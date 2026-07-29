@@ -75,6 +75,29 @@ function Install-Pyexasol {
     return $true
 }
 
+# Update-Pyexasol - install the advertised version into the venv. Doubles as the
+# repair command: the install step is soft-fail, so this is what a user runs after
+# `exakit status` or `exakit update-check` reports pyexasol as missing. Asked for
+# explicitly, so a failure here IS a failure. Twin of pyexasol_update.
+function Update-Pyexasol {
+    $available = Get-ExakitComponentAvailable "pyexasol"
+    if (-not $available) { Fail "Could not resolve the advertised pyexasol version." }
+    $current = Get-PyexasolInstalledVersion
+    if ($current -and $current -eq $available) {
+        Ok "pyexasol is already current ($current)"
+        return
+    }
+    if ($current) { Info "Updating pyexasol $current -> $available" }
+    else { Info "Installing pyexasol $available" }
+    $script:PyexasolVersion = $available
+    if (-not (Install-Pyexasol)) {
+        Fail "pyexasol could not be installed - see the warning above and the log."
+    }
+    Test-PyexasolConnection
+    Set-ExakitManifestValue "desired.pyexasol" $script:PyexasolVersion
+    Ok "pyexasol updated; database data was not changed"
+}
+
 # Test-PyexasolConnection - prove the driver imports, then run SELECT 1
 # against the local database with the runtime credentials. A failed live
 # check records validated=false and warns rather than aborting the install:

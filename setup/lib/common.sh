@@ -1195,13 +1195,18 @@ print(sorted(candidates, key=key)[-1] if candidates else "")
     printf '%s\n' "$_dt_names" | head -1
 }
 
+# exakit_version_newer <a> <b> — true when <a> sorts after <b>.
+# The _vn_ prefix matters: bash 3.2 has no function-local variables here, and
+# callers hold their own state in names like _current/_latest while asking this
+# question (sometimes with the arguments the other way round, to detect a
+# rollback). Anything less specific would silently overwrite the caller's data.
 exakit_version_newer() {
-    _latest="$1"
-    _current="$2"
-    [ -n "$_latest" ] && [ -n "$_current" ] || return 1
-    [ "$_latest" != "$_current" ] || return 1
+    _vn_a="$1"
+    _vn_b="$2"
+    [ -n "$_vn_a" ] && [ -n "$_vn_b" ] || return 1
+    [ "$_vn_a" != "$_vn_b" ] || return 1
     if exakit_can_run_python; then
-        run_python - "$_latest" "$_current" <<'PY'
+        run_python - "$_vn_a" "$_vn_b" <<'PY'
 import re, sys
 def key(v):
     v = v.strip().lstrip("v")
@@ -1210,14 +1215,14 @@ sys.exit(0 if key(sys.argv[1]) > key(sys.argv[2]) else 1)
 PY
         return $?
     fi
-    _latest_major="$(exakit_major_version "$_latest")"
-    _current_major="$(exakit_major_version "$_current")"
-    case "$_latest_major$_current_major" in *[!0-9]*) return 1 ;; esac
-    if [ "$_latest_major" -gt "$_current_major" ]; then return 0; fi
-    if [ "$_latest_major" -lt "$_current_major" ]; then return 1; fi
+    _vn_a_major="$(exakit_major_version "$_vn_a")"
+    _vn_b_major="$(exakit_major_version "$_vn_b")"
+    case "$_vn_a_major$_vn_b_major" in *[!0-9]*) return 1 ;; esac
+    if [ "$_vn_a_major" -gt "$_vn_b_major" ]; then return 0; fi
+    if [ "$_vn_a_major" -lt "$_vn_b_major" ]; then return 1; fi
     # Same major and no Python/uv: treat different tags as worth inspecting,
     # but avoid claiming a downgrade is newer when the major clearly regressed.
-    [ "$_latest" != "$_current" ]
+    [ "$_vn_a" != "$_vn_b" ]
 }
 
 exakit_major_version() {
@@ -1305,11 +1310,16 @@ _exakit_resolve_versions_pinned() {
     EXAKIT_PYEXASOL_VERSION="${EXAKIT_PYEXASOL_VERSION:-$EXAKIT_PYEXASOL_VERSION_FALLBACK}"
 }
 
+# exakit_component_latest <component> — the newest version upstream publishes.
+# The implementation behind EXAKIT_VERSION_POLICY=latest; under the default
+# manifest policy nothing calls it, which is what keeps `exakit version` and the
+# update notice off the network.
 exakit_component_latest() {
     case "$1" in
         exakit)   exakit_latest_github_release_version "$EXAKIT_KIT_REPO" ;;
         exapump)  exakit_latest_github_release_version "$EXAKIT_EXAPUMP_REPO" ;;
         mcp)      exakit_latest_pypi_version "$EXAKIT_MCP_PACKAGE" ;;
+        pyexasol) exakit_latest_pypi_version "${EXAKIT_PYEXASOL_PACKAGE:-pyexasol}" ;;
         nano)     exakit_latest_docker_tag "$EXAKIT_NANO_IMAGE" ;;
         personal) exakit_latest_github_release_version "$EXAKIT_PERSONAL_REPO" ;;
         runtime)
@@ -1323,14 +1333,166 @@ exakit_component_latest() {
     esac
 }
 
+# _exakit_component_block <component> — where this Component lives in
+# versions.json. One mapping serves version, severity, note and min_kit_version.
+_exakit_component_block() {
+    case "$1" in
+        exakit) printf '%s\n' kit ;;
+        kit2)   printf '%s\n' kit2 ;;
+        exapump|mcp|pyexasol|nano|personal) printf 'components.%s\n' "$1" ;;
+        runtime)
+            case "$(exakit_installation_runtime_type 2>/dev/null)" in
+                nano)     printf '%s\n' components.nano ;;
+                personal) printf '%s\n' components.personal ;;
+                *) return 1 ;;
+            esac
+            ;;
+        *) return 1 ;;
+    esac
+}
+
+# _exakit_component_env_override <component> — the version the user asked for by
+# hand, if any. Same precedence as the install path: an explicit
+# EXAKIT_*_VERSION / EXAKIT_NANO_TAG outranks the manifest and any upstream
+# lookup, so `EXAKIT_EXAPUMP_VERSION=0.11.2 exakit update exapump` installs
+# exactly that (still through the confirmation gate, and still verified — the
+# digest chain falls back to the release API when the version is not the
+# advertised one).
+_exakit_component_env_override() {
+    case "$1" in
+        exapump)  printf '%s' "${EXAKIT_EXAPUMP_VERSION:-}" ;;
+        mcp)      printf '%s' "${EXAKIT_MCP_VERSION:-}" ;;
+        pyexasol) printf '%s' "${EXAKIT_PYEXASOL_VERSION:-}" ;;
+        nano)     printf '%s' "${EXAKIT_NANO_TAG:-}" ;;
+        personal) printf '%s' "${EXAKIT_PERSONAL_VERSION:-}" ;;
+        runtime)
+            case "$(exakit_installation_runtime_type 2>/dev/null)" in
+                nano)     printf '%s' "${EXAKIT_NANO_TAG:-}" ;;
+                personal) printf '%s' "${EXAKIT_PERSONAL_VERSION:-}" ;;
+            esac
+            ;;
+    esac
+}
+
+# exakit_component_available <component> — the version this kit would install
+# NOW, under the policy in force. That is the promise the Available column makes,
+# so each policy answers from the same place its install path would:
+#   env override  the version the user asked for
+#   manifest      versions.json
+#   latest        a live upstream lookup
+#   anything else the compiled-in *_FALLBACK constant
+# Empty output means "cannot tell" (no readable document), which the table reports
+# as unknown rather than guessing.
+exakit_component_available() {
+    _cav_override="$(_exakit_component_env_override "$1")"
+    if [ -n "$_cav_override" ]; then
+        printf '%s\n' "$_cav_override"
+        return 0
+    fi
+    case "${EXAKIT_VERSION_POLICY:-manifest}" in
+        latest)
+            exakit_component_latest "$1"
+            return $?
+            ;;
+        manifest) ;;
+        *)
+            _exakit_component_fallback "$1"
+            return $?
+            ;;
+    esac
+    _cav_block="$(_exakit_component_block "$1" 2>/dev/null)" || return 1
+    exakit_versions_value "${_cav_block}.version"
+}
+
+# The last-known-good constant for a Component: what a no-network install picks.
+_exakit_component_fallback() {
+    case "$1" in
+        exapump)  printf '%s\n' "$EXAKIT_EXAPUMP_VERSION_FALLBACK" ;;
+        mcp)      printf '%s\n' "$EXAKIT_MCP_VERSION_FALLBACK" ;;
+        pyexasol) printf '%s\n' "$EXAKIT_PYEXASOL_VERSION_FALLBACK" ;;
+        nano)     printf '%s\n' "$EXAKIT_NANO_TAG_FALLBACK" ;;
+        personal) printf '%s\n' "$EXAKIT_PERSONAL_VERSION_FALLBACK" ;;
+        runtime)
+            case "$(exakit_installation_runtime_type 2>/dev/null)" in
+                nano)     printf '%s\n' "$EXAKIT_NANO_TAG_FALLBACK" ;;
+                personal) printf '%s\n' "$EXAKIT_PERSONAL_VERSION_FALLBACK" ;;
+                *) return 1 ;;
+            esac
+            ;;
+        # The kit's own version is not one of the constants: it comes from the
+        # copy on disk, which is exactly what is installed.
+        exakit) exakit_kit_bundled_version ;;
+        *) return 1 ;;
+    esac
+}
+
+# The severity, note and min_kit_version below describe the ADVERTISED version of
+# a Component. When the version on offer comes from somewhere else — a live
+# upstream lookup under `latest`, the fallback constants, or the user's own env
+# override — pairing it with the maintainers' commentary would be actively
+# misleading ("0.12.0 is the tested build" next to an available 9.9.9).
+_exakit_manifest_metadata_applies() {
+    [ "${EXAKIT_VERSION_POLICY:-manifest}" = "manifest" ] || return 1
+    [ -z "$(_exakit_component_env_override "$1")" ]
+}
+
+# exakit_component_severity <component> — normal | recommended | critical.
+# Absent means normal; the value gates the after-command notice and is the only
+# thing that makes a row stand out in the table.
+exakit_component_severity() {
+    _exakit_manifest_metadata_applies "$1" || { printf '%s\n' normal; return 0; }
+    _cs_block="$(_exakit_component_block "$1" 2>/dev/null)" || { printf '%s\n' normal; return 0; }
+    _cs_value="$(exakit_versions_value "${_cs_block}.severity" 2>/dev/null || true)"
+    case "$_cs_value" in
+        recommended|critical) printf '%s\n' "$_cs_value" ;;
+        *) printf '%s\n' normal ;;
+    esac
+}
+
+# exakit_component_note <component> — the maintainer's one-line note, if any.
+exakit_component_note() {
+    _exakit_manifest_metadata_applies "$1" || return 1
+    _cn_block="$(_exakit_component_block "$1" 2>/dev/null)" || return 1
+    exakit_versions_value "${_cn_block}.note"
+}
+
+# exakit_component_min_kit <component> — the kit version this Component needs.
+exakit_component_min_kit() {
+    _exakit_manifest_metadata_applies "$1" || return 1
+    _cm_block="$(_exakit_component_block "$1" 2>/dev/null)" || return 1
+    exakit_versions_value "${_cm_block}.min_kit_version"
+}
+
+# exakit_component_is_heavy <component> — true for changes that stop the
+# database. Intrinsic to the Component, so it lives in code rather than in the
+# manifest: the runtime is heavy, everything else is seconds of work.
+exakit_component_is_heavy() {
+    case "$1" in
+        runtime|nano|personal) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
 exakit_component_current() {
     case "$1" in
         exakit)
-            _src="$(manifest_get kit.source 2>/dev/null || true)"
-            case "$_src" in *@*) printf '%s\n' "${_src##*@}" ;; *) printf '%s\n' "unknown" ;; esac
+            # kit.version is written by the installer and by self-update; the
+            # kit.source parse is the fallback for installs made before that.
+            _cur_kit="$(manifest_get kit.version 2>/dev/null || true)"
+            if [ -n "$_cur_kit" ]; then
+                printf '%s\n' "$_cur_kit"
+            else
+                _src="$(manifest_get kit.source 2>/dev/null || true)"
+                case "$_src" in
+                    *@main) exakit_kit_bundled_version 2>/dev/null || printf '%s\n' "unknown" ;;
+                    *@*)    printf '%s\n' "${_src##*@}" ;;
+                    *)      exakit_kit_bundled_version 2>/dev/null || printf '%s\n' "unknown" ;;
+                esac
+            fi
             ;;
         exapump)  manifest_get components.exapump.version 2>/dev/null ;;
         mcp)      manifest_get components.mcp_server.version 2>/dev/null ;;
+        pyexasol) manifest_get components.pyexasol.version 2>/dev/null ;;
         nano)
             _image="$(manifest_get runtime.image 2>/dev/null || true)"
             printf '%s\n' "${_image##*:}"
@@ -1345,48 +1507,219 @@ exakit_component_current() {
 
 exakit_update_targets() {
     case "${1:-all}" in
-        all) printf '%s\n' exakit runtime exapump mcp ;;
+        all) printf '%s\n' exakit runtime exapump mcp pyexasol ;;
         runtime|database|db) printf '%s\n' runtime ;;
-        nano|personal|exakit|exapump|mcp) printf '%s\n' "$1" ;;
+        nano|personal|exakit|exapump|mcp|pyexasol) printf '%s\n' "$1" ;;
         *) return 1 ;;
     esac
 }
 
+# exakit_min_kit_satisfied <required> — can this kit run the advertised
+# Component? An unknown kit version never blocks: it would strand the user.
+exakit_min_kit_satisfied() {
+    _mks_kit="$(exakit_component_current exakit 2>/dev/null || true)"
+    [ -n "$_mks_kit" ] && [ "$_mks_kit" != "unknown" ] || return 0
+    [ "$_mks_kit" != "$1" ] || return 0
+    exakit_version_newer "$_mks_kit" "$1"
+}
+
+# exakit_updates_pending — true when a NEWER version is advertised for anything.
+# Reads the cached document and refreshes it only once the TTL has expired, so
+# `exakit version` costs at most one small fetch a day (none at all with a warm
+# cache) instead of the three API calls it used to make on every run.
+exakit_updates_pending() {
+    # `latest` policy means live upstream lookups; nothing that runs after an
+    # ordinary command may pay for three API calls.
+    [ "${EXAKIT_VERSION_POLICY:-manifest}" = "manifest" ] || return 1
+    exakit_versions_update_cache >/dev/null 2>&1 || true
+    exakit_versions_resolve_doc >/dev/null 2>&1 || true
+    for _upd_component in $(exakit_update_targets all); do
+        _upd_actual="$(exakit_update_actual_target "$_upd_component" 2>/dev/null || printf '%s\n' "$_upd_component")"
+        _upd_available="$(exakit_component_available "$_upd_actual" 2>/dev/null || true)"
+        [ -n "$_upd_available" ] || continue
+        _upd_current="$(exakit_component_current "$_upd_actual" 2>/dev/null || true)"
+        # A component that is not installed at all is a repair, not a new version.
+        # `exakit status` and update-check surface it; counting it here would make
+        # `exakit version` claim "New versions are available" with nothing newer.
+        [ -n "$_upd_current" ] || continue
+        [ "$_upd_current" != "unknown" ] || continue
+        exakit_version_newer "$_upd_available" "$_upd_current" && return 0
+    done
+    return 1
+}
+
+# exakit_confirm_downgrade <component> — applying an older version than the one
+# installed is a rollback. The maintainers may well have advised it (lowering the
+# version in versions.json IS the rollback lever), but it never happens silently.
+# Returns non-zero when the rollback was refused; the caller decides whether that
+# ends the run or just skips this component.
+exakit_confirm_downgrade() {
+    _cd_component="$1"
+    _cd_current="$(exakit_component_current "$_cd_component" 2>/dev/null || true)"
+    _cd_available="$(exakit_component_available "$_cd_component" 2>/dev/null || true)"
+    [ -n "$_cd_current" ] && [ -n "$_cd_available" ] || return 0
+    [ "$_cd_current" != "unknown" ] || return 0
+    exakit_version_newer "$_cd_current" "$_cd_available" || return 0
+    warn "$_cd_component $_cd_current is NEWER than the advertised $_cd_available — this is a rollback."
+    _cd_note="$(exakit_component_note "$_cd_component" 2>/dev/null || true)"
+    [ -n "$_cd_note" ] && info "$_cd_note"
+    if confirm_env EXAKIT_ALLOW_DOWNGRADE \
+            "Downgrade $_cd_component $_cd_current -> $_cd_available as advised by the maintainers?" n; then
+        return 0
+    fi
+    warn "Rollback of $_cd_component not applied. Set EXAKIT_ALLOW_DOWNGRADE=1 to apply it non-interactively."
+    return 1
+}
+
+# exakit_print_versions_source_line — where the Available column came from, so
+# nobody has to guess whether a stale answer is being shown.
+exakit_print_versions_source_line() {
+    case "${EXAKIT_VERSION_POLICY:-manifest}" in
+        manifest) ;;
+        latest)
+            info "Available versions come from live upstream lookups (EXAKIT_VERSION_POLICY=latest)"
+            _exakit_print_override_line
+            return 0
+            ;;
+        *)
+            info "Available versions come from this kit's built-in fallbacks (EXAKIT_VERSION_POLICY=${EXAKIT_VERSION_POLICY}, no network)"
+            _exakit_print_override_line
+            return 0
+            ;;
+    esac
+    case "$(exakit_versions_source)" in
+        fetched) _vsl_text="the published versions manifest, fetched just now" ;;
+        cache)   _vsl_text="the cached copy of the versions manifest" ;;
+        baked)   _vsl_text="the versions manifest that shipped with this kit (no network)" ;;
+        # Nothing readable anywhere: the rows say "unknown" rather than inventing
+        # a number, so say that plainly instead of crediting a source.
+        *)       info "The versions manifest could not be read, so the available versions are unknown"
+                 _exakit_print_override_line
+                 return 0
+                 ;;
+    esac
+    _vsl_updated="$(exakit_versions_value updated 2>/dev/null || true)"
+    [ -n "$_vsl_updated" ] && _vsl_text="$_vsl_text, updated $_vsl_updated"
+    info "Available versions from $_vsl_text"
+    if exakit_versions_schema_ahead; then
+        info "This kit is older than the published manifest — update it first: exakit update exakit"
+    fi
+    _exakit_print_override_line
+    return 0
+}
+
+# An env override outranks every source above, so say so rather than letting the
+# line above take credit for a version the user picked.
+_exakit_print_override_line() {
+    for _pol_component in exapump mcp pyexasol nano personal; do
+        if [ -n "$(_exakit_component_env_override "$_pol_component")" ]; then
+            info "Some versions come from EXAKIT_* environment overrides and not from the manifest"
+            return 0
+        fi
+    done
+    return 0
+}
+
+# _exakit_severity_cell <severity> — the padded, coloured Severity cell. Only a
+# severity that is NOT normal shows text, so a flagged row is the only thing that
+# draws the eye. Padding happens before colouring so escapes cannot break the
+# column alignment.
+_exakit_severity_cell() {
+    case "$1" in
+        critical)
+            _sc_cell="$(printf '%-11s' critical)"
+            [ "${UI_FANCY:-0}" = 1 ] && _sc_cell="${UI_WARN:-}${_sc_cell}${UI_RESET:-}"
+            ;;
+        recommended)
+            _sc_cell="$(printf '%-11s' recommended)"
+            [ "${UI_FANCY:-0}" = 1 ] && _sc_cell="${UI_OK:-}${_sc_cell}${UI_RESET:-}"
+            ;;
+        *) _sc_cell="$(printf '%-11s' '-')" ;;
+    esac
+    printf '%s' "$_sc_cell"
+}
+
+# exakit_print_update_check [target] — THE comparison table. It is the only
+# command that renders it: `exakit version` prints a two-line hint instead, and
+# `exakit update` prints just the work it is about to do.
+#
+# Someone who asks explicitly gets fresh data: the TTL exists for readers that
+# run behind other commands, not for this one.
 exakit_print_update_check() {
     _target="${1:-all}"
     _targets="$(exakit_update_targets "$_target")" || die "Unknown update target: $_target"
+    if [ "${EXAKIT_VERSION_POLICY:-manifest}" = "manifest" ]; then
+        exakit_versions_update_cache force >/dev/null 2>&1 || true
+        exakit_versions_resolve_doc >/dev/null 2>&1 || true
+    fi
     printf '\n  Component update check\n'
     printf '  ----------------------\n'
-    printf '%-12s %-18s %-18s %s\n' "Component" "Installed" "Latest" "Action"
+    printf '%-10s %-17s %-17s %-11s %s\n' "Component" "Installed" "Available" "Severity" "Action"
     _updates=0
+    _heavy_pending=0
     for _component in $_targets; do
-        _actual="$(exakit_update_actual_target "$_component" 2>/dev/null || printf '%s\n' "$_component")"
-        _current="$(exakit_component_current "$_actual" 2>/dev/null || true)"
-        _latest="$(exakit_component_latest "$_actual" 2>/dev/null || true)"
-        [ -n "$_current" ] || _current="not installed"
-        [ -n "$_latest" ] || _latest="unknown"
+        _row_component="$(exakit_update_actual_target "$_component" 2>/dev/null || printf '%s\n' "$_component")"
+        _row_installed="$(exakit_component_current "$_row_component" 2>/dev/null || true)"
+        _row_available="$(exakit_component_available "$_row_component" 2>/dev/null || true)"
+        [ -n "$_row_installed" ] || _row_installed="not installed"
+        [ -n "$_row_available" ] || _row_available="unknown"
+        _row_display="$_row_available"
+        _row_note=""
         _action="current"
-        if [ "$_latest" = "unknown" ] || [ "$_current" = "unknown" ] || [ "$_current" = "not installed" ]; then
+        if [ "$_row_available" = "unknown" ] || [ "$_row_installed" = "unknown" ]; then
             _action="inspect"
-        elif exakit_version_newer "$_latest" "$_current"; then
-            if [ "$_actual" = "personal" ] && [ "$(exakit_major_version "$_latest")" != "$(exakit_major_version "$_current")" ]; then
-                _action="exakit update $_component --plan"
+        elif [ "$_row_installed" = "not installed" ] && exakit_component_is_heavy "$_row_component"; then
+            # A runtime that is not installed is not a runtime this machine wants:
+            # offering to deploy Exasol Personal onto a Nano install would be
+            # actively wrong. (A missing light component, by contrast, is exactly
+            # the pyexasol repair case below.)
+            _action="inspect"
+        elif [ "$_row_installed" != "$_row_available" ]; then
+            _row_min_kit="$(exakit_component_min_kit "$_row_component" 2>/dev/null || true)"
+            if [ -n "$_row_min_kit" ] && ! exakit_min_kit_satisfied "$_row_min_kit"; then
+                _action="update exakit first (needs kit >= $_row_min_kit)"
             else
                 _action="exakit update $_component"
+                if [ "$_row_installed" != "not installed" ] && exakit_version_newer "$_row_installed" "$_row_available"; then
+                    # The maintainers advertise something older: an advisory
+                    # rollback, offered but never applied without a confirmation.
+                    _row_display="$_row_available (older)"
+                    _row_note="advisory rollback — applying this asks for confirmation"
+                elif [ "$_row_component" = "personal" ] && \
+                     [ "$(exakit_major_version "$_row_available")" != "$(exakit_major_version "$_row_installed")" ]; then
+                    _action="exakit update $_component --plan"
+                fi
+                if exakit_component_is_heavy "$_row_component"; then
+                    _action="$_action (heavy)"
+                    _heavy_pending=1
+                else
+                    # Counts only what a plain `exakit update` would actually
+                    # apply: a heavy row and a kit-blocked row must not inflate
+                    # the "apply them in one go" hint below.
+                    _updates=$((_updates + 1))
+                fi
             fi
-            _updates=$((_updates + 1))
         fi
-        printf '%-12s %-18s %-18s %s\n' "$_actual" "$_current" "$_latest" "$_action"
+        printf '%-10s %-17s %-17s %s %s\n' "$_row_component" "$_row_installed" "$_row_display" \
+            "$(_exakit_severity_cell "$(exakit_component_severity "$_row_component")")" "$_action"
+        [ -n "$_row_note" ] && printf '    %s%s%s\n' "${UI_DIM:-}" "$_row_note" "${UI_RESET:-}"
+        _row_maint_note="$(exakit_component_note "$_row_component" 2>/dev/null || true)"
+        [ -n "$_row_maint_note" ] && printf '    %s%s%s\n' "${UI_DIM:-}" "$_row_maint_note" "${UI_RESET:-}"
     done
     printf '\n'
+    exakit_print_versions_source_line
     if [ "$_updates" -gt 1 ]; then
-        info "Update everything with: exakit update all"
+        info "Apply the quick ones in one go with: exakit update"
     fi
+    if [ "$_heavy_pending" -eq 1 ]; then
+        info "A runtime change stops the database — run it when convenient: exakit update runtime"
+    fi
+    return 0
 }
 
 exakit_update_self() {
-    _latest="$(exakit_component_latest exakit)"
-    [ -n "$_latest" ] || die "Could not resolve the latest starter kit release."
+    _latest="$(exakit_component_available exakit)"
+    [ -n "$_latest" ] || die "Could not resolve the advertised starter kit version."
     _current="$(exakit_component_current exakit 2>/dev/null || true)"
     if [ "$_latest" = "$_current" ]; then
         ok "exakit is already current ($_current)"
@@ -1438,6 +1771,12 @@ exakit_update_self() {
         die "Updated kit did not contain setup/exakit after staging; previous kit copy was restored."
     fi
     manifest_set kit.source "${_repo}@${_latest}"
+    # Record the version too, not just where it came from. exakit_component_current
+    # reads kit.version first, so without this the kit would report its old
+    # version forever: update-check would keep offering the same update, `exakit
+    # version` would keep nagging, and `exakit update` would re-download the whole
+    # kit on every run.
+    manifest_set kit.version "$_latest"
     ok "exakit updated. Database data, credentials, and MCP state were not changed."
 }
 
@@ -1453,6 +1792,10 @@ exakit_update_component() {
         mcp)
             command -v mcp_update >/dev/null 2>&1 || die "MCP module is not available in this version."
             mcp_update
+            ;;
+        pyexasol)
+            command -v pyexasol_update >/dev/null 2>&1 || die "pyexasol module is not available in this version."
+            pyexasol_update
             ;;
         runtime)
             case "$(exakit_installation_runtime_type 2>/dev/null)" in
@@ -1484,11 +1827,72 @@ exakit_update() {
     fi
     _targets="$(exakit_update_targets "$_target")" || die "Unknown update target: $_target"
     exakit_init_logging
-    info "Checking updates before applying changes"
-    exakit_print_update_check "$_target"
+    # An explicit update applies what is advertised right NOW, so ask upstream
+    # once and resolve in this shell — the loop below reads the same document.
+    if [ "${EXAKIT_VERSION_POLICY:-manifest}" = "manifest" ]; then
+        exakit_versions_update_cache force >/dev/null 2>&1 || true
+        exakit_versions_resolve_doc >/dev/null 2>&1 || true
+    fi
+    exakit_print_versions_source_line
+    _deferred=0
+    _acted=0
     for _component in $_targets; do
+        # _upd_ prefix: verify_sha256 (reached through the component updaters)
+        # assigns _actual, and bash has no function-local variables here.
+        _upd_actual="$(exakit_update_actual_target "$_component" 2>/dev/null || printf '%s\n' "$_component")"
+        _cur="$(exakit_component_current "$_upd_actual" 2>/dev/null || true)"
+        _avail="$(exakit_component_available "$_upd_actual" 2>/dev/null || true)"
+        # Nothing advertised for this component (unreadable manifest, or a
+        # component this kit knows nothing about): a routine update says so and
+        # moves on. An explicit single target still runs, so its updater can
+        # report the real reason.
+        if [ "$_target" = "all" ] && [ -z "$_avail" ]; then
+            warn "No advertised version for $_upd_actual — skipping it. Details: exakit update-check"
+            continue
+        fi
+        # A blanket update never stops the database: the runtime is announced with
+        # its exact command and left for the user to run when it suits them.
+        if [ "$_target" = "all" ] && exakit_component_is_heavy "$_upd_actual"; then
+            if [ -n "$_cur" ] && [ -n "$_avail" ] && [ "$_cur" != "unknown" ] && [ "$_cur" != "$_avail" ]; then
+                warn "$_upd_actual $_cur -> $_avail needs the database stopped, so it is not part of a routine update."
+                info "Apply it when convenient:  exakit update runtime"
+                _deferred=$((_deferred + 1))
+            fi
+            continue
+        fi
+        # Only the components this run will actually touch are reported: the work
+        # plan, not a status table. `exakit update-check` is where everything is
+        # listed, including what is already current.
+        if [ -n "$_cur" ] && [ -n "$_avail" ] && [ "$_cur" = "$_avail" ]; then
+            continue
+        fi
+        # The table's "update exakit first" verdict has to hold here too, or the
+        # manifest's only hard compatibility lever would be advice nobody applies.
+        _upd_min_kit="$(exakit_component_min_kit "$_upd_actual" 2>/dev/null || true)"
+        if [ -n "$_upd_min_kit" ] && ! exakit_min_kit_satisfied "$_upd_min_kit"; then
+            warn "$_upd_actual $_avail needs kit >= $_upd_min_kit — update the kit first: exakit update exakit"
+            [ "$_target" = "all" ] && continue
+            die "Refusing to install $_upd_actual $_avail on kit $(exakit_component_current exakit 2>/dev/null || printf unknown)."
+        fi
+        if [ -n "$_avail" ]; then
+            info "$_upd_actual ${_cur:-not installed} -> $_avail"
+        fi
+        # A refused rollback stops THAT component, not the whole run: one advisory
+        # rollback must not block every other update on an unattended machine.
+        if ! exakit_confirm_downgrade "$_upd_actual"; then
+            [ "$_target" = "all" ] && continue
+            die "Downgrade of $_upd_actual cancelled. Set EXAKIT_ALLOW_DOWNGRADE=1 to apply it non-interactively."
+        fi
         exakit_update_component "$_component" "$@"
+        _acted=$((_acted + 1))
     done
+    if [ "$_acted" -eq 0 ] && [ "$_deferred" -eq 0 ]; then
+        ok "Everything is already current."
+    fi
+    if [ "$_deferred" -gt 0 ]; then
+        info "See everything, including the deferred runtime change: exakit update-check"
+    fi
+    return 0
 }
 
 # step_done <name> — succeeds if the step is recorded in steps_completed.

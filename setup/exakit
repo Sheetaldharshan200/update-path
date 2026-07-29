@@ -6,8 +6,10 @@
 #   preflight           check this machine's requirements, install nothing
 #   status              show what is installed and whether it is healthy
 #   version             kit source, install date, component versions
-#   update-check [what] check latest versions (all, runtime, exakit, exapump, mcp)
-#   update [what]       update all or one component without deleting database data
+#   update-check [what] compare installed vs advertised versions
+#                       (all, runtime, exakit, exapump, mcp, pyexasol)
+#   update [what]       apply the advertised versions without deleting database data;
+#                       a runtime change is announced, not applied, by `update all`
 #                       Personal major upgrades support --plan, --backup, --apply
 #   info                print the connection details panel
 #   guide               friendly walkthrough: connect AI clients (MCP), SQL
@@ -56,6 +58,9 @@ fi
 . "$_lib_dir/runtime-personal.sh"
 [ -f "$_lib_dir/exapump.sh" ] && . "$_lib_dir/exapump.sh"
 [ -f "$_lib_dir/mcp.sh" ] && . "$_lib_dir/mcp.sh"
+# pyexasol is an update target of its own (and its own repair command), so the
+# CLI needs the module even though it takes no part in the runtime commands.
+[ -f "$_lib_dir/pyexasol.sh" ] && . "$_lib_dir/pyexasol.sh"
 
 _runtime_type() {
     manifest_get runtime.type 2>/dev/null
@@ -80,6 +85,14 @@ cmd_status() {
         *)        printf 'Status:     unknown\n' ;;
     esac
     printf 'Steps done: %s\n' "$(manifest_get steps_completed 2>/dev/null)"
+    # pyexasol installs soft: when it is missing, say so here with the one command
+    # that fixes it, instead of leaving a silent gap in the install.
+    _pyx_version="$(manifest_get components.pyexasol.version 2>/dev/null || true)"
+    if [ -n "$_pyx_version" ]; then
+        printf 'pyexasol:   %s\n' "$_pyx_version"
+    elif manifest_get components.pyexasol.validated >/dev/null 2>&1; then
+        printf 'pyexasol:   not installed — repair: exakit update pyexasol\n'
+    fi
     printf 'Manifest:   %s\n' "$EXAKIT_MANIFEST"
 }
 
@@ -150,8 +163,12 @@ cmd_uninstall() {
     info "If a PATH entry for $EXAKIT_BIN_DIR remains in your shell profile (~/.zshrc, ~/.bashrc, ~/.profile), remove it manually if you no longer need it."
 }
 
+# cmd_version — what is INSTALLED, nothing else. The comparison table belongs to
+# `exakit update-check` alone; when something newer is waiting, this command says
+# so in two lines instead of making three API calls on every run.
 cmd_version() {
     [ -f "$EXAKIT_MANIFEST" ] || { echo "Not installed (no manifest at $EXAKIT_MANIFEST)"; exit 0; }
+    printf 'Kit version:    %s\n' "$(exakit_component_current exakit 2>/dev/null || printf 'unknown')"
     printf 'Kit level:      %s\n' "$(manifest_get kit_level 2>/dev/null)"
     printf 'Kit source:     %s\n' "$(manifest_get kit.source 2>/dev/null)"
     printf 'Installed at:   %s\n' "$(manifest_get installed_at 2>/dev/null)"
@@ -160,9 +177,13 @@ cmd_version() {
     printf 'exapump:        %s\n' "$(manifest_get components.exapump.version 2>/dev/null)"
     printf 'MCP server:     %s %s\n' "$(manifest_get components.mcp_server.package 2>/dev/null)" \
         "$(manifest_get components.mcp_server.version 2>/dev/null)"
-    printf 'pyexasol:       %s\n' "$(manifest_get components.pyexasol.version 2>/dev/null)"
-    printf '\n'
-    exakit_print_update_check all || true
+    printf 'pyexasol:       %s\n' "$(manifest_get components.pyexasol.version 2>/dev/null || printf 'not installed')"
+    if exakit_updates_pending; then
+        printf '\n'
+        printf 'New versions are available.\n'
+        printf "See what's new:  exakit update-check\n"
+        printf 'Update:          exakit update\n'
+    fi
 }
 
 cmd_update_check() {

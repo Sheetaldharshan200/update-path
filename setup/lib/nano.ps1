@@ -369,6 +369,19 @@ function Update-Nano {
     $currentTag = if ($currentImage -and $currentImage.Contains(":")) { ($currentImage -split ":")[-1] } else { "" }
     if ($currentTag -eq $LatestTag) { Ok "Exasol Nano is already current ($currentTag)"; return }
 
+    # The container is recreated, so the database goes down for the duration.
+    # Even an explicit `exakit update runtime` asks first; a script pre-answers
+    # with EXAKIT_CONFIRM_RUNTIME_UPDATE=1 (an unattended run takes the default,
+    # which is yes - the command was asked for explicitly).
+    $tagShown = $currentTag
+    if (-not $tagShown) { $tagShown = "unknown" }
+    if (-not (Confirm-ExakitEnvPrompt -EnvName "EXAKIT_CONFIRM_RUNTIME_UPDATE" `
+            -Question "Update Exasol Nano $tagShown -> ${LatestTag}? The database stops while the container is recreated; the data volume is kept." `
+            -DefaultYes $true)) {
+        Info "Runtime update cancelled - nothing was changed."
+        return
+    }
+
     $engine = Get-NanoEngine
     $image = "docker.io/$($script:NanoImage):$LatestTag"
     $oldImage = if ($currentTag) { "docker.io/$($script:NanoImage):$currentTag" } else { "" }

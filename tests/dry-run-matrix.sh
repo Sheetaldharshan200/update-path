@@ -137,7 +137,7 @@ rm -rf "$_mcp_test_dir"
 
 echo "update command routing:"
 update_targets="$(bash -c ". '$ROOT/setup/lib/common.sh'; exakit_update_targets all" | tr '\n' ' ')"
-check "update_targets(all)" "exakit runtime exapump mcp " "$update_targets"
+check "update_targets(all)" "exakit runtime exapump mcp pyexasol " "$update_targets"
 personal_target="$(bash -c ". '$ROOT/setup/lib/common.sh'; exakit_update_targets personal" | tr '\n' ' ')"
 check "update_targets(personal)" "personal " "$personal_target"
 if grep -q 'mcp.sh' "$ROOT/setup/exakit"; then
@@ -156,7 +156,11 @@ if bash -c ". '$ROOT/setup/lib/common.sh'; exakit_version_newer 3.0.0 2.0.0"; th
 else
     check "version_newer(3>2)" "yes" "no"
 fi
+# One row per target, every one of them behind: the table must offer an update
+# command for each. EXAKIT_VERSION_POLICY is pinned so the harness cannot reach
+# the network, and the available versions come from the stub below.
 update_action="$(bash -c "
+EXAKIT_VERSION_POLICY=pinned
 . '$ROOT/setup/lib/common.sh'
 manifest_get() {
   case \"\$1\" in
@@ -164,21 +168,56 @@ manifest_get() {
     runtime.image) printf '%s\n' docker.io/exasol/nano:2026.2.0-nano.2 ;;
     components.exapump.version) printf '%s\n' 0.11.2 ;;
     components.mcp_server.version) printf '%s\n' 1.10.1 ;;
-    kit.source) printf '%s\n' example/starter@1.0.0 ;;
+    components.pyexasol.version) printf '%s\n' 2.2.2 ;;
+    kit.version) printf '%s\n' 0.2.0 ;;
+    kit.source) printf '%s\n' example/starter@0.2.0 ;;
     *) return 1 ;;
   esac
 }
-exakit_component_latest() {
+exakit_component_available() {
   case \"\$1\" in
     nano) printf '%s\n' 2026.3.0-nano.1 ;;
     exapump) printf '%s\n' 0.12.0 ;;
     mcp) printf '%s\n' 1.11.0 ;;
-    exakit) printf '%s\n' 1.1.0 ;;
+    pyexasol) printf '%s\n' 2.3.0 ;;
+    exakit) printf '%s\n' 0.3.0 ;;
   esac
 }
 exakit_print_update_check all
-" | grep -c 'exakit update')"
+" | grep -c '^[a-z].*exakit update')"
 check "update_check(commands)" "5" "$update_action"
+
+# The runtime is the only heavy target, and a routine `exakit update` must
+# announce it instead of stopping the database on its own.
+update_plan="$(bash -c "
+EXAKIT_VERSION_POLICY=pinned
+. '$ROOT/setup/lib/common.sh'
+manifest_get() {
+  case \"\$1\" in
+    runtime.type) printf '%s\n' nano ;;
+    runtime.image) printf '%s\n' docker.io/exasol/nano:2026.2.0-nano.2 ;;
+    components.exapump.version) printf '%s\n' 0.11.2 ;;
+    kit.version) printf '%s\n' 0.2.0 ;;
+    *) return 1 ;;
+  esac
+}
+exakit_component_available() {
+  case \"\$1\" in
+    nano) printf '%s\n' 2026.3.0-nano.1 ;;
+    exapump) printf '%s\n' 0.11.2 ;;
+    *) return 1 ;;
+  esac
+}
+exakit_init_logging() { :; }
+exakit_update_component() { printf 'APPLIED %s\n' \"\$1\"; }
+exakit_update all
+" 2>&1)"
+if printf '%s' "$update_plan" | grep -q 'needs the database stopped' && \
+   ! printf '%s' "$update_plan" | grep -q 'APPLIED runtime'; then
+    check "update_all(defers_heavy)" "yes" "yes"
+else
+    check "update_all(defers_heavy)" "yes" "no"
+fi
 
 personal_major_plan="$(bash -c "
 . '$ROOT/setup/lib/common.sh'
@@ -190,7 +229,7 @@ manifest_get() {
     *) return 1 ;;
   esac
 }
-exakit_component_latest() { printf '%s\n' 3.0.0; }
+exakit_component_available() { printf '%s\n' 3.0.0; }
 personal_update --plan
 " 2>&1 | grep -c 'exakit update personal --backup')"
 check "personal_major(plan)" "1" "$personal_major_plan"
@@ -282,6 +321,14 @@ if grep -q 'exakit-kit-stage' "$ROOT/setup/lib/common.sh" && \
     check "self_update(staged_validation)" "yes" "yes"
 else
     check "self_update(staged_validation)" "yes" "no"
+fi
+# A successful self-update must record the new version, not just where it came
+# from: exakit_component_current reads kit.version first, so without this write
+# the kit reports its old version forever and re-downloads on every update.
+if grep -q 'manifest_set kit.version "\$_latest"' "$ROOT/setup/lib/common.sh"; then
+    check "self_update(records_kit_version)" "yes" "yes"
+else
+    check "self_update(records_kit_version)" "yes" "no"
 fi
 
 echo "Windows parity guards:"

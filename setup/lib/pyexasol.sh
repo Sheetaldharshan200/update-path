@@ -79,6 +79,29 @@ pyexasol_install() {
     manifest_set components.pyexasol.python "$(pyexasol_venv_python)"
 }
 
+# pyexasol_update — install the advertised version into the venv. Doubles as the
+# repair command: the install step is soft-fail, so this is what a user runs after
+# `exakit status` or `exakit update-check` reports pyexasol as missing. Asked for
+# explicitly, so a failure here IS a failure.
+pyexasol_update() {
+    _pyu_available="$(exakit_component_available pyexasol 2>/dev/null || true)"
+    [ -n "$_pyu_available" ] || die "Could not resolve the advertised pyexasol version."
+    _pyu_current="$(pyexasol_installed_version 2>/dev/null || true)"
+    if [ -n "$_pyu_current" ] && [ "$_pyu_current" = "$_pyu_available" ]; then
+        ok "pyexasol is already current ($_pyu_current)"
+        return 0
+    fi
+    info "Updating pyexasol ${_pyu_current:-not installed} -> $_pyu_available"
+    EXAKIT_PYEXASOL_VERSION="$_pyu_available"
+    export EXAKIT_PYEXASOL_VERSION
+    if ! pyexasol_install; then
+        die "pyexasol could not be installed — see the warning above and ${EXAKIT_LOG_FILE:-the log}."
+    fi
+    pyexasol_validate || true
+    manifest_set desired.pyexasol "$EXAKIT_PYEXASOL_VERSION"
+    ok "pyexasol updated; database data was not changed"
+}
+
 # pyexasol_apply_sve_workaround <venv-python> — recognize and self-repair the
 # faked-SVE crash. On aarch64 guests whose hypervisor advertises SVE the host
 # CPU cannot execute (seen: VirtualBox on Apple Silicon), importing

@@ -490,8 +490,8 @@ exapump_record_manifest() {
 }
 
 exapump_update() {
-    _latest="$(exakit_component_latest exapump)"
-    [ -n "$_latest" ] || die "Could not resolve the latest exapump release."
+    _latest="$(exakit_component_available exapump)"
+    [ -n "$_latest" ] || die "Could not resolve the advertised exapump version."
     _current="$(manifest_get components.exapump.version 2>/dev/null || true)"
     if [ "$_latest" = "$_current" ]; then
         ok "exapump is already current ($_current)"

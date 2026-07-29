@@ -436,13 +436,23 @@ nano_teardown() {
 
 nano_update() {
     nano_resolve_names
-    _latest="$(exakit_component_latest nano)"
-    [ -n "$_latest" ] || die "Could not resolve the latest Exasol Nano image tag."
+    _latest="$(exakit_component_available nano)"
+    [ -n "$_latest" ] || die "Could not resolve the advertised Exasol Nano image tag."
     _current="$(exakit_component_current nano 2>/dev/null || true)"
     if [ "$_latest" = "$_current" ]; then
         ok "Exasol Nano is already current ($_current)"
         return 0
     fi
+
+    # The container is recreated, so the database goes down for the duration.
+    # Even an explicit `exakit update runtime` asks first; a script pre-answers
+    # with EXAKIT_CONFIRM_RUNTIME_UPDATE=1 (an unattended run takes the default,
+    # which is yes — the command was asked for explicitly).
+    confirm_env EXAKIT_CONFIRM_RUNTIME_UPDATE \
+        "Update Exasol Nano ${_current:-unknown} -> ${_latest}? The database stops while the container is recreated; the data volume is kept." y || {
+        info "Runtime update cancelled — nothing was changed."
+        return 0
+    }
 
     _engine="$(nano_engine)"
     _image="docker.io/${EXAKIT_NANO_IMAGE}:${_latest}"

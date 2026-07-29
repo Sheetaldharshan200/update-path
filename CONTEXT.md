@@ -28,6 +28,14 @@ _Avoid_: dependency, package
 The maintainer-edited record of the current tested version set for every Component, published at the root of the Starter Kit repository and read by installs and update checks.
 _Avoid_: version file, lockfile, release manifest
 
+**Available Version**:
+The version of a Component that the Versions Manifest currently advertises, shown next to the installed one by the update check.
+_Avoid_: latest version, newest version
+
+**Advisory Rollback**:
+A Component move to an older Available Version, advised by the maintainers and applied only after the user confirms it.
+_Avoid_: downgrade, revert
+
 **Desired Version**:
 The version the Starter Kit resolved or was explicitly asked to install for a Component.
 _Avoid_: target version, pinned version

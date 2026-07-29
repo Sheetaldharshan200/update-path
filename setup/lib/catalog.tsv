@@ -2,8 +2,8 @@ tool	command	options	description
 exakit	preflight		Check this machine's requirements (runtime, RAM, ports); install nothing.
 exakit	status		Show what is installed and whether each component is healthy.
 exakit	version		Show kit source, install date, and component versions.
-exakit	update-check	[all|runtime|exakit|exapump|mcp|nano|personal]	Check latest available versions and print the exact update command.
-exakit	update	[all|runtime|exakit|exapump|mcp|nano|personal]	Update all or one component while preserving database data by default.
+exakit	update-check	[all|runtime|exakit|exapump|mcp|pyexasol|nano|personal]	Compare installed versions against the versions the maintainers advertise, and print the exact update command for each.
+exakit	update	[all|runtime|exakit|exapump|mcp|pyexasol|nano|personal]	Apply the advertised versions of the quick components (kit, exapump, MCP server, pyexasol); a runtime change is announced but left for you to run explicitly. Database data is preserved.
 exakit	update personal	[--plan|--backup|--apply]	Handle Exasol Personal major-version updates with an explicit non-destructive plan, deployment backup, and launcher apply step.
 exakit	info		Print the connection details panel (DSN, users, schema).
 exakit	guide		Friendly walkthrough: connect AI clients (MCP), SQL clients (DBeaver recommended), and Python (pyexasol).

@@ -6,8 +6,11 @@
 #   preflight            check this machine's requirements, install nothing
 #   status                show what is installed and whether it is healthy
 #   version               kit source, install date, component versions
-#   update-check [what]   check latest versions (all, runtime, exakit, exapump, mcp)
-#   update [what]         update all or one component without deleting database data
+#   update-check [what]   compare installed vs advertised versions
+#                         (all, runtime, exakit, exapump, mcp, pyexasol)
+#   update [what]         apply the advertised versions without deleting database
+#                         data; a runtime change is announced, not applied, by
+#                         `update all`
 #   info                  print the connection details panel
 #   guide                 friendly walkthrough: connect AI clients (MCP), SQL
 #                         clients (DBeaver), and Python (pyexasol)
@@ -61,6 +64,9 @@ if (Test-Path (Join-Path $scriptDir "lib\exakit-common.ps1")) {
 . (Join-Path $libDir "nano.ps1")
 . (Join-Path $libDir "exapump.ps1")
 . (Join-Path $libDir "mcp.ps1")
+# pyexasol is an update target of its own (and its own repair command), so the
+# CLI needs the module even though it takes no part in the runtime commands.
+. (Join-Path $libDir "pyexasol.ps1")
 
 function Get-RuntimeType { return (Get-ExakitManifestValue "runtime.type") }
 
@@ -81,6 +87,14 @@ function Invoke-CmdStatus {
     Write-Host "Status:     $status"
     $steps = @(Get-ExakitManifestValue "steps_completed")
     Write-Host "Steps done: $($steps -join ', ')"
+    # pyexasol installs soft: when it is missing, say so here with the one command
+    # that fixes it, instead of leaving a silent gap in the install.
+    $pyexasol = Get-ExakitManifestValue "components.pyexasol.version"
+    if ($pyexasol) {
+        Write-Host "pyexasol:   $pyexasol"
+    } elseif ($null -ne (Get-ExakitManifestValue "components.pyexasol.validated")) {
+        Write-Host "pyexasol:   not installed - repair: exakit update pyexasol"
+    }
     Write-Host "Manifest:   $script:ManifestPath"
 }
 
@@ -256,8 +270,12 @@ function Invoke-CmdUninstall {
     Info "If a PATH entry for $script:BinDir remains in your profile, remove it manually if you no longer need it."
 }
 
+# Invoke-CmdVersion - what is INSTALLED, nothing else. The comparison table
+# belongs to `exakit update-check` alone; when something newer is waiting, this
+# command says so in two lines instead of calling three APIs on every run.
 function Invoke-CmdVersion {
     if (-not (Test-Path $script:ManifestPath)) { Write-Host "Not installed (no manifest at $script:ManifestPath)"; return }
+    Write-Host "Kit version:    $(Get-ExakitComponentCurrent 'exakit')"
     Write-Host "Kit level:      $(Get-ExakitManifestValue 'kit_level')"
     Write-Host "Kit source:     $(Get-ExakitManifestValue 'kit.source')"
     Write-Host "Installed at:   $(Get-ExakitManifestValue 'installed_at')"
@@ -266,44 +284,44 @@ function Invoke-CmdVersion {
     Write-Host "Runtime:        $(Get-RuntimeType) $runtimeVersion"
     Write-Host "exapump:        $(Get-ExakitManifestValue 'components.exapump.version')"
     Write-Host "MCP server:     $(Get-ExakitManifestValue 'components.mcp_server.package') $(Get-ExakitManifestValue 'components.mcp_server.version')"
-    Write-Host "pyexasol:       $(Get-ExakitManifestValue 'components.pyexasol.version')"
-    Invoke-CmdUpdateCheck -Target "all"
+    $pyexasol = Get-ExakitManifestValue "components.pyexasol.version"
+    if (-not $pyexasol) { $pyexasol = "not installed" }
+    Write-Host "pyexasol:       $pyexasol"
+    if (Test-ExakitUpdatesPending) {
+        Write-Host ""
+        Write-Host "New versions are available."
+        Write-Host "See what's new:  exakit update-check"
+        Write-Host "Update:          exakit update"
+    }
 }
 
 function Get-ExakitUpdateTargets {
     param([string]$Target = "all")
     switch ($Target) {
-        "all" { return @("exakit", "runtime", "exapump", "mcp") }
+        "all" { return @("exakit", "runtime", "exapump", "mcp", "pyexasol") }
         { $_ -in @("runtime", "database", "db") } { return @("runtime") }
-        { $_ -in @("nano", "personal", "exakit", "exapump", "mcp") } { return @($Target) }
+        { $_ -in @("nano", "personal", "exakit", "exapump", "mcp", "pyexasol") } { return @($Target) }
         default { Fail "Unknown update target: $Target" }
     }
 }
 
-function Get-ExakitLatestGithubRelease {
-    param([Parameter(Mandatory)][string]$Repo)
-    try {
-        $release = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases/latest" -UseBasicParsing -TimeoutSec 12
-        return ("" + $release.tag_name).TrimStart("v")
-    } catch { return "" }
+# exakit_update_actual_target equivalent: "runtime" names whichever runtime is
+# actually installed.
+function Get-ExakitActualTarget {
+    param([string]$Component)
+    if ($Component -eq "runtime") {
+        $type = Get-RuntimeType
+        if ($type) { return $type }
+    }
+    return $Component
 }
 
-function Get-ExakitLatestPypiVersion {
-    param([Parameter(Mandatory)][string]$Package)
-    try {
-        $doc = Invoke-RestMethod -Uri "https://pypi.org/pypi/$Package/json" -UseBasicParsing -TimeoutSec 12
-        return "" + $doc.info.version
-    } catch { return "" }
-}
-
-function Get-ExakitLatestDockerTag {
-    try {
-        $doc = Invoke-RestMethod -Uri "https://hub.docker.com/v2/repositories/$($script:NanoImage)/tags?page_size=100&ordering=last_updated" -UseBasicParsing -TimeoutSec 12
-        $candidates = @($doc.results | ForEach-Object { $_.name } | Where-Object { $_ -match '^\d+(\.\d+)+[-._A-Za-z0-9]*$' -and $_ -notmatch 'latest' })
-        if ($candidates.Count -eq 0) { return "" }
-        return ($candidates | Sort-Object { [regex]::Replace($_, '\d+', { param($m) $m.Value.PadLeft(12, '0') }) } | Select-Object -Last 1)
-    } catch { return "" }
-}
+# The upstream lookup helpers (Get-ExakitLatestGithubRelease,
+# Get-ExakitLatestPypiVersion, Get-ExakitLatestDockerTag) deliberately live ONLY
+# in setup/lib/exakit-common.ps1. This file used to redefine them, and because it
+# is dot-sourced afterwards its copies won - including a docker-tag lookup that
+# was not architecture-aware, so an x86_64 host could be told an arm64 tag was
+# the newest one. One definition, in the library, for both entry points.
 
 function Test-ExakitVersionNewer {
     param([string]$Latest, [string]$Current)
@@ -317,12 +335,21 @@ function Get-ExakitComponentCurrent {
     param([string]$Component)
     switch ($Component) {
         "exakit" {
+            # kit.version is written by the installer; the kit.source parse is the
+            # fallback for installs made before that, and the kit copy's own
+            # manifest is the last resort (kit.source is usually "<repo>@main",
+            # which is a branch, not a version).
+            $version = Get-ExakitManifestValue "kit.version"
+            if ($version) { return $version }
             $src = Get-ExakitManifestValue "kit.source"
-            if ($src -and $src.Contains("@")) { return ($src -split "@")[-1] }
+            if ($src -and $src.Contains("@") -and -not $src.EndsWith("@main")) { return ($src -split "@")[-1] }
+            $bundled = Get-ExakitKitBundledVersion
+            if ($bundled) { return $bundled }
             return "unknown"
         }
         "exapump" { return (Get-ExakitManifestValue "components.exapump.version") }
         "mcp" { return (Get-ExakitManifestValue "components.mcp_server.version") }
+        "pyexasol" { return (Get-ExakitManifestValue "components.pyexasol.version") }
         "nano" {
             $image = Get-ExakitManifestValue "runtime.image"
             if ($image -and $image.Contains(":")) { return ($image -split ":")[-1] }
@@ -340,12 +367,16 @@ function Get-ExakitComponentCurrent {
     }
 }
 
+# Get-ExakitComponentLatest - the newest version upstream publishes. The
+# implementation behind EXAKIT_VERSION_POLICY=latest; under the default manifest
+# policy nothing calls it, which keeps `exakit version` off the network.
 function Get-ExakitComponentLatest {
     param([string]$Component)
     switch ($Component) {
-        "exakit" { return (Get-ExakitLatestGithubRelease $(if ($env:EXAKIT_KIT_REPO) { $env:EXAKIT_KIT_REPO } elseif ($env:EXAKIT_REPO) { $env:EXAKIT_REPO } else { "exasol-labs/exasol-personal-local-starterkit" })) }
+        "exakit" { return (Get-ExakitLatestGithubRelease $script:KitRepo) }
         "exapump" { return (Get-ExakitLatestGithubRelease $script:ExapumpRepo) }
         "mcp" { return (Get-ExakitLatestPypiVersion $script:McpPackage) }
+        "pyexasol" { return (Get-ExakitLatestPypiVersion $script:PyexasolPackage) }
         "nano" { return (Get-ExakitLatestDockerTag) }
         "personal" { return (Get-ExakitLatestGithubRelease "exasol/exasol-personal") }
         "runtime" {
@@ -356,61 +387,387 @@ function Get-ExakitComponentLatest {
     }
 }
 
+# Get-ExakitComponentBlock - where this Component lives in versions.json. One
+# mapping serves version, severity, note and min_kit_version.
+function Get-ExakitComponentBlock {
+    param([string]$Component)
+    switch ($Component) {
+        "exakit" { return "kit" }
+        "kit2" { return "kit2" }
+        { $_ -in @("exapump", "mcp", "pyexasol", "nano", "personal") } { return "components.$Component" }
+        "runtime" {
+            if ((Get-RuntimeType) -eq "nano") { return "components.nano" }
+            if ((Get-RuntimeType) -eq "personal") { return "components.personal" }
+            return $null
+        }
+    }
+    return $null
+}
+
+# Get-ExakitComponentEnvOverride - the version the user asked for by hand, if any.
+# Same precedence as the install path: an explicit EXAKIT_*_VERSION /
+# EXAKIT_NANO_TAG outranks the manifest and any upstream lookup, so
+# `$env:EXAKIT_EXAPUMP_VERSION="0.11.2"; exakit update exapump` installs exactly
+# that (still through the confirmation gate, and still verified - the digest chain
+# falls back to the release API when the version is not the advertised one).
+function Get-ExakitComponentEnvOverride {
+    param([string]$Component)
+    $component = $Component
+    if ($component -eq "runtime") { $component = Get-RuntimeType }
+    switch ($component) {
+        "exapump" { return $env:EXAKIT_EXAPUMP_VERSION }
+        "mcp" { return $env:EXAKIT_MCP_VERSION }
+        "pyexasol" { return $env:EXAKIT_PYEXASOL_VERSION }
+        "nano" { return $env:EXAKIT_NANO_TAG }
+        "personal" { return $env:EXAKIT_PERSONAL_VERSION }
+    }
+    return ""
+}
+
+# Get-ExakitComponentAvailable - the version this kit would install NOW, under the
+# policy in force. That is the promise the Available column makes, so each policy
+# answers from the same place its install path would:
+#   env override  the version the user asked for
+#   manifest      versions.json
+#   latest        a live upstream lookup
+#   anything else the compiled-in *Fallback variable
+# $null/"" means "cannot tell", which the table reports as unknown.
+function Get-ExakitComponentAvailable {
+    param([string]$Component)
+    $override = Get-ExakitComponentEnvOverride $Component
+    if ($override) { return $override }
+    if ($script:VersionPolicy -eq "latest") { return (Get-ExakitComponentLatest $Component) }
+    if ($script:VersionPolicy -ne "manifest") { return (Get-ExakitComponentFallback $Component) }
+    $block = Get-ExakitComponentBlock $Component
+    if (-not $block) { return "" }
+    return (Get-ExakitVersionsValue -Path "$block.version")
+}
+
+# The last-known-good constant for a Component: what a no-network install picks.
+function Get-ExakitComponentFallback {
+    param([string]$Component)
+    $component = $Component
+    if ($component -eq "runtime") { $component = Get-RuntimeType }
+    switch ($component) {
+        "exapump" { return $script:ExapumpVersionFallback }
+        "mcp" { return $script:McpVersionFallback }
+        "pyexasol" { return $script:PyexasolVersionFallback }
+        "nano" { return $script:NanoTagFallback }
+        # The kit's own version is not one of the constants: it comes from the copy
+        # on disk, which is exactly what is installed.
+        "exakit" { return (Get-ExakitKitBundledVersion) }
+    }
+    return ""
+}
+
+# The severity, note and min_kit_version below describe the ADVERTISED set. Under
+# `latest` policy the versions on offer come from upstream instead, so pairing
+# them with the maintainers' commentary would be actively misleading ("0.12.0 is
+# the tested build" next to an available 9.9.9). Report nothing there.
+function Test-ExakitManifestMetadataApplies {
+    param([string]$Component)
+    if ($script:VersionPolicy -ne "manifest") { return $false }
+    return (-not (Get-ExakitComponentEnvOverride $Component))
+}
+
+# normal | recommended | critical (absent means normal).
+function Get-ExakitComponentSeverity {
+    param([string]$Component)
+    if (-not (Test-ExakitManifestMetadataApplies $Component)) { return "normal" }
+    $block = Get-ExakitComponentBlock $Component
+    if (-not $block) { return "normal" }
+    $value = Get-ExakitVersionsValue -Path "$block.severity"
+    if ($value -eq "recommended" -or $value -eq "critical") { return $value }
+    return "normal"
+}
+
+function Get-ExakitComponentNote {
+    param([string]$Component)
+    if (-not (Test-ExakitManifestMetadataApplies $Component)) { return "" }
+    $block = Get-ExakitComponentBlock $Component
+    if (-not $block) { return "" }
+    return (Get-ExakitVersionsValue -Path "$block.note")
+}
+
+function Get-ExakitComponentMinKit {
+    param([string]$Component)
+    if (-not (Test-ExakitManifestMetadataApplies $Component)) { return "" }
+    $block = Get-ExakitComponentBlock $Component
+    if (-not $block) { return "" }
+    return (Get-ExakitVersionsValue -Path "$block.min_kit_version")
+}
+
+# True for changes that stop the database. Intrinsic to the Component, so it
+# lives in code rather than in the manifest.
+function Test-ExakitComponentHeavy {
+    param([string]$Component)
+    return ($Component -in @("runtime", "nano", "personal"))
+}
+
+# Can this kit run the advertised Component? An unknown kit version never blocks.
+function Test-ExakitMinKitSatisfied {
+    param([string]$Required)
+    $kit = Get-ExakitComponentCurrent "exakit"
+    if (-not $kit -or $kit -eq "unknown") { return $true }
+    if ($kit -eq $Required) { return $true }
+    return (Test-ExakitVersionNewer -Latest $kit -Current $Required)
+}
+
+# Applying an older version than the installed one is a rollback. The maintainers
+# may well have advised it, but it never happens silently.
+# Returns $false when the rollback was refused; the caller decides whether that
+# ends the run or just skips this component.
+function Confirm-ExakitDowngrade {
+    param([string]$Component)
+    $current = Get-ExakitComponentCurrent $Component
+    $available = Get-ExakitComponentAvailable $Component
+    if (-not $current -or -not $available -or $current -eq "unknown") { return $true }
+    if (-not (Test-ExakitVersionNewer -Latest $current -Current $available)) { return $true }
+    Warn2 "$Component $current is NEWER than the advertised $available - this is a rollback."
+    $note = Get-ExakitComponentNote $Component
+    if ($note) { Info $note }
+    if (Confirm-ExakitEnvPrompt -EnvName "EXAKIT_ALLOW_DOWNGRADE" `
+            -Question "Downgrade $Component $current -> $available as advised by the maintainers?" -DefaultYes $false) {
+        return $true
+    }
+    Warn2 "Rollback of $Component not applied. Set EXAKIT_ALLOW_DOWNGRADE=1 to apply it non-interactively."
+    return $false
+}
+
+# Where the Available column came from, so nobody has to guess whether a stale
+# answer is being shown.
+function Write-ExakitVersionsSourceLine {
+    if ($script:VersionPolicy -eq "latest") {
+        Info "Available versions come from live upstream lookups (EXAKIT_VERSION_POLICY=latest)"
+        Write-ExakitOverrideLine
+        return
+    }
+    if ($script:VersionPolicy -ne "manifest") {
+        Info "Available versions come from this kit's built-in fallbacks (EXAKIT_VERSION_POLICY=$($script:VersionPolicy), no network)"
+        Write-ExakitOverrideLine
+        return
+    }
+    $source = Get-ExakitVersionsSource
+    if ($source -ne "fetched" -and $source -ne "cache" -and $source -ne "baked") {
+        # Nothing readable anywhere: the rows say "unknown" rather than inventing a
+        # number, so say that plainly instead of crediting a source.
+        Info "The versions manifest could not be read, so the available versions are unknown"
+        Write-ExakitOverrideLine
+        return
+    }
+    switch ($source) {
+        "fetched" { $text = "the published versions manifest, fetched just now" }
+        "cache"   { $text = "the cached copy of the versions manifest" }
+        "baked"   { $text = "the versions manifest that shipped with this kit (no network)" }
+    }
+    $updated = Get-ExakitVersionsValue -Path "updated"
+    if ($updated) { $text = "$text, updated $updated" }
+    Info "Available versions from $text"
+    if (Test-ExakitVersionsSchemaAhead) {
+        Info "This kit is older than the published manifest - update it first: exakit update exakit"
+    }
+    Write-ExakitOverrideLine
+}
+
+# An env override outranks every source above, so say so rather than letting the
+# line above take credit for a version the user picked.
+function Write-ExakitOverrideLine {
+    foreach ($component in @("exapump", "mcp", "pyexasol", "nano", "personal")) {
+        if (Get-ExakitComponentEnvOverride $component) {
+            Info "Some versions come from EXAKIT_* environment overrides and not from the manifest"
+            return
+        }
+    }
+}
+
+# The padded, coloured Severity cell. Only a severity that is NOT normal shows
+# text, so a flagged row is the only thing that draws the eye. Padding happens
+# before colouring so escapes cannot break the column alignment.
+function Get-ExakitSeverityCell {
+    param([string]$Severity)
+    if ($Severity -eq "critical") {
+        $cell = "critical".PadRight(11)
+        if ($script:UiFancy) { return "$($script:UiWarn)$cell$($script:UiReset)" }
+        return $cell
+    }
+    if ($Severity -eq "recommended") {
+        $cell = "recommended".PadRight(11)
+        if ($script:UiFancy) { return "$($script:UiOk)$cell$($script:UiReset)" }
+        return $cell
+    }
+    return "-".PadRight(11)
+}
+
+# True when a NEWER version is advertised for anything (or a Component is missing
+# entirely). Cache-only under the TTL: `exakit version` consults this and has to
+# stay instant.
+function Test-ExakitUpdatesPending {
+    if ($script:VersionPolicy -ne "manifest") { return $false }
+    Update-ExakitVersionsCache | Out-Null
+    Resolve-ExakitVersionsDoc | Out-Null
+    foreach ($component in (Get-ExakitUpdateTargets -Target "all")) {
+        $actual = Get-ExakitActualTarget $component
+        $available = Get-ExakitComponentAvailable $actual
+        if (-not $available) { continue }
+        $current = Get-ExakitComponentCurrent $actual
+        # A component that is not installed at all is a repair, not a new version.
+        # `exakit status` and update-check surface it; counting it here would make
+        # `exakit version` claim "New versions are available" with nothing newer.
+        if (-not $current -or $current -eq "not installed") { continue }
+        if ($current -eq "unknown") { continue }
+        if (Test-ExakitVersionNewer -Latest $available -Current $current) { return $true }
+    }
+    return $false
+}
+
+# Invoke-CmdUpdateCheck - THE comparison table. It is the only command that
+# renders it: `exakit version` prints a short hint instead, and `exakit update`
+# prints just the work it is about to do. Someone who asks explicitly gets fresh
+# data: the TTL exists for readers that run behind other commands.
+# Twin of exakit_print_update_check in setup/lib/common.sh.
 function Invoke-CmdUpdateCheck {
     param([string]$Target = "all")
     if (-not (Test-Path $script:ManifestPath)) { Write-Host "Not installed (no manifest at $script:ManifestPath)"; return }
+    if (-not $Target) { $Target = "all" }
     $targets = Get-ExakitUpdateTargets -Target $Target
+    if ($script:VersionPolicy -eq "manifest") {
+        Update-ExakitVersionsCache -Force | Out-Null
+        Resolve-ExakitVersionsDoc | Out-Null
+    }
     Write-Host ""
     Write-Host "  Component update check"
     Write-Host "  ----------------------"
-    "{0,-12} {1,-18} {2,-18} {3}" -f "Component", "Installed", "Latest", "Action" | Write-Host
+    "{0,-10} {1,-17} {2,-17} {3,-11} {4}" -f "Component", "Installed", "Available", "Severity", "Action" | Write-Host
     $updates = 0
+    $heavyPending = $false
     foreach ($component in $targets) {
-        $actual = if ($component -eq "runtime" -and (Get-RuntimeType)) { Get-RuntimeType } else { $component }
+        $actual = Get-ExakitActualTarget $component
         $current = Get-ExakitComponentCurrent $actual
         if (-not $current) { $current = "not installed" }
-        $latest = Get-ExakitComponentLatest $actual
-        if (-not $latest) { $latest = "unknown" }
+        $available = Get-ExakitComponentAvailable $actual
+        if (-not $available) { $available = "unknown" }
+        $availableCell = $available
+        $rowNote = ""
         $action = "current"
-        if ($latest -eq "unknown" -or $current -eq "unknown" -or $current -eq "not installed") {
+        if ($available -eq "unknown" -or $current -eq "unknown") {
             $action = "inspect"
-        } elseif (Test-ExakitVersionNewer -Latest $latest -Current $current) {
-            $action = "exakit update $component"
-            $updates += 1
+        } elseif ($current -eq "not installed" -and (Test-ExakitComponentHeavy $actual)) {
+            # A runtime that is not installed is not a runtime this machine wants:
+            # offering to deploy Exasol Personal onto a Nano install would be
+            # actively wrong. (A missing light component, by contrast, is exactly
+            # the pyexasol repair case below.)
+            $action = "inspect"
+        } elseif ($current -ne $available) {
+            $minKit = Get-ExakitComponentMinKit $actual
+            if ($minKit -and -not (Test-ExakitMinKitSatisfied -Required $minKit)) {
+                $action = "update exakit first (needs kit >= $minKit)"
+            } else {
+                $action = "exakit update $component"
+                if ($current -ne "not installed" -and (Test-ExakitVersionNewer -Latest $current -Current $available)) {
+                    # The maintainers advertise something older: an advisory
+                    # rollback, offered but never applied without a confirmation.
+                    $availableCell = "$available (older)"
+                    $rowNote = "advisory rollback - applying this asks for confirmation"
+                }
+                if (Test-ExakitComponentHeavy $actual) {
+                    $action = "$action (heavy)"
+                    $heavyPending = $true
+                } else {
+                    # Counts only what a plain `exakit update` would actually
+                    # apply: a heavy row and a kit-blocked row must not inflate the
+                    # "apply them in one go" hint below.
+                    $updates += 1
+                }
+            }
         }
-        "{0,-12} {1,-18} {2,-18} {3}" -f $actual, $current, $latest, $action | Write-Host
+        "{0,-10} {1,-17} {2,-17} {3} {4}" -f $actual, $current, $availableCell,
+            (Get-ExakitSeverityCell (Get-ExakitComponentSeverity $actual)), $action | Write-Host
+        if ($rowNote) { Write-Host ("    " + $rowNote) }
+        $note = Get-ExakitComponentNote $actual
+        if ($note) { Write-Host ("    " + $note) }
     }
     Write-Host ""
-    if ($updates -gt 1) { Info "Update everything with: exakit update all" }
+    Write-ExakitVersionsSourceLine
+    if ($updates -gt 1) { Info "Apply the quick ones in one go with: exakit update" }
+    if ($heavyPending) { Info "A runtime change stops the database - run it when convenient: exakit update runtime" }
 }
 
+# Invoke-CmdUpdate - apply the advertised versions. Prints its work plan, not the
+# full table, and never stops the database on its own: a pending runtime change is
+# announced with the exact command and left for the user to run when it suits
+# them. Twin of exakit_update in setup/lib/common.sh.
 function Invoke-CmdUpdate {
     param([string]$Target = "all")
     Assert-ExakitInstalled
     Initialize-ExakitLogging
-    Invoke-CmdUpdateCheck -Target $Target
+    if (-not $Target) { $Target = "all" }
+    # An explicit update applies what is advertised RIGHT NOW.
+    if ($script:VersionPolicy -eq "manifest") {
+        Update-ExakitVersionsCache -Force | Out-Null
+        Resolve-ExakitVersionsDoc | Out-Null
+    }
+    Write-ExakitVersionsSourceLine
+    $deferred = 0
+    $acted = 0
     foreach ($component in (Get-ExakitUpdateTargets -Target $Target)) {
+        $actual = Get-ExakitActualTarget $component
+        $current = Get-ExakitComponentCurrent $actual
+        $available = Get-ExakitComponentAvailable $actual
+        # Nothing advertised for this component (unreadable manifest, or a
+        # component this kit knows nothing about): a routine update says so and
+        # moves on. An explicit single target still runs, so its updater can
+        # report the real reason.
+        if ($Target -eq "all" -and -not $available) {
+            Warn2 "No advertised version for $actual - skipping it. Details: exakit update-check"
+            continue
+        }
+        if ($Target -eq "all" -and (Test-ExakitComponentHeavy $actual)) {
+            if ($current -and $available -and $current -ne "unknown" -and $current -ne $available) {
+                Warn2 "$actual $current -> $available needs the database stopped, so it is not part of a routine update."
+                Info "Apply it when convenient:  exakit update runtime"
+                $deferred += 1
+            }
+            continue
+        }
+        # Only the components this run will actually touch are reported: the work
+        # plan, not a status table. `exakit update-check` is where everything is
+        # listed, including what is already current.
+        if ($current -and $available -and $current -eq $available) { continue }
+        # The table's "update exakit first" verdict has to hold here too, or the
+        # manifest's only hard compatibility lever would be advice nobody applies.
+        $minKit = Get-ExakitComponentMinKit $actual
+        if ($minKit -and -not (Test-ExakitMinKitSatisfied -Required $minKit)) {
+            Warn2 "$actual $available needs kit >= $minKit - update the kit first: exakit update exakit"
+            if ($Target -eq "all") { continue }
+            Fail "Refusing to install $actual $available on kit $(Get-ExakitComponentCurrent 'exakit')."
+        }
+        if ($available) {
+            $shown = $current
+            if (-not $shown) { $shown = "not installed" }
+            Info "$actual $shown -> $available"
+        }
+        # A refused rollback stops THAT component, not the whole run: one advisory
+        # rollback must not block every other update on an unattended machine.
+        if (-not (Confirm-ExakitDowngrade $actual)) {
+            if ($Target -eq "all") { continue }
+            Fail "Downgrade of $actual cancelled. Set EXAKIT_ALLOW_DOWNGRADE=1 to apply it non-interactively."
+        }
         switch ($component) {
             "exakit" {
                 Warn2 "Starter-kit self-update is not automated on the Windows PowerShell path yet. Re-run install.ps1 with the desired tag to refresh the kit scripts."
             }
             "runtime" {
-                if ((Get-RuntimeType) -eq "nano") {
-                    $latest = Get-ExakitComponentLatest "nano"
-                    if ($latest) { Update-Nano -LatestTag $latest }
-                }
+                if ((Get-RuntimeType) -eq "nano" -and $available) { Update-Nano -LatestTag $available }
             }
             "nano" {
-                $latest = Get-ExakitComponentLatest "nano"
-                if ($latest) { Update-Nano -LatestTag $latest }
+                if ($available) { Update-Nano -LatestTag $available }
             }
             "personal" {
                 Warn2 "Exasol Personal local deployments are macOS-only in this kit. On Windows this target is reported for catalog parity but cannot be applied."
             }
             "exapump" {
-                $latest = Get-ExakitComponentLatest "exapump"
-                if ($latest) {
-                    $script:ExapumpVersion = $latest
+                if ($available) {
+                    $script:ExapumpVersion = $available
                     Remove-Item -Force (Get-ExapumpCli) -ErrorAction SilentlyContinue
                     Install-Exapump
                     New-ExapumpProfile
@@ -418,17 +775,26 @@ function Invoke-CmdUpdate {
                 }
             }
             "mcp" {
-                $latest = Get-ExakitComponentLatest "mcp"
-                if ($latest) {
+                if ($available) {
                     New-McpUpdateSnapshot | Out-Null
-                    $script:McpVersion = $latest
+                    $script:McpVersion = $available
                     Install-Mcp
                     Test-McpServer
                     Warn2 "Run exakit mcp-setup to refresh AI client configs with the new MCP version."
                     Set-ExakitManifestValue "desired.mcp" $script:McpVersion
                 }
             }
+            "pyexasol" {
+                if ($available) { Update-Pyexasol | Out-Null }
+            }
         }
+        $acted += 1
+    }
+    if ($acted -eq 0 -and $deferred -eq 0) {
+        Ok "Everything is already current."
+    }
+    if ($deferred -gt 0) {
+        Info "See everything, including the deferred runtime change: exakit update-check"
     }
 }
 

@@ -118,8 +118,8 @@ mcp_install() {
 }
 
 mcp_update() {
-    _latest="$(exakit_component_latest mcp)"
-    [ -n "$_latest" ] || die "Could not resolve the latest ${EXAKIT_MCP_PACKAGE} version."
+    _latest="$(exakit_component_available mcp)"
+    [ -n "$_latest" ] || die "Could not resolve the advertised ${EXAKIT_MCP_PACKAGE} version."
     _current="$(manifest_get components.mcp_server.version 2>/dev/null || true)"
     if [ "$_latest" = "$_current" ]; then
         ok "MCP server is already current ($_current)"

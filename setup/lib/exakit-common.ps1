@@ -455,6 +455,28 @@ function Confirm-ExakitPrompt {
     return $answer -match '^(y|yes)$'
 }
 
+# Confirm-ExakitEnvPrompt <EnvName> "Question?" [DefaultYes] - twin of bash's
+# confirm_env: a pre-set environment variable answers the question outright, so a
+# scripted run is deterministic instead of silently taking the default. Anything
+# else falls through to the prompt (which itself defaults when there is no
+# console).
+function Confirm-ExakitEnvPrompt {
+    param(
+        [Parameter(Mandatory)][string]$EnvName,
+        [Parameter(Mandatory)][string]$Question,
+        [bool]$DefaultYes = $false
+    )
+    # The accepted values are exactly confirm_env's list in setup/lib/common.sh -
+    # deliberately not a looser set, so the same value means the same thing on both
+    # platforms (-cmatch keeps the comparison case-sensitive, as bash's case does).
+    $preset = [Environment]::GetEnvironmentVariable($EnvName)
+    if ($preset) {
+        if ($preset -cmatch '^(1|y|Y|yes|YES|Yes)$') { return $true }
+        if ($preset -cmatch '^(0|n|N|no|NO|No)$') { return $false }
+    }
+    return (Confirm-ExakitPrompt $Question $DefaultYes)
+}
+
 # Read-ExakitPrompt "Question" ["default"] - non-interactive runs return the
 # default immediately (mirrors bash's prompt_text over /dev/tty).
 function Read-ExakitPrompt {
