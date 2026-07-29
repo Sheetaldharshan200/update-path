@@ -29,6 +29,41 @@ exapump_asset_name() {
     echo "exapump-${_ver}-${_osname}-${_archname}"
 }
 
+# exapump_expected_sha256 <asset> — the digest the download is verified against:
+#
+#   1. versions.json, but ONLY when the version being installed is the advertised
+#      one. An env override must never borrow another release's digest — that
+#      would either fail confusingly or, worse, match the wrong artifact.
+#   2. the digests of the release shipped with this kit (below).
+#   3. the release API for the version in question.
+#
+# Empty output means "no digest available"; the caller decides what to do with
+# that (it refuses to install unless explicitly overridden).
+# ⇄ twin: Get-ExapumpExpectedSha256 in exapump.ps1.
+exapump_expected_sha256() {
+    _ex_asset="$1"
+    _ex_advertised="$(exakit_versions_value components.exapump.version 2>/dev/null || true)"
+    if [ -n "$_ex_advertised" ] && [ "$_ex_advertised" = "$EXAKIT_EXAPUMP_VERSION" ]; then
+        # The asset name is exapump-<version>-<os>-<arch>, and versions.json keys
+        # its digests by that same <os>-<arch> token.
+        _ex_platform="${_ex_asset#exapump-${EXAKIT_EXAPUMP_VERSION}-}"
+        _ex_digest="$(exakit_versions_value "components.exapump.sha256.${_ex_platform}" 2>/dev/null || true)"
+        case "$_ex_digest" in
+            *[!0-9a-f]*) _ex_digest="" ;;
+        esac
+        if [ -n "$_ex_digest" ] && [ "${#_ex_digest}" -eq 64 ]; then
+            printf '%s\n' "$_ex_digest"
+            return 0
+        fi
+    fi
+    _ex_digest="$(exapump_pinned_sha256 "$_ex_asset")"
+    if [ -n "$_ex_digest" ]; then
+        printf '%s\n' "$_ex_digest"
+        return 0
+    fi
+    exapump_release_digest_from_api "$_ex_asset"
+}
+
 # Digests of the bundled fallback release (published by the release API). When the
 # version is overridden the digest is fetched from the API instead.
 exapump_pinned_sha256() {
@@ -120,22 +155,20 @@ exapump_install() {
     info "Downloading exapump v${EXAKIT_EXAPUMP_VERSION} ($_asset)"
     fetch "$_url" "$_tmp"
 
-    _expected="$(exapump_pinned_sha256 "$_asset")"
-    if [ -z "$_expected" ]; then
-        _expected="$(exapump_release_digest_from_api "$_asset")"
-    fi
+    _expected="$(exapump_expected_sha256 "$_asset" 2>/dev/null || true)"
     if [ -n "$_expected" ]; then
         verify_sha256 "$_tmp" "$_expected"
     elif [ "${EXAKIT_ALLOW_UNVERIFIED_EXAPUMP:-0}" = "1" ]; then
         warn "No digest available for $_asset — proceeding WITHOUT checksum verification (EXAKIT_ALLOW_UNVERIFIED_EXAPUMP=1)."
     else
         # Match the launcher's bar: never install a downloaded-and-executed
-        # binary we could not verify. For a released version the pinned digest
-        # in exapump_pinned_sha256 always resolves, so this only fires on an
-        # un-pinned version bump or an unreachable release API — both of which
-        # should fail loudly rather than run unverified code.
+        # binary we could not verify. For an advertised version the digest comes
+        # from versions.json, and for the shipped one from the pinned table, so
+        # this only fires on a version this kit knows nothing about plus an
+        # unreachable release API — which should fail loudly rather than run
+        # unverified code.
         rm -f "$_tmp"
-        die "No checksum available for $_asset; refusing to install an unverified exapump binary. Add its digest to exapump_pinned_sha256 (version bump?) or check network access to the release API. Override at your own risk with EXAKIT_ALLOW_UNVERIFIED_EXAPUMP=1."
+        die "No checksum available for $_asset; refusing to install an unverified exapump binary. Add its digest to versions.json (components.exapump.sha256) or check network access to the release API. Override at your own risk with EXAKIT_ALLOW_UNVERIFIED_EXAPUMP=1."
     fi
 
     mkdir -p "$EXAKIT_BIN_DIR"

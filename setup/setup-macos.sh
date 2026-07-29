@@ -45,6 +45,10 @@ exakit_enable_failure_handling
 manifest_set os "$(detect_os)"
 manifest_set arch "$(detect_arch)"
 manifest_set kit.source "${EXAKIT_KIT_SOURCE:-checkout:$KIT_ROOT}"
+# The kit's own version comes from the versions manifest shipping with THIS
+# tree, not from whatever copy an earlier install left under the kit home.
+_kit_version="$(exakit_kit_version_at "$KIT_ROOT" 2>/dev/null || true)"
+[ -n "$_kit_version" ] && manifest_set kit.version "$_kit_version"
 exakit_resolve_install_versions
 
 # --- step 1: requirements ---------------------------------------------------

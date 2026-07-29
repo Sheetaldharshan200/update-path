@@ -30,6 +30,10 @@ Set-ExakitManifestValue "os" "windows"
 Set-ExakitManifestValue "arch" $env:PROCESSOR_ARCHITECTURE
 $kitSource = if ($env:EXAKIT_KIT_SOURCE) { $env:EXAKIT_KIT_SOURCE } else { "checkout:$KitRoot" }
 Set-ExakitManifestValue "kit.source" $kitSource
+# The kit's own version comes from the versions manifest shipping with THIS
+# tree, not from whatever copy an earlier install left under the kit home.
+$kitVersion = Get-ExakitKitVersionAt -KitRoot $KitRoot
+if ($kitVersion) { Set-ExakitManifestValue "kit.version" $kitVersion }
 
 try {
     # --- step 1: requirements ------------------------------------------------
@@ -86,10 +90,14 @@ try {
     # --- step 5: pyexasol (Exasol Python driver) --------------------------------
     # Not gated on $exapumpSupported: pyexasol is pure Python via uv, so it
     # works on Windows-on-ARM too, where only exapump's binary is missing.
+    # A failed pyexasol install must not end the run: the exakit helper step
+    # below still has to happen, or the user is left without the command that
+    # manages everything else. The step stays unmarked so a re-run retries it.
     if (Begin-ExakitStep "pyexasol" "Step 4/5  pyexasol (Exasol Python driver)") {
-        Install-Pyexasol
-        Test-PyexasolConnection
-        Set-ExakitStepDone "pyexasol"
+        if (Install-Pyexasol) {
+            Test-PyexasolConnection
+            Set-ExakitStepDone "pyexasol"
+        }
     }
 
     # --- step 6: exakit helper command ------------------------------------------
@@ -121,6 +129,9 @@ try {
         foreach ($dir in @("mcp", "sql", "data")) {
             Copy-ExakitAsset -Source (Join-Path $KitRoot $dir) -Destination (Join-Path $script:ExakitHome "kit\$dir")
         }
+        # The versions manifest travels with the copy: it is the offline tier of
+        # version resolution and the record of which kit version this is.
+        Copy-ExakitAsset -Source (Join-Path $KitRoot "versions.json") -Destination (Join-Path $script:ExakitHome "kit\versions.json")
 
         # The bare `exakit` command must be ONLY the .cmd shim. The .ps1 is
         # deliberately NOT placed in the bin dir: when both sit on PATH,

@@ -48,7 +48,14 @@ EXAKIT_MCP_READONLY_SCHEMAS="${EXAKIT_MCP_READONLY_SCHEMAS:-STARTER_KIT}"
 # ---------------------------------------------------------------------------
 # Component version policy
 # ---------------------------------------------------------------------------
-EXAKIT_VERSION_POLICY="${EXAKIT_VERSION_POLICY:-latest}"
+# manifest (default) — take the version set the maintainers tested together,
+#                      from versions.json (see below).
+# latest             — resolve each Component independently from its upstream
+#                      (GitHub releases, PyPI, Docker Hub). The escape hatch for
+#                      anyone who wants the newest of everything.
+# anything else       — install the *_FALLBACK versions below and touch no
+#                      network at all.
+EXAKIT_VERSION_POLICY="${EXAKIT_VERSION_POLICY:-manifest}"
 EXAKIT_PERSONAL_VERSION="${EXAKIT_PERSONAL_VERSION:-}"
 EXAKIT_NANO_TAG="${EXAKIT_NANO_TAG:-}"
 EXAKIT_EXAPUMP_VERSION="${EXAKIT_EXAPUMP_VERSION:-}"
@@ -86,6 +93,9 @@ EXAKIT_VERSIONS_CACHE="${EXAKIT_VERSIONS_CACHE:-$EXAKIT_CACHE_DIR/versions.json}
 # treated as unavailable (the resolution chain falls back) rather than guessed
 # at — a newer kit knows how to read it.
 EXAKIT_VERSIONS_SCHEMA=1
+# Which tier of the chain actually answered, recorded as desired.versions_source
+# so a support question ("where did this version come from?") has an answer.
+EXAKIT_VERSIONS_SOURCE_USED=""
 
 EXAKIT_DB_PORT="${EXAKIT_DB_PORT:-8563}"
 
@@ -883,16 +893,25 @@ exakit_versions_baked_doc() {
     printf '%s\n' "$_vb_root/versions.json"
 }
 
+# exakit_kit_version_at <kit-root> — kit.version as stated by a specific kit
+# tree. The installers use it on the tree they are installing FROM, which is not
+# necessarily the copy under the kit home (that one may be an older install).
+exakit_kit_version_at() {
+    _kva_doc="$1/versions.json"
+    [ -f "$_kva_doc" ] || return 1
+    _kva_version="$(exakit_versions_value kit.version "$_kva_doc" 2>/dev/null || true)"
+    case "$_kva_version" in
+        ''|*[!A-Za-z0-9._+-]*) return 1 ;;
+    esac
+    printf '%s\n' "$_kva_version"
+}
+
 # exakit_kit_bundled_version — kit.version as recorded by the kit copy on disk.
 # This is what "installed" means for the kit itself; the manifest's kit.source
 # only says where the copy came from.
 exakit_kit_bundled_version() {
-    _kbv_doc="$(exakit_versions_baked_doc 2>/dev/null)" || return 1
-    _kbv_version="$(exakit_versions_value kit.version "$_kbv_doc" 2>/dev/null || true)"
-    case "$_kbv_version" in
-        ''|*[!A-Za-z0-9._+-]*) return 1 ;;
-    esac
-    printf '%s\n' "$_kbv_version"
+    _kbv_root="$(exakit_repo_root 2>/dev/null)" || return 1
+    exakit_kit_version_at "$_kbv_root"
 }
 
 exakit_versions_user_agent() {
@@ -1078,6 +1097,7 @@ exakit_installation_runtime_version() {
 
 exakit_record_desired_versions() {
     manifest_set version_policy "$EXAKIT_VERSION_POLICY"
+    manifest_set desired.versions_source "${EXAKIT_VERSIONS_SOURCE_USED:-unknown}"
     manifest_set desired.runtime.personal "$EXAKIT_PERSONAL_VERSION"
     manifest_set desired.runtime.nano "$EXAKIT_NANO_TAG"
     manifest_set desired.exapump "$EXAKIT_EXAPUMP_VERSION"
@@ -1204,47 +1224,85 @@ exakit_major_version() {
     printf '%s\n' "$1" | sed -E 's/^v//; s/^([0-9]+).*/\1/'
 }
 
+# exakit_resolve_install_versions — decide which version of each Component this
+# install gets. An explicit env override (EXAKIT_*_VERSION / EXAKIT_NANO_TAG)
+# always wins; the policy decides where the rest comes from. Resolution never
+# fails: each tier degrades into the next, and the recorded
+# desired.versions_source says which one answered.
 exakit_resolve_install_versions() {
-    [ "${EXAKIT_VERSION_POLICY:-latest}" = "latest" ] || {
-        EXAKIT_PERSONAL_VERSION="${EXAKIT_PERSONAL_VERSION:-$EXAKIT_PERSONAL_VERSION_FALLBACK}"
-        EXAKIT_NANO_TAG="${EXAKIT_NANO_TAG:-$EXAKIT_NANO_TAG_FALLBACK}"
-        EXAKIT_EXAPUMP_VERSION="${EXAKIT_EXAPUMP_VERSION:-$EXAKIT_EXAPUMP_VERSION_FALLBACK}"
-        EXAKIT_MCP_VERSION="${EXAKIT_MCP_VERSION:-$EXAKIT_MCP_VERSION_FALLBACK}"
-        EXAKIT_PYEXASOL_VERSION="${EXAKIT_PYEXASOL_VERSION:-$EXAKIT_PYEXASOL_VERSION_FALLBACK}"
-        export EXAKIT_PERSONAL_VERSION EXAKIT_NANO_TAG EXAKIT_EXAPUMP_VERSION EXAKIT_MCP_VERSION EXAKIT_PYEXASOL_VERSION
-        return 0
-    }
+    case "${EXAKIT_VERSION_POLICY:-manifest}" in
+        latest)   _exakit_resolve_versions_latest ;;
+        manifest) _exakit_resolve_versions_manifest ;;
+        *)        _exakit_resolve_versions_pinned ;;
+    esac
+    export EXAKIT_PERSONAL_VERSION EXAKIT_NANO_TAG EXAKIT_EXAPUMP_VERSION EXAKIT_MCP_VERSION EXAKIT_PYEXASOL_VERSION
+    [ -f "$EXAKIT_MANIFEST" ] && exakit_record_desired_versions
+    return 0
+}
 
-    _resolved=0
+# The versions manifest: one TTL-gated fetch, then read. A fresh install picks up
+# the currently advertised set; an offline one silently uses the cached copy, the
+# copy that shipped with this kit, or the constants above.
+_exakit_resolve_versions_manifest() {
+    exakit_versions_update_cache >/dev/null 2>&1 || true
+    # Resolve once in THIS shell so the command substitutions below inherit the
+    # decision instead of re-validating the document for every lookup.
+    exakit_versions_resolve_doc >/dev/null 2>&1 || true
+    EXAKIT_VERSIONS_SOURCE_USED="${_EXAKIT_VERSIONS_SOURCE:-fallback}"
+    _exakit_resolve_one EXAKIT_PERSONAL_VERSION components.personal.version "$EXAKIT_PERSONAL_VERSION_FALLBACK"
+    _exakit_resolve_one EXAKIT_NANO_TAG components.nano.version "$EXAKIT_NANO_TAG_FALLBACK"
+    _exakit_resolve_one EXAKIT_EXAPUMP_VERSION components.exapump.version "$EXAKIT_EXAPUMP_VERSION_FALLBACK"
+    _exakit_resolve_one EXAKIT_MCP_VERSION components.mcp.version "$EXAKIT_MCP_VERSION_FALLBACK"
+    _exakit_resolve_one EXAKIT_PYEXASOL_VERSION components.pyexasol.version "$EXAKIT_PYEXASOL_VERSION_FALLBACK"
+    _exakit_log_file "INFO  versions resolved from the manifest ($EXAKIT_VERSIONS_SOURCE_USED)"
+}
+
+# _exakit_resolve_one <var-name> <dot.path> <fallback> — fill <var-name> unless
+# it already carries an env override. bash 3.2 has no namerefs, so eval does the
+# assignment; the value is charset-checked by the validation gate before it ever
+# reaches this point.
+_exakit_resolve_one() {
+    eval "_ro_current=\${$1:-}"
+    [ -z "$_ro_current" ] || return 0
+    _ro_value="$(exakit_versions_value "$2" 2>/dev/null || true)"
+    [ -n "$_ro_value" ] || _ro_value="$3"
+    eval "$1=\$_ro_value"
+}
+
+# Today's live-lookup behaviour, kept intact as the escape hatch for anyone who
+# wants the newest of every Component rather than the tested set.
+_exakit_resolve_versions_latest() {
+    EXAKIT_VERSIONS_SOURCE_USED="latest"
     if [ -z "$EXAKIT_PERSONAL_VERSION" ]; then
         EXAKIT_PERSONAL_VERSION="$(exakit_latest_github_release_version "$EXAKIT_PERSONAL_REPO" || true)"
         [ -n "$EXAKIT_PERSONAL_VERSION" ] || EXAKIT_PERSONAL_VERSION="$EXAKIT_PERSONAL_VERSION_FALLBACK"
-        _resolved=1
     fi
     if [ -z "$EXAKIT_NANO_TAG" ]; then
         EXAKIT_NANO_TAG="$(exakit_latest_docker_tag "$EXAKIT_NANO_IMAGE" || true)"
         [ -n "$EXAKIT_NANO_TAG" ] || EXAKIT_NANO_TAG="$EXAKIT_NANO_TAG_FALLBACK"
-        _resolved=1
     fi
     if [ -z "$EXAKIT_EXAPUMP_VERSION" ]; then
         EXAKIT_EXAPUMP_VERSION="$(exakit_latest_github_release_version "$EXAKIT_EXAPUMP_REPO" || true)"
         [ -n "$EXAKIT_EXAPUMP_VERSION" ] || EXAKIT_EXAPUMP_VERSION="$EXAKIT_EXAPUMP_VERSION_FALLBACK"
-        _resolved=1
     fi
     if [ -z "$EXAKIT_MCP_VERSION" ]; then
         EXAKIT_MCP_VERSION="$(exakit_latest_pypi_version "$EXAKIT_MCP_PACKAGE" || true)"
         [ -n "$EXAKIT_MCP_VERSION" ] || EXAKIT_MCP_VERSION="$EXAKIT_MCP_VERSION_FALLBACK"
-        _resolved=1
     fi
     if [ -z "$EXAKIT_PYEXASOL_VERSION" ]; then
-        EXAKIT_PYEXASOL_VERSION="$(exakit_latest_pypi_version pyexasol || true)"
+        EXAKIT_PYEXASOL_VERSION="$(exakit_latest_pypi_version "${EXAKIT_PYEXASOL_PACKAGE:-pyexasol}" || true)"
         [ -n "$EXAKIT_PYEXASOL_VERSION" ] || EXAKIT_PYEXASOL_VERSION="$EXAKIT_PYEXASOL_VERSION_FALLBACK"
-        _resolved=1
     fi
-    export EXAKIT_PERSONAL_VERSION EXAKIT_NANO_TAG EXAKIT_EXAPUMP_VERSION EXAKIT_MCP_VERSION EXAKIT_PYEXASOL_VERSION
-    if [ "$_resolved" -eq 1 ] && [ -f "$EXAKIT_MANIFEST" ]; then
-        exakit_record_desired_versions
-    fi
+}
+
+# No network at all: the last-known-good constants only.
+_exakit_resolve_versions_pinned() {
+    EXAKIT_VERSIONS_SOURCE_USED="fallback"
+    EXAKIT_PERSONAL_VERSION="${EXAKIT_PERSONAL_VERSION:-$EXAKIT_PERSONAL_VERSION_FALLBACK}"
+    EXAKIT_NANO_TAG="${EXAKIT_NANO_TAG:-$EXAKIT_NANO_TAG_FALLBACK}"
+    EXAKIT_EXAPUMP_VERSION="${EXAKIT_EXAPUMP_VERSION:-$EXAKIT_EXAPUMP_VERSION_FALLBACK}"
+    EXAKIT_MCP_VERSION="${EXAKIT_MCP_VERSION:-$EXAKIT_MCP_VERSION_FALLBACK}"
+    EXAKIT_PYEXASOL_VERSION="${EXAKIT_PYEXASOL_VERSION:-$EXAKIT_PYEXASOL_VERSION_FALLBACK}"
 }
 
 exakit_component_latest() {
@@ -2959,9 +3017,15 @@ kit_shared_steps() {
 
     if command -v pyexasol_install >/dev/null 2>&1; then
         if begin_step pyexasol "Step ${_step_no}/${_total}  pyexasol (Exasol Python driver)"; then
-            pyexasol_install
-            pyexasol_validate
-            mark_step pyexasol
+            # pyexasol is the last, optional Component and it must not be able to
+            # end the run: the exakit helper step below still has to happen, or
+            # the user is left without the command that fixes everything else. A
+            # soft failure explains itself, records validated=false, and leaves
+            # the step unmarked so a re-run (or `exakit update pyexasol`) retries.
+            if pyexasol_install; then
+                pyexasol_validate
+                mark_step pyexasol
+            fi
         fi
     else
         info "Step ${_step_no}/${_total}  pyexasol — not part of this installation, skipping"
@@ -2999,7 +3063,10 @@ kit_shared_steps() {
             cp -R "$_script_dir/lib" "$EXAKIT_HOME/kit/setup/" \
                 || die "Could not copy the kit library to $EXAKIT_HOME/kit/setup."
             # Copy the assets exakit needs after the checkout is gone: the mcp/
-            # and sql/ packages, the data/ CSVs, and load-data.sh.
+            # and sql/ packages, the data/ CSVs, load-data.sh, and the versions
+            # manifest (the offline tier of version resolution, and the record of
+            # which kit version this is).
+            [ -f "$_kit_root/versions.json" ] && cp "$_kit_root/versions.json" "$EXAKIT_HOME/kit/"
             [ -d "$_kit_root/mcp" ] && cp -R "$_kit_root/mcp" "$EXAKIT_HOME/kit/"
             [ -d "$_kit_root/sql" ] && cp -R "$_kit_root/sql" "$EXAKIT_HOME/kit/"
             [ -d "$_kit_root/data" ] && cp -R "$_kit_root/data" "$EXAKIT_HOME/kit/"

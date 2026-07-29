@@ -27,8 +27,28 @@ function Get-PyexasolInstalledVersion {
     return ($version | Out-String).Trim()
 }
 
+# Write-PyexasolNotInstalled <reason> - report a soft failure and return $false.
+# pyexasol is the last, optional Component, and the exakit helper is installed
+# AFTER it: failing here would leave a user with a working database but no exakit
+# command to manage it. So every failure in this step is explained, recorded as
+# validated=false, and handed back to the caller as $false, which leaves the step
+# unmarked so a re-run retries it. Mirrors _pyexasol_not_installed in pyexasol.sh.
+function Write-PyexasolNotInstalled {
+    param([Parameter(Mandatory)][string]$Reason)
+    Warn2 "pyexasol was not installed: $Reason"
+    Warn2 "Everything else in the kit is unaffected. Retry with: exakit update pyexasol"
+    Set-ExakitManifestValue "components.pyexasol.validated" $false
+    return $false
+}
+
 function Install-Pyexasol {
-    $uv = Install-ExakitUv
+    # Install-ExakitUv fails hard on its own; this step may not end the run, so
+    # the throw is caught and turned into a soft miss.
+    try {
+        $uv = Install-ExakitUv
+    } catch {
+        return (Write-PyexasolNotInstalled "uv (the Python tool runner) is not available - install it from https://docs.astral.sh/uv/ and re-run")
+    }
     $python = Get-PyexasolVenvPython
 
     $current = Get-PyexasolInstalledVersion
@@ -38,16 +58,21 @@ function Install-Pyexasol {
         Info "Installing pyexasol $($script:PyexasolVersion) (Exasol Python driver)"
         if (-not (Test-Path $python)) {
             $code = Invoke-ExakitLogged $uv "venv" "--python" $script:ManagedPythonVersion $script:PyexasolVenv
-            if ($code -ne 0) { Fail "Could not create the pyexasol virtual environment at $script:PyexasolVenv (see log)." }
+            if ($code -ne 0) {
+                return (Write-PyexasolNotInstalled "the virtual environment at $script:PyexasolVenv could not be created (see log)")
+            }
         }
         $code = Invoke-ExakitLogged $uv "pip" "install" "--python" $python "$($script:PyexasolPackage)==$($script:PyexasolVersion)"
-        if ($code -ne 0) { Fail "pyexasol installation failed (see log)." }
+        if ($code -ne 0) {
+            return (Write-PyexasolNotInstalled "installing $($script:PyexasolPackage)==$($script:PyexasolVersion) failed (see log)")
+        }
         Ok "pyexasol installed: $script:PyexasolVenv"
     }
 
     Set-ExakitManifestValue "components.pyexasol.version" $script:PyexasolVersion
     Set-ExakitManifestValue "components.pyexasol.venv" $script:PyexasolVenv
     Set-ExakitManifestValue "components.pyexasol.python" $python
+    return $true
 }
 
 # Test-PyexasolConnection - prove the driver imports, then run SELECT 1
@@ -57,6 +82,9 @@ function Install-Pyexasol {
 # retries this step.
 function Test-PyexasolConnection {
     $python = Get-PyexasolVenvPython
+    # Nothing to validate when the install did not get far enough to create the
+    # venv: it is soft-fail by design and has already explained itself.
+    if (-not (Test-Path $python)) { return }
     $code = Invoke-ExakitLogged $python "-c" "import pyexasol"
     if ($code -ne 0) {
         # Non-fatal, matching this step's contract and the bash path: pyexasol

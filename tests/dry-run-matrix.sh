@@ -297,19 +297,46 @@ if command -v pwsh >/dev/null 2>&1; then
     ' | tr -d '\r')"
     check "powershell(parse)" "yes" "$ps_parse"
 
+    # Default (manifest) policy: the Windows path must resolve to exactly what
+    # versions.json advertises. Expectations are read from that file, so a
+    # Component bump never means editing this guard. A non-HTTPS endpoint keeps
+    # the check offline — it is refused before any connection is attempted — and
+    # the kit copy under the temporary home is the document being read.
     _ps_tmp="$(mktemp -d)"
-    ps_versions="$(EXAKIT_HOME="$_ps_tmp/home" EXAKIT_BIN_DIR="$_ps_tmp/bin" EXAKIT_VERSION_POLICY=pinned pwsh -NoProfile -Command '
+    mkdir -p "$_ps_tmp/home/kit/mcp"
+    cp "$ROOT/versions.json" "$_ps_tmp/home/kit/versions.json"
+    _read_advertised() { bash -c ". '$ROOT/setup/lib/common.sh'; exakit_versions_value '$1' '$ROOT/versions.json'"; }
+    exp_versions="baked $(_read_advertised components.nano.version) $(_read_advertised components.exapump.version) $(_read_advertised components.mcp.version)"
+    ps_versions="$(EXAKIT_HOME="$_ps_tmp/home" EXAKIT_BIN_DIR="$_ps_tmp/bin" \
+      EXAKIT_VERSIONS_URL="http://offline.invalid/versions.json" pwsh -NoProfile -Command '
       . ./setup/lib/exakit-common.ps1
       Initialize-ExakitManifest
       Resolve-ExakitInstallVersions
-      Write-Output "$script:NanoTag $script:ExapumpVersion $script:McpVersion"
+      Write-Output "$($script:VersionsSourceUsed) $script:NanoTag $script:ExapumpVersion $script:McpVersion"
+    ' | tail -1 | tr -d '\r')"
+    check "powershell(manifest_policy)" "$exp_versions" "$ps_versions"
+
+    # Any other policy value is the offline branch: the compiled-in constants,
+    # compared against the *Fallback variables themselves so this guard has no
+    # literals to fall out of date either.
+    ps_pinned="$(EXAKIT_HOME="$_ps_tmp/home2" EXAKIT_BIN_DIR="$_ps_tmp/bin2" EXAKIT_VERSION_POLICY=pinned pwsh -NoProfile -Command '
+      . ./setup/lib/exakit-common.ps1
+      Initialize-ExakitManifest
+      Resolve-ExakitInstallVersions
+      $matchesFallbacks = ($script:NanoTag -eq $script:NanoTagFallback) -and
+        ($script:ExapumpVersion -eq $script:ExapumpVersionFallback) -and
+        ($script:McpVersion -eq $script:McpVersionFallback) -and
+        ($script:PyexasolVersion -eq $script:PyexasolVersionFallback)
+      Write-Output "$($script:VersionsSourceUsed) $matchesFallbacks"
     ' | tail -1 | tr -d '\r')"
     rm -rf "$_ps_tmp"
-    check "powershell(version_policy_fallback)" "2026.2.0-nano.2 0.11.2 1.10.1" "$ps_versions"
+    check "powershell(version_policy_fallback)" "fallback True" "$ps_pinned"
 else
     check "powershell(parse)" "skipped" "skipped"
+    check "powershell(manifest_policy)" "skipped" "skipped"
     check "powershell(version_policy_fallback)" "skipped" "skipped"
 fi
+# The live-lookup helpers stay in the library: `latest` policy is still supported.
 if grep -q 'Resolve-ExakitInstallVersions' "$ROOT/setup/setup-windows-docker.ps1" && \
    grep -q 'Get-ExakitLatestDockerTag' "$ROOT/setup/lib/exakit-common.ps1" && \
    grep -q 'Get-ExakitLatestGithubRelease' "$ROOT/setup/lib/exakit-common.ps1" && \
@@ -317,6 +344,14 @@ if grep -q 'Resolve-ExakitInstallVersions' "$ROOT/setup/setup-windows-docker.ps1
     check "windows_install(latest_resolution)" "yes" "yes"
 else
     check "windows_install(latest_resolution)" "yes" "no"
+fi
+if grep -q 'Update-ExakitVersionsCache' "$ROOT/setup/lib/exakit-common.ps1" && \
+   grep -q 'Get-ExakitVersionsValue' "$ROOT/setup/lib/exakit-common.ps1" && \
+   grep -q 'Get-ExakitKitVersionAt' "$ROOT/setup/setup-windows-docker.ps1" && \
+   grep -q 'Get-ExapumpExpectedSha256' "$ROOT/setup/lib/exapump.ps1"; then
+    check "windows_install(manifest_wiring)" "yes" "yes"
+else
+    check "windows_install(manifest_wiring)" "yes" "no"
 fi
 if grep -q 'nano_update_snapshot' "$ROOT/setup/lib/runtime-nano.sh" && \
    grep -q 'nano_restore_previous_container' "$ROOT/setup/lib/runtime-nano.sh" && \

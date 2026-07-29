@@ -11,6 +11,13 @@ import unittest
 from mcp.adapters.registry import AdapterRegistry
 from mcp.core.models import DeploymentMode, ServerDefinition
 from mcp.runtime.environment import ExecutionEnvironment
+from mcp.runtime.exakit import DEFAULT_MCP_PACKAGE, DEFAULT_MCP_VERSION
+
+# The package spec the kit actually renders into client configs. Derived from the
+# runtime defaults rather than repeated as a literal, so a version bump in
+# versions.json (which CI keeps in step with DEFAULT_MCP_VERSION) does not have
+# to be chased through the fixtures.
+MCP_SPEC = f"{DEFAULT_MCP_PACKAGE}@{DEFAULT_MCP_VERSION}"
 
 
 class AdditionalAdapterTests(unittest.TestCase):
@@ -38,7 +45,7 @@ class AdditionalAdapterTests(unittest.TestCase):
             transport=DeploymentMode.STDIO,
             name="exasol",
             command="/tmp/uvx",
-            args=("exasol-mcp-server@1.10.1",),
+            args=(MCP_SPEC,),
             env={"EXA_DSN": "127.0.0.1:8563", "EXA_USER": "sys"},
         )
 
@@ -83,7 +90,7 @@ class AdditionalAdapterTests(unittest.TestCase):
             transport=DeploymentMode.STDIO,
             name="exasol",
             command=r"C:\Users\Example\.local\bin\uvx.exe",
-            args=("exasol-mcp-server@1.10.1",),
+            args=(MCP_SPEC,),
             env={"EXA_DSN": "127.0.0.1:8563", "EXA_USER": "sys"},
         )
         rendered = adapter.render(server, inspection)
@@ -108,7 +115,7 @@ class AdditionalAdapterTests(unittest.TestCase):
         entry = payload["mcp"]["exasol"]
         self.assertEqual(entry["type"], "local")
         self.assertTrue(entry["enabled"])
-        self.assertEqual(entry["command"], ["/tmp/uvx", "exasol-mcp-server@1.10.1"])
+        self.assertEqual(entry["command"], ["/tmp/uvx", MCP_SPEC])
         self.assertEqual(entry["environment"], {"EXA_DSN": "127.0.0.1:8563", "EXA_USER": "sys"})
         self.assertNotIn("args", entry)
         self.assertNotIn("env", entry)
@@ -140,7 +147,7 @@ class AdditionalAdapterTests(unittest.TestCase):
             transport=DeploymentMode.STDIO,
             name="exasol",
             command="uvx",
-            args=("exasol-mcp-server@1.10.1",),
+            args=(MCP_SPEC,),
             env={"EXA_DSN": "127.0.0.1:8563", "EXA_SSL_CERT_VALIDATION": "no"},
         )
         inspection = adapter.inspect(location.path, "exasol")  # type: ignore[arg-type]
@@ -150,7 +157,7 @@ class AdditionalAdapterTests(unittest.TestCase):
         self.assertIn("mcpServers:", content)
         self.assertIn("- name: exasol", content)
         self.assertIn("command: uvx", content)
-        self.assertIn("- exasol-mcp-server@1.10.1", content)
+        self.assertIn(f"- {MCP_SPEC}", content)
         # YAML 1.1 coercion guards:
         self.assertIn('EXA_SSL_CERT_VALIDATION: "no"', content)
         self.assertIn('EXA_DSN: "127.0.0.1:8563"', content)

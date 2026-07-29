@@ -108,6 +108,36 @@ function Get-ExapumpAssetName {
     }
 }
 
+# Get-ExapumpExpectedSha256 <asset> - the digest the download is verified
+# against:
+#
+#   1. versions.json, but ONLY when the version being installed is the advertised
+#      one. An env override must never borrow another release's digest - that
+#      would either fail confusingly or, worse, match the wrong artifact.
+#   2. the digest of the release shipped with this kit (below).
+#   3. the release API for the version in question.
+#
+# $null means "no digest available"; the caller decides what to do with that (it
+# refuses to install unless explicitly overridden).
+# Twin of exapump_expected_sha256 in exapump.sh.
+function Get-ExapumpExpectedSha256 {
+    param([Parameter(Mandatory)][string]$AssetName)
+    $advertised = Get-ExakitVersionsValue -Path "components.exapump.version"
+    if ($advertised -and $advertised -eq $script:ExapumpVersion) {
+        # The asset name is exapump-<version>-<os>-<arch>.exe, and versions.json
+        # keys its digests by that same <os>-<arch> token.
+        $platform = $AssetName
+        $prefix = "exapump-$($script:ExapumpVersion)-"
+        if ($platform.StartsWith($prefix)) { $platform = $platform.Substring($prefix.Length) }
+        if ($platform.EndsWith(".exe")) { $platform = $platform.Substring(0, $platform.Length - 4) }
+        $digest = Get-ExakitVersionsValue -Path "components.exapump.sha256.$platform"
+        if ($digest -and $digest -match '^[0-9a-f]{64}$') { return $digest }
+    }
+    $digest = Get-ExapumpPinnedSha256 $AssetName
+    if ($digest) { return $digest }
+    return (Get-ExapumpDigestFromApi $AssetName)
+}
+
 # Digest of the pinned release (published by the release API). When the
 # version is overridden the digest is fetched from the API instead.
 function Get-ExapumpPinnedSha256 {
@@ -177,19 +207,19 @@ function Install-Exapump {
     Info "Downloading exapump v$($script:ExapumpVersion) ($asset)"
     Get-ExakitFile -Url $url -Dest $tmp
 
-    $expected = Get-ExapumpPinnedSha256 $asset
-    if (-not $expected) { $expected = Get-ExapumpDigestFromApi $asset }
+    $expected = Get-ExapumpExpectedSha256 $asset
     if ($expected) {
         Test-ExakitSha256 -Path $tmp -Expected $expected
     } elseif ($env:EXAKIT_ALLOW_UNVERIFIED_EXAPUMP -eq "1") {
         Warn2 "No digest available for $asset - proceeding WITHOUT checksum verification (EXAKIT_ALLOW_UNVERIFIED_EXAPUMP=1)."
     } else {
         # Match the launcher's bar (and the bash twin in exapump.sh): never
-        # install a downloaded-and-executed binary we could not verify. For a
-        # released version the pinned digest always resolves, so this only
-        # fires on an un-pinned version bump or an unreachable release API.
+        # install a downloaded-and-executed binary we could not verify. For an
+        # advertised version the digest comes from versions.json, and for the
+        # shipped one from the pinned table, so this only fires on a version this
+        # kit knows nothing about plus an unreachable release API.
         Remove-Item -Force $tmp -ErrorAction SilentlyContinue
-        Fail "No checksum available for $asset; refusing to install an unverified exapump binary. Add its digest to the pinned list (version bump?) or check network access to the release API. Override at your own risk with EXAKIT_ALLOW_UNVERIFIED_EXAPUMP=1."
+        Fail "No checksum available for $asset; refusing to install an unverified exapump binary. Add its digest to versions.json (components.exapump.sha256) or check network access to the release API. Override at your own risk with EXAKIT_ALLOW_UNVERIFIED_EXAPUMP=1."
     }
 
     New-Item -ItemType Directory -Force -Path $script:BinDir | Out-Null

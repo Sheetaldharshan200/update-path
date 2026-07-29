@@ -14,7 +14,11 @@
 #   4. resolution degrades fetch -> cache -> baked kit copy -> fallback and
 #      never fails a command.
 #
-# No installs, no network: the fetch is a stubbed curl.
+# It also covers what install-time resolution does with those answers, and the
+# rule that pyexasol — the last, optional Component — can never end a run.
+#
+# No installs, no network: the fetch is a stubbed curl, and resolution runs
+# against a deliberately non-HTTPS endpoint (refused before any connection).
 #
 #   bash tests/versions-manifest.sh
 
@@ -239,6 +243,130 @@ http_refused="$( stub_curl
     exakit_versions_update_cache force >/dev/null 2>&1; printf '%s ' "$?"
     [ -d "$WORK/plain" ] && printf 'wrote' || printf 'nothing' )"
 check "a non-HTTPS endpoint is refused outright" "1 nothing" "$http_refused"
+
+echo "install-time resolution:"
+# Expectations are read from the manifest itself, so bumping a Component does not
+# mean editing this test.
+V_PERSONAL="$(exakit_versions_value components.personal.version "$REAL")"
+V_NANO="$(exakit_versions_value components.nano.version "$REAL")"
+V_EXAPUMP="$(exakit_versions_value components.exapump.version "$REAL")"
+V_MCP="$(exakit_versions_value components.mcp.version "$REAL")"
+V_PYEXASOL="$(exakit_versions_value components.pyexasol.version "$REAL")"
+
+# resolve_set <shell-statements> — resolve in a subshell (so nothing leaks into
+# the next case) and print "<source> <personal> <nano> <exapump> <mcp> <pyexasol>".
+# The endpoint is non-HTTPS on purpose: it is refused outright, which keeps the
+# whole test offline while still exercising the fetch-then-fall-back path.
+resolve_set() (
+    EXAKIT_VERSIONS_URL="http://offline.invalid/versions.json"
+    EXAKIT_MANIFEST="$WORK/absent-manifest.json"
+    EXAKIT_PERSONAL_VERSION=""; EXAKIT_NANO_TAG=""; EXAKIT_EXAPUMP_VERSION=""
+    EXAKIT_MCP_VERSION=""; EXAKIT_PYEXASOL_VERSION=""
+    _EXAKIT_VERSIONS_DOC=""; _EXAKIT_VERSIONS_SOURCE=""
+    eval "${1:-}"
+    exakit_resolve_install_versions >/dev/null 2>&1
+    printf '%s %s %s %s %s %s\n' "$EXAKIT_VERSIONS_SOURCE_USED" "$EXAKIT_PERSONAL_VERSION" \
+        "$EXAKIT_NANO_TAG" "$EXAKIT_EXAPUMP_VERSION" "$EXAKIT_MCP_VERSION" "$EXAKIT_PYEXASOL_VERSION"
+)
+
+check "manifest policy (default) reads the kit copy" \
+    "baked $V_PERSONAL $V_NANO $V_EXAPUMP $V_MCP $V_PYEXASOL" "$(resolve_set)"
+check "an env override beats the manifest" \
+    "baked $V_PERSONAL $V_NANO 9.9.9 $V_MCP $V_PYEXASOL" \
+    "$(resolve_set 'EXAKIT_EXAPUMP_VERSION=9.9.9')"
+check "no document at all -> the fallback constants" \
+    "fallback $EXAKIT_PERSONAL_VERSION_FALLBACK $EXAKIT_NANO_TAG_FALLBACK $EXAKIT_EXAPUMP_VERSION_FALLBACK $EXAKIT_MCP_VERSION_FALLBACK $EXAKIT_PYEXASOL_VERSION_FALLBACK" \
+    "$(resolve_set 'exakit_repo_root() { return 1; }')"
+mkdir -p "$EXAKIT_HOME/cache"
+sed 's/"version": "'"$V_EXAPUMP"'"/"version": "0.12.0"/' "$REAL" > "$EXAKIT_VERSIONS_CACHE"
+check "a cached document beats the kit copy" \
+    "cache $V_PERSONAL $V_NANO 0.12.0 $V_MCP $V_PYEXASOL" "$(resolve_set)"
+check "pinned policy ignores the document entirely" \
+    "fallback $EXAKIT_PERSONAL_VERSION_FALLBACK $EXAKIT_NANO_TAG_FALLBACK $EXAKIT_EXAPUMP_VERSION_FALLBACK $EXAKIT_MCP_VERSION_FALLBACK $EXAKIT_PYEXASOL_VERSION_FALLBACK" \
+    "$(resolve_set 'EXAKIT_VERSION_POLICY=pinned')"
+check "latest policy still asks upstream" \
+    "latest 7.7.7 8.8.8 7.7.7 6.6.6 6.6.6" \
+    "$(resolve_set 'EXAKIT_VERSION_POLICY=latest
+                    exakit_latest_github_release_version() { echo 7.7.7; }
+                    exakit_latest_docker_tag() { echo 8.8.8; }
+                    exakit_latest_pypi_version() { echo 6.6.6; }')"
+rm -f "$EXAKIT_VERSIONS_CACHE"
+
+recorded="$( EXAKIT_HOME="$WORK/record-home"
+             EXAKIT_MANIFEST="$WORK/record-home/manifest.json"
+             EXAKIT_VERSIONS_CACHE="$WORK/record-home/cache/versions.json"
+             EXAKIT_VERSIONS_URL="http://offline.invalid/versions.json"
+             EXAKIT_PERSONAL_VERSION=""; EXAKIT_NANO_TAG=""; EXAKIT_EXAPUMP_VERSION=""
+             EXAKIT_MCP_VERSION=""; EXAKIT_PYEXASOL_VERSION=""
+             _EXAKIT_VERSIONS_DOC=""; _EXAKIT_VERSIONS_SOURCE=""
+             mkdir -p "$EXAKIT_HOME/kit/mcp"
+             cp "$REAL" "$EXAKIT_HOME/kit/versions.json"
+             manifest_init >/dev/null 2>&1
+             exakit_resolve_install_versions >/dev/null 2>&1
+             printf '%s %s %s' "$(manifest_get version_policy)" \
+                 "$(manifest_get desired.versions_source)" "$(manifest_get desired.exapump)" )"
+check "the install records where the versions came from" "manifest baked $V_EXAPUMP" "$recorded"
+
+echo "exapump digest chain:"
+digest_chain="$( . "$ROOT/setup/lib/detect.sh"
+    . "$ROOT/setup/lib/exapump.sh"
+    _EXAKIT_VERSIONS_DOC=""; _EXAKIT_VERSIONS_SOURCE=""
+    EXAKIT_VERSIONS_CACHE="$WORK/no-cache.json"
+    EXAKIT_EXAPUMP_VERSION="$V_EXAPUMP"
+    _asset="$(exapump_asset_name)"
+    _advertised="$(exakit_versions_value "components.exapump.sha256.${_asset#exapump-$V_EXAPUMP-}" "$REAL")"
+    [ "$(exapump_expected_sha256 "$_asset")" = "$_advertised" ] && printf 'manifest ' || printf 'WRONG '
+    # A version the manifest does not advertise must not borrow its digest: the
+    # chain has to fall through to the pinned table and then the release API.
+    exapump_pinned_sha256() { printf '' ; }
+    exapump_release_digest_from_api() { printf 'from-api\n'; }
+    EXAKIT_EXAPUMP_VERSION="0.0.0-not-advertised"
+    printf '%s' "$(exapump_expected_sha256 "exapump-0.0.0-not-advertised-linux-x86_64")" )"
+check "the advertised version verifies against the manifest digest" "manifest from-api" "$digest_chain"
+
+echo "resilient install (pyexasol cannot end a run):"
+mkdir -p "$WORK/failing-uv"
+printf '#!/bin/sh\nexit 1\n' > "$WORK/failing-uv/uv"
+chmod +x "$WORK/failing-uv/uv"
+soft_fail="$( EXAKIT_HOME="$WORK/pyx-home"
+    EXAKIT_MANIFEST="$WORK/pyx-home/manifest.json"
+    EXAKIT_BIN_DIR="$WORK/pyx-home/bin"
+    EXAKIT_PYEXASOL_VENV="$WORK/pyx-home/pyexasol-venv"
+    EXAKIT_PYEXASOL_VERSION="$V_PYEXASOL"
+    mkdir -p "$EXAKIT_HOME"
+    . "$ROOT/setup/lib/pyexasol.sh"
+    manifest_init >/dev/null 2>&1
+    PATH="$WORK/failing-uv:$PATH"
+    if pyexasol_install >/dev/null 2>&1; then printf 'installed '; else printf 'soft-failed '; fi
+    printf '%s ' "$(manifest_get components.pyexasol.validated 2>/dev/null || printf unset)"
+    printf '%s' "$(manifest_get components.pyexasol.version 2>/dev/null || printf no-version)" )"
+check "a uv that cannot run records the miss instead of dying" \
+    "soft-failed false no-version" "$soft_fail"
+
+# The real promise: the exakit helper step comes AFTER pyexasol, so a pyexasol
+# failure must not stop the run from installing the command that fixes it.
+mkdir -p "$WORK/fake-kit"
+cp "$REAL" "$WORK/fake-kit/versions.json"
+completed="$( EXAKIT_HOME="$WORK/kss-home"
+    EXAKIT_MANIFEST="$WORK/kss-home/manifest.json"
+    EXAKIT_BIN_DIR="$WORK/kss-home/bin"
+    EXAKIT_PYEXASOL_VENV="$WORK/kss-home/pyexasol-venv"
+    EXAKIT_PYEXASOL_VERSION="$V_PYEXASOL"
+    mkdir -p "$EXAKIT_HOME"
+    . "$ROOT/setup/lib/pyexasol.sh"
+    manifest_init >/dev/null 2>&1
+    # Out of scope for this test: data load, MCP client setup, skills, PATH hints.
+    exakit_maybe_offer_data_load() { :; }
+    exakit_maybe_offer_mcp_setup() { :; }
+    exakit_maybe_offer_skills_install() { :; }
+    ensure_path_hint() { :; }
+    PATH="$WORK/failing-uv:$PATH"
+    kit_shared_steps 3 6 "$ROOT/setup" "$WORK/fake-kit" >/dev/null 2>&1
+    [ -x "$EXAKIT_BIN_DIR/exakit" ] && printf 'exakit-installed ' || printf 'NO-EXAKIT '
+    [ -f "$EXAKIT_HOME/kit/versions.json" ] && printf 'manifest-copied ' || printf 'NO-MANIFEST '
+    printf '%s' "$(manifest_get steps_completed | tr -d ' "[]')" )"
+check "the run completes and the kit copy carries the manifest" \
+    "exakit-installed manifest-copied exakit_helper" "$completed"
 
 echo "Windows parity (versions manifest):"
 if command -v pwsh >/dev/null 2>&1; then

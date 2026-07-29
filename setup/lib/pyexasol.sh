@@ -26,16 +26,32 @@ pyexasol_installed_version() {
     "$_pyx_python" -c 'import pyexasol; print(pyexasol.__version__)' 2>/dev/null
 }
 
+# _pyexasol_not_installed <reason> — report a soft failure and return 1.
+# pyexasol is the last, optional Component, and the exakit helper is installed
+# AFTER it: dying here would leave a user with a working database but no exakit
+# command to manage it. So every failure in this step is explained, recorded as
+# validated=false, and handed back to the caller as a non-zero return, which
+# leaves the step unmarked so a re-run retries it.
+_pyexasol_not_installed() {
+    warn "pyexasol was not installed: $1"
+    warn "Everything else in the kit is unaffected. Retry with: exakit update pyexasol"
+    manifest_set components.pyexasol.validated false
+    return 1
+}
+
 pyexasol_install() {
     # uv is normally present already (the MCP step installs it and it is a
     # hard dependency of the kit); bootstrap it here only if this step runs
-    # in a build without the MCP module.
-    if ! command -v uv >/dev/null 2>&1; then
-        if command -v mcp_uv_install >/dev/null 2>&1; then
-            mcp_uv_install
-        else
-            die "uv is required to install pyexasol but is not available. Install uv (https://docs.astral.sh/uv/) and re-run."
-        fi
+    # in a build without the MCP module. exakit_ensure_uv, not mcp_uv_install:
+    # this step may not fail the run, and mcp_uv_install dies on failure.
+    _pyx_uv=""
+    if command -v uv >/dev/null 2>&1; then
+        _pyx_uv="uv"
+    elif exakit_ensure_uv && [ -x "${EXAKIT_UV_BIN:-}" ]; then
+        _pyx_uv="$EXAKIT_UV_BIN"
+    else
+        _pyexasol_not_installed "uv (the Python tool runner) is not available — install it from https://docs.astral.sh/uv/ and re-run"
+        return 1
     fi
 
     _pyx_current="$(pyexasol_installed_version || true)"
@@ -44,13 +60,17 @@ pyexasol_install() {
     else
         info "Installing pyexasol $EXAKIT_PYEXASOL_VERSION (Exasol Python driver)"
         if [ ! -x "$(pyexasol_venv_python)" ]; then
-            run_logged uv venv --python "$EXAKIT_MANAGED_PYTHON_VERSION" "$EXAKIT_PYEXASOL_VENV" || \
-                die "Could not create the pyexasol virtual environment at $EXAKIT_PYEXASOL_VENV (see log)."
+            if ! run_logged "$_pyx_uv" venv --python "$EXAKIT_MANAGED_PYTHON_VERSION" "$EXAKIT_PYEXASOL_VENV"; then
+                _pyexasol_not_installed "the virtual environment at $EXAKIT_PYEXASOL_VENV could not be created (see log)"
+                return 1
+            fi
             push_rollback "rm -rf '$EXAKIT_PYEXASOL_VENV'"
         fi
-        run_logged uv pip install --python "$(pyexasol_venv_python)" \
-            "${EXAKIT_PYEXASOL_PACKAGE}==${EXAKIT_PYEXASOL_VERSION}" || \
-            die "pyexasol installation failed (see log)."
+        if ! run_logged "$_pyx_uv" pip install --python "$(pyexasol_venv_python)" \
+                "${EXAKIT_PYEXASOL_PACKAGE}==${EXAKIT_PYEXASOL_VERSION}"; then
+            _pyexasol_not_installed "installing ${EXAKIT_PYEXASOL_PACKAGE}==${EXAKIT_PYEXASOL_VERSION} failed (see log)"
+            return 1
+        fi
         ok "pyexasol installed: $EXAKIT_PYEXASOL_VENV"
     fi
 
@@ -122,6 +142,9 @@ EXAKIT_SVE_EOF
 # and every other component are unaffected, and a re-run retries this step.
 pyexasol_validate() {
     _pyx_python="$(pyexasol_venv_python)"
+    # Nothing to validate when the install did not get far enough to create the
+    # venv: it is soft-fail by design and has already explained itself.
+    [ -x "$_pyx_python" ] || return 0
     # Non-fatal, matching this step's stated contract (and the live-check path
     # below): pyexasol is the last, optional component, so a broken import
     # records validated=false and warns rather than turning an otherwise

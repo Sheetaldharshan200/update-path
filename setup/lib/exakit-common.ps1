@@ -65,7 +65,12 @@ $script:McpReadonlySchemas = if ($env:EXAKIT_MCP_READONLY_SCHEMAS) { $env:EXAKIT
 # ---------------------------------------------------------------------------
 # Component version policy
 # ---------------------------------------------------------------------------
-$script:VersionPolicy = if ($env:EXAKIT_VERSION_POLICY) { $env:EXAKIT_VERSION_POLICY } else { "latest" }
+# manifest (default) - take the version set the maintainers tested together,
+#                      from versions.json (see below).
+# latest             - resolve each Component independently from its upstream
+#                      (GitHub releases, PyPI, Docker Hub).
+# anything else      - install the *Fallback versions below, no network at all.
+$script:VersionPolicy = if ($env:EXAKIT_VERSION_POLICY) { $env:EXAKIT_VERSION_POLICY } else { "manifest" }
 $script:NanoImage       = "exasol/nano"
 $script:NanoTagFallback = if ($env:EXAKIT_NANO_TAG_FALLBACK) { $env:EXAKIT_NANO_TAG_FALLBACK } else { "2026.2.0-nano.2" }
 $script:ExapumpVersionFallback = if ($env:EXAKIT_EXAPUMP_VERSION_FALLBACK) { $env:EXAKIT_EXAPUMP_VERSION_FALLBACK } else { "0.11.2" }
@@ -99,6 +104,9 @@ $script:VersionsSchema = 1
 $script:VersionsDocPath = ""
 $script:VersionsSource = ""
 $script:VersionsSchemaAhead = $false
+# Which tier of the chain actually answered, recorded as desired.versions_source
+# so a support question ("where did this version come from?") has an answer.
+$script:VersionsSourceUsed = ""
 
 New-Item -ItemType Directory -Force -Path $script:ExakitHome, $script:LogDir, $script:CredsDir, $script:BinDir | Out-Null
 
@@ -746,15 +754,25 @@ function Get-ExakitVersionsBakedPath {
     return $path
 }
 
+# Get-ExakitKitVersionAt - kit.version as stated by a specific kit tree. The
+# installer uses it on the tree it is installing FROM, which is not necessarily
+# the copy under the kit home (that one may be an older install).
+function Get-ExakitKitVersionAt {
+    param([Parameter(Mandatory)][string]$KitRoot)
+    $doc = Join-Path $KitRoot "versions.json"
+    if (-not (Test-Path $doc)) { return $null }
+    $version = Get-ExakitVersionsValue -Path "kit.version" -DocPath $doc
+    if (-not $version -or $version -notmatch '^[A-Za-z0-9._+-]+$') { return $null }
+    return $version
+}
+
 # Get-ExakitKitBundledVersion - kit.version as recorded by the kit copy on disk.
 # This is what "installed" means for the kit itself; the manifest's kit.source
 # only says where the copy came from.
 function Get-ExakitKitBundledVersion {
-    $baked = Get-ExakitVersionsBakedPath
-    if (-not $baked) { return $null }
-    $version = Get-ExakitVersionsValue -Path "kit.version" -DocPath $baked
-    if (-not $version -or $version -notmatch '^[A-Za-z0-9._+-]+$') { return $null }
-    return $version
+    $root = Get-ExakitRepoRoot
+    if (-not $root) { return $null }
+    return (Get-ExakitKitVersionAt -KitRoot $root)
 }
 
 function Get-ExakitVersionsUserAgent {
@@ -939,14 +957,45 @@ function Get-ExakitLatestDockerTag {
 
 function Set-ExakitDesiredVersions {
     Set-ExakitManifestValue "version_policy" $script:VersionPolicy
+    $source = $script:VersionsSourceUsed
+    if (-not $source) { $source = "unknown" }
+    Set-ExakitManifestValue "desired.versions_source" $source
     Set-ExakitManifestValue "desired.runtime.nano" $script:NanoTag
     Set-ExakitManifestValue "desired.exapump" $script:ExapumpVersion
     Set-ExakitManifestValue "desired.mcp" $script:McpVersion
     Set-ExakitManifestValue "desired.pyexasol" $script:PyexasolVersion
 }
 
+# Resolve-ExakitInstallVersions - decide which version of each Component this
+# install gets. An explicit env override always wins; the policy decides where
+# the rest comes from. Resolution never fails: each tier degrades into the next,
+# and the recorded desired.versions_source says which one answered.
 function Resolve-ExakitInstallVersions {
-    if ($script:VersionPolicy -ne "latest") {
+    if ($script:VersionPolicy -eq "latest") {
+        # The escape hatch: newest of every Component, resolved upstream.
+        $script:VersionsSourceUsed = "latest"
+        if (-not $script:NanoTag) {
+            $script:NanoTag = Get-ExakitLatestDockerTag
+            if (-not $script:NanoTag) { $script:NanoTag = $script:NanoTagFallback }
+        }
+        if (-not $script:ExapumpVersion) {
+            $script:ExapumpVersion = Get-ExakitLatestGithubRelease $script:ExapumpRepo
+            if (-not $script:ExapumpVersion) { $script:ExapumpVersion = $script:ExapumpVersionFallback }
+        }
+        if (-not $script:McpVersion) {
+            $script:McpVersion = Get-ExakitLatestPypiVersion $script:McpPackage
+            if (-not $script:McpVersion) { $script:McpVersion = $script:McpVersionFallback }
+        }
+        if (-not $script:PyexasolVersion) {
+            $script:PyexasolVersion = Get-ExakitLatestPypiVersion $script:PyexasolPackage
+            if (-not $script:PyexasolVersion) { $script:PyexasolVersion = $script:PyexasolVersionFallback }
+        }
+        Set-ExakitDesiredVersions
+        return
+    }
+    if ($script:VersionPolicy -ne "manifest") {
+        # No network at all: the last-known-good constants only.
+        $script:VersionsSourceUsed = "fallback"
         if (-not $script:NanoTag) { $script:NanoTag = $script:NanoTagFallback }
         if (-not $script:ExapumpVersion) { $script:ExapumpVersion = $script:ExapumpVersionFallback }
         if (-not $script:McpVersion) { $script:McpVersion = $script:McpVersionFallback }
@@ -955,22 +1004,29 @@ function Resolve-ExakitInstallVersions {
         return
     }
 
+    # The versions manifest: one TTL-gated fetch, then read. A fresh install picks
+    # up the currently advertised set; an offline one silently uses the cached
+    # copy, the copy that shipped with this kit, or the constants above.
+    Update-ExakitVersionsCache | Out-Null
+    Resolve-ExakitVersionsDoc | Out-Null
+    $script:VersionsSourceUsed = Get-ExakitVersionsSource
     if (-not $script:NanoTag) {
-        $script:NanoTag = Get-ExakitLatestDockerTag
+        $script:NanoTag = Get-ExakitVersionsValue -Path "components.nano.version"
         if (-not $script:NanoTag) { $script:NanoTag = $script:NanoTagFallback }
     }
     if (-not $script:ExapumpVersion) {
-        $script:ExapumpVersion = Get-ExakitLatestGithubRelease $script:ExapumpRepo
+        $script:ExapumpVersion = Get-ExakitVersionsValue -Path "components.exapump.version"
         if (-not $script:ExapumpVersion) { $script:ExapumpVersion = $script:ExapumpVersionFallback }
     }
     if (-not $script:McpVersion) {
-        $script:McpVersion = Get-ExakitLatestPypiVersion $script:McpPackage
+        $script:McpVersion = Get-ExakitVersionsValue -Path "components.mcp.version"
         if (-not $script:McpVersion) { $script:McpVersion = $script:McpVersionFallback }
     }
     if (-not $script:PyexasolVersion) {
-        $script:PyexasolVersion = Get-ExakitLatestPypiVersion $script:PyexasolPackage
+        $script:PyexasolVersion = Get-ExakitVersionsValue -Path "components.pyexasol.version"
         if (-not $script:PyexasolVersion) { $script:PyexasolVersion = $script:PyexasolVersionFallback }
     }
+    Write-ExakitLog "INFO" "versions resolved from the manifest ($($script:VersionsSourceUsed))"
     Set-ExakitDesiredVersions
 }
 
