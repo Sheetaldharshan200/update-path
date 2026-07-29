@@ -9,6 +9,11 @@
 # Windows-side checkout (EXAKIT_LOCAL_KIT or /mnt/c).
 setup/exakit text eol=lf
 
+# The versions manifest is read line by line (sed/awk) when no Python runtime
+# is available, and its canonical form is CI-checked. A CRLF checkout would
+# leave a CR on every extracted value — enough to break a download URL.
+versions.json text eol=lf
+
 # Runtime-parsed text files. The bash installer reads dataset.conf with sed
 # (a CRLF checkout makes every dataset id end in CR, so dataset discovery
 # fails with "Unknown bundled dataset"), and the SQL/CSV fixtures are fed to

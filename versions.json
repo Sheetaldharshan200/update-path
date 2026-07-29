@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "updated": "2026-07-29",
+  "kit": {
+    "version": "0.2.0"
+  },
+  "components": {
+    "personal": {
+      "version": "2.0.0-rc4",
+      "severity": "normal"
+    },
+    "nano": {
+      "version": "2026.2.0-nano.2",
+      "image": "exasol/nano",
+      "severity": "normal"
+    },
+    "exapump": {
+      "version": "0.11.2",
+      "repo": "exasol-labs/exapump",
+      "severity": "normal",
+      "sha256": {
+        "macos-aarch64": "e1438c69f26cdcca69ad1b7211aa9495524c53ff1badebee91d5a631c503616b",
+        "macos-x86_64": "1dd68d2dbc2d556e1613975eeffb25813f1ec60e06e93d514d5dd86df8144648",
+        "linux-aarch64": "106c3c5ea168a1381549807b82639137c8b3f94bd64c1b6d02fa380a025d5085",
+        "linux-x86_64": "669af4d488e5b1ae2e9c9e030c1be4b1cdb7442dedf3175a361928613f4b3e80",
+        "windows-x86_64": "8a2e8199a94f1b21782e4c68179948bfa43217c82c9b9b2a25eaec4532305237"
+      }
+    },
+    "mcp": {
+      "version": "1.10.1",
+      "package": "exasol-mcp-server",
+      "severity": "normal"
+    },
+    "pyexasol": {
+      "version": "2.2.2",
+      "package": "pyexasol",
+      "severity": "normal"
+    }
+  }
+}

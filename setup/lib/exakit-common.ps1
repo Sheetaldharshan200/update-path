@@ -53,6 +53,7 @@ if (-not (Get-Command Start-ExakitSpinner -ErrorAction SilentlyContinue)) {
 # ---------------------------------------------------------------------------
 $script:ExakitHome   = if ($env:EXAKIT_HOME) { $env:EXAKIT_HOME } else { Join-Path $HOME ".exasol-starter-kit" }
 $script:LogDir       = Join-Path $script:ExakitHome "logs"
+$script:CacheDir     = Join-Path $script:ExakitHome "cache"
 $script:CredsDir     = Join-Path $script:ExakitHome "credentials"
 $script:ManifestPath = Join-Path $script:ExakitHome "manifest.json"
 $script:McpDir       = Join-Path $script:ExakitHome "mcp"
@@ -78,6 +79,26 @@ $script:PyexasolPackage = if ($env:EXAKIT_PYEXASOL_PACKAGE) { $env:EXAKIT_PYEXAS
 $script:PyexasolVersionFallback = if ($env:EXAKIT_PYEXASOL_VERSION_FALLBACK) { $env:EXAKIT_PYEXASOL_VERSION_FALLBACK } else { "2.2.2" }
 $script:PyexasolVersion = if ($env:EXAKIT_PYEXASOL_VERSION) { $env:EXAKIT_PYEXASOL_VERSION } else { "" }
 $script:DbPort          = if ($env:EXAKIT_DB_PORT) { $env:EXAKIT_DB_PORT } else { "8563" }
+
+# The versions manifest (versions.json at the root of the kit repository on
+# main) is the maintainer-edited record of the version set that was tested
+# together. It is fetched over plain HTTPS from GitHub's raw endpoint - the same
+# trust domain that already serves install.ps1 - and cached under the kit home.
+# Nothing is collected on our side: the request carries a User-Agent header and
+# no query string, and no third party is involved.
+if ($env:EXAKIT_KIT_REPO) { $script:KitRepo = $env:EXAKIT_KIT_REPO }
+elseif ($env:EXAKIT_REPO) { $script:KitRepo = $env:EXAKIT_REPO }
+else { $script:KitRepo = "exasol-labs/exasol-personal-local-starterkit" }
+$script:VersionsUrl = if ($env:EXAKIT_VERSIONS_URL) { $env:EXAKIT_VERSIONS_URL } else { "https://raw.githubusercontent.com/$($script:KitRepo)/main/versions.json" }
+$script:VersionsTtl = 86400
+if ($env:EXAKIT_VERSIONS_TTL -match '^[0-9]+$') { $script:VersionsTtl = [int]$env:EXAKIT_VERSIONS_TTL }
+$script:VersionsCachePath = if ($env:EXAKIT_VERSIONS_CACHE) { $env:EXAKIT_VERSIONS_CACHE } else { Join-Path $script:CacheDir "versions.json" }
+# Schema this kit understands. A document announcing a higher number is treated
+# as unavailable (the resolution chain falls back) rather than guessed at.
+$script:VersionsSchema = 1
+$script:VersionsDocPath = ""
+$script:VersionsSource = ""
+$script:VersionsSchemaAhead = $false
 
 New-Item -ItemType Directory -Force -Path $script:ExakitHome, $script:LogDir, $script:CredsDir, $script:BinDir | Out-Null
 
@@ -640,6 +661,232 @@ function Set-ExakitManifestValue {
     if ($null -eq $doc) { Fail "Failed to update manifest ($Path): no manifest at $script:ManifestPath" }
     Set-ManifestValue -Manifest $doc -Path $Path -Value $Value
     Save-ExakitManifest $doc
+}
+
+# ---------------------------------------------------------------------------
+# Versions manifest (versions.json)
+# ---------------------------------------------------------------------------
+# Twin of the exakit_versions_* set in setup/lib/common.sh. One document answers
+# one question: "which version of each Component is the current tested set?".
+# Maintainers edit it via pull request; clients read it. Nothing here may ever
+# fail a command - every reader degrades along the chain
+#
+#   fresh fetch -> cached copy (any age) -> copy baked into the kit -> the
+#   *Fallback variables above
+#
+# so an offline machine, a rate-limited network, or a hand-mangled cache all end
+# up with a usable answer instead of an error. JSON is read natively here, so
+# the bash side's no-Python fallback has no counterpart.
+
+# Test-ExakitVersionsDoc - the gate every document passes before it is trusted.
+# Returns 0 when the document can be used, 2 when it parses but announces a
+# newer schema (the caller can hint at updating the kit), 1 otherwise.
+# Rejects any version or digest outside the safe charset: advertised versions
+# are interpolated into download URLs and command lines.
+function Test-ExakitVersionsDoc {
+    param([Parameter(Mandatory)][string]$Path)
+    if (-not (Test-Path $Path)) { return 1 }
+    try {
+        $raw = Get-Content $Path -Raw -ErrorAction Stop
+        if (-not $raw -or -not $raw.Trim()) { return 1 }
+        $doc = $raw | ConvertFrom-Json
+    } catch {
+        Write-ExakitLog "WARN" "versions manifest did not parse ($Path)"
+        return 1
+    }
+    if ($null -eq $doc -or $doc -is [System.Array] -or -not ($doc -is [System.Management.Automation.PSCustomObject])) { return 1 }
+    $announced = Get-ManifestValue -Manifest $doc -Path "schema_version"
+    if ($announced -ne $script:VersionsSchema) {
+        if ($announced -is [int] -or $announced -is [long]) {
+            if ($announced -gt $script:VersionsSchema) {
+                $script:VersionsSchemaAhead = $true
+                return 2
+            }
+        }
+        return 1
+    }
+    $blocks = @()
+    $kit = Get-ManifestValue -Manifest $doc -Path "kit"
+    if ($null -eq $kit) { return 1 }
+    $blocks += , $kit
+    $components = Get-ManifestValue -Manifest $doc -Path "components"
+    if ($null -eq $components -or $components.PSObject.Properties.Count -eq 0) { return 1 }
+    foreach ($prop in $components.PSObject.Properties) { $blocks += , $prop.Value }
+    # Optional and additive: absent until the first Kit 2 assets ship.
+    $kit2 = Get-ManifestValue -Manifest $doc -Path "kit2"
+    if ($null -ne $kit2) { $blocks += , $kit2 }
+
+    foreach ($block in $blocks) {
+        if ($null -eq $block -or -not ($block -is [System.Management.Automation.PSCustomObject])) { return 1 }
+        $version = Get-ManifestValue -Manifest $block -Path "version"
+        if (-not ($version -is [string]) -or $version -notmatch '^[A-Za-z0-9._+-]+$') { return 1 }
+        $minKit = Get-ManifestValue -Manifest $block -Path "min_kit_version"
+        if ($null -ne $minKit) {
+            if (-not ($minKit -is [string]) -or $minKit -notmatch '^[A-Za-z0-9._+-]+$') { return 1 }
+        }
+        $digests = Get-ManifestValue -Manifest $block -Path "sha256"
+        if ($null -ne $digests) {
+            if (-not ($digests -is [System.Management.Automation.PSCustomObject]) -or $digests.PSObject.Properties.Count -eq 0) { return 1 }
+            foreach ($digest in $digests.PSObject.Properties) {
+                if (-not ($digest.Value -is [string]) -or $digest.Value -notmatch '^[0-9a-f]{64}$') { return 1 }
+            }
+        }
+    }
+    return 0
+}
+
+# The copy that shipped inside the installed kit: the last stop before the
+# compiled-in fallbacks, and what makes an offline machine still agree with the
+# release it installed.
+function Get-ExakitVersionsBakedPath {
+    $root = Get-ExakitRepoRoot
+    if (-not $root) { return $null }
+    $path = Join-Path $root "versions.json"
+    if (-not (Test-Path $path)) { return $null }
+    return $path
+}
+
+# Get-ExakitKitBundledVersion - kit.version as recorded by the kit copy on disk.
+# This is what "installed" means for the kit itself; the manifest's kit.source
+# only says where the copy came from.
+function Get-ExakitKitBundledVersion {
+    $baked = Get-ExakitVersionsBakedPath
+    if (-not $baked) { return $null }
+    $version = Get-ExakitVersionsValue -Path "kit.version" -DocPath $baked
+    if (-not $version -or $version -notmatch '^[A-Za-z0-9._+-]+$') { return $null }
+    return $version
+}
+
+function Get-ExakitVersionsUserAgent {
+    $kit = Get-ExakitKitBundledVersion
+    if (-not $kit) { $kit = "unknown" }
+    # Environment only, deliberately not Get-ExakitHostArch: the header is
+    # cosmetic, and its WMI probe has no business delaying a version lookup.
+    if ($env:PROCESSOR_ARCHITEW6432) { $arch = $env:PROCESSOR_ARCHITEW6432 }
+    elseif ($env:PROCESSOR_ARCHITECTURE) { $arch = $env:PROCESSOR_ARCHITECTURE }
+    else { $arch = "unknown" }
+    return "exakit-update-check/$kit (windows; $arch)"
+}
+
+# Seconds since the cached copy was written, or $null when there is no cache.
+function Get-ExakitVersionsCacheAge {
+    if (-not (Test-Path $script:VersionsCachePath)) { return $null }
+    try {
+        $written = (Get-Item $script:VersionsCachePath).LastWriteTimeUtc
+    } catch {
+        return $null
+    }
+    return [int]((Get-Date).ToUniversalTime() - $written).TotalSeconds
+}
+
+function Test-ExakitVersionsCacheFresh {
+    $age = Get-ExakitVersionsCacheAge
+    if ($null -eq $age) { return $false }
+    return ($age -lt $script:VersionsTtl)
+}
+
+# Update-ExakitVersionsCache - refresh the cached document. Skips the network
+# while the cache is younger than the TTL; -Force is for the explicit
+# `exakit update-check`, which should always ask upstream.
+# Returns 0 when a validated document was installed, 2 when the fetch was
+# skipped as unnecessary, 1 when nothing could be fetched.
+#
+# A failed or invalid download never touches the cache: the temporary file lives
+# in the cache directory (same volume) and only a validated document is moved
+# into place, so a reader can never observe a half-written file.
+function Update-ExakitVersionsCache {
+    param([switch]$Force)
+    if ($script:VersionsUrl -notlike "https://*") {
+        Write-ExakitLog "WARN" "refusing to fetch the versions manifest over a non-HTTPS URL"
+        return 1
+    }
+    if (-not $Force -and (Test-ExakitVersionsCacheFresh)) { return 2 }
+    try {
+        New-Item -ItemType Directory -Force -Path (Split-Path $script:VersionsCachePath -Parent) | Out-Null
+    } catch {
+        return 1
+    }
+    $tmp = "$($script:VersionsCachePath).tmp.$PID"
+    try {
+        Invoke-WebRequest -Uri $script:VersionsUrl -OutFile $tmp -UseBasicParsing -TimeoutSec 12 -UserAgent (Get-ExakitVersionsUserAgent)
+    } catch {
+        Remove-Item -Force $tmp -ErrorAction SilentlyContinue
+        Write-ExakitLog "INFO" "versions manifest fetch failed - keeping the cached copy"
+        return 1
+    }
+    if ((Test-ExakitVersionsDoc -Path $tmp) -ne 0) {
+        Remove-Item -Force $tmp -ErrorAction SilentlyContinue
+        Write-ExakitLog "WARN" "fetched versions manifest did not validate - keeping the cached copy"
+        return 1
+    }
+    try {
+        Move-Item -Force $tmp $script:VersionsCachePath
+    } catch {
+        Remove-Item -Force $tmp -ErrorAction SilentlyContinue
+        return 1
+    }
+    $script:VersionsDocPath = $script:VersionsCachePath
+    $script:VersionsSource = "fetched"
+    Write-ExakitLog "INFO" "versions manifest refreshed from $($script:VersionsUrl)"
+    return 0
+}
+
+# Resolve-ExakitVersionsDoc - pick the document to read and remember it, so the
+# validation gate runs once per command instead of once per lookup. Returns the
+# path, or $null when only the compiled-in fallbacks are left.
+function Resolve-ExakitVersionsDoc {
+    if ($script:VersionsDocPath) { return $script:VersionsDocPath }
+    # The cache is written only after validation, but anything under the kit
+    # home can be edited by hand - re-check before trusting it.
+    if ((Test-Path $script:VersionsCachePath) -and ((Test-ExakitVersionsDoc -Path $script:VersionsCachePath) -eq 0)) {
+        $script:VersionsDocPath = $script:VersionsCachePath
+        if (-not $script:VersionsSource) { $script:VersionsSource = "cache" }
+        return $script:VersionsDocPath
+    }
+    $baked = Get-ExakitVersionsBakedPath
+    if ($baked -and (Test-ExakitVersionsDoc -Path $baked) -eq 0) {
+        $script:VersionsDocPath = $baked
+        $script:VersionsSource = "baked"
+        return $script:VersionsDocPath
+    }
+    $script:VersionsSource = "fallback"
+    return $null
+}
+
+# Where the answers came from: fetched | cache | baked | fallback. Shown by
+# update-check and recorded as desired.versions_source.
+function Get-ExakitVersionsSource {
+    if (-not $script:VersionsSource) { Resolve-ExakitVersionsDoc | Out-Null }
+    if (-not $script:VersionsSource) { return "fallback" }
+    return $script:VersionsSource
+}
+
+# True when a document was readable JSON but announced a newer schema, so
+# callers can suggest updating the kit.
+function Test-ExakitVersionsSchemaAhead {
+    return $script:VersionsSchemaAhead
+}
+
+# Get-ExakitVersionsValue - the advertised value, e.g.
+#   Get-ExakitVersionsValue -Path "components.exapump.version"
+#   Get-ExakitVersionsValue -Path "components.exapump.sha256.windows-x86_64"
+# $null means "not advertised" - never a failure to be propagated.
+function Get-ExakitVersionsValue {
+    param([Parameter(Mandatory)][string]$Path, [string]$DocPath = "")
+    if (-not $DocPath) {
+        $DocPath = Resolve-ExakitVersionsDoc
+        if (-not $DocPath) { return $null }
+    }
+    if (-not (Test-Path $DocPath)) { return $null }
+    try {
+        $doc = Get-Content $DocPath -Raw -ErrorAction Stop | ConvertFrom-Json
+    } catch {
+        return $null
+    }
+    $value = Get-ManifestValue -Manifest $doc -Path $Path
+    if ($null -eq $value) { return $null }
+    if ($value -is [System.Management.Automation.PSCustomObject]) { return ($value | ConvertTo-Json -Compress) }
+    return "" + $value
 }
 
 function Get-ExakitLatestGithubRelease {

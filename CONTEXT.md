@@ -24,6 +24,10 @@ _Avoid_: native database, Personal install
 A separately versioned part of the Starter Kit experience, such as the kit scripts, Runtime image, exapump, or MCP server.
 _Avoid_: dependency, package
 
+**Versions Manifest**:
+The maintainer-edited record of the current tested version set for every Component, published at the root of the Starter Kit repository and read by installs and update checks.
+_Avoid_: version file, lockfile, release manifest
+
 **Desired Version**:
 The version the Starter Kit resolved or was explicitly asked to install for a Component.
 _Avoid_: target version, pinned version

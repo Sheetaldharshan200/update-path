@@ -36,6 +36,7 @@ fi
 # ---------------------------------------------------------------------------
 EXAKIT_HOME="${EXAKIT_HOME:-$HOME/.exasol-starter-kit}"
 EXAKIT_LOG_DIR="$EXAKIT_HOME/logs"
+EXAKIT_CACHE_DIR="$EXAKIT_HOME/cache"
 EXAKIT_MANIFEST="$EXAKIT_HOME/manifest.json"
 EXAKIT_MCP_DIR="$EXAKIT_HOME/mcp"
 EXAKIT_CREDS_DIR="$EXAKIT_HOME/credentials"
@@ -71,6 +72,20 @@ EXAKIT_NANO_IMAGE="exasol/nano"
 EXAKIT_KIT_REPO="${EXAKIT_KIT_REPO:-${EXAKIT_REPO:-exasol-labs/exasol-personal-local-starterkit}}"
 EXAKIT_VERSION_LOOKUP_CONNECT_TIMEOUT="${EXAKIT_VERSION_LOOKUP_CONNECT_TIMEOUT:-5}"
 EXAKIT_VERSION_LOOKUP_MAX_TIME="${EXAKIT_VERSION_LOOKUP_MAX_TIME:-12}"
+
+# The versions manifest (versions.json at the root of the kit repository on
+# main) is the maintainer-edited record of the version set that was tested
+# together. It is fetched over plain HTTPS from GitHub's raw endpoint — the same
+# trust domain that already serves install.sh — and cached under the kit home.
+# Nothing is collected on our side: the request carries a User-Agent header and
+# no query string, and no third party is involved.
+EXAKIT_VERSIONS_URL="${EXAKIT_VERSIONS_URL:-https://raw.githubusercontent.com/${EXAKIT_KIT_REPO}/main/versions.json}"
+EXAKIT_VERSIONS_TTL="${EXAKIT_VERSIONS_TTL:-86400}"
+EXAKIT_VERSIONS_CACHE="${EXAKIT_VERSIONS_CACHE:-$EXAKIT_CACHE_DIR/versions.json}"
+# Schema the client understands. A document that announces a higher number is
+# treated as unavailable (the resolution chain falls back) rather than guessed
+# at — a newer kit knows how to read it.
+EXAKIT_VERSIONS_SCHEMA=1
 
 EXAKIT_DB_PORT="${EXAKIT_DB_PORT:-8563}"
 
@@ -681,6 +696,366 @@ for part in key.split("."):
         sys.exit(1)
 print(node if isinstance(node, str) else json.dumps(node))
 PY
+}
+
+# ---------------------------------------------------------------------------
+# Versions manifest (versions.json)
+# ---------------------------------------------------------------------------
+# One document answers one question: "which version of each Component is the
+# current tested set?". Maintainers edit it via pull request; clients read it.
+# Nothing here may ever fail a command — every reader degrades along the chain
+#
+#   fresh fetch  ->  cached copy (any age)  ->  copy baked into the kit  ->  the
+#   *_FALLBACK constants above
+#
+# so an offline machine, a rate-limited network, or a hand-mangled cache all
+# end up with a usable answer instead of an error.
+#
+# The document's formatting is an interface, not a style choice: canonical
+# 2-space pretty-print, one key per line, LF endings, and "version" before any
+# nested object inside a block. That is what lets the no-Python fallback below
+# read it with awk, and it is enforced by CI on every edit.
+#
+# ⇄ twin: the Get-ExakitVersions* / Update-ExakitVersionsCache set in
+# setup/lib/exakit-common.ps1.
+_EXAKIT_VERSIONS_DOC=""
+_EXAKIT_VERSIONS_SOURCE=""
+_EXAKIT_VERSIONS_SCHEMA_AHEAD=0
+
+# _exakit_json_leaves <file> [dot.path] — scalar reader for the canonical form
+# described above: prints "<dot.path><TAB><value>" for every scalar, or just the
+# value of one path when asked. Indentation is the nesting depth (two spaces per
+# level, one key per line), so no real parser is needed. Used only when there is
+# no Python runtime at all — Python stays the primary path everywhere.
+_exakit_json_leaves() {
+    awk -v want="${2:-}" '
+        {
+            n = match($0, /[^ ]/)
+            if (n == 0) next
+            depth = int((n - 1) / 2)
+            if (depth < 1) next
+            rest = substr($0, n)
+            if (!match(rest, /^"[^"]*" *:/)) next
+            key = substr(rest, 1, RLENGTH)
+            val = substr(rest, RLENGTH + 1)
+            sub(/^"/, "", key)
+            sub(/" *:$/, "", key)
+            keys[depth] = key
+            sub(/^ +/, "", val)
+            if (val == "" || val == "{" || val == "[") next
+            if (substr(val, 1, 1) == "\"") {
+                sub(/",$/, "\"", val)
+                val = substr(val, 2, length(val) - 2)
+            } else {
+                sub(/,$/, "", val)
+            }
+            path = keys[1]
+            for (i = 2; i <= depth; i++) path = path "." keys[i]
+            if (want != "") {
+                if (path == want) { print val; exit }
+                next
+            }
+            print path "\t" val
+        }
+    ' "$1"
+}
+
+# exakit_versions_validate <file> — the gate every document passes before it is
+# trusted. Rejects anything that does not parse, announces a schema this kit
+# cannot read, or carries a version/digest outside the safe charset (advertised
+# versions are interpolated into download URLs and command lines).
+exakit_versions_validate() {
+    _vv_file="$1"
+    [ -f "$_vv_file" ] && [ -s "$_vv_file" ] || return 1
+    if exakit_can_run_python; then
+        run_python - "$_vv_file" "$EXAKIT_VERSIONS_SCHEMA" <<'PY' 2>/dev/null
+import json, re, sys
+
+path, schema = sys.argv[1], int(sys.argv[2])
+try:
+    with open(path) as handle:
+        doc = json.load(handle)
+except (OSError, ValueError):
+    sys.exit(1)
+if not isinstance(doc, dict):
+    sys.exit(1)
+announced = doc.get("schema_version")
+if announced != schema:
+    # Exit 2 = "readable, but newer than this kit" so the caller can hint at
+    # updating instead of reporting a broken document.
+    sys.exit(2 if isinstance(announced, int) and announced > schema else 1)
+
+version_re = re.compile(r"^[A-Za-z0-9._+-]+$")
+digest_re = re.compile(r"^[0-9a-f]{64}$")
+
+
+def check_block(block):
+    if not isinstance(block, dict):
+        sys.exit(1)
+    version = block.get("version")
+    if not isinstance(version, str) or not version_re.match(version):
+        sys.exit(1)
+    min_kit = block.get("min_kit_version")
+    if min_kit is not None and (not isinstance(min_kit, str) or not version_re.match(min_kit)):
+        sys.exit(1)
+    digests = block.get("sha256")
+    if digests is not None:
+        if not isinstance(digests, dict) or not digests:
+            sys.exit(1)
+        for value in digests.values():
+            if not isinstance(value, str) or not digest_re.match(value):
+                sys.exit(1)
+
+
+kit = doc.get("kit")
+if not isinstance(kit, dict):
+    sys.exit(1)
+check_block(kit)
+components = doc.get("components")
+if not isinstance(components, dict) or not components:
+    sys.exit(1)
+for block in components.values():
+    check_block(block)
+# Optional and additive: absent until the first Kit 2 assets ship.
+if doc.get("kit2") is not None:
+    check_block(doc["kit2"])
+PY
+        _vv_rc=$?
+        [ "$_vv_rc" -eq 2 ] && _EXAKIT_VERSIONS_SCHEMA_AHEAD=1
+        [ "$_vv_rc" -eq 0 ] || _exakit_log_file "WARN  versions manifest rejected ($_vv_file, code $_vv_rc)"
+        return $_vv_rc
+    fi
+    _exakit_versions_validate_shell "$_vv_file"
+}
+
+# No-Python fallback for the gate above: shape check plus a charset sweep over
+# every scalar the kit would actually use.
+_exakit_versions_validate_shell() {
+    _vs_file="$1"
+    case "$(sed -n '1p' "$_vs_file" | tr -d '\r')" in
+        '{') ;;
+        *) return 1 ;;
+    esac
+    _vs_schema="$(_exakit_json_leaves "$_vs_file" schema_version)"
+    if [ "$_vs_schema" != "$EXAKIT_VERSIONS_SCHEMA" ]; then
+        case "$_vs_schema" in
+            ''|*[!0-9]*) return 1 ;;
+        esac
+        [ "$_vs_schema" -gt "$EXAKIT_VERSIONS_SCHEMA" ] || return 1
+        _EXAKIT_VERSIONS_SCHEMA_AHEAD=1
+        return 2
+    fi
+    _vs_kit="$(_exakit_json_leaves "$_vs_file" kit.version)"
+    [ -n "$_vs_kit" ] || return 1
+    _vs_seen_version=0
+    while IFS="$(printf '\t')" read -r _vs_path _vs_value; do
+        [ -n "$_vs_path" ] || continue
+        case "$_vs_path" in
+            *.sha256.*)
+                case "$_vs_value" in
+                    *[!0-9a-f]*|'') return 1 ;;
+                esac
+                [ "${#_vs_value}" -eq 64 ] || return 1
+                ;;
+            *version)
+                # Covers kit.version, every components.*.version and any
+                # min_kit_version; schema_version is the document's own integer.
+                case "$_vs_path" in schema_version) continue ;; esac
+                case "$_vs_value" in
+                    ''|*[!A-Za-z0-9._+-]*) return 1 ;;
+                esac
+                _vs_seen_version=1
+                ;;
+        esac
+    done <<EOF
+$(_exakit_json_leaves "$_vs_file")
+EOF
+    [ "$_vs_seen_version" -eq 1 ]
+}
+
+# exakit_versions_baked_doc — the copy that shipped inside the installed kit.
+# It is the last stop before the compiled-in fallbacks, and it is what makes an
+# offline machine still agree with the release it installed.
+exakit_versions_baked_doc() {
+    _vb_root="$(exakit_repo_root 2>/dev/null || true)"
+    [ -n "$_vb_root" ] || return 1
+    [ -f "$_vb_root/versions.json" ] || return 1
+    printf '%s\n' "$_vb_root/versions.json"
+}
+
+# exakit_kit_bundled_version — kit.version as recorded by the kit copy on disk.
+# This is what "installed" means for the kit itself; the manifest's kit.source
+# only says where the copy came from.
+exakit_kit_bundled_version() {
+    _kbv_doc="$(exakit_versions_baked_doc 2>/dev/null)" || return 1
+    _kbv_version="$(exakit_versions_value kit.version "$_kbv_doc" 2>/dev/null || true)"
+    case "$_kbv_version" in
+        ''|*[!A-Za-z0-9._+-]*) return 1 ;;
+    esac
+    printf '%s\n' "$_kbv_version"
+}
+
+exakit_versions_user_agent() {
+    _ua_kit="$(exakit_kit_bundled_version 2>/dev/null || true)"
+    [ -n "$_ua_kit" ] || _ua_kit="unknown"
+    if command -v detect_os >/dev/null 2>&1; then
+        _ua_os="$(detect_os 2>/dev/null || true)"
+        _ua_arch="$(detect_arch 2>/dev/null || true)"
+    else
+        _ua_os="$(uname -s 2>/dev/null || true)"
+        _ua_arch="$(uname -m 2>/dev/null || true)"
+    fi
+    printf 'exakit-update-check/%s (%s; %s)\n' "$_ua_kit" "${_ua_os:-unknown}" "${_ua_arch:-unknown}"
+}
+
+_exakit_file_mtime() {
+    case "$(uname -s 2>/dev/null || true)" in
+        Darwin|*BSD*) stat -f %m "$1" 2>/dev/null ;;
+        *)            stat -c %Y "$1" 2>/dev/null ;;
+    esac
+}
+
+# exakit_versions_cache_age — seconds since the cached copy was written.
+exakit_versions_cache_age() {
+    [ -f "$EXAKIT_VERSIONS_CACHE" ] || return 1
+    _vca_mtime="$(_exakit_file_mtime "$EXAKIT_VERSIONS_CACHE")"
+    case "$_vca_mtime" in
+        ''|*[!0-9]*) return 1 ;;
+    esac
+    printf '%s\n' "$(( $(date +%s) - _vca_mtime ))"
+}
+
+exakit_versions_cache_fresh() {
+    _vcf_age="$(exakit_versions_cache_age 2>/dev/null)" || return 1
+    case "$EXAKIT_VERSIONS_TTL" in
+        ''|*[!0-9]*) return 1 ;;
+    esac
+    [ "$_vcf_age" -lt "$EXAKIT_VERSIONS_TTL" ]
+}
+
+# exakit_versions_update_cache [force] — refresh the cached document.
+# Skips the network while the cache is younger than the TTL; "force" is for the
+# explicit `exakit update-check`, which should always ask upstream.
+# Returns 0 when a validated document was installed, 2 when the fetch was
+# skipped as unnecessary, 1 when nothing could be fetched.
+#
+# A failed or invalid download never touches the cache: the temporary file lives
+# in the cache directory (same filesystem) and only a validated document is
+# moved into place, so a reader can never observe a half-written file.
+exakit_versions_update_cache() {
+    _vu_force="${1:-}"
+    case "$EXAKIT_VERSIONS_URL" in
+        https://*) ;;
+        *)
+            _exakit_log_file "WARN  refusing to fetch the versions manifest over a non-HTTPS URL"
+            return 1
+            ;;
+    esac
+    if [ "$_vu_force" != "force" ] && exakit_versions_cache_fresh; then
+        return 2
+    fi
+    command -v curl >/dev/null 2>&1 || return 1
+    mkdir -p "$(dirname "$EXAKIT_VERSIONS_CACHE")" 2>/dev/null || return 1
+    _vu_tmp="$EXAKIT_VERSIONS_CACHE.tmp.$$"
+    if ! curl -fsSL --proto '=https' --retry 1 \
+            --connect-timeout "$EXAKIT_VERSION_LOOKUP_CONNECT_TIMEOUT" \
+            --max-time "$EXAKIT_VERSION_LOOKUP_MAX_TIME" \
+            -A "$(exakit_versions_user_agent)" \
+            -o "$_vu_tmp" "$EXAKIT_VERSIONS_URL" 2>/dev/null; then
+        rm -f "$_vu_tmp"
+        _exakit_log_file "INFO  versions manifest fetch failed — keeping the cached copy"
+        return 1
+    fi
+    if ! exakit_versions_validate "$_vu_tmp"; then
+        rm -f "$_vu_tmp"
+        _exakit_log_file "WARN  fetched versions manifest did not validate — keeping the cached copy"
+        return 1
+    fi
+    mv -f "$_vu_tmp" "$EXAKIT_VERSIONS_CACHE" 2>/dev/null || {
+        rm -f "$_vu_tmp"
+        return 1
+    }
+    _EXAKIT_VERSIONS_DOC="$EXAKIT_VERSIONS_CACHE"
+    _EXAKIT_VERSIONS_SOURCE="fetched"
+    _exakit_log_file "INFO  versions manifest refreshed from $EXAKIT_VERSIONS_URL"
+    return 0
+}
+
+# exakit_versions_resolve_doc — pick the document to read and remember it in
+# _EXAKIT_VERSIONS_DOC/_SOURCE. Callers that read several values should call
+# this once first: command substitutions inherit the memo, so the validation
+# gate runs once per command instead of once per lookup.
+exakit_versions_resolve_doc() {
+    [ -n "$_EXAKIT_VERSIONS_DOC" ] && return 0
+    # The cache is written only after validation, but anything under the kit
+    # home can be edited by hand — re-check before trusting it.
+    if [ -f "$EXAKIT_VERSIONS_CACHE" ] && exakit_versions_validate "$EXAKIT_VERSIONS_CACHE"; then
+        _EXAKIT_VERSIONS_DOC="$EXAKIT_VERSIONS_CACHE"
+        [ -n "$_EXAKIT_VERSIONS_SOURCE" ] || _EXAKIT_VERSIONS_SOURCE="cache"
+        return 0
+    fi
+    _vr_baked="$(exakit_versions_baked_doc 2>/dev/null || true)"
+    if [ -n "$_vr_baked" ] && exakit_versions_validate "$_vr_baked"; then
+        _EXAKIT_VERSIONS_DOC="$_vr_baked"
+        _EXAKIT_VERSIONS_SOURCE="baked"
+        return 0
+    fi
+    _EXAKIT_VERSIONS_SOURCE="fallback"
+    return 1
+}
+
+exakit_versions_active_doc() {
+    exakit_versions_resolve_doc || return 1
+    printf '%s\n' "$_EXAKIT_VERSIONS_DOC"
+}
+
+# exakit_versions_source — where the answers came from: fetched | cache | baked
+# | fallback. Shown by update-check and recorded as desired.versions_source.
+exakit_versions_source() {
+    [ -n "$_EXAKIT_VERSIONS_SOURCE" ] || exakit_versions_resolve_doc >/dev/null 2>&1 || true
+    printf '%s\n' "${_EXAKIT_VERSIONS_SOURCE:-fallback}"
+}
+
+# exakit_versions_schema_ahead — true when a document was readable JSON but
+# announced a newer schema, so callers can suggest updating the kit.
+exakit_versions_schema_ahead() {
+    [ "$_EXAKIT_VERSIONS_SCHEMA_AHEAD" -eq 1 ]
+}
+
+# exakit_versions_value <dot.path> [file] — the advertised value, e.g.
+#   exakit_versions_value components.exapump.version
+#   exakit_versions_value components.exapump.sha256.macos-aarch64
+# Non-zero exit means "not advertised" — never a failure to be propagated.
+exakit_versions_value() {
+    _vv_path="$1"
+    _vv_doc="${2:-}"
+    if [ -z "$_vv_doc" ]; then
+        exakit_versions_resolve_doc || return 1
+        _vv_doc="$_EXAKIT_VERSIONS_DOC"
+    fi
+    [ -f "$_vv_doc" ] || return 1
+    if exakit_can_run_python; then
+        run_python - "$_vv_doc" "$_vv_path" <<'PY' 2>/dev/null
+import json, sys
+
+try:
+    with open(sys.argv[1]) as handle:
+        doc = json.load(handle)
+except (OSError, ValueError):
+    sys.exit(1)
+node = doc
+for part in sys.argv[2].split("."):
+    if isinstance(node, dict) and part in node:
+        node = node[part]
+    else:
+        sys.exit(1)
+print(node if isinstance(node, str) else json.dumps(node))
+PY
+        return $?
+    fi
+    _vv_out="$(_exakit_json_leaves "$_vv_doc" "$_vv_path")"
+    [ -n "$_vv_out" ] || return 1
+    printf '%s\n' "$_vv_out"
 }
 
 # ---------------------------------------------------------------------------

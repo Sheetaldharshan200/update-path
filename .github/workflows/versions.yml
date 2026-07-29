@@ -1,0 +1,212 @@
+name: versions
+
+# versions.json is the maintainer-edited record of the tested version set: every
+# installed kit reads it, so a typo there reaches users directly. This workflow
+# is the review gate for that file and for the shell/PowerShell code that reads
+# it — schema and formatting first, then real artifact digests, then the test
+# suite on both a real bash 3.2 (macOS) and a Linux host with pwsh available.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: versions-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  changes:
+    name: detect versions.json changes
+    runs-on: ubuntu-latest
+    outputs:
+      versions: ${{ steps.detect.outputs.versions }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: detect
+        run: |
+          set -u
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            changed="$(git diff --name-only "origin/${{ github.base_ref }}...HEAD")"
+          elif [ -n "${{ github.event.before }}" ] && \
+               git cat-file -e "${{ github.event.before }}^{commit}" 2>/dev/null; then
+            changed="$(git diff --name-only "${{ github.event.before }}" HEAD)"
+          else
+            # No usable base (first push, force push, rerun): verify rather than skip.
+            changed="versions.json"
+          fi
+          if printf '%s\n' "$changed" | grep -qx 'versions.json'; then
+            echo "versions=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "versions=false" >> "$GITHUB_OUTPUT"
+          fi
+          printf 'versions.json changed: %s\n' "$(printf '%s\n' "$changed" | grep -cx 'versions.json')"
+
+  validate:
+    name: validate versions.json
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: canonical formatting
+        # The no-Python reader in setup/lib/common.sh walks the file line by
+        # line, so the shape is an interface: 2-space pretty-print, one key per
+        # line, LF endings. A reformat that json.tool would not produce breaks
+        # that reader on machines without Python.
+        run: |
+          python3 -m json.tool --indent 2 versions.json > /tmp/canonical.json
+          diff -u versions.json /tmp/canonical.json
+          if grep -q $'\r' versions.json; then
+            echo "versions.json contains CR characters (must be LF-only)" >&2
+            exit 1
+          fi
+
+      - name: schema
+        run: |
+          python3 - <<'PY'
+          import collections
+          import json
+          import re
+          import sys
+
+          with open("versions.json") as handle:
+              doc = json.load(handle, object_pairs_hook=collections.OrderedDict)
+
+          problems = []
+          version_re = re.compile(r"^[A-Za-z0-9._+-]+$")
+          digest_re = re.compile(r"^[0-9a-f]{64}$")
+
+          if doc.get("schema_version") != 1:
+              problems.append("schema_version must be 1")
+          if not re.match(r"^\d{4}-\d{2}-\d{2}$", str(doc.get("updated", ""))):
+              problems.append("updated must be an ISO date (YYYY-MM-DD)")
+
+          expected = {"personal", "nano", "exapump", "mcp", "pyexasol"}
+          components = doc.get("components") or {}
+          if set(components) != expected:
+              problems.append("components must be exactly %s, found %s"
+                              % (sorted(expected), sorted(components)))
+
+          blocks = [("kit", doc.get("kit") or {})]
+          blocks += [("components.%s" % name, block) for name, block in components.items()]
+          if doc.get("kit2") is not None:
+              blocks.append(("kit2", doc["kit2"]))
+
+          for label, block in blocks:
+              if not isinstance(block, dict):
+                  problems.append("%s must be an object" % label)
+                  continue
+              version = block.get("version")
+              if not isinstance(version, str) or not version_re.match(version):
+                  problems.append("%s.version is missing or outside [A-Za-z0-9._+-]" % label)
+              keys = list(block)
+              # The no-Python reader tracks nesting by indentation, so a nested
+              # object before "version" would hide it behind a deeper path.
+              nested = [k for k in keys if isinstance(block[k], dict)]
+              if nested and "version" in keys and keys.index("version") > min(keys.index(k) for k in nested):
+                  problems.append('%s must list "version" before any nested object' % label)
+              severity = block.get("severity")
+              if severity is not None and severity not in ("normal", "recommended", "critical"):
+                  problems.append("%s.severity must be normal, recommended or critical" % label)
+              note = block.get("note")
+              if note is not None and (not isinstance(note, str) or "\n" in note):
+                  problems.append("%s.note must be a single-line string" % label)
+              min_kit = block.get("min_kit_version")
+              if min_kit is not None and (not isinstance(min_kit, str) or not version_re.match(min_kit)):
+                  problems.append("%s.min_kit_version is outside [A-Za-z0-9._+-]" % label)
+
+          exapump = components.get("exapump") or {}
+          digests = exapump.get("sha256") or {}
+          expected_platforms = {
+              "macos-aarch64", "macos-x86_64",
+              "linux-aarch64", "linux-x86_64",
+              "windows-x86_64",
+          }
+          if set(digests) != expected_platforms:
+              problems.append("components.exapump.sha256 must cover exactly %s, found %s"
+                              % (sorted(expected_platforms), sorted(digests)))
+          for platform, digest in digests.items():
+              if not isinstance(digest, str) or not digest_re.match(digest):
+                  problems.append("components.exapump.sha256.%s is not a 64-character hex digest" % platform)
+
+          for problem in problems:
+              print("versions.json: %s" % problem, file=sys.stderr)
+          sys.exit(1 if problems else 0)
+          PY
+
+      - name: the MCP fallback constant matches the manifest
+        # mcp/runtime/exakit.py keeps a last-resort default for the MCP server
+        # version. It must move with the manifest, in the same pull request.
+        run: |
+          set -u
+          advertised="$(python3 -c 'import json; print(json.load(open("versions.json"))["components"]["mcp"]["version"])')"
+          constant="$(sed -n 's/^DEFAULT_MCP_VERSION = "\(.*\)"$/\1/p' mcp/runtime/exakit.py)"
+          printf 'manifest: %s\nexakit.py: %s\n' "$advertised" "$constant"
+          if [ "$advertised" != "$constant" ]; then
+            echo "DEFAULT_MCP_VERSION in mcp/runtime/exakit.py must equal components.mcp.version" >&2
+            exit 1
+          fi
+
+  digest-verify:
+    name: verify exapump digests
+    needs: changes
+    if: needs.changes.outputs.versions == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: download the advertised assets and check every digest
+        # A wrong digest here would make the exapump install refuse to run (or,
+        # worse, be waved through with EXAKIT_ALLOW_UNVERIFIED_EXAPUMP=1). The
+        # assets are the ground truth, so download them and hash them.
+        run: |
+          set -u
+          repo="$(python3 -c 'import json; print(json.load(open("versions.json"))["components"]["exapump"].get("repo", "exasol-labs/exapump"))')"
+          version="$(python3 -c 'import json; print(json.load(open("versions.json"))["components"]["exapump"]["version"])')"
+          # Written to a file rather than piped: a mismatch must fail the job,
+          # and `exit 1` inside a piped while-loop only ends the subshell.
+          python3 -c 'import json; d = json.load(open("versions.json"))["components"]["exapump"]["sha256"]; print("\n".join("%s %s" % kv for kv in d.items()))' > /tmp/digests.txt
+          while read -r platform digest; do
+            case "$platform" in
+              windows-*) asset="exapump-${version}-${platform}.exe" ;;
+              *)         asset="exapump-${version}-${platform}" ;;
+            esac
+            url="https://github.com/${repo}/releases/download/v${version}/${asset}"
+            printf '\n%s\n' "$asset"
+            if ! curl -fL --proto '=https' --retry 3 -sS -o "/tmp/$asset" "$url"; then
+              echo "  could not download $url" >&2
+              exit 1
+            fi
+            actual="$(sha256sum "/tmp/$asset" | cut -d' ' -f1)"
+            rm -f "/tmp/$asset"
+            if [ "$actual" != "$digest" ]; then
+              printf '  digest mismatch\n    advertised: %s\n    actual:     %s\n' "$digest" "$actual" >&2
+              exit 1
+            fi
+            printf '  verified %s\n' "$digest"
+          done < /tmp/digests.txt
+
+  shell-tests:
+    name: shell tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # macOS gives a real bash 3.2 (the version users actually run the
+        # installer with); the Linux runner ships pwsh, so the PowerShell
+        # halves of the parity guards execute instead of being skipped.
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - name: bash version
+        run: bash --version | head -1
+      - name: PowerShell available
+        run: command -v pwsh >/dev/null 2>&1 && pwsh --version || echo "pwsh not installed - PowerShell checks will report skipped"
+      - run: bash tests/ps-encoding-guard.sh
+      - run: bash tests/versions-manifest.sh
+      - run: bash tests/dry-run-matrix.sh
+      - run: bash tests/noninteractive-answers.sh
