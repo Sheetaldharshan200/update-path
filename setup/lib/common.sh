@@ -1550,6 +1550,23 @@ exakit_component_min_kit() {
     exakit_versions_value "${_cm_block}.min_kit_version"
 }
 
+# exakit_component_supported <component> — false when no build of it exists for THIS
+# machine. The kit must never offer an update for something that cannot be installed
+# here: exapump publishes binaries for x86_64 and arm64 on macOS and Linux, nothing for
+# a CPU outside those, and nothing at all for Windows on ARM (see Get-ExapumpAssetName
+# in exapump.ps1, and the installer's own $exapumpSupported gate).
+# ⇄ twin: Test-ExakitComponentSupported in setup/exakit.ps1.
+exakit_component_supported() {
+    case "$1" in
+        exapump)
+            command -v detect_arch >/dev/null 2>&1 || return 0
+            [ "$(detect_arch 2>/dev/null || true)" != "unsupported" ] || return 1
+            return 0
+            ;;
+        *) return 0 ;;
+    esac
+}
+
 # exakit_component_is_heavy <component> — true for changes that stop the
 # database. Intrinsic to the Component, so it lives in code rather than in the
 # manifest: the runtime is heavy, everything else is seconds of work.
@@ -2050,7 +2067,13 @@ exakit_print_update_check() {
         _row_display="$_row_available"
         _row_note=""
         _action="current"
-        if [ "$_row_available" = "unknown" ] || [ "$_row_installed" = "unknown" ]; then
+        if ! exakit_component_supported "$_row_component"; then
+            # Nothing to offer and nothing wrong: there is simply no build for this
+            # machine, and an update command that cannot succeed must not be printed.
+            _row_installed="not available"
+            _action="-"
+            _row_note="no $_row_component build exists for this platform"
+        elif [ "$_row_available" = "unknown" ] || [ "$_row_installed" = "unknown" ]; then
             _action="inspect"
         elif [ "$_row_installed" = "not installed" ] && exakit_component_is_heavy "$_row_component"; then
             # A runtime that is not installed is not a runtime this machine wants:
@@ -2256,6 +2279,13 @@ exakit_update() {
         _upd_actual="$(exakit_update_actual_target "$_component" 2>/dev/null || printf '%s\n' "$_component")"
         _cur="$(exakit_component_current "$_upd_actual" 2>/dev/null || true)"
         _avail="$(exakit_component_available "$_upd_actual" 2>/dev/null || true)"
+        # No build for this machine: a routine update stays quiet about it (there is
+        # nothing the user can do), and an explicit target says why rather than
+        # failing deep inside the installer.
+        if ! exakit_component_supported "$_upd_actual"; then
+            [ "$_target" = "all" ] && continue
+            die "$_upd_actual has no build for this platform, so there is nothing to update."
+        fi
         # Nothing advertised for this component (unreadable manifest, or a
         # component this kit knows nothing about): a routine update says so and
         # moves on. An explicit single target still runs, so its updater can

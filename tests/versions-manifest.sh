@@ -718,6 +718,32 @@ lacks "and says nothing extra when they agree" "(kit installed" "$agree_out"
 # must be compared as tags, or every Nano install would claim a phantom difference.
 has "the runtime row compares tag with tag" "Runtime:        nano 2026.2.0-nano.2" "$agree_out"
 
+echo "a component with no build for this machine is never offered:"
+# exapump publishes nothing for Windows on ARM, and nothing for a CPU outside
+# x86_64/arm64. Offering `exakit update exapump` there fails deep inside the installer,
+# so the row says why instead.
+unsupported_row="$( EXAKIT_HOME="$UC"
+    EXAKIT_MANIFEST="$UC/manifest.json"
+    EXAKIT_VERSIONS_CACHE="$UC/cache/versions.json"
+    EXAKIT_VERSIONS_URL="http://offline.invalid/versions.json"
+    _EXAKIT_VERSIONS_DOC=""; _EXAKIT_VERSIONS_SOURCE=""
+    detect_arch() { printf unsupported; }
+    exakit_print_update_check exapump 2>&1 )"
+has "the row says not available" "exapump    not available" "$unsupported_row"
+has "and explains why once" "no exapump build exists for this platform" "$unsupported_row"
+lacks "and offers no command" "exakit update exapump" "$unsupported_row"
+unsupported_apply="$( EXAKIT_HOME="$UC"
+    EXAKIT_MANIFEST="$UC/manifest.json"
+    EXAKIT_VERSIONS_CACHE="$UC/cache/versions.json"
+    EXAKIT_VERSIONS_URL="http://offline.invalid/versions.json"
+    _EXAKIT_VERSIONS_DOC=""; _EXAKIT_VERSIONS_SOURCE=""
+    exakit_init_logging() { :; }
+    detect_arch() { printf unsupported; }
+    exakit_update_component() { printf 'APPLIED %s\n' "$1"; }
+    ( exakit_update exapump </dev/null 2>&1 ) )"
+has "an explicit update explains rather than failing deep" "no build for this platform" "$unsupported_apply"
+lacks "and installs nothing" "APPLIED" "$unsupported_apply"
+
 echo "the table's verdict binds the apply path too:"
 # uc_run <statements> — `exakit update all` against the fixture, with the real
 # component updaters replaced by a marker so the decisions are what is observed.

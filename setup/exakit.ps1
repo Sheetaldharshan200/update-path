@@ -635,6 +635,21 @@ function Get-ExakitComponentMinKit {
     return (Get-ExakitVersionsValue -Path "$block.min_kit_version")
 }
 
+# Test-ExakitComponentSupported - false when no build of it exists for THIS machine.
+# The kit must never offer an update for something that cannot be installed here:
+# exapump publishes no Windows ARM64 binary (Get-ExapumpAssetName returns $null, and
+# the installer skips the step through its own $exapumpSupported gate).
+# Twin of exakit_component_supported in setup/lib/common.sh.
+function Test-ExakitComponentSupported {
+    param([string]$Component)
+    # PROCESSOR_ARCHITECTURE is a Windows variable. It is empty when this file runs
+    # under PowerShell on macOS or Linux (tests, cross-platform checks), and an empty
+    # value must not be read as "some other architecture".
+    if ($Component -eq "exapump" -and $env:PROCESSOR_ARCHITECTURE `
+            -and $env:PROCESSOR_ARCHITECTURE -ne "AMD64") { return $false }
+    return $true
+}
+
 # True for changes that stop the database. Intrinsic to the Component, so it
 # lives in code rather than in the manifest.
 function Test-ExakitComponentHeavy {
@@ -787,7 +802,13 @@ function Invoke-CmdUpdateCheck {
         $availableCell = $available
         $rowNote = ""
         $action = "current"
-        if ($available -eq "unknown" -or $current -eq "unknown") {
+        if (-not (Test-ExakitComponentSupported $actual)) {
+            # Nothing to offer and nothing wrong: there is simply no build for this
+            # machine, and an update command that cannot succeed must not be printed.
+            $current = "not available"
+            $action = "-"
+            $rowNote = "no $actual build exists for this platform"
+        } elseif ($available -eq "unknown" -or $current -eq "unknown") {
             $action = "inspect"
         } elseif ($current -eq "not installed" -and (Test-ExakitComponentHeavy $actual)) {
             # A runtime that is not installed is not a runtime this machine wants:
@@ -851,6 +872,13 @@ function Invoke-CmdUpdate {
         $actual = Get-ExakitActualTarget $component
         $current = Get-ExakitComponentCurrent $actual
         $available = Get-ExakitComponentAvailable $actual
+        # No build for this machine: a routine update stays quiet about it (there is
+        # nothing the user can do), and an explicit target says why rather than
+        # failing deep inside the installer.
+        if (-not (Test-ExakitComponentSupported $actual)) {
+            if ($Target -eq "all") { continue }
+            Fail "$actual has no build for this platform, so there is nothing to update."
+        }
         # Nothing advertised for this component (unreadable manifest, or a
         # component this kit knows nothing about): a routine update says so and
         # moves on. An explicit single target still runs, so its updater can

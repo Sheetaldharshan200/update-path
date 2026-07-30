@@ -120,6 +120,15 @@ jobs:
               if min_kit is not None and (not isinstance(min_kit, str) or not version_re.match(min_kit)):
                   problems.append("%s.min_kit_version is outside [A-Za-z0-9._+-]" % label)
 
+          # The kit pulls docker.io/exasol/nano:<version> verbatim, and relies on the
+          # registry to pick the right architecture. That only works for the plain,
+          # multi-arch tag: an arch-suffixed one would hand every machine of the other
+          # architecture an image it can only run under emulation, or not at all.
+          nano_version = str((components.get("nano") or {}).get("version", ""))
+          if re.search(r"(amd64|arm64|x86[_-]?64|aarch64)", nano_version, re.IGNORECASE):
+              problems.append("components.nano.version must be the plain multi-arch tag, "
+                              "not the arch-suffixed one (%s)" % nano_version)
+
           exapump = components.get("exapump") or {}
           digests = exapump.get("sha256") or {}
           expected_platforms = {
