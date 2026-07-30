@@ -491,8 +491,10 @@ function Get-ExakitComponentCurrent {
                 $engine = Get-NanoEngine
                 if ($engine -and $engine -ne "none") {
                     Resolve-NanoNames
-                    $out = & $engine container inspect -f "{{.Config.Image}}" $script:NanoContainer 2>$null |
-                        Select-Object -First 1
+                    $out = Invoke-ExakitBounded -FilePath $engine `
+                        -Arguments @("container", "inspect", "-f", "{{.Config.Image}}", $script:NanoContainer) `
+                        -TimeoutSeconds $(if ($env:EXAKIT_ENGINE_PROBE_TIMEOUT) { [int]$env:EXAKIT_ENGINE_PROBE_TIMEOUT } else { 8 })
+                    if ($out) { $out = ($out -split "`n" | Select-Object -First 1) }
                     if ($out -and ("" + $out).Contains(":")) { $live = (("" + $out).Trim() -split ":")[-1] }
                 }
             } catch { }

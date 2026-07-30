@@ -982,6 +982,49 @@ lacks "and applies nothing" "APPLIED exapump" "$one_ahead"
 lacks "without asking anything" "Downgrade" "$one_ahead"
 has "and exits clean" "rc=0" "$one_ahead"
 
+echo "a hanging container engine cannot stall a version lookup:"
+# The failure this prevents: `docker info` and `docker container inspect` do not
+# return while Docker Desktop is starting, and an unbounded probe left
+# `exakit version` printing nothing for as long as that took.
+mkdir -p "$WORK/hang-bin"
+printf '#!/bin/sh\nsleep 300\n' > "$WORK/hang-bin/docker"
+chmod +x "$WORK/hang-bin/docker"
+hang_start="$(date +%s)"
+hang="$( PATH="$WORK/hang-bin:$PATH"
+    EXAKIT_ENGINE_PROBE_TIMEOUT=2
+    unset EXAKIT_NANO_ENGINE
+    # detect.sh is where the engine detection lives, and this file does not source
+    # it by default: without this the call is a silent "command not found", which
+    # looks exactly like a pass.
+    . "$ROOT/setup/lib/detect.sh"
+    if [ "$(detect_container_runtime)" = "none" ]; then printf 'gave-up'; else printf 'HUNG-OR-FOUND'; fi )"
+hang_elapsed=$(( $(date +%s) - hang_start ))
+check "a docker that never answers is treated as no engine" "gave-up" "$hang"
+if [ "$hang_elapsed" -le 20 ]; then
+    check "and it gives up promptly" "prompt" "prompt"
+else
+    check "and it gives up promptly" "prompt" "took ${hang_elapsed}s"
+fi
+# The tag probe must still answer, from the record, while the engine hangs.
+HG="$WORK/hang-home"
+mkdir -p "$HG/kit/mcp"
+cp "$REAL" "$HG/kit/versions.json"
+printf '{"manifest_version":1,"runtime":{"type":"nano","image":"docker.io/exasol/nano:2026.1.0-nano.9"}}\n' \
+    > "$HG/manifest.json"
+hang_tag="$( EXAKIT_HOME="$HG"
+    EXAKIT_MANIFEST="$HG/manifest.json"
+    PATH="$WORK/hang-bin:$PATH"
+    EXAKIT_ENGINE_PROBE_TIMEOUT=2
+    nano_engine() { printf 'docker\n'; }
+    nano_resolve_names() { :; }
+    exakit_installed_nano_tag )"
+check "the recorded tag answers instead" "2026.1.0-nano.9" "$hang_tag"
+# The bounded runner's own contract, independent of docker.
+bounded="$( if exakit_run_bounded 2 sleep 30 >/dev/null 2>&1; then printf 'NO-CUTOFF'; else printf "rc=$?"; fi
+            printf ' '
+            if exakit_run_bounded 5 printf 'ok' >/dev/null 2>&1; then printf 'fast-ok'; else printf 'FAST-FAILED'; fi )"
+check "the runner cuts off a hang and passes a quick command through" "rc=124 fast-ok" "$bounded"
+
 echo "the manifest date reads as a date:"
 # A calendar date must never be shifted into local time: TZ is set to a zone west
 # of UTC to prove the day does not move backwards.

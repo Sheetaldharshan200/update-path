@@ -817,6 +817,58 @@ function Format-ExakitManifestDate {
     }
 }
 
+# Invoke-ExakitBounded - run an external command and give up on it after
+# -TimeoutSeconds, returning $null if it had to be cut off.
+#
+# The twin of the bash exakit_run_bounded, and needed for the same reason: `docker
+# info` and `docker container inspect` do not return while Docker Desktop is still
+# starting, so an unbounded probe leaves `exakit version` printing nothing at all
+# for as long as the engine takes. Reading a version is never worth that wait - the
+# callers fall back to the recorded value, exactly as they do for a stopped engine.
+#
+# Uses Process directly rather than Start-Job: a job pays PowerShell startup per
+# call, and WaitForExit(ms) is the one primitive that is honest about giving up.
+function Invoke-ExakitBounded {
+    param(
+        [Parameter(Mandatory)][string]$FilePath,
+        [string[]]$Arguments = @(),
+        [int]$TimeoutSeconds = 8
+    )
+    $info = New-Object System.Diagnostics.ProcessStartInfo
+    $info.FileName = $FilePath
+    # .Arguments, not .ArgumentList: the latter only exists on .NET Core, so it
+    # would throw on Windows PowerShell 5.1 - and never on the pwsh 7 the tests
+    # run under. Quote each argument, since one of them is a Go template.
+    $quoted = @()
+    foreach ($argument in $Arguments) {
+        $quoted += '"' + ($argument -replace '"', '\"') + '"'
+    }
+    $info.Arguments = ($quoted -join " ")
+    $info.RedirectStandardOutput = $true
+    $info.RedirectStandardError = $true
+    $info.UseShellExecute = $false
+    $info.CreateNoWindow = $true
+    $process = $null
+    try {
+        $process = [System.Diagnostics.Process]::Start($info)
+        # Read stdout on a task so a chatty command cannot fill the pipe buffer and
+        # deadlock against our own WaitForExit.
+        $reader = $process.StandardOutput.ReadToEndAsync()
+        if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
+            try { $process.Kill() } catch { }
+            Write-ExakitLog "WARN" "$FilePath did not answer within ${TimeoutSeconds}s; giving up"
+            return $null
+        }
+        if ($process.ExitCode -ne 0) { return $null }
+        return $reader.Result
+    } catch {
+        Write-ExakitLog "WARN" "$FilePath could not be run: $_"
+        return $null
+    } finally {
+        if ($process) { $process.Dispose() }
+    }
+}
+
 # Get-ExakitKitVersionAt - kit.version as stated by a specific kit tree. The
 # installer uses it on the tree it is installing FROM, which is not necessarily
 # the copy under the kit home (that one may be an older install).

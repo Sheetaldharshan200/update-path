@@ -36,8 +36,14 @@ function Get-NanoEngine {
             # "not running". Switch to Continue (exactly what Invoke-ExakitLogged
             # does) so the exit code, not incidental stderr, decides.
             $ErrorActionPreference = "Continue"
-            & docker info *> $null
-            if ($LASTEXITCODE -eq 0) { $script:NanoEngineCache = "docker"; return "docker" }
+            # Bounded: a starting Docker Desktop answers `docker info` only when it
+            # is ready, and a version lookup must not wait that out. $null covers
+            # both "failed" and "took too long", and both mean the same here.
+            if ($null -ne (Invoke-ExakitBounded -FilePath "docker" -Arguments @("info") `
+                    -TimeoutSeconds $(if ($env:EXAKIT_ENGINE_PROBE_TIMEOUT) { [int]$env:EXAKIT_ENGINE_PROBE_TIMEOUT } else { 8 }))) {
+                $script:NanoEngineCache = "docker"
+                return "docker"
+            }
         } catch {
             Write-ExakitLog "WARN" "docker info failed: $_"
         } finally {

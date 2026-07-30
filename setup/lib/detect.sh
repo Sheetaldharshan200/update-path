@@ -89,12 +89,25 @@ detect_free_disk_gb() {
 # detect_container_runtime — prints the first usable runtime:
 #   docker | podman | none
 # "Usable" means the CLI exists and the daemon/socket answers.
+# `docker info` blocks for as long as Docker Desktop takes to start, so bound it:
+# a version lookup must not sit there in silence. detect.sh is also sourced on its
+# own by the installer's preflight, before common.sh and the bounded runner exist;
+# there the plain call is correct, since preflight is allowed to wait for an engine
+# it is specifically reporting on.
+_detect_engine_probe() {
+    if command -v exakit_run_bounded >/dev/null 2>&1; then
+        exakit_run_bounded "${EXAKIT_ENGINE_PROBE_TIMEOUT:-8}" "$@"
+    else
+        "$@"
+    fi
+}
+
 detect_container_runtime() {
-    if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+    if command -v docker >/dev/null 2>&1 && _detect_engine_probe docker info >/dev/null 2>&1; then
         echo "docker"
         return
     fi
-    if command -v podman >/dev/null 2>&1 && podman info >/dev/null 2>&1; then
+    if command -v podman >/dev/null 2>&1 && _detect_engine_probe podman info >/dev/null 2>&1; then
         echo "podman"
         return
     fi

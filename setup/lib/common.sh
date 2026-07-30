@@ -1165,6 +1165,47 @@ PY
 # row to "inspect" every time would be noise. Whether the runtime exists at all is
 # `exakit status`'s question, and it asks the engine directly.
 
+# exakit_run_bounded <seconds> <command> [args...] — run a command and give up on
+# it after <seconds>, exiting 124 if it had to be cut off.
+#
+# `docker info` and `docker container inspect` do not return while Docker Desktop
+# is still starting, so an unbounded probe turns `exakit version` and
+# `exakit update-check` into commands that print nothing at all for as long as the
+# engine takes. Reading a version is never worth that wait: the probes fall back to
+# the recorded value, which is exactly what they do when the engine is stopped.
+#
+# timeout(1) is not on a stock macOS and gtimeout only arrives with coreutils, so
+# both are used when present and otherwise the command runs in the background and
+# is polled. SIGTERM first, then SIGKILL for a client that ignores it.
+exakit_run_bounded() {
+    _rb_limit="$1"
+    shift
+    if command -v timeout >/dev/null 2>&1; then
+        timeout "$_rb_limit" "$@"
+        return $?
+    fi
+    if command -v gtimeout >/dev/null 2>&1; then
+        gtimeout "$_rb_limit" "$@"
+        return $?
+    fi
+    "$@" &
+    _rb_pid=$!
+    _rb_waited=0
+    while [ "$_rb_waited" -lt "$_rb_limit" ]; do
+        if ! kill -0 "$_rb_pid" 2>/dev/null; then
+            wait "$_rb_pid"
+            return $?
+        fi
+        sleep 1
+        _rb_waited=$((_rb_waited + 1))
+    done
+    kill -TERM "$_rb_pid" 2>/dev/null
+    sleep 1
+    kill -KILL "$_rb_pid" 2>/dev/null
+    wait "$_rb_pid" 2>/dev/null
+    return 124
+}
+
 # exakit_installed_nano_tag — the tag on the container IS the installed version.
 # Needs runtime-nano.sh for the engine and container name.
 exakit_installed_nano_tag() {
@@ -1176,7 +1217,8 @@ exakit_installed_nano_tag() {
         command -v nano_resolve_names >/dev/null 2>&1 && nano_resolve_names 2>/dev/null
         _int_engine="$(nano_engine 2>/dev/null || true)"
         if [ -n "$_int_engine" ] && [ "$_int_engine" != "none" ]; then
-            _int_image="$("$_int_engine" container inspect -f '{{.Config.Image}}' \
+            _int_image="$(exakit_run_bounded "${EXAKIT_ENGINE_PROBE_TIMEOUT:-8}" \
+                "$_int_engine" container inspect -f '{{.Config.Image}}' \
                 "${EXAKIT_NANO_CONTAINER:-exasol-nano}" 2>/dev/null | head -1)"
             case "$_int_image" in
                 *:*) _int_live="${_int_image##*:}" ;;

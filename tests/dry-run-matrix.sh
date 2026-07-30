@@ -462,6 +462,21 @@ if grep -q 'Update-ExakitVersionsCache' "$ROOT/setup/lib/exakit-common.ps1" && \
 else
     check "windows_install(manifest_wiring)" "yes" "no"
 fi
+# Bounded engine probes, both sides. `docker info` does not return while Docker
+# Desktop is starting, so every read-path probe has to be able to give up. The
+# PowerShell half must use .Arguments and not .ArgumentList, which exists only on
+# .NET Core and would throw on the Windows PowerShell 5.1 these scripts support.
+if grep -q 'exakit_run_bounded' "$ROOT/setup/lib/common.sh" && \
+   grep -q '_detect_engine_probe docker info' "$ROOT/setup/lib/detect.sh" && \
+   grep -q 'Invoke-ExakitBounded' "$ROOT/setup/lib/exakit-common.ps1" && \
+   grep -q 'Invoke-ExakitBounded' "$ROOT/setup/lib/nano.ps1" && \
+   grep -q 'Invoke-ExakitBounded' "$ROOT/setup/exakit.ps1" && \
+   grep -q '\$info\.Arguments = ' "$ROOT/setup/lib/exakit-common.ps1" && \
+   ! grep -qE '\$info\.ArgumentList' "$ROOT/setup/lib/exakit-common.ps1"; then
+    check "engine_probe(bounded_both_sides)" "yes" "yes"
+else
+    check "engine_probe(bounded_both_sides)" "yes" "no"
+fi
 # Re-run freshness, both sides: the exakit_helper flag says "installed", not
 # "current", so a re-run over an older install has to compare what is on disk with
 # what this kit would write. bash compares the installed COPY of setup/exakit; the
