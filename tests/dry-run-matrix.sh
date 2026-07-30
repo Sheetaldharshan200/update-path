@@ -422,6 +422,19 @@ if grep -q 'Update-ExakitVersionsCache' "$ROOT/setup/lib/exakit-common.ps1" && \
 else
     check "windows_install(manifest_wiring)" "yes" "no"
 fi
+# The Kit 2 surface: both wrappers, the update target, the catalog rows, and the
+# Windows answer. Whether Kit 2 is ADVERTISED is a separate switch (the kit2 block
+# in versions.json) and is asserted in tests/versions-manifest.sh.
+if grep -q 'upgrade-kit2)  cmd_kit2_script' "$ROOT/setup/exakit" && \
+   grep -q 'rollback-kit2) cmd_kit2_script' "$ROOT/setup/exakit" && \
+   grep -q 'exakit_update_kit2' "$ROOT/setup/lib/common.sh" && \
+   grep -q 'manifest_set kit2.version' "$ROOT/upgrade/upgrade-kit2.sh" && \
+   grep -q 'upgrade-kit2' "$ROOT/setup/lib/catalog.tsv" && \
+   grep -q 'Write-ExakitKit2NotAvailable' "$ROOT/setup/exakit.ps1"; then
+    check "kit2(cli_surface)" "yes" "yes"
+else
+    check "kit2(cli_surface)" "yes" "no"
+fi
 if grep -q 'nano_update_snapshot' "$ROOT/setup/lib/runtime-nano.sh" && \
    grep -q 'nano_restore_previous_container' "$ROOT/setup/lib/runtime-nano.sh" && \
    grep -q 'New-NanoUpdateSnapshot' "$ROOT/setup/lib/nano.ps1" && \

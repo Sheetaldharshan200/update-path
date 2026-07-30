@@ -893,13 +893,15 @@ exakit_versions_baked_doc() {
     printf '%s\n' "$_vb_root/versions.json"
 }
 
-# exakit_kit_version_at <kit-root> — kit.version as stated by a specific kit
-# tree. The installers use it on the tree they are installing FROM, which is not
+# exakit_kit_version_at <kit-root> [dot.path] — a version a specific kit tree
+# states about itself: kit.version by default, kit2.version for the Kit 2 asset
+# bundle. The installers use it on the tree they are installing FROM, which is not
 # necessarily the copy under the kit home (that one may be an older install).
 exakit_kit_version_at() {
     _kva_doc="$1/versions.json"
+    _kva_path="${2:-kit.version}"
     [ -f "$_kva_doc" ] || return 1
-    _kva_version="$(exakit_versions_value kit.version "$_kva_doc" 2>/dev/null || true)"
+    _kva_version="$(exakit_versions_value "$_kva_path" "$_kva_doc" 2>/dev/null || true)"
     case "$_kva_version" in
         ''|*[!A-Za-z0-9._+-]*) return 1 ;;
     esac
@@ -912,6 +914,14 @@ exakit_kit_version_at() {
 exakit_kit_bundled_version() {
     _kbv_root="$(exakit_repo_root 2>/dev/null)" || return 1
     exakit_kit_version_at "$_kbv_root"
+}
+
+# exakit_kit2_bundled_version — the version of the Kit 2 asset bundle this kit
+# ships. Kit 2 assets travel INSIDE the kit tarball, so the bundle's version is a
+# property of the kit copy on disk, not of anything installed separately.
+exakit_kit2_bundled_version() {
+    _k2b_root="$(exakit_repo_root 2>/dev/null)" || return 1
+    exakit_kit_version_at "$_k2b_root" kit2.version
 }
 
 exakit_versions_user_agent() {
@@ -1493,6 +1503,7 @@ exakit_component_current() {
         exapump)  manifest_get components.exapump.version 2>/dev/null ;;
         mcp)      manifest_get components.mcp_server.version 2>/dev/null ;;
         pyexasol) manifest_get components.pyexasol.version 2>/dev/null ;;
+        kit2)     manifest_get kit2.version 2>/dev/null ;;
         nano)
             _image="$(manifest_get runtime.image 2>/dev/null || true)"
             printf '%s\n' "${_image##*:}"
@@ -1507,9 +1518,18 @@ exakit_component_current() {
 
 exakit_update_targets() {
     case "${1:-all}" in
-        all) printf '%s\n' exakit runtime exapump mcp pyexasol ;;
+        all)
+            printf '%s\n' exakit runtime exapump mcp pyexasol
+            # Kit 2 is a target only once it is installed: at Kit 1 the update
+            # check offers it as a discovery line instead, and a routine update
+            # must never add a kit level on its own. It comes last because its
+            # assets arrive with the kit copy that `exakit` updates above.
+            if [ "$(manifest_get kit_level 2>/dev/null || true)" = "2" ]; then
+                printf '%s\n' kit2
+            fi
+            ;;
         runtime|database|db) printf '%s\n' runtime ;;
-        nano|personal|exakit|exapump|mcp|pyexasol) printf '%s\n' "$1" ;;
+        nano|personal|exakit|exapump|mcp|pyexasol|kit2) printf '%s\n' "$1" ;;
         *) return 1 ;;
     esac
 }
@@ -1639,6 +1659,49 @@ _exakit_severity_cell() {
     printf '%s' "$_sc_cell"
 }
 
+# exakit_print_kit2_discovery_line — one dim line offering the Kit 2 add-on, and
+# ONLY when the maintainers have deliberately enabled that path by adding a kit2
+# block to versions.json. Its absence is the launch switch: no block, no line,
+# anywhere. It is never part of the after-command notice either — discovering an
+# add-on is not an update anyone is behind on.
+exakit_print_kit2_discovery_line() {
+    [ "$(manifest_get kit_level 2>/dev/null || true)" = "1" ] || return 0
+    _k2d_version="$(exakit_component_available kit2 2>/dev/null || true)"
+    [ -n "$_k2d_version" ] || return 0
+    _k2d_min="$(exakit_component_min_kit kit2 2>/dev/null || true)"
+    if [ -n "$_k2d_min" ] && ! exakit_min_kit_satisfied "$_k2d_min"; then
+        return 0
+    fi
+    _k2d_note="$(exakit_component_note kit2 2>/dev/null || true)"
+    printf '    %sKit 2 (%s) is available — add it with: exakit upgrade-kit2%s\n' \
+        "${UI_DIM:-}" "${_k2d_note:-Trusted AI Workflow add-on}" "${UI_RESET:-}"
+    return 0
+}
+
+# exakit_update_kit2 — re-stage the Kit 2 assets from the kit copy. Kit 2 assets
+# travel inside the kit tarball, so "updating Kit 2" is: make sure the kit copy is
+# the one carrying them, then re-run the additive upgrade, which is idempotent and
+# touches nothing but kit2.* state.
+exakit_update_kit2() {
+    [ "$(manifest_get kit_level 2>/dev/null || true)" = "2" ] || \
+        die "Kit 2 is not installed. Add it with: exakit upgrade-kit2"
+    _k2u_root="$(exakit_repo_root)" || die "Could not locate the kit's upgrade scripts."
+    _k2u_script="$_k2u_root/upgrade/upgrade-kit2.sh"
+    [ -f "$_k2u_script" ] || die "upgrade-kit2.sh is not part of this kit build."
+    _k2u_bundled="$(exakit_kit2_bundled_version 2>/dev/null || true)"
+    _k2u_advertised="$(exakit_component_available kit2 2>/dev/null || true)"
+    if [ -n "$_k2u_advertised" ] && [ -n "$_k2u_bundled" ] && \
+       exakit_version_newer "$_k2u_advertised" "$_k2u_bundled"; then
+        # The newer bundle is not on this machine yet, and no amount of re-staging
+        # will conjure it: the assets arrive with the kit itself.
+        warn "Kit 2 $_k2u_advertised is advertised, but this kit copy carries $_k2u_bundled."
+        info "Kit 2 assets travel with the kit — update it first:  exakit update exakit"
+        return 0
+    fi
+    info "Re-staging the Kit 2 assets from $(ui_tilde "$_k2u_root")"
+    bash "$_k2u_script" || die "The Kit 2 upgrade script reported an error; nothing else was changed."
+}
+
 # exakit_print_update_check [target] — THE comparison table. It is the only
 # command that renders it: `exakit version` prints a two-line hint instead, and
 # `exakit update` prints just the work it is about to do.
@@ -1708,6 +1771,7 @@ exakit_print_update_check() {
     done
     printf '\n'
     exakit_print_versions_source_line
+    exakit_print_kit2_discovery_line
     if [ "$_updates" -gt 1 ]; then
         info "Apply the quick ones in one go with: exakit update"
     fi
@@ -1825,6 +1889,7 @@ exakit_update_component() {
             command -v pyexasol_update >/dev/null 2>&1 || die "pyexasol module is not available in this version."
             pyexasol_update
             ;;
+        kit2) exakit_update_kit2 ;;
         runtime)
             case "$(exakit_installation_runtime_type 2>/dev/null)" in
                 nano)

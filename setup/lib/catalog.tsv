@@ -5,6 +5,9 @@ exakit	version		Show kit source, install date, and component versions.
 exakit	update-check	[all|runtime|exakit|exapump|mcp|pyexasol|nano|personal]	Compare installed versions against the versions the maintainers advertise, and print the exact update command for each.
 exakit	update	[all|runtime|exakit|exapump|mcp|pyexasol|nano|personal]	Apply the advertised versions of the quick components (kit, exapump, MCP server, pyexasol); a runtime change is announced but left for you to run explicitly. Database data is preserved.
 exakit	update personal	[--plan|--backup|--apply]	Handle Exasol Personal major-version updates with an explicit non-destructive plan, deployment backup, and launcher apply step.
+exakit	upgrade-kit2		Add the Kit 2 trust assets (Trusted AI Workflow add-on) on top of this install: semantic model, audit/run log, saved workflow. Nothing is reinstalled and no data is touched; safe to re-run.
+exakit	rollback-kit2		Remove exactly what upgrade-kit2 added and return to Kit 1. The database, exapump, MCP server and sample data stay untouched.
+exakit	update kit2		Re-stage the Kit 2 assets from the current kit copy (valid once Kit 2 is installed). A newer asset bundle arrives with the kit itself.
 exakit	info		Print the connection details panel (DSN, users, schema).
 exakit	guide		Friendly walkthrough: connect AI clients (MCP), SQL clients (DBeaver recommended), and Python (pyexasol).
 exakit	start		Start the local Exasol database container.

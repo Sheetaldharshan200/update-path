@@ -26,6 +26,8 @@
 #   mcp-restore [snapshot] restore the latest (or a chosen) MCP snapshot
 #   skills-install        install the kit's AI skills for CLI agents
 #                         (~\.claude\skills, ~\.agents\skills)
+#   upgrade-kit2          add the Kit 2 trust assets (bash paths only for now)
+#   rollback-kit2         remove what upgrade-kit2 added (bash paths only for now)
 #   uninstall [-Yes] [-DryRun]
 #                         remove EVERYTHING the kit installed: database + all
 #                         data, MCP client configs, skills, exapump, the kit
@@ -300,7 +302,7 @@ function Get-ExakitUpdateTargets {
     switch ($Target) {
         "all" { return @("exakit", "runtime", "exapump", "mcp", "pyexasol") }
         { $_ -in @("runtime", "database", "db") } { return @("runtime") }
-        { $_ -in @("nano", "personal", "exakit", "exapump", "mcp", "pyexasol") } { return @($Target) }
+        { $_ -in @("nano", "personal", "exakit", "exapump", "mcp", "pyexasol", "kit2") } { return @($Target) }
         default { Fail "Unknown update target: $Target" }
     }
 }
@@ -787,6 +789,7 @@ function Invoke-CmdUpdate {
             "pyexasol" {
                 if ($available) { Update-Pyexasol | Out-Null }
             }
+            "kit2" { Write-ExakitKit2NotAvailable -Command "exakit update kit2" }
         }
         $acted += 1
     }
@@ -796,6 +799,17 @@ function Invoke-CmdUpdate {
     if ($deferred -gt 0) {
         Info "See everything, including the deferred runtime change: exakit update-check"
     }
+}
+
+# Kit 2 is delivered by the bash upgrade scripts (upgrade/upgrade-kit2.sh), which
+# apply SQL through exapump and stage the semantic assets. That pipeline has no
+# Windows counterpart yet, so the commands exist here only to answer clearly
+# rather than to fail with "unknown command" - the same treatment the Windows path
+# gave kit self-update until it was implemented.
+function Write-ExakitKit2NotAvailable {
+    param([string]$Command)
+    Warn2 "Kit 2 is not available on the Windows path yet ($Command)."
+    Info "The Kit 2 add-on ships with the macOS, Linux and WSL paths; it is planned for Windows."
 }
 
 function Invoke-CmdLogs {
@@ -971,6 +985,8 @@ try {
         "mcp-remove"   { Invoke-CmdMcpOperation -Operation "uninstall" -OpArgs $RestArgs }
         "mcp-restore"  { Invoke-CmdMcpRestore -SnapshotId ($RestArgs | Select-Object -First 1) }
         "skills-install" { Invoke-CmdSkillsInstall }
+        "upgrade-kit2"  { Write-ExakitKit2NotAvailable -Command "exakit upgrade-kit2" }
+        "rollback-kit2" { Write-ExakitKit2NotAvailable -Command "exakit rollback-kit2" }
         "uninstall"    { Invoke-CmdUninstall -AssumeYes:($RestArgs -contains "-Yes" -or $RestArgs -contains "--yes" -or $RestArgs -contains "-y") -DryRun:($RestArgs -contains "-DryRun" -or $RestArgs -contains "--dry-run" -or $RestArgs -contains "-n") }
         "logs"         { Invoke-CmdLogs }
         "catalog"      { Invoke-CmdCatalog -Search ($RestArgs | Select-Object -First 1) }

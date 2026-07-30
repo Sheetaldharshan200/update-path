@@ -652,6 +652,125 @@ allowed="$( EXAKIT_HOME="$UC"
     exakit_confirm_downgrade exapump </dev/null >/dev/null 2>&1; printf 'rc=%s' "$?" )"
 check "EXAKIT_ALLOW_DOWNGRADE=1 lets it through" "rc=0" "$allowed"
 
+echo "Kit 2 awareness (the block's absence is the launch switch):"
+# The shipped versions.json has no kit2 block, and nothing may advertise Kit 2
+# until a reviewed pull request adds one. This is the gate, asserted directly.
+check "the shipped manifest advertises no Kit 2" "absent" \
+    "$(exakit_versions_value kit2.version "$REAL" 2>/dev/null || printf absent)"
+K2="$WORK/kit2-home"
+mkdir -p "$K2/kit/mcp" "$K2/cache"
+cat > "$K2/manifest.json" <<'EOF'
+{
+  "manifest_version": 1,
+  "kit_level": 1,
+  "kit": {
+    "version": "0.2.0"
+  },
+  "runtime": {
+    "type": "nano",
+    "image": "docker.io/exasol/nano:2026.2.0-nano.2"
+  },
+  "components": {},
+  "steps_completed": []
+}
+EOF
+cp "$REAL" "$K2/kit/versions.json"
+
+# kit2_table <versions-doc> [statements] — the table as a Kit 1 (or stubbed Kit 2)
+# machine would render it against the given advertised document.
+kit2_table() (
+    EXAKIT_HOME="$K2"
+    EXAKIT_MANIFEST="$K2/manifest.json"
+    EXAKIT_VERSIONS_CACHE="$K2/cache/versions.json"
+    EXAKIT_VERSIONS_URL="http://offline.invalid/versions.json"
+    _EXAKIT_VERSIONS_DOC=""; _EXAKIT_VERSIONS_SOURCE=""
+    cp "$1" "$K2/kit/versions.json"
+    eval "${2:-}"
+    exakit_print_update_check all 2>&1
+)
+
+no_kit2="$(kit2_table "$REAL")"
+lacks "no kit2 block -> not a word about Kit 2" "Kit 2" "$no_kit2"
+lacks "and no kit2 row" "kit2 " "$no_kit2"
+
+# Enabling the path is exactly one edit: add the block.
+python3 - "$REAL" "$WORK/with-kit2.json" <<'PY'
+import json, sys, collections
+with open(sys.argv[1]) as handle:
+    doc = json.load(handle, object_pairs_hook=collections.OrderedDict)
+doc["kit2"] = collections.OrderedDict(
+    [("version", "0.1.0"), ("min_kit_version", "0.2.0"), ("severity", "normal"),
+     ("note", "Trusted AI Workflow add-on")])
+with open(sys.argv[2], "w") as handle:
+    json.dump(doc, handle, indent=2)
+    handle.write("\n")
+PY
+with_kit2="$(kit2_table "$WORK/with-kit2.json")"
+has "the block turns the discovery line on" "Kit 2 (Trusted AI Workflow add-on) is available" "$with_kit2"
+has "and names the command" "exakit upgrade-kit2" "$with_kit2"
+lacks "a Kit 1 machine gets no kit2 row" "kit2       " "$with_kit2"
+
+# A kit too old for the add-on must not be told to add it.
+python3 - "$WORK/with-kit2.json" "$WORK/with-kit2-future.json" <<'PY'
+import json, sys, collections
+with open(sys.argv[1]) as handle:
+    doc = json.load(handle, object_pairs_hook=collections.OrderedDict)
+doc["kit2"]["min_kit_version"] = "9.9.9"
+with open(sys.argv[2], "w") as handle:
+    json.dump(doc, handle, indent=2)
+    handle.write("\n")
+PY
+future_kit2="$(kit2_table "$WORK/with-kit2-future.json")"
+lacks "an unsatisfied min_kit_version keeps it hidden" "Kit 2 (" "$future_kit2"
+
+# Once Kit 2 is installed the discovery line gives way to a real row.
+level2="$(kit2_table "$WORK/with-kit2.json" \
+    'manifest_get() { case "$1" in kit_level) printf "2\n" ;;
+                                   kit2.version) printf "0.1.0\n" ;;
+                                   runtime.type) printf "nano\n" ;;
+                                   kit.version) printf "0.2.0\n" ;;
+                                   *) return 1 ;; esac; }')"
+has "Kit 2 installed -> its own row" "kit2       0.1.0" "$level2"
+lacks "and no discovery line any more" "is available — add it with" "$level2"
+level2_behind="$(kit2_table "$WORK/with-kit2.json" \
+    'manifest_get() { case "$1" in kit_level) printf "2\n" ;;
+                                   kit2.version) printf "0.0.9\n" ;;
+                                   runtime.type) printf "nano\n" ;;
+                                   kit.version) printf "0.2.0\n" ;;
+                                   *) return 1 ;; esac; }')"
+has "an older bundle offers the update" "exakit update kit2" "$level2_behind"
+
+# `exakit update kit2` is only meaningful once Kit 2 is installed, and it never
+# invents assets the kit copy does not carry.
+kit2_update_at_level1="$( EXAKIT_HOME="$K2"
+    EXAKIT_MANIFEST="$K2/manifest.json"
+    ( exakit_update_kit2 2>&1 ) )"
+has "updating Kit 2 at Kit 1 explains itself" "Kit 2 is not installed" "$kit2_update_at_level1"
+kit2_update_behind="$( EXAKIT_HOME="$K2"
+    EXAKIT_MANIFEST="$K2/manifest.json"
+    EXAKIT_VERSIONS_CACHE="$K2/cache/versions.json"
+    EXAKIT_VERSIONS_URL="http://offline.invalid/versions.json"
+    _EXAKIT_VERSIONS_DOC=""; _EXAKIT_VERSIONS_SOURCE=""
+    cp "$WORK/with-kit2.json" "$K2/kit/versions.json"
+    mkdir -p "$K2/kit/upgrade"
+    printf '#!/usr/bin/env bash\necho STAGED\n' > "$K2/kit/upgrade/upgrade-kit2.sh"
+    manifest_get() { [ "$1" = kit_level ] && printf '2\n' && return 0; return 1; }
+    # This kit copy carries an older bundle than the manifest advertises.
+    exakit_kit2_bundled_version() { printf '0.0.9\n'; }
+    exakit_update_kit2 2>&1 )"
+has "a kit copy behind the advertised bundle says so" "update it first" "$kit2_update_behind"
+lacks "and stages nothing" "STAGED" "$kit2_update_behind"
+kit2_update_current="$( EXAKIT_HOME="$K2"
+    EXAKIT_MANIFEST="$K2/manifest.json"
+    EXAKIT_VERSIONS_CACHE="$K2/cache/versions.json"
+    EXAKIT_VERSIONS_URL="http://offline.invalid/versions.json"
+    _EXAKIT_VERSIONS_DOC=""; _EXAKIT_VERSIONS_SOURCE=""
+    manifest_get() { [ "$1" = kit_level ] && printf '2\n' && return 0; return 1; }
+    exakit_kit2_bundled_version() { printf '0.1.0\n'; }
+    exakit_update_kit2 2>&1 )"
+has "a current kit copy re-stages the assets" "STAGED" "$kit2_update_current"
+cp "$REAL" "$K2/kit/versions.json"
+
 echo "kit self-update (stubbed download, no network):"
 # A real tarball of a fake kit: the download is stubbed, but everything after it —
 # unpacking, the required-file gate, the staged-version gate, the backup/swap and

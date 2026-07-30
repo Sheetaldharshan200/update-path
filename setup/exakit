@@ -26,6 +26,10 @@
 #   mcp-restore         restore the latest (or a chosen) MCP snapshot
 #   skills-install      install the kit's AI skills for CLI agents
 #                       (~/.claude/skills, ~/.agents/skills)
+#   upgrade-kit2        add the Kit 2 trust assets (Trusted AI Workflow add-on)
+#                       on top of this install; nothing is reinstalled
+#   rollback-kit2       remove exactly what upgrade-kit2 added; the database and
+#                       every Kit 1 component stay untouched
 #   uninstall [--yes] [--dry-run]
 #                       remove EVERYTHING the kit installed: database + all
 #                       data, MCP client configs, skills, exapump, the kit home
@@ -194,6 +198,15 @@ cmd_update_check() {
 cmd_update() {
     _require_install
     exakit_update "$@"
+}
+
+# cmd_kit2_script <script> — run one of the kit's own upgrade scripts from the
+# installed kit copy, so nobody has to know or type its path.
+cmd_kit2_script() {
+    _k2_root="$(exakit_repo_root)" || die "Could not locate the kit's upgrade/ scripts."
+    _k2_script="$_k2_root/upgrade/$1"
+    [ -f "$_k2_script" ] || die "$1 is not part of this kit build."
+    bash "$_k2_script"
 }
 
 cmd_logs() {
@@ -380,6 +393,8 @@ case "${1:-help}" in
     mcp-remove) shift; cmd_mcp_remove "$@" ;;
     mcp-restore) shift; cmd_mcp_restore "$@" ;;
     skills-install) cmd_skills_install ;;
+    upgrade-kit2)  cmd_kit2_script upgrade-kit2.sh ;;
+    rollback-kit2) cmd_kit2_script rollback-kit2.sh ;;
     uninstall) shift; cmd_uninstall "$@" ;;
     logs)     cmd_logs ;;
     catalog)  shift; cmd_catalog "${1:-}" ;;
