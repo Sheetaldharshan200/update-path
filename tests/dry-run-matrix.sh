@@ -314,6 +314,15 @@ exapump_cli
 check "exapump_cli(prefers-managed)" "$_bin_test_dir/kit-bin/exapump" "$managed_exapump"
 rm -rf "$_bin_test_dir"
 
+# mcp-doctor is what people run when an AI client looks wrong, so it names the one
+# command that fixes it. Only doctor: status/validate/repair are not that question.
+if grep -q 'doctor) info "Connect or re-connect AI clients any time with:  exakit mcp-setup"' "$ROOT/setup/lib/common.sh" && \
+   grep -q 'Connect or re-connect AI clients any time with:  exakit mcp-setup' "$ROOT/setup/lib/mcp.ps1"; then
+    check "mcp_doctor(names_the_remedy)" "yes" "yes"
+else
+    check "mcp_doctor(names_the_remedy)" "yes" "no"
+fi
+
 echo "self-update staging guard:"
 if grep -q 'exakit-kit-stage' "$ROOT/setup/lib/common.sh" && \
    grep -q 'Downloaded starter kit is incomplete' "$ROOT/setup/lib/common.sh" && \

@@ -3471,6 +3471,13 @@ exakit_mcp_operation() {
             ;;
     esac
 
+    # A diagnosis is only useful next to its remedy. Doctor is the command people
+    # run when something looks wrong with an AI client, and the answer is almost
+    # always the same one — so name it rather than making them go and find it.
+    case "$_operation" in
+        doctor) info "Connect or re-connect AI clients any time with:  exakit mcp-setup" ;;
+    esac
+
     return "$_operation_status"
 }
 

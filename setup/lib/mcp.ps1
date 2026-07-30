@@ -932,6 +932,12 @@ function Invoke-McpOperation {
     if ($Operation -in @("doctor", "validate")) {
         if (-not (Confirm-McpReadonlyPosture)) { $ok = $false }
     }
+    # A diagnosis is only useful next to its remedy. Doctor is the command people run
+    # when something looks wrong with an AI client, and the answer is almost always
+    # the same one - so name it rather than making them go and find it.
+    if ($Operation -eq "doctor") {
+        Info "Connect or re-connect AI clients any time with:  exakit mcp-setup"
+    }
     return $ok
 }
 
