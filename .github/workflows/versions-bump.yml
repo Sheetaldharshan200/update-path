@@ -53,6 +53,7 @@ jobs:
           import hashlib
           import json
           import os
+          import pathlib
           import re
           import sys
           import time
@@ -257,6 +258,63 @@ jobs:
                           exapump["version"] = winner
                           exapump["sha256"] = digests
 
+          # --- the constants that must move with the manifest -------------------
+          # A version lives in more than one place. mcp/runtime/exakit.py's
+          # DEFAULT_MCP_VERSION is asserted equal to components.mcp.version by the
+          # validate job, so a manifest-only bump of mcp would fail its own CI. The
+          # *_FALLBACK constants are the last tier of resolution -- what a machine
+          # with no network, no cache and no kit copy installs -- and they are in
+          # lockstep with the manifest today. Leaving them behind would quietly
+          # make a fully offline install a different install.
+          COUPLED = {
+              "personal": [
+                  ("setup/lib/common.sh", "bash", "EXAKIT_PERSONAL_VERSION_FALLBACK"),
+              ],
+              "nano": [
+                  ("setup/lib/common.sh", "bash", "EXAKIT_NANO_TAG_FALLBACK"),
+                  ("setup/lib/exakit-common.ps1", "pwsh", "NanoTagFallback"),
+              ],
+              "exapump": [
+                  ("setup/lib/common.sh", "bash", "EXAKIT_EXAPUMP_VERSION_FALLBACK"),
+                  ("setup/lib/exakit-common.ps1", "pwsh", "ExapumpVersionFallback"),
+              ],
+              "mcp": [
+                  ("setup/lib/common.sh", "bash", "EXAKIT_MCP_VERSION_FALLBACK"),
+                  ("setup/lib/exakit-common.ps1", "pwsh", "McpVersionFallback"),
+                  ("mcp/runtime/exakit.py", "python", "DEFAULT_MCP_VERSION"),
+              ],
+              "pyexasol": [
+                  ("setup/lib/common.sh", "bash", "EXAKIT_PYEXASOL_VERSION_FALLBACK"),
+                  ("setup/lib/exakit-common.ps1", "pwsh", "PyexasolVersionFallback"),
+              ],
+          }
+          touched = set()
+
+          def retune(path, dialect, name, version):
+              """Point one constant at version. Loud on anything unexpected: a
+              renamed constant must stop the run, not produce a half-done PR."""
+              if dialect == "bash":
+                  pattern = re.compile(r'(%s="\$\{%s:-)([^}"]*)(\}")' % (name, name))
+              elif dialect == "pwsh":
+                  pattern = re.compile(
+                      r'(\$script:%s = if \(\$env:[A-Z_]+\) \{ \$env:[A-Z_]+ \} else \{ ")([^"]*)(" \})'
+                      % name)
+              else:
+                  pattern = re.compile(r'(^%s = ")([^"]*)(")' % name, re.MULTILINE)
+              text = pathlib.Path(path).read_text()
+              found = pattern.findall(text)
+              if len(found) != 1:
+                  print("expected exactly one %s in %s, found %d"
+                        % (name, path, len(found)), file=sys.stderr)
+                  raise SystemExit(1)
+              pathlib.Path(path).write_text(
+                  pattern.sub(lambda m: m.group(1) + version + m.group(3), text, count=1))
+              touched.add(path)
+
+          for key, (_, new_version) in sorted(bumped.items()):
+              for path, dialect, name in COUPLED.get(key, []):
+                  retune(path, dialect, name, new_version)
+
           # --- write it back, canonically --------------------------------------
           summary = []
           if bumped:
@@ -290,6 +348,13 @@ jobs:
                   summary.append("")
                   summary.append("The five exapump `sha256` digests were recomputed from the "
                                  "downloaded release assets.")
+              if touched:
+                  summary.append("")
+                  summary.append("Constants moved with the manifest, so a fully offline install "
+                                 "and the CI cross-check stay in step:")
+                  summary.append("")
+                  for path in sorted(touched):
+                      summary.append("- `%s`" % path)
           else:
               summary.append("Everything advertised is already the newest stable release.")
 
@@ -336,9 +401,12 @@ jobs:
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git switch -c "$BRANCH"
-          git add versions.json
-          # The summary is a build artifact, not part of the change.
-          git commit -m "$TITLE" -m "$(cat bump-summary.md)" -- versions.json
+          # Everything the bump touched, never the summary (a build artifact).
+          git add versions.json setup/lib/common.sh setup/lib/exakit-common.ps1 \
+                  mcp/runtime/exakit.py
+          git commit -m "$TITLE" -m "$(cat bump-summary.md)" \
+              -- versions.json setup/lib/common.sh setup/lib/exakit-common.ps1 \
+                 mcp/runtime/exakit.py
           # One reusable branch, force-pushed: a later run replaces the proposal
           # instead of leaving a trail of stale pull requests behind it.
           git push --force origin "$BRANCH"

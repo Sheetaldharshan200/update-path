@@ -51,11 +51,37 @@ mkdir -p "$EXAKIT_HOME" "$EXAKIT_BIN_DIR"
 
 REAL="$ROOT/versions.json"
 
+# shipped <dotted.path> - a value straight out of the shipped document, read with
+# plain json.load rather than either of the kit's readers.
+#
+# Nothing here may hardcode what versions.json currently says. A version bump is
+# meant to be a one-file pull request, and every literal copied out of that file
+# turns it into a two-file one -- which is exactly what happened: the first
+# automated bump PR failed 15 checks that were only asserting the old numbers
+# back at themselves. What these tests actually owe you is that the two readers
+# agree with each other and with the document, whatever it holds today.
+shipped() {
+    python3 - "$REAL" "$1" <<'SHIPPED_PY'
+import json, sys
+node = json.load(open(sys.argv[1]))
+for part in sys.argv[2].split("."):
+    node = node[part]
+print(node)
+SHIPPED_PY
+}
+
 # --- fixtures ----------------------------------------------------------------
 # Variants are derived from the shipped document so they keep its canonical
 # shape; only the property under test differs.
 sed 's/"schema_version": 1/"schema_version": 2/' "$REAL" > "$FIX/schema2.json"
-sed 's/"version": "0.11.2"/"version": "0.11.2 rm -rf \/"/' "$REAL" > "$FIX/bad-charset.json"
+python3 - "$REAL" "$FIX/bad-charset.json" <<'CHARSET_PY'
+import json, sys
+doc = json.load(open(sys.argv[1]))
+doc["components"]["exapump"]["version"] += " rm -rf /"
+with open(sys.argv[2], "w") as handle:
+    json.dump(doc, handle, indent=2)
+    handle.write("\n")
+CHARSET_PY
 sed 's/"macos-aarch64": "[0-9a-f]*"/"macos-aarch64": "nothexnothexnothex"/' "$REAL" > "$FIX/bad-digest.json"
 printf 'this is not json\n' > "$FIX/corrupt.json"
 printf '[{"schema_version": 1}]\n' > "$FIX/array.json"
@@ -138,20 +164,13 @@ schema_ahead="$( exakit_versions_validate "$FIX/schema2.json" >/dev/null 2>&1
 check "newer schema is reported as ahead" "yes" "$schema_ahead"
 
 echo "reader (Python and the awk fallback must agree):"
-both_value "kit.version" "0.2.0" kit.version "$REAL"
-both_value "components.personal.version" "2.0.0-rc4" components.personal.version "$REAL"
-both_value "components.nano.version" "2026.2.0-nano.2" components.nano.version "$REAL"
-both_value "components.nano.image" "exasol/nano" components.nano.image "$REAL"
-both_value "components.exapump.version" "0.11.2" components.exapump.version "$REAL"
-both_value "components.mcp.version" "1.10.1" components.mcp.version "$REAL"
-both_value "components.mcp.package" "exasol-mcp-server" components.mcp.package "$REAL"
-both_value "components.pyexasol.version" "2.2.2" components.pyexasol.version "$REAL"
-both_value "exapump digest (macos-aarch64)" \
-    "e1438c69f26cdcca69ad1b7211aa9495524c53ff1badebee91d5a631c503616b" \
-    components.exapump.sha256.macos-aarch64 "$REAL"
-both_value "exapump digest (windows-x86_64)" \
-    "8a2e8199a94f1b21782e4c68179948bfa43217c82c9b9b2a25eaec4532305237" \
-    components.exapump.sha256.windows-x86_64 "$REAL"
+for _path in kit.version components.personal.version components.nano.version \
+             components.nano.image components.exapump.version components.mcp.version \
+             components.mcp.package components.pyexasol.version \
+             components.exapump.sha256.macos-aarch64 \
+             components.exapump.sha256.windows-x86_64; do
+    both_value "$_path" "$(shipped "$_path")" "$_path" "$REAL"
+done
 both_value "unknown component" "absent" components.nope.version "$REAL"
 both_value "kit2 absent from the shipped document" "absent" kit2.version "$REAL"
 both_value "kit2.version" "0.1.0" kit2.version "$FIX/kit2.json"
@@ -163,9 +182,10 @@ echo "kit copy (what 'installed' means for the kit itself):"
 mkdir -p "$EXAKIT_HOME/kit/mcp"
 cp "$REAL" "$EXAKIT_HOME/kit/versions.json"
 check "baked document is the kit copy" "$EXAKIT_HOME/kit/versions.json" "$(exakit_versions_baked_doc)"
-check "kit bundled version" "0.2.0" "$(exakit_kit_bundled_version)"
-check "kit bundled version (no python)" "0.2.0" "$(no_python exakit_kit_bundled_version)"
-check "user agent" "exakit-update-check/0.2.0" "$(exakit_versions_user_agent | cut -d' ' -f1)"
+V_KIT="$(shipped kit.version)"
+check "kit bundled version" "$V_KIT" "$(exakit_kit_bundled_version)"
+check "kit bundled version (no python)" "$V_KIT" "$(no_python exakit_kit_bundled_version)"
+check "user agent" "exakit-update-check/$V_KIT" "$(exakit_versions_user_agent | cut -d' ' -f1)"
 printf 'garbage\n' > "$EXAKIT_HOME/kit/versions.json"
 check "unreadable kit copy is not a version" "absent" \
     "$(exakit_kit_bundled_version 2>/dev/null || printf absent)"
@@ -174,14 +194,25 @@ cp "$REAL" "$EXAKIT_HOME/kit/versions.json"
 echo "resolution chain (a command must never fail over a version lookup):"
 EXAKIT_VERSIONS_CACHE="$EXAKIT_HOME/cache/versions.json"
 check "no cache -> baked kit copy" "baked" "$( exakit_versions_source )"
-check "baked value is readable" "0.11.2" "$( exakit_versions_value components.exapump.version )"
+V_BAKED_EXAPUMP="$(shipped components.exapump.version)"
+check "baked value is readable" "$V_BAKED_EXAPUMP" "$( exakit_versions_value components.exapump.version )"
 mkdir -p "$EXAKIT_HOME/cache"
-sed 's/"version": "0.11.2"/"version": "0.12.0"/' "$REAL" > "$EXAKIT_VERSIONS_CACHE"
+# A sentinel, not a plausible version: it has to be impossible for the cached
+# answer to coincide with the baked one, or this proves nothing.
+V_CACHED_EXAPUMP="0.0.0-from-the-cache"
+python3 - "$REAL" "$EXAKIT_VERSIONS_CACHE" "$V_CACHED_EXAPUMP" <<'CACHE_PY'
+import json, sys
+doc = json.load(open(sys.argv[1]))
+doc["components"]["exapump"]["version"] = sys.argv[3]
+with open(sys.argv[2], "w") as handle:
+    json.dump(doc, handle, indent=2)
+    handle.write("\n")
+CACHE_PY
 check "cache wins over the kit copy" "cache" "$( exakit_versions_source )"
-check "cached value is used" "0.12.0" "$( exakit_versions_value components.exapump.version )"
+check "cached value is used" "$V_CACHED_EXAPUMP" "$( exakit_versions_value components.exapump.version )"
 printf 'corrupted by hand\n' > "$EXAKIT_VERSIONS_CACHE"
 check "unreadable cache falls back to the kit copy" "baked" "$( exakit_versions_source )"
-check "kit copy answers again" "0.11.2" "$( exakit_versions_value components.exapump.version )"
+check "kit copy answers again" "$V_BAKED_EXAPUMP" "$( exakit_versions_value components.exapump.version )"
 rm -f "$EXAKIT_VERSIONS_CACHE"
 no_doc="$( exakit_repo_root() { return 1; }
            printf '%s ' "$(exakit_versions_source)"
@@ -1340,8 +1371,17 @@ if command -v pwsh >/dev/null 2>&1; then
     PS_HOME="$WORK/ps-home"
     mkdir -p "$PS_HOME/kit/mcp" "$PS_HOME/cache"
     cp "$REAL" "$PS_HOME/kit/versions.json"
-    # A cached copy that differs from the kit copy proves which one is read.
-    sed 's/"version": "0.11.2"/"version": "0.12.0"/' "$REAL" > "$PS_HOME/cache/versions.json"
+    # A cached copy that differs from the kit copy proves which one is read. The
+    # sentinel cannot coincide with whatever the document advertises today.
+    PS_CACHED_EXAPUMP="0.0.0-from-the-cache"
+    python3 - "$REAL" "$PS_HOME/cache/versions.json" "$PS_CACHED_EXAPUMP" <<'PS_CACHE_PY'
+import json, sys
+doc = json.load(open(sys.argv[1]))
+doc["components"]["exapump"]["version"] = sys.argv[3]
+with open(sys.argv[2], "w") as handle:
+    json.dump(doc, handle, indent=2)
+    handle.write("\n")
+PS_CACHE_PY
     touch "$PS_HOME/cache/versions.json"
     ps_state="$(EXAKIT_HOME="$PS_HOME" EXAKIT_BIN_DIR="$PS_HOME/bin" \
         EXAKIT_VERSIONS_CACHE="$PS_HOME/cache/versions.json" \
@@ -1366,7 +1406,9 @@ if command -v pwsh >/dev/null 2>&1; then
         $out += (Get-ExakitVersionsSource)
         Write-Output ($out -join " ")
     ' | tail -1 | tr -d '\r')"
-    check "powershell(versions_manifest)" "0 2 1 1 0 0.11.2 8a2e8199 0.2.0 2 1 0.12.0 cache" "$ps_state"
+    check "powershell(versions_manifest)" \
+        "0 2 1 1 0 $(shipped components.exapump.version) $(shipped components.exapump.sha256.windows-x86_64 | cut -c1-8) $(shipped kit.version) 2 1 $PS_CACHED_EXAPUMP cache" \
+        "$ps_state"
     ps_http="$(EXAKIT_HOME="$PS_HOME" EXAKIT_BIN_DIR="$PS_HOME/bin" \
         EXAKIT_VERSIONS_CACHE="$PS_HOME/cache/versions.json" \
         EXAKIT_VERSIONS_URL="http://example.invalid/versions.json" \
