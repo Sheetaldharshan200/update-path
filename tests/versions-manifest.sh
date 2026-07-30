@@ -504,8 +504,10 @@ version_out="$( EXAKIT_HOME="$UC" EXAKIT_MANIFEST="$UC/manifest.json" \
     bash "$ROOT/setup/exakit" version 2>&1 )"
 has "version reports the installed kit version" "Kit version:    0.2.0" "$version_out"
 lacks "version prints no comparison table" "Component update check" "$version_out"
-has "version says something is waiting" "New versions are available." "$version_out"
-has "version points at update-check" "See what's new:  exakit update-check" "$version_out"
+# Framed like the connection panel, not three loose lines that read like an error.
+has "version frames the waiting updates" "Updates available" "$version_out"
+has "version points at update-check" "See what's new   exakit update-check" "$version_out"
+has "version points at update" "Apply them       exakit update" "$version_out"
 
 update_out="$( EXAKIT_HOME="$UC"
     EXAKIT_MANIFEST="$UC/manifest.json"
@@ -1349,7 +1351,8 @@ PSEOF
         pwsh -NoProfile -File "$ROOT/setup/exakit.ps1" version 2>&1 | tr -d '\r')"
     has "powershell: version reports the kit version" "Kit version:    0.2.0" "$ps_version"
     lacks "powershell: version prints no table" "Component update check" "$ps_version"
-    has "powershell: version says something is waiting" "New versions are available." "$ps_version"
+    has "powershell: version frames the waiting updates" "Updates available" "$ps_version"
+    has "powershell: version points at update-check" "See what's new   exakit update-check" "$ps_version"
 else
     check "powershell(versions_manifest)" "skipped" "skipped"
     check "powershell(non_https_refused)" "skipped" "skipped"
@@ -1360,7 +1363,7 @@ else
                     "pinned policy uses the fallback" "an override is credited" \
                     "and withholds the maintainer note" \
                     "version reports the kit version" "version prints no table" \
-                    "version says something is waiting" "(self_update)" \
+                    "version frames the waiting updates" "version points at update-check" "(self_update)" \
                     "recommended light bump" "critical heavy bump" \
                     "the heavy line names the cost"; do
         check "powershell: $_skipped" "skipped" "skipped"

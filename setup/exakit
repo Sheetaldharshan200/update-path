@@ -210,10 +210,14 @@ cmd_version() {
     printf 'pyexasol:       %s\n' \
         "$(_version_cell pyexasol "$(manifest_get components.pyexasol.version 2>/dev/null || true)")"
     if exakit_updates_pending; then
+        # The same framed panel the connection details use, rather than three loose
+        # lines that read like an error: this is good news, and it is the only thing
+        # on this screen the reader might want to act on.
         printf '\n'
-        printf 'New versions are available.\n'
-        printf "See what's new:  exakit update-check\n"
-        printf 'Update:          exakit update\n'
+        ui_panel_begin "Updates available"
+        ui_panel_line "See what's new   exakit update-check"
+        ui_panel_line "Apply them       exakit update"
+        ui_panel_end
     fi
 }
 
