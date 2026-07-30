@@ -91,7 +91,7 @@ function Invoke-CmdStatus {
     Write-Host "Steps done: $($steps -join ', ')"
     # pyexasol installs soft: when it is missing, say so here with the one command
     # that fixes it, instead of leaving a silent gap in the install.
-    $pyexasol = Get-ExakitManifestValue "components.pyexasol.version"
+    $pyexasol = Get-ExakitComponentCurrent "pyexasol"
     if ($pyexasol) {
         Write-Host "pyexasol:   $pyexasol"
     } elseif ($null -ne (Get-ExakitManifestValue "components.pyexasol.validated")) {
@@ -284,9 +284,9 @@ function Invoke-CmdVersion {
     $runtimeVersion = Get-ExakitManifestValue "runtime.version"
     if (-not $runtimeVersion) { $runtimeVersion = Get-ExakitManifestValue "runtime.image" }
     Write-Host "Runtime:        $(Get-RuntimeType) $runtimeVersion"
-    Write-Host "exapump:        $(Get-ExakitManifestValue 'components.exapump.version')"
+    Write-Host "exapump:        $(Get-ExakitComponentCurrent 'exapump')"
     Write-Host "MCP server:     $(Get-ExakitManifestValue 'components.mcp_server.package') $(Get-ExakitManifestValue 'components.mcp_server.version')"
-    $pyexasol = Get-ExakitManifestValue "components.pyexasol.version"
+    $pyexasol = Get-ExakitComponentCurrent "pyexasol"
     if (-not $pyexasol) { $pyexasol = "not installed" }
     Write-Host "pyexasol:       $pyexasol"
     if (Test-ExakitUpdatesPending) {
@@ -333,6 +333,37 @@ function Test-ExakitVersionNewer {
     return ([string]::CompareOrdinal($lk, $ck) -gt 0)
 }
 
+# Get-ExakitProbedVersion - run a command that reports its own version and return
+# just the version. -Raw when the output IS the version (a python one-liner);
+# otherwise the first version-shaped token is taken out of a line like
+# "exapump 0.11.2". Empty on any failure, so the caller can fall back to the record.
+function Get-ExakitProbedVersion {
+    param(
+        [Parameter(Mandatory)][string]$Command,
+        [string[]]$Arguments = @(),
+        [switch]$Raw
+    )
+    $previous = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = "Continue"
+        $out = (& $Command @Arguments 2>$null | Select-Object -First 1)
+        if ($LASTEXITCODE -ne 0 -and -not $out) { return "" }
+        $out = ("" + $out).Trim()
+        if (-not $out) { return "" }
+        if ($Raw) {
+            if ($out -match '^[A-Za-z0-9._+-]+$') { return $out }
+            return ""
+        }
+        $match = [regex]::Match($out, '[0-9]+\.[0-9]+[0-9A-Za-z._+-]*')
+        if ($match.Success) { return $match.Value }
+        return ""
+    } catch {
+        return ""
+    } finally {
+        $ErrorActionPreference = $previous
+    }
+}
+
 function Get-ExakitComponentCurrent {
     param([string]$Component)
     switch ($Component) {
@@ -349,9 +380,36 @@ function Get-ExakitComponentCurrent {
             if ($bundled) { return $bundled }
             return "unknown"
         }
-        "exapump" { return (Get-ExakitManifestValue "components.exapump.version") }
+        "exapump" {
+            # What is on disk wins over what was recorded: someone may have replaced
+            # the binary by hand, and an update check must compare against the thing
+            # that actually runs. Provably absent beats a stale record, so a missing
+            # binary reports nothing and the table offers the reinstall.
+            $bin = Get-ExakitManifestValue "components.exapump.path"
+            if (-not $bin -or -not (Test-Path $bin)) {
+                $found = Get-Command exapump -ErrorAction SilentlyContinue
+                if ($found) { $bin = $found.Source } else { $bin = "" }
+            }
+            if (-not $bin -or -not (Test-Path $bin)) { return "" }
+            $live = Get-ExakitProbedVersion -Command $bin -Arguments @("--version")
+            if ($live) { return $live }
+            return (Get-ExakitManifestValue "components.exapump.version")
+        }
+        # The MCP server runs on demand through uvx; probing it would cost a
+        # resolution (and possibly the network), so the record stands. Per-client
+        # config drift is what `exakit mcp-doctor` is for.
         "mcp" { return (Get-ExakitManifestValue "components.mcp_server.version") }
-        "pyexasol" { return (Get-ExakitManifestValue "components.pyexasol.version") }
+        "pyexasol" {
+            $python = Get-ExakitManifestValue "components.pyexasol.python"
+            if (-not $python -or -not (Test-Path $python)) {
+                $python = Join-Path $script:ExakitHome "pyexasol-venv\Scripts\python.exe"
+            }
+            if (-not (Test-Path $python)) { return "" }
+            $live = Get-ExakitProbedVersion -Command $python `
+                -Arguments @("-c", "import pyexasol; print(pyexasol.__version__)") -Raw
+            if ($live) { return $live }
+            return (Get-ExakitManifestValue "components.pyexasol.version")
+        }
         "nano" {
             $image = Get-ExakitManifestValue "runtime.image"
             if ($image -and $image.Contains(":")) { return ($image -split ":")[-1] }

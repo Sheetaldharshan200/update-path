@@ -376,8 +376,13 @@ echo "update-check table:"
 #   mcp       1.10.1          -> 1.11.0 critical   -> severity + note
 #   pyexasol  not installed   -> 2.2.2             -> repair action
 UC="$WORK/uc-home"
-mkdir -p "$UC/kit/mcp" "$UC/cache"
-cat > "$UC/manifest.json" <<'EOF'
+mkdir -p "$UC/kit/mcp" "$UC/cache" "$UC/bin"
+# Installed versions are read from disk now, so the fixture supplies the disk: a
+# stub that reports 0.13.0 is what makes this an advisory-rollback scenario against
+# an advertised 0.12.0, on any machine, whether or not a real exapump is installed.
+printf '#!/bin/sh\necho "exapump 0.13.0"\n' > "$UC/bin/exapump"
+chmod +x "$UC/bin/exapump"
+cat > "$UC/manifest.json" <<EOF
 {
   "manifest_version": 1,
   "kit_level": 1,
@@ -392,7 +397,8 @@ cat > "$UC/manifest.json" <<'EOF'
   },
   "components": {
     "exapump": {
-      "version": "0.13.0"
+      "version": "0.13.0",
+      "path": "$UC/bin/exapump"
     },
     "mcp_server": {
       "package": "exasol-mcp-server",
@@ -563,6 +569,52 @@ current_only="$( EXAKIT_HOME="$UC"
 has "an up-to-date install says so once" "Everything is already current." "$current_only"
 lacks "without listing every component" "is current (" "$current_only"
 
+echo "installed versions come from disk, not just from the record:"
+# The record says what the kit installed. A user can upgrade pyexasol inside its
+# venv or drop in another exapump build, and an update check that trusted the
+# record would compare against a version nobody is running.
+LIVE="$WORK/live-home"
+mkdir -p "$LIVE/bin" "$LIVE/venv/bin" "$LIVE/kit/mcp" "$LIVE/cache"
+cp "$REAL" "$LIVE/kit/versions.json"
+printf '#!/bin/sh\necho "exapump 0.13.0"\n' > "$LIVE/bin/exapump"
+printf '#!/bin/sh\necho 2.9.9\n' > "$LIVE/venv/bin/python"
+chmod +x "$LIVE/bin/exapump" "$LIVE/venv/bin/python"
+cat > "$LIVE/manifest.json" <<EOF
+{
+  "manifest_version": 1,
+  "kit_level": 1,
+  "kit": { "version": "0.2.0" },
+  "runtime": { "type": "nano", "image": "docker.io/exasol/nano:2026.2.0-nano.2" },
+  "components": {
+    "exapump": { "version": "0.11.2", "path": "$LIVE/bin/exapump" },
+    "mcp_server": { "version": "1.10.1" },
+    "pyexasol": { "version": "2.2.2", "python": "$LIVE/venv/bin/python" }
+  },
+  "steps_completed": []
+}
+EOF
+
+live_read() (
+    EXAKIT_HOME="$LIVE"
+    EXAKIT_MANIFEST="$LIVE/manifest.json"
+    eval "${2:-}"
+    exakit_component_current "$1" 2>/dev/null || printf 'not installed'
+)
+
+check "exapump: the binary on disk wins over the record" "0.13.0" "$(live_read exapump)"
+check "pyexasol: the venv wins over the record" "2.9.9" "$(live_read pyexasol)"
+# A probe that runs but says nothing usable: keep the record rather than claim
+# the component vanished.
+check "a silent probe falls back to the record" "0.11.2" \
+    "$(live_read exapump 'printf "#!/bin/sh\nexit 3\n" > "$LIVE/bin/exapump"; chmod +x "$LIVE/bin/exapump"')"
+# Provably absent is different from unknown: the table should offer the reinstall.
+check "a missing binary reports not installed" "not installed" \
+    "$(live_read exapump 'rm -f "$LIVE/bin/exapump"; PATH="/nonexistent"')"
+check "a missing venv reports not installed" "not installed" \
+    "$(live_read pyexasol 'rm -f "$LIVE/venv/bin/python"')"
+# The MCP server is materialised per launch by uvx, so its record stands.
+check "the MCP server keeps its recorded version" "1.10.1" "$(live_read mcp)"
+
 echo "the table's verdict binds the apply path too:"
 # uc_run <statements> — `exakit update all` against the fixture, with the real
 # component updaters replaced by a marker so the decisions are what is observed.
@@ -654,9 +706,11 @@ check "EXAKIT_ALLOW_DOWNGRADE=1 lets it through" "rc=0" "$allowed"
 
 echo "after-command notice (severity-gated, once a day, stderr only):"
 NT="$WORK/notice-home"
-mkdir -p "$NT/kit/mcp" "$NT/cache"
+mkdir -p "$NT/kit/mcp" "$NT/cache" "$NT/bin"
 cp "$REAL" "$NT/kit/versions.json"
-cat > "$NT/manifest.json" <<'EOF'
+printf '#!/bin/sh\necho "exapump 0.11.2"\n' > "$NT/bin/exapump"
+chmod +x "$NT/bin/exapump"
+cat > "$NT/manifest.json" <<EOF
 {
   "manifest_version": 1,
   "kit_level": 1,
@@ -669,7 +723,8 @@ cat > "$NT/manifest.json" <<'EOF'
   },
   "components": {
     "exapump": {
-      "version": "0.11.2"
+      "version": "0.11.2",
+      "path": "$NT/bin/exapump"
     },
     "mcp_server": {
       "version": "1.10.1"

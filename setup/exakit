@@ -91,7 +91,7 @@ cmd_status() {
     printf 'Steps done: %s\n' "$(manifest_get steps_completed 2>/dev/null)"
     # pyexasol installs soft: when it is missing, say so here with the one command
     # that fixes it, instead of leaving a silent gap in the install.
-    _pyx_version="$(manifest_get components.pyexasol.version 2>/dev/null || true)"
+    _pyx_version="$(exakit_component_current pyexasol 2>/dev/null || true)"
     if [ -n "$_pyx_version" ]; then
         printf 'pyexasol:   %s\n' "$_pyx_version"
     elif manifest_get components.pyexasol.validated >/dev/null 2>&1; then
@@ -178,10 +178,10 @@ cmd_version() {
     printf 'Installed at:   %s\n' "$(exakit_format_local_time "$(manifest_get installed_at 2>/dev/null)")"
     printf 'Runtime:        %s %s\n' "$(manifest_get runtime.type 2>/dev/null)" \
         "$(manifest_get runtime.version 2>/dev/null || manifest_get runtime.image 2>/dev/null)"
-    printf 'exapump:        %s\n' "$(manifest_get components.exapump.version 2>/dev/null)"
+    printf 'exapump:        %s\n' "$(exakit_component_current exapump 2>/dev/null)"
     printf 'MCP server:     %s %s\n' "$(manifest_get components.mcp_server.package 2>/dev/null)" \
         "$(manifest_get components.mcp_server.version 2>/dev/null)"
-    printf 'pyexasol:       %s\n' "$(manifest_get components.pyexasol.version 2>/dev/null || printf 'not installed')"
+    printf 'pyexasol:       %s\n' "$(exakit_component_current pyexasol 2>/dev/null || printf 'not installed')"
     if exakit_updates_pending; then
         printf '\n'
         printf 'New versions are available.\n'

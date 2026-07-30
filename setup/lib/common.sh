@@ -1518,6 +1518,37 @@ exakit_component_is_heavy() {
     esac
 }
 
+# The manifest records what the kit INSTALLED. These two read what is actually on
+# disk, because a user can upgrade pyexasol inside its venv or drop in a different
+# exapump build from GitHub — and an update check that trusted the record would
+# compare against a version nobody is running, then call it current.
+#
+# Only these two are probed live: they are the cheap ones (a binary that prints its
+# version, an interpreter that already exists) and the ones a person can most
+# easily change by hand. The MCP server would cost a uvx resolution, and the
+# runtime's recorded version IS the launcher the kit installed, so both stay on the
+# record.
+
+# _exakit_probe_exapump_version <binary> — "exapump 0.11.2" -> "0.11.2". Empty when
+# the binary will not run (a release built against a newer glibc, for instance).
+_exakit_probe_exapump_version() {
+    _pev_out="$("$1" --version 2>/dev/null | head -1)"
+    [ -n "$_pev_out" ] || return 0
+    printf '%s' "$_pev_out" | grep -oE '[0-9]+\.[0-9]+[0-9A-Za-z._+-]*' | head -1
+}
+
+# _exakit_probe_pyexasol_version <venv-python> — asks the driver itself.
+_exakit_probe_pyexasol_version() {
+    # The subshell with `&& :` is the house pattern for this probe: on a guest that
+    # advertises SVE its host cannot execute, the import dies on a signal, and this
+    # keeps the shell's job-status noise out of the user's output.
+    _ppv_out="$( ( "$1" -c 'import pyexasol; print(pyexasol.__version__)' && : ) 2>/dev/null | head -1 )"
+    case "$_ppv_out" in
+        ''|*[!A-Za-z0-9._+-]*) return 0 ;;
+    esac
+    printf '%s' "$_ppv_out"
+}
+
 exakit_component_current() {
     case "$1" in
         exakit)
@@ -1535,9 +1566,33 @@ exakit_component_current() {
                 esac
             fi
             ;;
-        exapump)  manifest_get components.exapump.version 2>/dev/null ;;
+        exapump)
+            _cur_bin="$(manifest_get components.exapump.path 2>/dev/null || true)"
+            [ -n "$_cur_bin" ] && [ -x "$_cur_bin" ] || _cur_bin="$(command -v exapump 2>/dev/null || true)"
+            # Provably absent beats a stale record: with no binary the table says
+            # "not installed" and offers the reinstall, which is the useful answer.
+            [ -n "$_cur_bin" ] && [ -x "$_cur_bin" ] || return 1
+            _cur_live="$(_exakit_probe_exapump_version "$_cur_bin")"
+            if [ -n "$_cur_live" ]; then
+                printf '%s\n' "$_cur_live"
+            else
+                manifest_get components.exapump.version 2>/dev/null
+            fi
+            ;;
+        # The MCP server runs on demand through uvx; probing it would cost a
+        # resolution (and possibly the network), so the record stands.
         mcp)      manifest_get components.mcp_server.version 2>/dev/null ;;
-        pyexasol) manifest_get components.pyexasol.version 2>/dev/null ;;
+        pyexasol)
+            _cur_python="$(manifest_get components.pyexasol.python 2>/dev/null || true)"
+            [ -n "$_cur_python" ] && [ -x "$_cur_python" ] || _cur_python="$EXAKIT_HOME/pyexasol-venv/bin/python"
+            [ -x "$_cur_python" ] || return 1
+            _cur_live="$(_exakit_probe_pyexasol_version "$_cur_python")"
+            if [ -n "$_cur_live" ]; then
+                printf '%s\n' "$_cur_live"
+            else
+                manifest_get components.pyexasol.version 2>/dev/null
+            fi
+            ;;
         kit2)     manifest_get kit2.version 2>/dev/null ;;
         nano)
             _image="$(manifest_get runtime.image 2>/dev/null || true)"

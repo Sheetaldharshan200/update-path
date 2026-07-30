@@ -159,6 +159,10 @@ fi
 # One row per target, every one of them behind: the table must offer an update
 # command for each. EXAKIT_VERSION_POLICY is pinned so the harness cannot reach
 # the network, and the available versions come from the stub below.
+_stub_bin="$(mktemp -d)"
+printf '#!/bin/sh\necho "exapump 0.11.2"\n' > "$_stub_bin/exapump"
+printf '#!/bin/sh\necho 2.2.2\n' > "$_stub_bin/python"
+chmod +x "$_stub_bin/exapump" "$_stub_bin/python"
 update_action="$(bash -c "
 EXAKIT_VERSION_POLICY=pinned
 . '$ROOT/setup/lib/common.sh'
@@ -167,6 +171,8 @@ manifest_get() {
     runtime.type) printf '%s\n' nano ;;
     runtime.image) printf '%s\n' docker.io/exasol/nano:2026.2.0-nano.2 ;;
     components.exapump.version) printf '%s\n' 0.11.2 ;;
+    components.exapump.path) printf '%s\n' '$_stub_bin/exapump' ;;
+    components.pyexasol.python) printf '%s\n' '$_stub_bin/python' ;;
     components.mcp_server.version) printf '%s\n' 1.10.1 ;;
     components.pyexasol.version) printf '%s\n' 2.2.2 ;;
     kit.version) printf '%s\n' 0.2.0 ;;
