@@ -280,7 +280,7 @@ function Invoke-CmdVersion {
     Write-Host "Kit version:    $(Get-ExakitComponentCurrent 'exakit')"
     Write-Host "Kit level:      $(Get-ExakitManifestValue 'kit_level')"
     Write-Host "Kit source:     $(Get-ExakitManifestValue 'kit.source')"
-    Write-Host "Installed at:   $(Get-ExakitManifestValue 'installed_at')"
+    Write-Host "Installed at:   $(Format-ExakitLocalTime (Get-ExakitManifestValue 'installed_at'))"
     $runtimeVersion = Get-ExakitManifestValue "runtime.version"
     if (-not $runtimeVersion) { $runtimeVersion = Get-ExakitManifestValue "runtime.image" }
     Write-Host "Runtime:        $(Get-RuntimeType) $runtimeVersion"

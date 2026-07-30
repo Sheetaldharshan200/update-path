@@ -893,6 +893,41 @@ exakit_versions_baked_doc() {
     printf '%s\n' "$_vb_root/versions.json"
 }
 
+# exakit_format_local_time <utc-iso> — a manifest timestamp rendered for a human:
+# "May 3, 2026 at 5:30 PM", in the machine's own timezone. The manifest keeps UTC
+# ISO 8601 (machine-readable state must not move); only the display changes.
+# Falls back to the raw value, because an awkward timestamp beats none at all.
+# TWIN: Format-ExakitLocalTime in setup/lib/exakit-common.ps1.
+exakit_format_local_time() {
+    _flt_raw="$1"
+    [ -n "$_flt_raw" ] || return 0
+    if exakit_can_run_python; then
+        _flt_out="$(
+            run_python - "$_flt_raw" 2>/dev/null <<'PY'
+import sys
+from datetime import datetime, timezone
+
+raw = sys.argv[1].strip()
+try:
+    stamp = datetime.strptime(raw, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+except ValueError:
+    raise SystemExit(1)
+local = stamp.astimezone()
+# Assembled by hand rather than with %-d/%-I: those are platform extensions and
+# are not available everywhere this kit runs.
+hour = local.strftime("%I").lstrip("0") or "12"
+print("%s %d, %d at %s:%s" % (local.strftime("%B"), local.day, local.year,
+                              hour, local.strftime("%M %p")))
+PY
+        )"
+        if [ -n "$_flt_out" ]; then
+            printf '%s\n' "$_flt_out"
+            return 0
+        fi
+    fi
+    printf '%s\n' "$_flt_raw"
+}
+
 # exakit_kit_version_at <kit-root> [dot.path] — a version a specific kit tree
 # states about itself: kit.version by default, kit2.version for the Kit 2 asset
 # bundle. The installers use it on the tree they are installing FROM, which is not

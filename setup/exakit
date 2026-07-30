@@ -175,7 +175,7 @@ cmd_version() {
     printf 'Kit version:    %s\n' "$(exakit_component_current exakit 2>/dev/null || printf 'unknown')"
     printf 'Kit level:      %s\n' "$(manifest_get kit_level 2>/dev/null)"
     printf 'Kit source:     %s\n' "$(manifest_get kit.source 2>/dev/null)"
-    printf 'Installed at:   %s\n' "$(manifest_get installed_at 2>/dev/null)"
+    printf 'Installed at:   %s\n' "$(exakit_format_local_time "$(manifest_get installed_at 2>/dev/null)")"
     printf 'Runtime:        %s %s\n' "$(manifest_get runtime.type 2>/dev/null)" \
         "$(manifest_get runtime.version 2>/dev/null || manifest_get runtime.image 2>/dev/null)"
     printf 'exapump:        %s\n' "$(manifest_get components.exapump.version 2>/dev/null)"

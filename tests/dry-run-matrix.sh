@@ -323,6 +323,31 @@ else
     check "mcp_doctor(names_the_remedy)" "yes" "no"
 fi
 
+echo "install time is shown in the machine's own timezone:"
+# The manifest keeps UTC ISO 8601; only the display is localised. TZ is pinned per
+# case so the expectation is deterministic on any machine that runs this suite.
+for tz_spec in "UTC|2026-07-30T05:50:21Z|July 30, 2026 at 5:50 AM" \
+               "Asia/Kolkata|2026-05-03T12:00:00Z|May 3, 2026 at 5:30 PM" \
+               "America/New_York|2026-05-03T12:00:00Z|May 3, 2026 at 8:00 AM" \
+               "UTC|2026-07-30T00:30:00Z|July 30, 2026 at 12:30 AM" \
+               "UTC|2026-07-30T12:05:00Z|July 30, 2026 at 12:05 PM"; do
+    tz_name="${tz_spec%%|*}"
+    tz_rest="${tz_spec#*|}"
+    tz_input="${tz_rest%%|*}"
+    tz_want="${tz_rest#*|}"
+    tz_got="$(TZ="$tz_name" bash -c ". '$ROOT/setup/lib/common.sh'; exakit_format_local_time '$tz_input'")"
+    check "local_time($tz_name)" "$tz_want" "$tz_got"
+done
+# A timestamp nobody can parse is still better shown than swallowed.
+tz_passthrough="$(bash -c ". '$ROOT/setup/lib/common.sh'; exakit_format_local_time 'not-a-date'")"
+check "local_time(unparseable passes through)" "not-a-date" "$tz_passthrough"
+if grep -q 'exakit_format_local_time "$(manifest_get installed_at' "$ROOT/setup/exakit" && \
+   grep -q 'Format-ExakitLocalTime (Get-ExakitManifestValue' "$ROOT/setup/exakit.ps1"; then
+    check "local_time(wired on both platforms)" "yes" "yes"
+else
+    check "local_time(wired on both platforms)" "yes" "no"
+fi
+
 echo "self-update staging guard:"
 if grep -q 'exakit-kit-stage' "$ROOT/setup/lib/common.sh" && \
    grep -q 'Downloaded starter kit is incomplete' "$ROOT/setup/lib/common.sh" && \

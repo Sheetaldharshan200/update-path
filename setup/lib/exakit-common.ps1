@@ -776,6 +776,27 @@ function Get-ExakitVersionsBakedPath {
     return $path
 }
 
+# Format-ExakitLocalTime <utc-iso> - a manifest timestamp rendered for a human:
+# "May 3, 2026 at 5:30 PM", in the machine's own timezone. The manifest keeps UTC
+# ISO 8601 (machine-readable state must not move); only the display changes.
+# Falls back to the raw value, because an awkward timestamp beats none at all.
+# Twin of exakit_format_local_time in setup/lib/common.sh. InvariantCulture keeps
+# the month names identical to the bash side on a non-English Windows.
+function Format-ExakitLocalTime {
+    param([string]$Utc)
+    if (-not $Utc) { return "" }
+    try {
+        $culture = [System.Globalization.CultureInfo]::InvariantCulture
+        $styles = [System.Globalization.DateTimeStyles]::AdjustToUniversal -bor `
+                  [System.Globalization.DateTimeStyles]::AssumeUniversal
+        $parsed = [datetime]::ParseExact($Utc.Trim(), "yyyy-MM-ddTHH:mm:ssZ", $culture, $styles)
+        $local = $parsed.ToLocalTime()
+        return ($local.ToString("MMMM d, yyyy", $culture) + " at " + $local.ToString("h:mm tt", $culture))
+    } catch {
+        return $Utc
+    }
+}
+
 # Get-ExakitKitVersionAt - kit.version as stated by a specific kit tree. The
 # installer uses it on the tree it is installing FROM, which is not necessarily
 # the copy under the kit home (that one may be an older install).
