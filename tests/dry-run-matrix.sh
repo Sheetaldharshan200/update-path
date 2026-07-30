@@ -462,6 +462,19 @@ if grep -q 'Update-ExakitVersionsCache' "$ROOT/setup/lib/exakit-common.ps1" && \
 else
     check "windows_install(manifest_wiring)" "yes" "no"
 fi
+# Re-run freshness, both sides: the exakit_helper flag says "installed", not
+# "current", so a re-run over an older install has to compare what is on disk with
+# what this kit would write. bash compares the installed COPY of setup/exakit; the
+# Windows shim only points at the kit copy, so there it is the shim's own content.
+# The behavioural halves live in tests/versions-manifest.sh.
+if grep -q 'cmp -s "$_script_dir/exakit" "$EXAKIT_BIN_DIR/exakit"' "$ROOT/setup/lib/common.sh" && \
+   grep -q 'Test-ExakitCmdShimCurrent' "$ROOT/setup/lib/exakit-common.ps1" && \
+   grep -q 'Test-ExakitCmdShimCurrent' "$ROOT/setup/setup-windows-docker.ps1" && \
+   grep -q 'Get-ExakitCmdShimContent' "$ROOT/setup/lib/exakit-common.ps1"; then
+    check "rerun(refreshes_stale_command)" "yes" "yes"
+else
+    check "rerun(refreshes_stale_command)" "yes" "no"
+fi
 # The Kit 2 surface: both wrappers, the update target, the catalog rows, and the
 # Windows answer. Whether Kit 2 is ADVERTISED is a separate switch (the kit2 block
 # in versions.json) and is asserted in tests/versions-manifest.sh.

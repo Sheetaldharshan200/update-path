@@ -3902,6 +3902,17 @@ kit_shared_steps() {
     elif [ ! -x "$EXAKIT_BIN_DIR/exakit" ]; then
         info "exakit command is missing — reinstalling it"
         _helper_needed=1
+    elif ! cmp -s "$_script_dir/exakit" "$EXAKIT_BIN_DIR/exakit" 2>/dev/null; then
+        # The flag records "installed", not "current". Re-running the installer
+        # over an older install (the 0.1.0 -> 0.2.0 upgrade path) arrives with
+        # the flag already set and a command already on disk, while install.sh
+        # has just replaced the kit copy underneath it. The installed command is
+        # a COPY of setup/exakit, so without this it stays at the old version
+        # and drives the new library: the update notice, the version panel and
+        # the kit2 subcommands all live in the command itself and would go
+        # missing until the next self-update.
+        info "exakit command is out of date — refreshing it"
+        _helper_needed=1
     else
         ensure_path_hint "$EXAKIT_BIN_DIR"
     fi

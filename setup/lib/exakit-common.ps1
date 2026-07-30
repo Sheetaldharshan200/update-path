@@ -1122,14 +1122,34 @@ function Begin-ExakitStep {
 # -ExecutionPolicy Bypass and fails on default-policy systems. The shim therefore
 # targets the kit's copy by absolute path. Both the installer and the kit
 # self-update write it, so the content lives here rather than in two places.
+function Get-ExakitCmdShimContent {
+    param([Parameter(Mandatory)][string]$PsTarget)
+    return "@echo off`r`npowershell -NoProfile -ExecutionPolicy Bypass -File `"$PsTarget`" %*`r`n"
+}
+
 function Set-ExakitCmdShim {
     param([Parameter(Mandatory)][string]$PsTarget)
     New-Item -ItemType Directory -Force -Path $script:BinDir | Out-Null
     Remove-Item -Force (Join-Path $script:BinDir "exakit.ps1") -ErrorAction SilentlyContinue
     $shimPath = Join-Path $script:BinDir "exakit.cmd"
-    $shimContent = "@echo off`r`npowershell -NoProfile -ExecutionPolicy Bypass -File `"$PsTarget`" %*`r`n"
-    Set-Content -Path $shimPath -Value $shimContent -NoNewline
+    Set-Content -Path $shimPath -Value (Get-ExakitCmdShimContent -PsTarget $PsTarget) -NoNewline
     return $shimPath
+}
+
+# Test-ExakitCmdShimCurrent - is the installed shim the one this kit would write?
+#
+# The twin of the bash side's copy comparison, and needed for the same reason: the
+# exakit_helper step flag records "installed", not "current", so a re-run over an
+# older install skips the step with the flag already set. Windows gets off lighter
+# because the shim only points AT the kit copy, which install.ps1 has just
+# replaced - but a shim written by an older kit, or aimed at a path that has since
+# moved, still has to be rewritten.
+function Test-ExakitCmdShimCurrent {
+    param([Parameter(Mandatory)][string]$PsTarget)
+    $shimPath = Join-Path $script:BinDir "exakit.cmd"
+    if (-not (Test-Path $shimPath)) { return $false }
+    $actual = Get-Content -Path $shimPath -Raw -ErrorAction SilentlyContinue
+    return ($actual -eq (Get-ExakitCmdShimContent -PsTarget $PsTarget))
 }
 
 # ---------------------------------------------------------------------------

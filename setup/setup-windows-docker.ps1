@@ -110,6 +110,14 @@ try {
         Info "exakit command is missing - reinstalling it"
         $helperNeeded = $true
     }
+    # A re-run over an older install arrives with the flag set and a shim already
+    # on disk, so "installed" is not the same as "current". Rewrite one an older
+    # kit left behind, or one aimed at a path this kit no longer uses.
+    if (-not $helperNeeded -and
+        -not (Test-ExakitCmdShimCurrent -PsTarget (Join-Path $script:ExakitHome "kit\setup\exakit.ps1"))) {
+        Info "exakit command is out of date - refreshing it"
+        $helperNeeded = $true
+    }
     if (-not $helperNeeded) {
         Confirm-ExakitOnPath $script:BinDir
     }

@@ -368,6 +368,66 @@ completed="$( EXAKIT_HOME="$WORK/kss-home"
 check "the run completes and the kit copy carries the manifest" \
     "exakit-installed manifest-copied exakit_helper" "$completed"
 
+# Re-running the installer over an older install (the 0.1.0 -> 0.2.0 path) is the
+# one case where the step flag lies: install.sh has already replaced the kit copy,
+# but exakit_helper is marked and a command is on disk, so the step skips. The
+# installed command is a COPY of setup/exakit, so it has to be compared with the
+# kit's own script or the user drives the new library with the old command.
+rerun="$( EXAKIT_HOME="$WORK/rerun-home"
+    EXAKIT_MANIFEST="$WORK/rerun-home/manifest.json"
+    EXAKIT_BIN_DIR="$WORK/rerun-home/bin"
+    EXAKIT_PYEXASOL_VENV="$WORK/rerun-home/pyexasol-venv"
+    EXAKIT_PYEXASOL_VERSION="$V_PYEXASOL"
+    mkdir -p "$EXAKIT_HOME" "$EXAKIT_BIN_DIR"
+    . "$ROOT/setup/lib/pyexasol.sh"
+    manifest_init >/dev/null 2>&1
+    exakit_maybe_offer_data_load() { :; }
+    exakit_maybe_offer_mcp_setup() { :; }
+    exakit_maybe_offer_skills_install() { :; }
+    ensure_path_hint() { :; }
+    PATH="$WORK/failing-uv:$PATH"
+    # Stand in for the older install: step already marked, previous command on disk.
+    printf '#!/bin/sh\nprintf 0.1.0\n' > "$EXAKIT_BIN_DIR/exakit"
+    chmod +x "$EXAKIT_BIN_DIR/exakit"
+    mark_step exakit_helper >/dev/null 2>&1
+    _out="$(kit_shared_steps 3 6 "$ROOT/setup" "$WORK/fake-kit" 2>&1)"
+    # grep rather than case: inside a command substitution bash 3.2 reads the
+    # close-paren of a case pattern as the end of the substitution itself, and
+    # quote characters in a comment here confuse it the same way. Keep both out.
+    if printf '%s\n' "$_out" | grep -q 'out of date'; then
+        printf 'said-out-of-date '
+    else
+        printf 'SILENT '
+    fi
+    if cmp -s "$ROOT/setup/exakit" "$EXAKIT_BIN_DIR/exakit"; then printf 'refreshed'; else printf 'STALE'; fi )"
+check "a re-run refreshes the command an older install left behind" \
+    "said-out-of-date refreshed" "$rerun"
+
+# ...and it must leave a command that already matches alone, or every re-run
+# announces an upgrade that did not happen.
+noop="$( EXAKIT_HOME="$WORK/noop-home"
+    EXAKIT_MANIFEST="$WORK/noop-home/manifest.json"
+    EXAKIT_BIN_DIR="$WORK/noop-home/bin"
+    EXAKIT_PYEXASOL_VENV="$WORK/noop-home/pyexasol-venv"
+    EXAKIT_PYEXASOL_VERSION="$V_PYEXASOL"
+    mkdir -p "$EXAKIT_HOME" "$EXAKIT_BIN_DIR"
+    . "$ROOT/setup/lib/pyexasol.sh"
+    manifest_init >/dev/null 2>&1
+    exakit_maybe_offer_data_load() { :; }
+    exakit_maybe_offer_mcp_setup() { :; }
+    exakit_maybe_offer_skills_install() { :; }
+    ensure_path_hint() { :; }
+    PATH="$WORK/failing-uv:$PATH"
+    install -m 755 "$ROOT/setup/exakit" "$EXAKIT_BIN_DIR/exakit"
+    mark_step exakit_helper >/dev/null 2>&1
+    _out="$(kit_shared_steps 3 6 "$ROOT/setup" "$WORK/fake-kit" 2>&1)"
+    if printf '%s\n' "$_out" | grep -q 'out of date'; then
+        printf 'REFRESHED-ANYWAY'
+    else
+        printf 'left-alone'
+    fi )"
+check "a re-run leaves an up-to-date command alone" "left-alone" "$noop"
+
 echo "update-check table:"
 # One fixture install, one advertised set, every interesting row at once:
 #   exakit    0.2.0            = 0.2.0             -> current (and NOT "inspect")
