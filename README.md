@@ -169,10 +169,50 @@ exakit data-load       # load more data
 exakit mcp-setup       # connect AI clients
 exakit mcp-doctor      # AI connection health check
 exakit update-check    # updates available?
+exakit update          # apply the quick ones (seconds, no downtime)
 exakit help            # every command
 ```
 
 Something failed mid-install? Re-run the install command. It picks up where it left off.
+
+## Staying up to date
+
+The kit tracks a **tested set** of versions, not the newest of everything. The
+maintainers publish that set, and your machine reads it — so an update means
+"move to the combination we verified together", never "hope four independent
+releases work with each other".
+
+```bash
+exakit update-check    # what is installed vs what is available, and why
+exakit update          # apply the quick ones: kit scripts, exapump, MCP server, pyexasol
+exakit update runtime  # the database itself — stops it briefly, keeps your data
+```
+
+`exakit update` finishes in seconds and never stops your database. If a database
+update is waiting, it says so and leaves the moment to you.
+
+```
+Component  Installed         Available         Severity    Action
+exakit     0.2.0             0.2.0             -           current
+nano       2026.2.0-nano.2   2026.3.0-nano.1   -           exakit update runtime (heavy)
+exapump    0.11.2            0.12.0            recommended exakit update exapump
+mcp        1.10.1            1.10.1            -           current
+pyexasol   2.2.2             2.2.2             -           current
+```
+
+A few things worth knowing:
+
+- **Severity is the maintainers' judgement.** Only `recommended` and `critical`
+  changes ever interrupt another command, at most once a day, on `stderr`.
+  Silence them for good with `EXAKIT_NO_UPDATE_NOTICE=1`.
+- **Sometimes the advice is to go back.** If a release turns out to be faulty, the
+  advertised version goes *down* and the row shows `(older)`. Applying it asks you
+  to confirm first — it is never silent.
+- **Offline is fine.** Version resolution falls back to a cached copy, then to the
+  copy that shipped with your kit. No command ever fails because an update check
+  could not reach the network.
+- **You can still pick your own versions.** `EXAKIT_EXAPUMP_VERSION=0.11.2 exakit
+  update exapump` installs exactly that, digest-verified like anything else.
 
 ## Safety and operations
 
@@ -206,6 +246,8 @@ https://github.com/user-attachments/assets/77916db0-d273-4720-8d59-1aedac95d5e8
 | Behind&nbsp;a&nbsp;corporate&nbsp;proxy? | `export HTTPS_PROXY=...` and re-run. |
 | Where's&nbsp;the&nbsp;deep-dive&nbsp;for&nbsp;my&nbsp;OS? | [macOS](quickstarts/macos.md) · [WSL](quickstarts/windows-wsl.md) · [Windows + Docker](quickstarts/windows-docker.md) |
 | Step-by-step&nbsp;to&nbsp;the&nbsp;first&nbsp;query? | [QUICKSTART](QUICKSTART.md) → [First workflow](demo/first-revenue-analysis.md) |
+| Installing&nbsp;over&nbsp;a&nbsp;database<br>I&nbsp;already&nbsp;have? | **It is adopted, not replaced.** A running database is reused (the installer asks, and defaults to yes); a stopped one is started and reused. Your data is untouched. Only a database that cannot start at all is replaced, and the installer says so first — including that the previous data is not recoverable. |
+| How&nbsp;do&nbsp;updates&nbsp;work? | The maintainers publish a tested version set; `exakit update-check` compares it against what you have and `exakit update` applies the quick parts in seconds. See [Staying up to date](#staying-up-to-date). |
 | How&nbsp;do&nbsp;I&nbsp;remove&nbsp;everything? | `exakit uninstall` |
 
 ---

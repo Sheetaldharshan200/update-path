@@ -47,6 +47,18 @@ The installer does this too. To run it again: `exakit mcp-setup`. Details in the
 
 Restart your AI client, then continue with the [first workflow](../demo/first-revenue-analysis.md).
 
+## Keeping it current
+
+```powershell
+exakit update-check    # installed vs the versions the maintainers advertise
+exakit update          # the quick ones, in seconds, database untouched
+exakit update runtime  # recreates the Nano container; the data volume is kept
+```
+
+Kit 2 (the Trusted AI Workflow add-on) is not available on the Windows path yet.
+
+Full detail: [Staying up to date](../README.md#staying-up-to-date).
+
 ## Windows notes
 
 | Issue | Fix |

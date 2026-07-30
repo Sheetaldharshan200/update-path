@@ -59,6 +59,16 @@ Windows apps can reach the database directly at `127.0.0.1:8563`. If you configu
 
 Then continue with the [first workflow](../demo/first-revenue-analysis.md).
 
+## Keeping it current
+
+```bash
+exakit update-check    # installed vs the versions the maintainers advertise
+exakit update          # the quick ones, in seconds, database untouched
+exakit update runtime  # recreates the Nano container; the data volume is kept
+```
+
+Full detail: [Staying up to date](../README.md#staying-up-to-date).
+
 ## WSL notes
 
 | Issue | Fix |

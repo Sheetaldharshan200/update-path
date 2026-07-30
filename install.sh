@@ -22,6 +22,18 @@
 #                           line to add instead (default: the installer
 #                           adds ~/.local/bin to the user's own profile)
 #
+#   Versions (the kit installs the tested set the maintainers publish in
+#   versions.json; see MAINTAINERS.md and README "Staying up to date"):
+#   EXAKIT_VERSION_POLICY=manifest|latest|pinned
+#                           manifest (default) = the published tested set,
+#                           latest = each component's own upstream,
+#                           anything else = the kit's built-in fallbacks,
+#                           no network
+#   EXAKIT_VERSIONS_URL=... where that document is fetched from (https only)
+#   EXAKIT_VERSIONS_TTL=n   seconds before the cached copy is refreshed
+#   EXAKIT_NO_UPDATE_NOTICE=1  never print the once-a-day update notice that
+#                           other exakit commands can show afterwards
+#
 #   Non-interactive answers (for agent-driven or scripted installs, so the
 #   install honours a choice instead of silently taking the default):
 #   EXAKIT_REUSE_DB=0|1     reuse a running database (macOS): 0 deploy fresh, 1 reuse

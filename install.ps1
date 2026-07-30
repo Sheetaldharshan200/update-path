@@ -24,6 +24,19 @@
 #   $env:EXAKIT_DRY_RUN = "1"   show the plan, install nothing
 #   $env:EXAKIT_REPO    = "..." override the source repo (owner/name)
 #   $env:EXAKIT_REF     = "..." override the git ref to install from
+#
+# Versions (the kit installs the tested set the maintainers publish in
+# versions.json; see MAINTAINERS.md and README "Staying up to date"):
+#   $env:EXAKIT_VERSION_POLICY = "manifest" | "latest" | "pinned"
+#                               manifest (default) = the published tested set,
+#                               latest = each component's own upstream,
+#                               anything else = built-in fallbacks, no network
+#   $env:EXAKIT_VERSIONS_URL = "..."  where that document is fetched from
+#                               (https only)
+#   $env:EXAKIT_VERSIONS_TTL = "86400"  seconds before the cached copy is
+#                               refreshed
+#   $env:EXAKIT_NO_UPDATE_NOTICE = "1"  never print the once-a-day update
+#                               notice that other exakit commands can show
 
 $ErrorActionPreference = "Stop"
 # Silence the progress stream: it hides the noisy download/extract progress

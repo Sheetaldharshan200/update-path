@@ -56,6 +56,17 @@ After setup, restart the AI client and look for an MCP server named `exasol`.
 
 Then continue with the [first workflow](../demo/first-revenue-analysis.md).
 
+## Keeping it current
+
+```bash
+exakit update-check    # installed vs the versions the maintainers advertise
+exakit update          # the quick ones, in seconds, database untouched
+exakit update runtime  # Exasol Personal itself; a major version routes through
+                       # --plan / --backup / --apply, and your data is backed up first
+```
+
+Full detail: [Staying up to date](../README.md#staying-up-to-date).
+
 ## macOS notes
 
 | Issue | Fix |

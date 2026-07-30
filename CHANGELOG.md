@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.2.0
+
+- **Changed default:** `EXAKIT_VERSION_POLICY` is now `manifest`. An install takes the version set the maintainers tested together, published as `versions.json` at the root of this repository, instead of resolving each component from its own upstream. `latest` keeps the old behaviour as an escape hatch, and any other value installs the built-in fallbacks with no network at all.
+- Feat: `versions.json` as the update mechanism — maintainers change a version by merging a pull request; installers and `exakit update-check` / `exakit update` read it. Component bumps no longer need a kit release. Resolution degrades env override → fresh fetch → cached copy → the copy that shipped with the kit → compiled-in fallbacks, so no command can fail because a version lookup did not answer.
+- Feat: `exakit update-check` compares installed against advertised versions per component, with a Severity column, the maintainer's note under the row it belongs to, `min_kit_version` gating, and the exact command for each row. It is the only command that prints the table: `exakit version` shows what is installed plus a short hint, and `exakit update` prints just the work it is about to do.
+- Feat: `exakit update` applies the quick components (kit scripts, exapump, MCP server, pyexasol) in seconds and never stops the database. A pending runtime change is announced with `exakit update runtime` and left for the user to time; Nano asks before it recreates the container (`EXAKIT_CONFIRM_RUNTIME_UPDATE=1` pre-answers).
+- Feat: advisory rollbacks. When the maintainers advertise an OLDER version than the one installed — how a faulty release is withdrawn — the row is flagged `(older)`, applying it asks for confirmation, and `EXAKIT_ALLOW_DOWNGRADE=1` pre-answers for scripted fleets. Digests are verified in both directions.
+- Feat: `pyexasol` is a full update target and its own repair command. Its install step no longer ends a run: a failure warns, records `validated=false`, and leaves the step unmarked, so the database, exapump, MCP server and the `exakit` command itself still finish installing. `exakit status` names the repair.
+- Feat: kit self-update from `main` (what `install.sh` fetches), with the release tags kept as fallbacks. The staged copy is validated before it replaces anything, `versions.json` is on that list, and the version recorded is the one that actually landed. Windows is no longer warn-only: `Update-ExakitSelf` does the same work through `Expand-Archive`, deferring the directory swap to just after the command exits when Windows will not replace files that are open.
+- Feat: `exakit upgrade-kit2`, `exakit rollback-kit2` and `exakit update kit2` bring the Kit 2 (Trusted AI Workflow) add-on into the CLI. It stays invisible until `versions.json` carries a `kit2` block — that absence is the launch switch.
+- Feat: a severity-gated update notice. Only `recommended` or `critical` changes ever interrupt an unrelated command, at most once a day, on stderr, only on a terminal, and `EXAKIT_NO_UPDATE_NOTICE=1` silences it for good. The wording carries the cost: light changes offer `exakit update`, a database change points at `exakit update-check`.
+- Feat: exapump downloads verify against the digests in `versions.json` when the version being installed is the advertised one, then the digests shipped with the kit, then the release API. An env override never borrows another release's digest, and the refuse-to-install bar is unchanged.
+- Fix: `setup/exakit.ps1` no longer redefines the upstream lookup helpers. Its copies won over the library's because it is dot-sourced later, and its docker-tag lookup was not architecture-aware — an x86_64 host could be told an arm64 tag was the newest one.
+- Fix: `exakit update` and `exakit update-check` with no argument failed on Windows with "Unknown update target".
+- Docs: "Staying up to date" in the README, per-OS update sections in the quickstarts, the update model and its environment variables in AGENTS.md, and a new [MAINTAINERS.md](MAINTAINERS.md) runbook for publishing a bump, rolling one back, and enabling Kit 2.
+- Docs: README quick answer for installing over a database you already have — it is adopted, never silently replaced.
+- Verified: 189 checks in `tests/versions-manifest.sh` plus the existing suites, run on real bash 3.2 (macOS), on Linux, and against a native PowerShell for every mirrored function. The repository's first CI workflow validates `versions.json` on every pull request, downloads the advertised exapump assets to verify all five digests whenever that file changes, and runs the shell suites on Linux and macOS.
+
 ## 0.1.0
 
 - First public release of the Exasol Personal Local Starter Kit.
