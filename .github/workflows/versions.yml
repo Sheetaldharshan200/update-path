@@ -199,6 +199,128 @@ jobs:
             printf '  verified %s\n' "$digest"
           done < /tmp/digests.txt
 
+  upstream-exists:
+    name: the advertised versions exist upstream
+    needs: changes
+    if: needs.changes.outputs.versions == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: every advertised version resolves at its own upstream
+        # digest-verify proves the exapump binaries are the ones we say they are.
+        # This job asks the other question: does what we advertise exist at all?
+        # A typo in a nano tag, an MCP version that was never published, or a
+        # yanked pyexasol release reaches users as a failed install, and the
+        # manifest is the only place to catch it before that happens.
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import sys
+          import time
+          import urllib.error
+          import urllib.request
+
+          with open("versions.json") as handle:
+              doc = json.load(handle)
+          components = doc.get("components") or {}
+          problems = []
+
+          def fetch(url, token=False):
+              """GET url, returning a parsed body, or (None, reason). Retries the
+              transient failures only: a 404 is an answer, not a flake."""
+              request = urllib.request.Request(url, headers={
+                  "Accept": "application/json",
+                  "User-Agent": "exakit-versions-ci",
+              })
+              if token and os.environ.get("GITHUB_TOKEN"):
+                  request.add_header("Authorization", "Bearer %s" % os.environ["GITHUB_TOKEN"])
+              last = "unknown error"
+              for attempt in range(3):
+                  try:
+                      with urllib.request.urlopen(request, timeout=30) as response:
+                          return json.load(response), None
+                  except urllib.error.HTTPError as error:
+                      if error.code in (403, 429) or error.code >= 500:
+                          last = "HTTP %s" % error.code
+                          time.sleep(2 * (attempt + 1))
+                          continue
+                      return None, "HTTP %s" % error.code
+                  except Exception as error:                      # network, DNS, timeout
+                      last = str(error)
+                      time.sleep(2 * (attempt + 1))
+              return None, last
+
+          def check_pypi(label, block, default_package):
+              version = block.get("version")
+              package = block.get("package", default_package)
+              body, reason = fetch("https://pypi.org/pypi/%s/%s/json" % (package, version))
+              if body is None:
+                  problems.append("%s: %s==%s did not resolve on PyPI (%s)"
+                                  % (label, package, version, reason))
+                  return
+              if (body.get("info") or {}).get("yanked"):
+                  why = (body["info"].get("yanked_reason") or "no reason given")
+                  problems.append("%s: %s==%s is YANKED on PyPI (%s)" % (label, package, version, why))
+                  return
+              print("  ok  %s: %s==%s is published and not yanked" % (label, package, version))
+
+          # --- the container runtime ------------------------------------------
+          nano = components.get("nano") or {}
+          if nano:
+              tag = nano.get("version")
+              image = nano.get("image", "exasol/nano")
+              body, reason = fetch("https://hub.docker.com/v2/repositories/%s/tags/%s" % (image, tag))
+              if body is None:
+                  problems.append("nano: %s:%s did not resolve on Docker Hub (%s)" % (image, tag, reason))
+              else:
+                  # The kit pulls the plain tag and lets the registry choose the
+                  # architecture, so a single-arch tag would strand every machine
+                  # of the other architecture. Assert both are actually behind it.
+                  arches = set()
+                  for entry in body.get("images") or []:
+                      if entry.get("os") == "linux" and entry.get("architecture"):
+                          arches.add(entry["architecture"])
+                  missing = {"amd64", "arm64"} - arches
+                  if missing:
+                      problems.append("nano: %s:%s covers %s but not %s -- the kit pulls the "
+                                      "plain multi-arch tag" % (image, tag, sorted(arches) or "nothing",
+                                                                sorted(missing)))
+                  else:
+                      print("  ok  nano: %s:%s exists and covers amd64 + arm64" % (image, tag))
+
+          # --- the native macOS runtime ---------------------------------------
+          personal = components.get("personal") or {}
+          if personal:
+              version = personal.get("version")
+              repo = personal.get("repo", "exasol/exasol-personal")
+              # runtime-personal.sh downloads from releases/download/v<version>/,
+              # so the tag it needs is v-prefixed. Check exactly that.
+              body, reason = fetch("https://api.github.com/repos/%s/releases/tags/v%s"
+                                   % (repo, version), token=True)
+              if body is None:
+                  problems.append("personal: %s has no release tagged v%s (%s)"
+                                  % (repo, version, reason))
+              else:
+                  print("  ok  personal: %s release v%s exists" % (repo, version))
+
+          # --- the PyPI-published pieces --------------------------------------
+          if components.get("mcp"):
+              check_pypi("mcp", components["mcp"], "exasol-mcp-server")
+          if components.get("pyexasol"):
+              check_pypi("pyexasol", components["pyexasol"], "pyexasol")
+
+          # exapump is deliberately not re-checked here: digest-verify already
+          # downloads all five assets and hashes them, which is strictly stronger.
+          print("  --  exapump: covered by the digest-verify job")
+
+          for problem in problems:
+              print("versions.json: %s" % problem, file=sys.stderr)
+          sys.exit(1 if problems else 0)
+          PY
+
   shell-tests:
     name: shell tests (${{ matrix.os }})
     runs-on: ${{ matrix.os }}

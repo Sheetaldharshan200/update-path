@@ -23,9 +23,15 @@ against a ~1 KB document, and the fleet picks it up within a day.
 1. Open a pull request that edits `versions.json`: the new `version`, the
    `updated` date, and — for exapump — the five `sha256` digests of the new
    release's assets.
-2. CI checks it: the canonical formatting, the schema, and (whenever the file
-   changes) it **downloads the advertised exapump assets and verifies every
-   digest**. A typo cannot reach users.
+2. CI checks it: the canonical formatting, the schema, and — whenever the file
+   changes — two upstream checks. It **downloads the advertised exapump assets and
+   verifies every digest**, and it confirms **every other advertised version
+   actually exists upstream**: the nano tag on Docker Hub (and that it really
+   covers both `amd64` and `arm64`, since the kit pulls the plain tag and lets the
+   registry choose), the Exasol Personal release tag on GitHub, and the MCP server
+   and pyexasol versions on PyPI — including a refusal if a release has been
+   **yanked**. A typo, or a version withdrawn after you published it, cannot reach
+   users.
 3. Merge. Installs pick the new version up immediately; existing machines see it
    in `exakit update-check` within `EXAKIT_VERSIONS_TTL` (a day by default).
 
