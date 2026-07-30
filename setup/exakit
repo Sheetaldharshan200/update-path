@@ -374,29 +374,43 @@ cmd_catalog() {
     printf '  %sTip:%s exakit catalog <search>   e.g. exakit catalog data · exakit catalog mcp\n\n' "$_dim" "$_r"
 }
 
+# _with_notice <command...> — run a command, then let the update notice speak.
+# The command's own exit status is preserved: version news must never change what
+# `exakit mcp-doctor` (or anything else) reports to a script.
+#
+# Only the commands below carry it. update-check and update render version state
+# themselves, `version` has its own always-on hint, uninstall is a farewell, and
+# help/catalog are reference screens that stay instant and clean.
+_with_notice() {
+    "$@"
+    _wn_rc=$?
+    exakit_notice_after_command || true
+    return $_wn_rc
+}
+
 case "${1:-help}" in
-    preflight) preflight_report ;;
-    status)   cmd_status ;;
+    preflight) _with_notice preflight_report ;;
+    status)   _with_notice cmd_status ;;
     version|--version|-v)  cmd_version ;;
     update-check) shift; cmd_update_check "${1:-all}" ;;
     update) shift; cmd_update "$@" ;;
-    info)     connection_panel ;;
-    guide)    exakit_guide ;;
-    start)    cmd_start ;;
-    stop)     cmd_stop ;;
-    data-load) shift; cmd_data_load "${1:-}" ;;
-    mcp-setup) cmd_mcp_setup ;;
-    mcp-repair) shift; cmd_mcp_repair "$@" ;;
-    mcp-doctor) shift; cmd_mcp_doctor "$@" ;;
-    mcp-status) shift; cmd_mcp_status "$@" ;;
-    mcp-validate) shift; cmd_mcp_validate "$@" ;;
-    mcp-remove) shift; cmd_mcp_remove "$@" ;;
-    mcp-restore) shift; cmd_mcp_restore "$@" ;;
-    skills-install) cmd_skills_install ;;
+    info)     _with_notice connection_panel ;;
+    guide)    _with_notice exakit_guide ;;
+    start)    _with_notice cmd_start ;;
+    stop)     _with_notice cmd_stop ;;
+    data-load) shift; _with_notice cmd_data_load "${1:-}" ;;
+    mcp-setup) _with_notice cmd_mcp_setup ;;
+    mcp-repair) shift; _with_notice cmd_mcp_repair "$@" ;;
+    mcp-doctor) shift; _with_notice cmd_mcp_doctor "$@" ;;
+    mcp-status) shift; _with_notice cmd_mcp_status "$@" ;;
+    mcp-validate) shift; _with_notice cmd_mcp_validate "$@" ;;
+    mcp-remove) shift; _with_notice cmd_mcp_remove "$@" ;;
+    mcp-restore) shift; _with_notice cmd_mcp_restore "$@" ;;
+    skills-install) _with_notice cmd_skills_install ;;
     upgrade-kit2)  cmd_kit2_script upgrade-kit2.sh ;;
     rollback-kit2) cmd_kit2_script rollback-kit2.sh ;;
     uninstall) shift; cmd_uninstall "$@" ;;
-    logs)     cmd_logs ;;
+    logs)     _with_notice cmd_logs ;;
     catalog)  shift; cmd_catalog "${1:-}" ;;
     help|-h|--help) shift; usage "${1:-}" ;;
     *) echo "exakit: unknown command '${1}'" >&2; usage >&2; exit 2 ;;

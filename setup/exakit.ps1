@@ -997,6 +997,16 @@ try {
             exit 2
         }
     }
+    # Only these commands carry the update notice. update-check and update render
+    # version state themselves, `version` has its own always-on hint, uninstall is
+    # a farewell, and help/catalog are reference screens that stay instant and
+    # clean. A command that failed reaches the catch below instead, so the notice
+    # never talks over an error.
+    if (@("status", "info", "guide", "start", "stop", "data-load", "preflight",
+          "skills-install", "logs", "mcp-setup", "mcp-doctor", "mcp-status",
+          "mcp-repair", "mcp-validate", "mcp-restore", "mcp-remove") -contains $Command) {
+        Show-ExakitUpdateNotice
+    }
 } catch [ExakitFailException] {
     # Fail() already printed the error and the log path; just set the exit code.
     exit 1

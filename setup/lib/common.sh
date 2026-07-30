@@ -1659,6 +1659,128 @@ _exakit_severity_cell() {
     printf '%s' "$_sc_cell"
 }
 
+# ---------------------------------------------------------------------------
+# After-command update notice
+# ---------------------------------------------------------------------------
+# One dim line on stderr, after an unrelated command, when the maintainers have
+# flagged a pending change as recommended or critical. Everything about it is
+# deliberately conservative: a normal bump never interrupts anyone, the notice
+# appears at most once a day, it never speaks unless stderr is a terminal, and
+# EXAKIT_NO_UPDATE_NOTICE=1 silences it for good.
+#
+# It is NOT a nag about every version: `exakit update-check` is where the full
+# picture lives, and `exakit version` has its own always-on hint.
+# ⇄ twin: Show-ExakitUpdateNotice in setup/lib/exakit-common.ps1.
+EXAKIT_NOTICE_STATE="${EXAKIT_NOTICE_STATE:-$EXAKIT_CACHE_DIR/notice-state.json}"
+EXAKIT_NOTICE_INTERVAL="${EXAKIT_NOTICE_INTERVAL:-86400}"
+
+# exakit_notice_due — has enough time passed since the last notice?
+exakit_notice_due() {
+    [ -f "$EXAKIT_NOTICE_STATE" ] || return 0
+    _nd_last="$(sed -n 's/.*"last_shown"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' \
+        "$EXAKIT_NOTICE_STATE" 2>/dev/null | head -1)"
+    case "$_nd_last" in
+        ''|*[!0-9]*) return 0 ;;
+    esac
+    case "$EXAKIT_NOTICE_INTERVAL" in
+        ''|*[!0-9]*) return 0 ;;
+    esac
+    [ "$(( $(date +%s) - _nd_last ))" -ge "$EXAKIT_NOTICE_INTERVAL" ]
+}
+
+# exakit_notice_record — stamp the state file. Atomic, and never a reason for a
+# command to fail: a read-only cache directory just means the notice repeats.
+exakit_notice_record() {
+    mkdir -p "$(dirname "$EXAKIT_NOTICE_STATE")" 2>/dev/null || return 0
+    _nr_tmp="$EXAKIT_NOTICE_STATE.tmp.$$"
+    printf '{\n  "last_shown": %s\n}\n' "$(date +%s)" > "$_nr_tmp" 2>/dev/null || return 0
+    mv -f "$_nr_tmp" "$EXAKIT_NOTICE_STATE" 2>/dev/null || rm -f "$_nr_tmp"
+    return 0
+}
+
+# A notice may never make an unrelated command feel slow. The cache is normally
+# warm (update-check, version and update all refresh it); when it is not, this is
+# one very short attempt that gives up almost immediately.
+_exakit_notice_refresh_cache() {
+    exakit_versions_cache_fresh && return 0
+    (
+        EXAKIT_VERSION_LOOKUP_CONNECT_TIMEOUT=1
+        EXAKIT_VERSION_LOOKUP_MAX_TIME=2
+        exakit_versions_update_cache force >/dev/null 2>&1
+    ) || true
+    return 0
+}
+
+_exakit_notice_word() {
+    case "$1" in
+        critical) printf 'A critical' ;;
+        *)        printf 'A recommended' ;;
+    esac
+}
+
+# exakit_notice_after_command — the whole notice, gates included. Always returns 0:
+# nothing about version news may change what a command reports.
+exakit_notice_after_command() {
+    [ "${EXAKIT_NO_UPDATE_NOTICE:-0}" = "1" ] && return 0
+    [ "${EXAKIT_VERSION_POLICY:-manifest}" = "manifest" ] || return 0
+    # stderr must be a terminal: a notice has no business in a log file, a pipe,
+    # or a CI transcript.
+    [ -t 2 ] || return 0
+    [ -f "$EXAKIT_MANIFEST" ] || return 0
+    exakit_notice_due || return 0
+
+    _exakit_notice_refresh_cache
+    exakit_versions_resolve_doc >/dev/null 2>&1 || return 0
+
+    # Severity is tracked per group, not once for the whole notice: a routine
+    # exapump bump must not be announced as critical just because the runtime
+    # happens to have a critical one pending in the same breath.
+    _notice_light=""
+    _notice_heavy=""
+    _notice_light_worst="normal"
+    _notice_heavy_worst="normal"
+    for _notice_component in $(exakit_update_targets all); do
+        _notice_actual="$(exakit_update_actual_target "$_notice_component" 2>/dev/null || printf '%s\n' "$_notice_component")"
+        _notice_avail="$(exakit_component_available "$_notice_actual" 2>/dev/null || true)"
+        [ -n "$_notice_avail" ] || continue
+        _notice_cur="$(exakit_component_current "$_notice_actual" 2>/dev/null || true)"
+        [ -n "$_notice_cur" ] && [ "$_notice_cur" != "unknown" ] || continue
+        [ "$_notice_cur" != "$_notice_avail" ] || continue
+        # Only what the maintainers flagged. A normal bump waits to be asked about
+        # — and an advised rollback counts, which is the whole point of the flag.
+        _notice_severity="$(exakit_component_severity "$_notice_actual")"
+        case "$_notice_severity" in
+            recommended|critical) ;;
+            *) continue ;;
+        esac
+        if exakit_component_is_heavy "$_notice_actual"; then
+            _notice_heavy="${_notice_heavy}${_notice_heavy:+, }$_notice_actual"
+            [ "$_notice_severity" = "critical" ] && _notice_heavy_worst="critical"
+            [ "$_notice_heavy_worst" = "normal" ] && _notice_heavy_worst="recommended"
+        else
+            _notice_light="${_notice_light}${_notice_light:+, }$_notice_actual"
+            [ "$_notice_severity" = "critical" ] && _notice_light_worst="critical"
+            [ "$_notice_light_worst" = "normal" ] && _notice_light_worst="recommended"
+        fi
+    done
+    [ -n "$_notice_light" ] || [ -n "$_notice_heavy" ] || return 0
+
+    printf '\n' >&2
+    if [ -n "$_notice_light" ]; then
+        printf '%s%s update is available for %s — apply in seconds:  exakit update%s\n' \
+            "${UI_DIM:-}" "$(_exakit_notice_word "$_notice_light_worst")" "$_notice_light" "${UI_RESET:-}" >&2
+    fi
+    if [ -n "$_notice_heavy" ]; then
+        # Never "run update now" for the runtime: it stops the database, so the
+        # user picks the moment after seeing what it involves.
+        printf '%s%s update is available for %s — requires stopping the database, details:  exakit update-check%s\n' \
+            "${UI_DIM:-}" "$(_exakit_notice_word "$_notice_heavy_worst")" "$_notice_heavy" "${UI_RESET:-}" >&2
+    fi
+    printf '%sSilence this with EXAKIT_NO_UPDATE_NOTICE=1%s\n' "${UI_DIM:-}" "${UI_RESET:-}" >&2
+    exakit_notice_record
+    return 0
+}
+
 # exakit_print_kit2_discovery_line — one dim line offering the Kit 2 add-on, and
 # ONLY when the maintainers have deliberately enabled that path by adding a kit2
 # block to versions.json. Its absence is the launch switch: no block, no line,

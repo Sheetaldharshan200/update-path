@@ -835,7 +835,7 @@ function Test-ExakitVersionsCacheFresh {
 # in the cache directory (same volume) and only a validated document is moved
 # into place, so a reader can never observe a half-written file.
 function Update-ExakitVersionsCache {
-    param([switch]$Force)
+    param([switch]$Force, [int]$TimeoutSec = 12)
     if ($script:VersionsUrl -notlike "https://*") {
         Write-ExakitLog "WARN" "refusing to fetch the versions manifest over a non-HTTPS URL"
         return 1
@@ -848,7 +848,7 @@ function Update-ExakitVersionsCache {
     }
     $tmp = "$($script:VersionsCachePath).tmp.$PID"
     try {
-        Invoke-WebRequest -Uri $script:VersionsUrl -OutFile $tmp -UseBasicParsing -TimeoutSec 12 -UserAgent (Get-ExakitVersionsUserAgent)
+        Invoke-WebRequest -Uri $script:VersionsUrl -OutFile $tmp -UseBasicParsing -TimeoutSec $TimeoutSec -UserAgent (Get-ExakitVersionsUserAgent)
     } catch {
         Remove-Item -Force $tmp -ErrorAction SilentlyContinue
         Write-ExakitLog "INFO" "versions manifest fetch failed - keeping the cached copy"
@@ -1109,6 +1109,127 @@ function Set-ExakitCmdShim {
     $shimContent = "@echo off`r`npowershell -NoProfile -ExecutionPolicy Bypass -File `"$PsTarget`" %*`r`n"
     Set-Content -Path $shimPath -Value $shimContent -NoNewline
     return $shimPath
+}
+
+# ---------------------------------------------------------------------------
+# After-command update notice
+# ---------------------------------------------------------------------------
+# One dim line on stderr, after an unrelated command, when the maintainers have
+# flagged a pending change as recommended or critical. Everything about it is
+# deliberately conservative: a normal bump never interrupts anyone, the notice
+# appears at most once a day, it never speaks unless stderr is a terminal, and
+# EXAKIT_NO_UPDATE_NOTICE=1 silences it for good.
+#
+# Twin of exakit_notice_after_command in setup/lib/common.sh, including the state
+# file, so the once-a-day budget is the same file on both platforms.
+$script:NoticeState = if ($env:EXAKIT_NOTICE_STATE) { $env:EXAKIT_NOTICE_STATE } else { Join-Path $script:CacheDir "notice-state.json" }
+$script:NoticeInterval = 86400
+if ($env:EXAKIT_NOTICE_INTERVAL -match '^[0-9]+$') { $script:NoticeInterval = [int]$env:EXAKIT_NOTICE_INTERVAL }
+
+function Test-ExakitNoticeDue {
+    if (-not (Test-Path $script:NoticeState)) { return $true }
+    try {
+        $state = Get-Content $script:NoticeState -Raw | ConvertFrom-Json
+    } catch {
+        return $true
+    }
+    $last = Get-ManifestValue -Manifest $state -Path "last_shown"
+    if (-not ($last -is [int] -or $last -is [long])) { return $true }
+    $epoch = [int][double]::Parse((Get-Date -UFormat %s))
+    return (($epoch - $last) -ge $script:NoticeInterval)
+}
+
+# Atomic, and never a reason for a command to fail: an unwritable cache directory
+# just means the notice repeats.
+function Set-ExakitNoticeShown {
+    try {
+        New-Item -ItemType Directory -Force -Path (Split-Path $script:NoticeState -Parent) | Out-Null
+        $epoch = [int][double]::Parse((Get-Date -UFormat %s))
+        $tmp = "$($script:NoticeState).tmp.$PID"
+        Set-Content -Path $tmp -Value ("{`n  ""last_shown"": $epoch`n}")
+        Move-Item -Force $tmp $script:NoticeState
+    } catch { }
+}
+
+# A notice may never make an unrelated command feel slow. The cache is normally
+# warm; when it is not, this is one very short attempt that gives up almost at once.
+function Update-ExakitNoticeCache {
+    if (Test-ExakitVersionsCacheFresh) { return }
+    # Two seconds, once a day, worst case - the bash twin passes the same budget to
+    # curl. Silence on failure: the notice simply does not appear.
+    try { Update-ExakitVersionsCache -Force -TimeoutSec 2 | Out-Null } catch { }
+}
+
+function Get-ExakitNoticeWord {
+    param([string]$Severity)
+    if ($Severity -eq "critical") { return "A critical" }
+    return "A recommended"
+}
+
+# Show-ExakitUpdateNotice - the whole notice, gates included. Never throws and
+# never changes what the command before it reported.
+function Show-ExakitUpdateNotice {
+    if ($env:EXAKIT_NO_UPDATE_NOTICE -eq "1") { return }
+    if ($script:VersionPolicy -ne "manifest") { return }
+    # stderr must be a terminal: a notice has no business in a log file, a pipe, or
+    # a CI transcript.
+    try { if ([Console]::IsErrorRedirected) { return } } catch { return }
+    if (-not (Test-Path $script:ManifestPath)) { return }
+    if (-not (Test-ExakitNoticeDue)) { return }
+    # The component readers live in setup/exakit.ps1; the notice is only ever
+    # hooked from that dispatcher, but never assume it when the library is used
+    # on its own (the installer dot-sources it too).
+    if (-not (Get-Command Get-ExakitComponentAvailable -ErrorAction SilentlyContinue)) { return }
+
+    try {
+        Update-ExakitNoticeCache
+        if (-not (Resolve-ExakitVersionsDoc)) { return }
+        # Severity is tracked per group, not once for the whole notice: a routine
+        # exapump bump must not be announced as critical just because the runtime
+        # happens to have a critical one pending in the same breath.
+        $light = @()
+        $heavy = @()
+        $lightWorst = "normal"
+        $heavyWorst = "normal"
+        foreach ($component in (Get-ExakitUpdateTargets -Target "all")) {
+            $actual = Get-ExakitActualTarget $component
+            $available = Get-ExakitComponentAvailable $actual
+            if (-not $available) { continue }
+            $current = Get-ExakitComponentCurrent $actual
+            if (-not $current -or $current -eq "unknown" -or $current -eq "not installed") { continue }
+            if ($current -eq $available) { continue }
+            # Only what the maintainers flagged. A normal bump waits to be asked
+            # about - and an advised rollback counts, which is the point of the flag.
+            $severity = Get-ExakitComponentSeverity $actual
+            if ($severity -ne "critical" -and $severity -ne "recommended") { continue }
+            if (Test-ExakitComponentHeavy $actual) {
+                $heavy += $actual
+                if ($severity -eq "critical") { $heavyWorst = "critical" }
+                elseif ($heavyWorst -eq "normal") { $heavyWorst = "recommended" }
+            } else {
+                $light += $actual
+                if ($severity -eq "critical") { $lightWorst = "critical" }
+                elseif ($lightWorst -eq "normal") { $lightWorst = "recommended" }
+            }
+        }
+        if ($light.Count -eq 0 -and $heavy.Count -eq 0) { return }
+
+        $dim = $script:UiDim
+        $reset = $script:UiReset
+        [Console]::Error.WriteLine("")
+        if ($light.Count -gt 0) {
+            $word = Get-ExakitNoticeWord $lightWorst
+            [Console]::Error.WriteLine("$dim$word update is available for $($light -join ', ') - apply in seconds:  exakit update$reset")
+        }
+        if ($heavy.Count -gt 0) {
+            # Never "run update now" for the runtime: it stops the database, so the
+            # user picks the moment after seeing what it involves.
+            $word = Get-ExakitNoticeWord $heavyWorst
+            [Console]::Error.WriteLine("$dim$word update is available for $($heavy -join ', ') - requires stopping the database, details:  exakit update-check$reset")
+        }
+        [Console]::Error.WriteLine("${dim}Silence this with EXAKIT_NO_UPDATE_NOTICE=1$reset")
+        Set-ExakitNoticeShown
+    } catch { }
 }
 
 # ---------------------------------------------------------------------------

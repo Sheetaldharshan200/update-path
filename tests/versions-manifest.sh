@@ -652,6 +652,153 @@ allowed="$( EXAKIT_HOME="$UC"
     exakit_confirm_downgrade exapump </dev/null >/dev/null 2>&1; printf 'rc=%s' "$?" )"
 check "EXAKIT_ALLOW_DOWNGRADE=1 lets it through" "rc=0" "$allowed"
 
+echo "after-command notice (severity-gated, once a day, stderr only):"
+NT="$WORK/notice-home"
+mkdir -p "$NT/kit/mcp" "$NT/cache"
+cp "$REAL" "$NT/kit/versions.json"
+cat > "$NT/manifest.json" <<'EOF'
+{
+  "manifest_version": 1,
+  "kit_level": 1,
+  "kit": {
+    "version": "0.2.0"
+  },
+  "runtime": {
+    "type": "nano",
+    "image": "docker.io/exasol/nano:2026.2.0-nano.2"
+  },
+  "components": {
+    "exapump": {
+      "version": "0.11.2"
+    },
+    "mcp_server": {
+      "version": "1.10.1"
+    }
+  },
+  "steps_completed": []
+}
+EOF
+# Advertise one recommended light bump and one critical heavy bump.
+python3 - "$REAL" "$WORK/notice-versions.json" <<'PY'
+import collections, json, sys
+with open(sys.argv[1]) as handle:
+    doc = json.load(handle, object_pairs_hook=collections.OrderedDict)
+doc["components"]["exapump"]["version"] = "0.12.0"
+doc["components"]["exapump"]["severity"] = "recommended"
+doc["components"]["nano"]["version"] = "2026.3.0-nano.1"
+doc["components"]["nano"]["severity"] = "critical"
+doc["components"]["mcp"]["severity"] = "normal"
+with open(sys.argv[2], "w") as handle:
+    json.dump(doc, handle, indent=2)
+    handle.write("\n")
+PY
+
+# The notice refuses to speak unless stderr is a terminal, so the harness has to
+# provide one. script(1) does that, with two different command lines in the wild:
+# BSD/macOS takes the command as arguments, util-linux takes it after -c.
+NOTICE_PTY="none"
+if command -v script >/dev/null 2>&1; then
+    # stdin must be /dev/null: macOS script(1) refuses to start when its stdin is
+    # a socket, which is what a CI or agent shell hands it.
+    if script -q /dev/null /bin/echo probe </dev/null >/dev/null 2>&1; then
+        NOTICE_PTY="bsd"
+    elif script -q -c "/bin/echo probe" /dev/null </dev/null >/dev/null 2>&1; then
+        NOTICE_PTY="util-linux"
+    fi
+fi
+
+# notice <versions-doc> [statements] — run the notice on a pty and return what it
+# wrote, stripped of the line breaks the pty inserts at its 80-column edge (a wrap
+# must not be able to hide a phrase from an assertion) and of script(1)'s own EOT.
+notice() {
+    _n_doc="$1"
+    _n_extra="${2:-}"
+    cp "$_n_doc" "$NT/kit/versions.json"
+    cat > "$WORK/notice-run.sh" <<EOF
+EXAKIT_NO_FANCY=1
+EXAKIT_HOME='$NT'
+EXAKIT_MANIFEST='$NT/manifest.json'
+EXAKIT_VERSIONS_CACHE='$NT/cache/versions.json'
+EXAKIT_VERSIONS_URL='http://offline.invalid/versions.json'
+EXAKIT_NOTICE_STATE='$NT/cache/notice-state.json'
+. '$ROOT/setup/lib/common.sh'
+_EXAKIT_VERSIONS_DOC=''; _EXAKIT_VERSIONS_SOURCE=''
+$_n_extra
+exakit_notice_after_command
+EOF
+    case "$NOTICE_PTY" in
+        bsd)        script -q /dev/null /bin/bash "$WORK/notice-run.sh" </dev/null 2>&1 ;;
+        util-linux) script -q -c "/bin/bash $WORK/notice-run.sh" /dev/null </dev/null 2>&1 ;;
+        *)          printf '' ;;
+    esac | tr -d '\r\n\004\010' | sed 's/\^D//g'
+}
+
+if [ "$NOTICE_PTY" = "none" ]; then
+    # Without a pty the notice cannot be observed at all (that is its own gate).
+    for _skipped in "a recommended light bump is announced as recommended" "with the cheap command" \
+                    "a critical heavy bump is announced as critical" "as a database stop, not a one-liner" \
+                    "and never told to just run update" "the kill switch is advertised" \
+                    "a normal-severity bump stays quiet" "the same day it stays silent" \
+                    "nothing flagged, nothing said" "the kill switch silences it" \
+                    "latest policy has no severities to gate on"; do
+        check "$_skipped" "skipped" "skipped"
+    done
+else
+rm -f "$NT/cache/notice-state.json"
+flagged="$(notice "$WORK/notice-versions.json")"
+has "a recommended light bump is announced as recommended" \
+    "A recommended update is available for exapump" "$flagged"
+has "with the cheap command" "apply in seconds:  exakit update" "$flagged"
+has "a critical heavy bump is announced as critical" \
+    "A critical update is available for nano" "$flagged"
+has "as a database stop, not a one-liner" "requires stopping the database" "$flagged"
+lacks "and never told to just run update" "nano — apply in seconds" "$flagged"
+has "the kill switch is advertised" "EXAKIT_NO_UPDATE_NOTICE=1" "$flagged"
+lacks "a normal-severity bump stays quiet" "mcp" "$flagged"
+
+repeat="$(notice "$WORK/notice-versions.json")"
+check "the same day it stays silent" "" "$(printf '%s' "$repeat" | tr -d '[:space:]')"
+rm -f "$NT/cache/notice-state.json"
+
+only_normal="$(notice "$REAL")"
+check "nothing flagged, nothing said" "" "$(printf '%s' "$only_normal" | tr -d '[:space:]')"
+
+kill_switch="$(notice "$WORK/notice-versions.json" 'EXAKIT_NO_UPDATE_NOTICE=1')"
+check "the kill switch silences it" "" "$(printf '%s' "$kill_switch" | tr -d '[:space:]')"
+
+latest_policy="$(notice "$WORK/notice-versions.json" 'EXAKIT_VERSION_POLICY=latest')"
+check "latest policy has no severities to gate on" "" "$(printf '%s' "$latest_policy" | tr -d '[:space:]')"
+fi
+
+# The gate that keeps it out of logs and pipes: no tty on stderr, no notice.
+piped="$( EXAKIT_HOME="$NT"
+    EXAKIT_MANIFEST="$NT/manifest.json"
+    EXAKIT_VERSIONS_CACHE="$NT/cache/versions.json"
+    EXAKIT_VERSIONS_URL="http://offline.invalid/versions.json"
+    EXAKIT_NOTICE_STATE="$NT/cache/notice-state.json"
+    _EXAKIT_VERSIONS_DOC=""; _EXAKIT_VERSIONS_SOURCE=""
+    cp "$WORK/notice-versions.json" "$NT/kit/versions.json"
+    exakit_notice_after_command 2>&1 )"
+check "no terminal on stderr, no notice" "" "$(printf '%s' "$piped" | tr -d '[:space:]')"
+
+# The commands that must never carry it, and the ones that must.
+if grep -q '_with_notice cmd_status' "$ROOT/setup/exakit" && \
+   grep -q '_with_notice cmd_mcp_doctor' "$ROOT/setup/exakit" && \
+   ! grep -q '_with_notice cmd_update' "$ROOT/setup/exakit" && \
+   ! grep -q '_with_notice cmd_version' "$ROOT/setup/exakit" && \
+   ! grep -q '_with_notice cmd_uninstall' "$ROOT/setup/exakit" && \
+   ! grep -q '_with_notice usage' "$ROOT/setup/exakit" && \
+   ! grep -q '_with_notice cmd_catalog' "$ROOT/setup/exakit"; then
+    check "hooked into the right commands only" "yes" "yes"
+else
+    check "hooked into the right commands only" "yes" "no"
+fi
+# A notice may not change what a command reported to a script.
+rc_preserved="$( _with_notice() { "$@"; _wn_rc=$?; exakit_notice_after_command || true; return $_wn_rc; }
+    exakit_notice_after_command() { printf 'notice\n' >&2; return 0; }
+    _with_notice false; printf 'rc=%s' "$?" )"
+check "the command's exit status survives the notice" "rc=1" "$rc_preserved"
+
 echo "Kit 2 awareness (the block's absence is the launch switch):"
 # The shipped versions.json has no kit2 block, and nothing may advertise Kit 2
 # until a reviewed pull request adds one. This is the gate, asserted directly.
@@ -982,6 +1129,36 @@ PY
     check "powershell(self_update)" \
         "0.3.0 exasol-labs/exasol-personal-local-starterkit@main kit-present replaced shim-written backup-kept" \
         "$ps_self"
+    # The notice is mirrored code and its wording carries the cost of the update, so
+    # compare the real thing against the same fixture the bash lines came from.
+    if [ "$NOTICE_PTY" != "none" ]; then
+        rm -f "$NT/cache/notice-state.json"
+        cp "$WORK/notice-versions.json" "$NT/kit/versions.json"
+        cat > "$WORK/ps-notice.ps1" <<'PSEOF'
+$env:EXAKIT_HOME = $env:NT
+$env:EXAKIT_BIN_DIR = "$env:NT/bin"
+$env:EXAKIT_VERSIONS_CACHE = "$env:NT/cache/versions.json"
+$env:EXAKIT_VERSIONS_URL = "http://offline.invalid/versions.json"
+$env:EXAKIT_NOTICE_STATE = "$env:NT/cache/notice-state.json"
+. "$env:VM_ROOT/setup/lib/exakit-common.ps1"
+# The component readers live in the CLI; load it with a harmless command.
+. "$env:VM_ROOT/setup/exakit.ps1" -Command "help" *> $null
+Show-ExakitUpdateNotice
+PSEOF
+        case "$NOTICE_PTY" in
+            bsd) ps_notice="$(NT="$NT" VM_ROOT="$ROOT" script -q /dev/null                     pwsh -NoProfile -File "$WORK/ps-notice.ps1" </dev/null 2>&1)" ;;
+            *)   ps_notice="$(NT="$NT" VM_ROOT="$ROOT" script -q                     -c "pwsh -NoProfile -File $WORK/ps-notice.ps1" /dev/null </dev/null 2>&1)" ;;
+        esac
+        ps_notice="$(printf '%s' "$ps_notice" | tr -d '\r\n\004\010' | sed 's/\^D//g')"
+        has "powershell: recommended light bump" "A recommended update is available for exapump" "$ps_notice"
+        has "powershell: critical heavy bump" "A critical update is available for nano" "$ps_notice"
+        has "powershell: the heavy line names the cost" "requires stopping the database" "$ps_notice"
+        cp "$REAL" "$NT/kit/versions.json"
+    else
+        check "powershell: recommended light bump" "skipped" "skipped"
+        check "powershell: critical heavy bump" "skipped" "skipped"
+        check "powershell: the heavy line names the cost" "skipped" "skipped"
+    fi
     ps_version="$(EXAKIT_HOME="$UC" EXAKIT_BIN_DIR="$UC/bin" \
         EXAKIT_VERSIONS_CACHE="$UC/cache/versions.json" \
         EXAKIT_VERSIONS_URL="http://offline.invalid/versions.json" \
@@ -999,7 +1176,9 @@ else
                     "pinned policy uses the fallback" "an override is credited" \
                     "and withholds the maintainer note" \
                     "version reports the kit version" "version prints no table" \
-                    "version says something is waiting" "(self_update)"; do
+                    "version says something is waiting" "(self_update)" \
+                    "recommended light bump" "critical heavy bump" \
+                    "the heavy line names the cost"; do
         check "powershell: $_skipped" "skipped" "skipped"
     done
 fi
