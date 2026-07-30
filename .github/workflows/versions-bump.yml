@@ -42,7 +42,7 @@ jobs:
     if: github.event_name == 'workflow_dispatch' || vars.EXAKIT_AUTO_BUMP == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: find newer stable releases and rewrite versions.json
         id: bump

@@ -25,7 +25,7 @@ jobs:
     outputs:
       versions: ${{ steps.detect.outputs.versions }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - id: detect
@@ -51,7 +51,7 @@ jobs:
     name: validate versions.json
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: canonical formatting
         # The no-Python reader in setup/lib/common.sh walks the file line by
@@ -167,7 +167,7 @@ jobs:
     if: needs.changes.outputs.versions == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: download the advertised assets and check every digest
         # A wrong digest here would make the exapump install refuse to run (or,
         # worse, be waved through with EXAKIT_ALLOW_UNVERIFIED_EXAPUMP=1). The
@@ -205,7 +205,7 @@ jobs:
     if: needs.changes.outputs.versions == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: every advertised version resolves at its own upstream
         # digest-verify proves the exapump binaries are the ones we say they are.
         # This job asks the other question: does what we advertise exist at all?
@@ -332,7 +332,7 @@ jobs:
         # halves of the parity guards execute instead of being skipped.
         os: [ubuntu-latest, macos-latest]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: bash version
         run: bash --version | head -1
       - name: PowerShell available
