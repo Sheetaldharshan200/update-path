@@ -173,7 +173,16 @@ cmd_uninstall() {
 # GitHub, an AI client still pinned to an older MCP server), and saying so answers
 # "why does this not match what I installed?" before it has to be asked.
 _version_cell() {
-    _vc_live="$(exakit_component_current "$1" 2>/dev/null || true)"
+    # The reader returns non-zero only when the component is provably ABSENT, and that
+    # verdict has to survive: swallowing it made `exakit version` print a recorded
+    # version for a deleted binary while update-check and status both said
+    # "not installed".
+    if _vc_live="$(exakit_component_current "$1" 2>/dev/null)"; then
+        :
+    else
+        printf 'not installed'
+        return 0
+    fi
     _vc_recorded="$2"
     if [ -z "$_vc_live" ]; then
         printf '%s' "${_vc_recorded:-not installed}"

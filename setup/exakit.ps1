@@ -280,11 +280,11 @@ function Invoke-CmdUninstall {
 # Twin of _version_cell in setup/exakit.
 function Get-ExakitVersionCell {
     param([Parameter(Mandatory)][string]$Component, [string]$Recorded = "")
+    # An empty answer means provably absent, and that verdict has to survive: falling
+    # back to the record made `exakit version` print a version for a deleted component
+    # while update-check and status both said "not installed".
     $live = Get-ExakitComponentCurrent $Component
-    if (-not $live) {
-        if ($Recorded) { return $Recorded }
-        return "not installed"
-    }
+    if (-not $live -or $live -eq "not installed") { return "not installed" }
     if ($Recorded -and $live -ne $Recorded) { return "$live  (kit installed $Recorded)" }
     return $live
 }
@@ -416,8 +416,12 @@ function Get-ExakitInstalledMcpVersion {
             }
         }
         if ($pins.Count -eq 0) { return "" }
+        # The OLDEST pin, not the set: this value is compared against the advertised
+        # version, and a comma-joined list is not a version. The oldest is the weakest
+        # link - the client that would launch the most outdated server. Which client is
+        # stale belongs to `exakit mcp-doctor`, which prints per-client state already.
         $sorted = $pins.Keys | Sort-Object { [regex]::Replace($_, '\d+', { param($m) $m.Value.PadLeft(12, '0') }) }
-        return ($sorted -join ", ")
+        return ($sorted | Select-Object -First 1)
     } catch {
         return ""
     }
@@ -502,9 +506,11 @@ function Get-ExakitComponentCurrent {
             if ((Get-RuntimeType) -eq "personal") { return (Get-ExakitComponentCurrent "personal") }
             return ""
         }
+        # The launcher is a different axis from the runtime (see
+        # exakit_installed_personal_version in common.sh): the record is the answer.
         "personal" {
             if ((Get-RuntimeType) -eq "personal") { return (Get-ExakitManifestValue "runtime.version") }
-            return "not installed"
+            return ""
         }
     }
 }

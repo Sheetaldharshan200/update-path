@@ -1137,6 +1137,10 @@ PY
 exakit_installed_nano_tag() {
     _int_live=""
     if command -v nano_engine >/dev/null 2>&1; then
+        # The container is not always called exasol-nano; nano_resolve_names reads the
+        # recorded name, and without it this probe silently failed on every install
+        # that used a custom one (PowerShell has always resolved it).
+        command -v nano_resolve_names >/dev/null 2>&1 && nano_resolve_names 2>/dev/null
         _int_engine="$(nano_engine 2>/dev/null || true)"
         if [ -n "$_int_engine" ] && [ "$_int_engine" != "none" ]; then
             _int_image="$("$_int_engine" container inspect -f '{{.Config.Image}}' \
@@ -1155,18 +1159,15 @@ exakit_installed_nano_tag() {
     printf '%s\n' "${_int_recorded##*:}"
 }
 
-# exakit_installed_personal_version — the launcher reports itself through the bare
-# `version` subcommand (--version only prints usage).
+# exakit_installed_personal_version — the RECORD, deliberately.
+#
+# `exasol version` reports the launcher, and the launcher is a different axis from the
+# runtime: personal_update --apply installs a new launcher but leaves runtime.version
+# alone until the data migration is finished (it records runtime.launcher_version and
+# says so). Substituting the launcher version here made update-check call a half-done
+# major upgrade "current" and hid the outstanding migration, while personal_update kept
+# offering it — the two commands disagreeing about one install.
 exakit_installed_personal_version() {
-    _ipv_bin="$EXAKIT_BIN_DIR/exasol"
-    [ -x "$_ipv_bin" ] || _ipv_bin="$(command -v exasol 2>/dev/null || true)"
-    if [ -n "$_ipv_bin" ] && [ -x "$_ipv_bin" ]; then
-        _ipv_live="$("$_ipv_bin" version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+[0-9A-Za-z._+-]*' | head -1)"
-        if [ -n "$_ipv_live" ]; then
-            printf '%s\n' "$_ipv_live"
-            return 0
-        fi
-    fi
     manifest_get runtime.version 2>/dev/null
 }
 
@@ -1591,7 +1592,7 @@ exakit_component_is_heavy() {
 # _exakit_probe_exapump_version <binary> — "exapump 0.11.2" -> "0.11.2". Empty when
 # the binary will not run (a release built against a newer glibc, for instance).
 _exakit_probe_exapump_version() {
-    _pev_out="$("$1" --version 2>/dev/null | head -1)"
+    _pev_out="$("$1" --version </dev/null 2>/dev/null | head -1)"
     [ -n "$_pev_out" ] || return 0
     printf '%s' "$_pev_out" | grep -oE '[0-9]+\.[0-9]+[0-9A-Za-z._+-]*' | head -1
 }
@@ -1601,7 +1602,7 @@ _exakit_probe_pyexasol_version() {
     # The subshell with `&& :` is the house pattern for this probe: on a guest that
     # advertises SVE its host cannot execute, the import dies on a signal, and this
     # keeps the shell's job-status noise out of the user's output.
-    _ppv_out="$( ( "$1" -c 'import pyexasol; print(pyexasol.__version__)' && : ) 2>/dev/null | head -1 )"
+    _ppv_out="$( ( "$1" -c 'import pyexasol; print(pyexasol.__version__)' </dev/null && : ) 2>/dev/null | head -1 )"
     case "$_ppv_out" in
         ''|*[!A-Za-z0-9._+-]*) return 0 ;;
     esac
@@ -1654,7 +1655,13 @@ def key(v):
     return [int(p) if p.isdigit() else p for p in re.split(r"([0-9]+)", v)]
 
 
-print(", ".join(sorted(pins, key=key)))
+# The OLDEST pin, not the set: this value is compared against the advertised version,
+# and a comma-joined list is not a version. The oldest is also the honest answer —
+# it is the weakest link, the client that would launch the most outdated server.
+# Which client is stale belongs to `exakit mcp-doctor`, which prints per-client state
+# already. (No apostrophes in here: this heredoc sits inside a command substitution,
+# and bash 3.2 mis-tracks a lone quote in that position.)
+print(sorted(pins, key=key)[0])
 PY
     )"
     rm -f "$_imv_result"

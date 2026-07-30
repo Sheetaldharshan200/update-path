@@ -617,6 +617,54 @@ check "a missing venv reports not installed" "not installed" \
 # The MCP server is materialised per launch by uvx, so its record stands.
 check "the MCP server keeps its recorded version" "1.10.1" "$(live_read mcp)"
 
+# A component that is gone must read as gone in EVERY command. Swallowing the reader's
+# "provably absent" verdict made `exakit version` print a recorded version while
+# update-check and status both said "not installed".
+# PATH must not contain a real exapump either, or the binary fallback finds the
+# tester's own install; python3 has to stay reachable for the manifest reads.
+absent_version="$( rm -f "$LIVE/bin/exapump" "$LIVE/venv/bin/python"
+    EXAKIT_HOME="$LIVE" PATH="$(dirname "$(command -v python3)"):/usr/bin:/bin" \
+        bash "$ROOT/setup/exakit" version 2>&1 )"
+has "version agrees that a deleted exapump is gone" "exapump:        not installed" "$absent_version"
+has "version agrees that a deleted venv is gone" "pyexasol:       not installed" "$absent_version"
+# Put them back for anything that follows.
+printf '#!/bin/sh\necho "exapump 0.13.0"\n' > "$LIVE/bin/exapump"
+printf '#!/bin/sh\necho 2.9.9\n' > "$LIVE/venv/bin/python"
+chmod +x "$LIVE/bin/exapump" "$LIVE/venv/bin/python"
+
+# Clients that disagree must yield ONE comparable version, not a joined list: the list
+# compared as newer than the advertised version, so an unattended update read it as a
+# rollback and skipped MCP entirely.
+mcp_not_rollback="$( EXAKIT_HOME="$LIVE"
+    EXAKIT_MANIFEST="$LIVE/manifest.json"
+    exakit_component_available() { printf '1.10.1\n'; }
+    exakit_component_current() { printf '1.9.0\n'; }
+    ( exakit_confirm_downgrade mcp </dev/null 2>&1 ); printf 'rc=%s' "$?" )"
+lacks "and an older pin is not mistaken for a rollback" "is NEWER than" "$mcp_not_rollback"
+
+# The launcher is a different axis from the runtime: personal_update --apply installs a
+# new launcher but leaves runtime.version behind until the data migration is done.
+# Reporting the launcher there hid the outstanding migration.
+check "personal reports the recorded runtime, not the launcher" "2.0.0-rc4" \
+    "$( EXAKIT_HOME="$LIVE"; EXAKIT_MANIFEST="$LIVE/manifest.json"; EXAKIT_BIN_DIR="$LIVE/rt"
+        mkdir -p "$LIVE/rt"; printf '#!/bin/sh\necho 9.9.9\n' > "$LIVE/rt/exasol"
+        chmod +x "$LIVE/rt/exasol"
+        exakit_installation_runtime_type() { printf personal; }
+        exakit_component_current personal 2>/dev/null )"
+
+# The container is not always called exasol-nano.
+check "nano resolves the recorded container name" "2026.9.9-nano.7" \
+    "$( EXAKIT_HOME="$LIVE"; EXAKIT_MANIFEST="$LIVE/manifest.json"
+        exakit_installation_runtime_type() { printf nano; }
+        nano_resolve_names() { EXAKIT_NANO_CONTAINER="custom-nano"; }
+        nano_engine() { printf "%s" "$LIVE/rt/fake-engine"; }
+        mkdir -p "$LIVE/rt"
+        # Answers only when asked about the resolved name, so a probe that ignored
+        # nano_resolve_names would get nothing and fall back to the record.
+        printf '#!/bin/sh\ncase " $* " in *" custom-nano "*) echo "docker.io/exasol/nano:2026.9.9-nano.7" ;; esac\n' \
+            > "$LIVE/rt/fake-engine"; chmod +x "$LIVE/rt/fake-engine"
+        exakit_component_current nano 2>/dev/null )"
+
 # The runtime is probed too, but with one deliberate difference: a probe that cannot
 # answer keeps the record instead of reporting absence. A stopped container engine
 # is an ordinary state; the runtime row must not flicker to "inspect" because Docker
@@ -636,13 +684,11 @@ runtime_read() (
     eval "${2:-}"
     exakit_component_current "$1" 2>/dev/null || printf 'not installed'
 )
-check "personal: the launcher wins over the record" "3.1.4" \
+# The launcher is NOT the runtime version: personal_update --apply installs a new
+# launcher and deliberately leaves runtime.version behind until the data migration is
+# finished, so the record is the only honest answer here.
+check "personal reports the record, launcher present or not" "2.0.0-rc4" \
     "$(runtime_read personal 'exakit_installation_runtime_type() { printf personal; }')"
-# A launcher that runs but reports nothing usable keeps the record, rather than
-# claiming the runtime disappeared.
-check "personal: a silent launcher keeps the record" "2.0.0-rc4" \
-    "$(runtime_read personal 'exakit_installation_runtime_type() { printf personal; }
-        printf "#!/bin/sh\nexit 3\n" > "$LIVE/rt/exasol"; chmod +x "$LIVE/rt/exasol"')"
 check "personal is not installed on a Nano box" "not installed" "$(runtime_read personal)"
 check "nano: the container tag wins over the record" "2026.9.9-nano.7" \
     "$(runtime_read nano 'nano_engine() { printf "%s" "$LIVE/rt/fake-engine"; }')"
@@ -668,8 +714,10 @@ mcp_read() (
 )
 check "mcp: the pin in the client config is what will run" "1.9.0" \
     "$(MCP_ARTIFACTS='{"path":"'"$LIVE"'/mcp/client-a.json"}' mcp_read)"
-# Clients that disagree are all reported: which one is stale is the useful part.
-check "mcp: clients that disagree are both named" "1.9.0, 1.10.1" \
+# Clients that disagree yield the OLDEST pin: this value is compared against the
+# advertised version, and the oldest is the weakest link — the client that would launch
+# the most outdated server. Which client is stale belongs to mcp-doctor.
+check "mcp: disagreeing clients yield the oldest pin" "1.9.0" \
     "$(MCP_ARTIFACTS='{"path":"'"$LIVE"'/mcp/client-a.json"},{"path":"'"$LIVE"'/mcp/client-b.json"}' mcp_read)"
 check "mcp: no configured client keeps the record" "1.10.1" \
     "$(MCP_ARTIFACTS='' mcp_read)"
