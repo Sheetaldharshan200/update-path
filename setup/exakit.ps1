@@ -411,6 +411,26 @@ function Get-ExakitComponentCurrent {
             return (Get-ExakitManifestValue "components.pyexasol.version")
         }
         "nano" {
+            # The tag on the container beats the record: someone may have recreated
+            # it by hand, and an interrupted update can leave the record ahead of
+            # what is really running.
+            #
+            # Unlike exapump and pyexasol, a probe that cannot answer NEVER reports
+            # absence here. A closed Docker Desktop is an ordinary, temporary state,
+            # and flipping the runtime row to "inspect" every time would be noise.
+            # Whether the runtime exists at all is `exakit status`'s question, and it
+            # asks the engine directly.
+            $live = ""
+            try {
+                $engine = Get-NanoEngine
+                if ($engine -and $engine -ne "none") {
+                    Resolve-NanoNames
+                    $out = & $engine container inspect -f "{{.Config.Image}}" $script:NanoContainer 2>$null |
+                        Select-Object -First 1
+                    if ($out -and ("" + $out).Contains(":")) { $live = (("" + $out).Trim() -split ":")[-1] }
+                }
+            } catch { }
+            if ($live) { return $live }
             $image = Get-ExakitManifestValue "runtime.image"
             if ($image -and $image.Contains(":")) { return ($image -split ":")[-1] }
             return ""

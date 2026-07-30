@@ -584,7 +584,7 @@ cat > "$LIVE/manifest.json" <<EOF
   "manifest_version": 1,
   "kit_level": 1,
   "kit": { "version": "0.2.0" },
-  "runtime": { "type": "nano", "image": "docker.io/exasol/nano:2026.2.0-nano.2" },
+  "runtime": { "type": "nano", "version": "2.0.0-rc4", "image": "docker.io/exasol/nano:2026.2.0-nano.2" },
   "components": {
     "exapump": { "version": "0.11.2", "path": "$LIVE/bin/exapump" },
     "mcp_server": { "version": "1.10.1" },
@@ -614,6 +614,38 @@ check "a missing venv reports not installed" "not installed" \
     "$(live_read pyexasol 'rm -f "$LIVE/venv/bin/python"')"
 # The MCP server is materialised per launch by uvx, so its record stands.
 check "the MCP server keeps its recorded version" "1.10.1" "$(live_read mcp)"
+
+# The runtime is probed too, but with one deliberate difference: a probe that cannot
+# answer keeps the record instead of reporting absence. A stopped container engine
+# is an ordinary state; the runtime row must not flicker to "inspect" because Docker
+# Desktop is closed.
+mkdir -p "$LIVE/rt"
+printf '#!/bin/sh\necho 3.1.4\n' > "$LIVE/rt/exasol"
+printf '#!/bin/sh\necho "docker.io/exasol/nano:2026.9.9-nano.7"\n' > "$LIVE/rt/fake-engine"
+chmod +x "$LIVE/rt/exasol" "$LIVE/rt/fake-engine"
+# The fixture records type nano, so asking for `personal` must return nothing even
+# with a launcher sitting right there: a runtime this kit does not manage is not
+# installed. PATH is left alone on purpose — stripping it hides python3, and the kit
+# then reaches for uv, which is noise rather than a result.
+runtime_read() (
+    EXAKIT_HOME="$LIVE"
+    EXAKIT_MANIFEST="$LIVE/manifest.json"
+    EXAKIT_BIN_DIR="$LIVE/rt"
+    eval "${2:-}"
+    exakit_component_current "$1" 2>/dev/null || printf 'not installed'
+)
+check "personal: the launcher wins over the record" "3.1.4" \
+    "$(runtime_read personal 'exakit_installation_runtime_type() { printf personal; }')"
+# A launcher that runs but reports nothing usable keeps the record, rather than
+# claiming the runtime disappeared.
+check "personal: a silent launcher keeps the record" "2.0.0-rc4" \
+    "$(runtime_read personal 'exakit_installation_runtime_type() { printf personal; }
+        printf "#!/bin/sh\nexit 3\n" > "$LIVE/rt/exasol"; chmod +x "$LIVE/rt/exasol"')"
+check "personal is not installed on a Nano box" "not installed" "$(runtime_read personal)"
+check "nano: the container tag wins over the record" "2026.9.9-nano.7" \
+    "$(runtime_read nano 'nano_engine() { printf "%s" "$LIVE/rt/fake-engine"; }')"
+check "nano: an engine that will not answer keeps the record" "2026.2.0-nano.2" \
+    "$(runtime_read nano 'nano_engine() { printf none; }')"
 
 echo "the table's verdict binds the apply path too:"
 # uc_run <statements> — `exakit update all` against the fixture, with the real

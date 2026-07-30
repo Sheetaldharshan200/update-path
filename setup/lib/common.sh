@@ -1125,17 +1125,59 @@ PY
 # ---------------------------------------------------------------------------
 # Version resolution and update planning
 # ---------------------------------------------------------------------------
+# The installed runtime version, read from the runtime itself with the record as
+# the fallback. Deliberately different from exapump and pyexasol in one way: a probe
+# that cannot answer NEVER reports absence here. A stopped container engine (or a
+# closed Docker Desktop) is an ordinary, temporary state, and flipping the runtime
+# row to "inspect" every time would be noise. Whether the runtime exists at all is
+# `exakit status`'s question, and it asks the engine directly.
+
+# exakit_installed_nano_tag — the tag on the container IS the installed version.
+# Needs runtime-nano.sh for the engine and container name.
+exakit_installed_nano_tag() {
+    _int_live=""
+    if command -v nano_engine >/dev/null 2>&1; then
+        _int_engine="$(nano_engine 2>/dev/null || true)"
+        if [ -n "$_int_engine" ] && [ "$_int_engine" != "none" ]; then
+            _int_image="$("$_int_engine" container inspect -f '{{.Config.Image}}' \
+                "${EXAKIT_NANO_CONTAINER:-exasol-nano}" 2>/dev/null | head -1)"
+            case "$_int_image" in
+                *:*) _int_live="${_int_image##*:}" ;;
+            esac
+        fi
+    fi
+    if [ -n "$_int_live" ]; then
+        printf '%s\n' "$_int_live"
+        return 0
+    fi
+    _int_recorded="$(manifest_get runtime.image 2>/dev/null || true)"
+    [ -n "$_int_recorded" ] || return 1
+    printf '%s\n' "${_int_recorded##*:}"
+}
+
+# exakit_installed_personal_version — the launcher reports itself through the bare
+# `version` subcommand (--version only prints usage).
+exakit_installed_personal_version() {
+    _ipv_bin="$EXAKIT_BIN_DIR/exasol"
+    [ -x "$_ipv_bin" ] || _ipv_bin="$(command -v exasol 2>/dev/null || true)"
+    if [ -n "$_ipv_bin" ] && [ -x "$_ipv_bin" ]; then
+        _ipv_live="$("$_ipv_bin" version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+[0-9A-Za-z._+-]*' | head -1)"
+        if [ -n "$_ipv_live" ]; then
+            printf '%s\n' "$_ipv_live"
+            return 0
+        fi
+    fi
+    manifest_get runtime.version 2>/dev/null
+}
+
 exakit_installation_runtime_type() {
     manifest_get runtime.type 2>/dev/null
 }
 
 exakit_installation_runtime_version() {
     case "$(exakit_installation_runtime_type 2>/dev/null || true)" in
-        nano)
-            _image="$(manifest_get runtime.image 2>/dev/null || true)"
-            printf '%s\n' "${_image##*:}"
-            ;;
-        personal) manifest_get runtime.version 2>/dev/null ;;
+        nano)     exakit_installed_nano_tag ;;
+        personal) exakit_installed_personal_version ;;
         *) return 1 ;;
     esac
 }
@@ -1595,10 +1637,16 @@ exakit_component_current() {
             ;;
         kit2)     manifest_get kit2.version 2>/dev/null ;;
         nano)
-            _image="$(manifest_get runtime.image 2>/dev/null || true)"
-            printf '%s\n' "${_image##*:}"
+            # Only the runtime this install actually uses. A Nano machine that
+            # happens to have the Personal launcher on PATH (or the other way
+            # round) must not report a version for a runtime it does not run.
+            [ "$(exakit_installation_runtime_type 2>/dev/null || true)" = "nano" ] || return 1
+            exakit_installed_nano_tag
             ;;
-        personal) manifest_get runtime.version 2>/dev/null ;;
+        personal)
+            [ "$(exakit_installation_runtime_type 2>/dev/null || true)" = "personal" ] || return 1
+            exakit_installed_personal_version
+            ;;
         runtime)
             exakit_installation_runtime_version
             ;;
