@@ -432,14 +432,14 @@ echo "update-check table:"
 # One fixture install, one advertised set, every interesting row at once:
 #   exakit    0.2.0            = 0.2.0             -> current (and NOT "inspect")
 #   nano      2026.2.0-nano.2 -> 2026.3.0-nano.1   -> heavy
-#   exapump   0.13.0          -> 0.12.0            -> advisory rollback
+#   exapump   0.13.0          -> 0.12.0            -> ahead, nothing offered
 #   mcp       1.10.1          -> 1.11.0 critical   -> severity + note
 #   pyexasol  not installed   -> 2.2.2             -> repair action
 UC="$WORK/uc-home"
 mkdir -p "$UC/kit/mcp" "$UC/cache" "$UC/bin"
 # Installed versions are read from disk now, so the fixture supplies the disk: a
-# stub that reports 0.13.0 is what makes this an advisory-rollback scenario against
-# an advertised 0.12.0, on any machine, whether or not a real exapump is installed.
+# stub that reports 0.13.0 is what puts the install AHEAD of the advertised 0.12.0,
+# on any machine, whether or not a real exapump is installed.
 printf '#!/bin/sh\necho "exapump 0.13.0"\n' > "$UC/bin/exapump"
 chmod +x "$UC/bin/exapump"
 cat > "$UC/manifest.json" <<EOF
@@ -539,7 +539,9 @@ has "installed stays installed (mcp)" "mcp        1.10.1" "$uc_table"
 lacks "no row is stuck on inspect" "inspect" "$uc_table"
 has "a runtime change is marked heavy" "exakit update runtime (heavy)" "$uc_table"
 has "an older advertised version is flagged" "0.12.0 (older)" "$uc_table"
-has "and explained as an advisory rollback" "advisory rollback" "$uc_table"
+has "and the row offers nothing" "none — yours is newer than tested" "$uc_table"
+lacks "no downgrade is offered" "exakit update exapump" "$uc_table"
+lacks "and no confirmation is promised" "advisory rollback" "$uc_table"
 has "a critical severity is shown" "critical" "$uc_table"
 has "a recommended severity is shown" "recommended" "$uc_table"
 has "the maintainer note is printed" "0.13.0 mis-detects CSV headers" "$uc_table"
@@ -574,7 +576,6 @@ update_out="$( EXAKIT_HOME="$UC"
     EXAKIT_VERSIONS_CACHE="$UC/cache/versions.json"
     EXAKIT_VERSIONS_URL="http://offline.invalid/versions.json"
     _EXAKIT_VERSIONS_DOC=""; _EXAKIT_VERSIONS_SOURCE=""
-    EXAKIT_ALLOW_DOWNGRADE=1
     exakit_init_logging() { :; }
     exakit_update_component() { printf 'APPLIED %s\n' "$1"; }
     exakit_update all 2>&1 )"
@@ -601,8 +602,9 @@ override_confirm="$( EXAKIT_HOME="$UC"
     EXAKIT_VERSIONS_URL="http://offline.invalid/versions.json"
     _EXAKIT_VERSIONS_DOC=""; _EXAKIT_VERSIONS_SOURCE=""
     EXAKIT_EXAPUMP_VERSION="0.11.2"
-    ( exakit_confirm_downgrade exapump </dev/null 2>&1 ) )"
-has "and still goes through the confirmation gate" "0.13.0 is NEWER than the advertised 0.11.2" "$override_confirm"
+    if exakit_component_is_ahead exapump; then printf 'ahead'; else printf 'NOT-AHEAD'; fi )"
+check "but an override naming an older version is still not a downgrade lever" \
+    "ahead" "$override_confirm"
 
 echo "a routine update never dies on one component:"
 unknown_skip="$( EXAKIT_HOME="$UC"
@@ -699,8 +701,8 @@ mcp_not_rollback="$( EXAKIT_HOME="$LIVE"
     EXAKIT_MANIFEST="$LIVE/manifest.json"
     exakit_component_available() { printf '1.10.1\n'; }
     exakit_component_current() { printf '1.9.0\n'; }
-    ( exakit_confirm_downgrade mcp </dev/null 2>&1 ); printf 'rc=%s' "$?" )"
-lacks "and an older pin is not mistaken for a rollback" "is NEWER than" "$mcp_not_rollback"
+    if exakit_component_is_ahead mcp; then printf 'AHEAD'; else printf 'not-ahead'; fi )"
+check "and an older pin is not mistaken for being ahead" "not-ahead" "$mcp_not_rollback"
 
 # The launcher is a different axis from the runtime: personal_update --apply installs a
 # new launcher but leaves runtime.version behind until the data migration is done.
@@ -869,16 +871,16 @@ uc_run() (
     ( exakit_update all </dev/null 2>&1 ); printf 'rc=%s' "$?"
 )
 
-min_kit_apply="$(uc_run 'exakit_component_min_kit() { [ "$1" = mcp ] && printf "9.9.9\n"; return 0; }
-                        EXAKIT_ALLOW_DOWNGRADE=1')"
+min_kit_apply="$(uc_run 'exakit_component_min_kit() { [ "$1" = mcp ] && printf "9.9.9\n"; return 0; }')"
 has "a kit-blocked component says so" "needs kit >= 9.9.9" "$min_kit_apply"
 lacks "and is not installed anyway" "APPLIED mcp" "$min_kit_apply"
-has "while the rest of the run continues" "APPLIED exapump" "$min_kit_apply"
+has "while the rest of the run continues" "APPLIED pyexasol" "$min_kit_apply"
 
-refused="$(uc_run)"
-lacks "a refused rollback is not applied" "APPLIED exapump" "$refused"
-has "but its neighbours still are" "APPLIED mcp" "$refused"
-has "and the run itself succeeds" "rc=0" "$refused"
+ahead_skip="$(uc_run)"
+lacks "an install ahead of the manifest is never downgraded" "APPLIED exapump" "$ahead_skip"
+has "and the skip is stated" "is newer than the tested 0.12.0" "$ahead_skip"
+has "but its neighbours still are" "APPLIED mcp" "$ahead_skip"
+has "and the run itself succeeds" "rc=0" "$ahead_skip"
 
 personal_row="$( EXAKIT_HOME="$UC"
     EXAKIT_MANIFEST="$UC/manifest.json"
@@ -921,27 +923,54 @@ unreadable_row="$( EXAKIT_HOME="$UC"
 has "no readable document is stated plainly" "could not be read" "$unreadable_row"
 has "and the row admits it does not know" "inspect" "$unreadable_row"
 
-echo "advisory rollback (never silent):"
-blocked="$( EXAKIT_HOME="$UC"
+echo "never backwards (no prompt, no override, no exception):"
+ahead="$( EXAKIT_HOME="$UC"
     EXAKIT_MANIFEST="$UC/manifest.json"
     EXAKIT_VERSIONS_CACHE="$UC/cache/versions.json"
     EXAKIT_VERSIONS_URL="http://offline.invalid/versions.json"
     _EXAKIT_VERSIONS_DOC=""; _EXAKIT_VERSIONS_SOURCE=""
-    # The refusal calls die(), which exits: run it in its own subshell so the
-    # exit status can still be reported here.
-    ( exakit_confirm_downgrade exapump </dev/null 2>&1 ); printf 'rc=%s' "$?" )"
-has "a rollback is announced" "0.13.0 is NEWER than the advertised 0.12.0" "$blocked"
-has "the maintainer note is repeated" "0.12.0 is the tested build" "$blocked"
-has "an unattended run refuses it" "Set EXAKIT_ALLOW_DOWNGRADE=1" "$blocked"
-has "and exits non-zero" "rc=1" "$blocked"
-allowed="$( EXAKIT_HOME="$UC"
-    EXAKIT_MANIFEST="$UC/manifest.json"
-    EXAKIT_VERSIONS_CACHE="$UC/cache/versions.json"
-    EXAKIT_VERSIONS_URL="http://offline.invalid/versions.json"
-    _EXAKIT_VERSIONS_DOC=""; _EXAKIT_VERSIONS_SOURCE=""
+    if exakit_component_is_ahead exapump; then printf 'ahead '; else printf 'NOT-AHEAD '; fi
+    # The env override that used to pre-answer the confirmation must not resurrect
+    # the behaviour now that the confirmation itself is gone.
     EXAKIT_ALLOW_DOWNGRADE=1
-    exakit_confirm_downgrade exapump </dev/null >/dev/null 2>&1; printf 'rc=%s' "$?" )"
-check "EXAKIT_ALLOW_DOWNGRADE=1 lets it through" "rc=0" "$allowed"
+    if exakit_component_is_ahead exapump; then printf 'still-ahead'; else printf 'OVERRIDDEN'; fi )"
+check "an install ahead of the manifest stays ahead, override or not" \
+    "ahead still-ahead" "$ahead"
+# The behaviour that used to prompt: asking for that component by name must now
+# succeed and do nothing, rather than fail or ask.
+one_ahead="$( EXAKIT_HOME="$UC"
+    EXAKIT_MANIFEST="$UC/manifest.json"
+    EXAKIT_VERSIONS_CACHE="$UC/cache/versions.json"
+    EXAKIT_VERSIONS_URL="http://offline.invalid/versions.json"
+    _EXAKIT_VERSIONS_DOC=""; _EXAKIT_VERSIONS_SOURCE=""
+    exakit_init_logging() { :; }
+    exakit_update_component() { printf 'APPLIED %s\n' "$1"; }
+    ( exakit_update exapump </dev/null 2>&1 ); printf 'rc=%s' "$?" )"
+has "asking for it by name explains the skip" "is newer than the tested 0.12.0" "$one_ahead"
+lacks "and applies nothing" "APPLIED exapump" "$one_ahead"
+lacks "without asking anything" "Downgrade" "$one_ahead"
+has "and exits clean" "rc=0" "$one_ahead"
+
+echo "the manifest date reads as a date:"
+# A calendar date must never be shifted into local time: TZ is set to a zone west
+# of UTC to prove the day does not move backwards.
+dates="$( TZ="Pacific/Honolulu"
+    printf '%s|' "$(exakit_format_manifest_date 2026-07-29)"
+    printf '%s|' "$(exakit_format_manifest_date 2026-01-09)"
+    printf '%s|' "$(exakit_format_manifest_date 2026-12-31)"
+    printf '%s|' "$(exakit_format_manifest_date not-a-date)"
+    printf '%s|' "$(exakit_format_manifest_date 2026-13-01)"
+    printf '%s' "$(exakit_format_manifest_date '')" )"
+check "formatted, zero-stripped, and passed through when unparseable" \
+    "July 29, 2026|January 9, 2026|December 31, 2026|not-a-date|2026-13-01|" "$dates"
+source_line="$( EXAKIT_HOME="$UC"
+    EXAKIT_MANIFEST="$UC/manifest.json"
+    EXAKIT_VERSIONS_CACHE="$UC/cache/versions.json"
+    EXAKIT_VERSIONS_URL="http://offline.invalid/versions.json"
+    _EXAKIT_VERSIONS_DOC=""; _EXAKIT_VERSIONS_SOURCE=""
+    exakit_print_versions_source_line 2>&1 )"
+has "and the source line spells it out" "updated July 29, 2026" "$source_line"
+lacks "with no ISO date left" "2026-07-29" "$source_line"
 
 echo "after-command notice (severity-gated, once a day, stderr only):"
 NT="$WORK/notice-home"

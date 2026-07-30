@@ -928,6 +928,39 @@ PY
     printf '%s\n' "$_flt_raw"
 }
 
+# exakit_format_manifest_date <YYYY-MM-DD> — "2026-07-29" -> "July 29, 2026".
+#
+# The manifest's "updated" is a calendar date, not an instant, so it must NOT be
+# converted to local time: a machine west of UTC would render the day before.
+# That also rules out date(1), whose parsing flags differ between BSD and GNU.
+# Pure shell instead — the shape is fixed (the CI schema check enforces
+# YYYY-MM-DD), and a date is not worth a Python spawn. Anything not of that shape
+# is passed through untouched rather than guessed at.
+exakit_format_manifest_date() {
+    _fmd_raw="$1"
+    [ -n "$_fmd_raw" ] || return 0
+    _fmd_year="${_fmd_raw%%-*}"
+    _fmd_rest="${_fmd_raw#*-}"
+    _fmd_month="${_fmd_rest%%-*}"
+    _fmd_day="${_fmd_rest#*-}"
+    case "${_fmd_year}${_fmd_month}${_fmd_day}" in
+        ""|*[!0-9]*) printf '%s\n' "$_fmd_raw"; return 0 ;;
+    esac
+    case "$_fmd_month" in
+        01) _fmd_name="January"   ;; 02) _fmd_name="February" ;;
+        03) _fmd_name="March"     ;; 04) _fmd_name="April"    ;;
+        05) _fmd_name="May"       ;; 06) _fmd_name="June"     ;;
+        07) _fmd_name="July"      ;; 08) _fmd_name="August"   ;;
+        09) _fmd_name="September" ;; 10) _fmd_name="October"  ;;
+        11) _fmd_name="November"  ;; 12) _fmd_name="December" ;;
+        *)  printf '%s\n' "$_fmd_raw"; return 0 ;;
+    esac
+    # Drop a leading zero for the day: "July 9", not "July 09".
+    _fmd_day="${_fmd_day#0}"
+    [ -n "$_fmd_day" ] || _fmd_day="0"
+    printf '%s %s, %s\n' "$_fmd_name" "$_fmd_day" "$_fmd_year"
+}
+
 # exakit_kit_version_at <kit-root> [dot.path] — a version a specific kit tree
 # states about itself: kit.version by default, kit2.version for the Kit 2 asset
 # bundle. The installers use it on the tree they are installing FROM, which is not
@@ -1791,27 +1824,23 @@ exakit_updates_pending() {
     return 1
 }
 
-# exakit_confirm_downgrade <component> — applying an older version than the one
-# installed is a rollback. The maintainers may well have advised it (lowering the
-# version in versions.json IS the rollback lever), but it never happens silently.
-# Returns non-zero when the rollback was refused; the caller decides whether that
-# ends the run or just skips this component.
-exakit_confirm_downgrade() {
-    _cd_component="$1"
-    _cd_current="$(exakit_component_current "$_cd_component" 2>/dev/null || true)"
-    _cd_available="$(exakit_component_available "$_cd_component" 2>/dev/null || true)"
-    [ -n "$_cd_current" ] && [ -n "$_cd_available" ] || return 0
-    [ "$_cd_current" != "unknown" ] || return 0
-    exakit_version_newer "$_cd_current" "$_cd_available" || return 0
-    warn "$_cd_component $_cd_current is NEWER than the advertised $_cd_available — this is a rollback."
-    _cd_note="$(exakit_component_note "$_cd_component" 2>/dev/null || true)"
-    [ -n "$_cd_note" ] && info "$_cd_note"
-    if confirm_env EXAKIT_ALLOW_DOWNGRADE \
-            "Downgrade $_cd_component $_cd_current -> $_cd_available as advised by the maintainers?" n; then
-        return 0
-    fi
-    warn "Rollback of $_cd_component not applied. Set EXAKIT_ALLOW_DOWNGRADE=1 to apply it non-interactively."
-    return 1
+# exakit_component_is_ahead <component> — is the installed version newer than the
+# one the manifest publishes?
+#
+# The kit never moves a component backwards: not on request, not with a
+# confirmation, not behind an env override. A user who upgraded pyexasol or
+# exapump themselves keeps what they chose, and a maintainer who lowers a version
+# in versions.json does not drag anyone back with it — to withdraw a bad release,
+# publish a higher version. Returns 0 when installed is ahead, so the caller can
+# leave the component alone.
+exakit_component_is_ahead() {
+    _cia_component="$1"
+    _cia_current="$(exakit_component_current "$_cia_component" 2>/dev/null || true)"
+    _cia_available="$(exakit_component_available "$_cia_component" 2>/dev/null || true)"
+    [ -n "$_cia_current" ] && [ -n "$_cia_available" ] || return 1
+    [ "$_cia_current" != "unknown" ] || return 1
+    [ "$_cia_current" != "not installed" ] || return 1
+    exakit_version_newer "$_cia_current" "$_cia_available"
 }
 
 # exakit_print_versions_source_line — where the Available column came from, so
@@ -1842,7 +1871,10 @@ exakit_print_versions_source_line() {
                  ;;
     esac
     _vsl_updated="$(exakit_versions_value updated 2>/dev/null || true)"
-    [ -n "$_vsl_updated" ] && _vsl_text="$_vsl_text, updated $_vsl_updated"
+    if [ -n "$_vsl_updated" ]; then
+        _vsl_updated="$(exakit_format_manifest_date "$_vsl_updated")"
+        _vsl_text="$_vsl_text, updated $_vsl_updated"
+    fi
     info "Available versions from $_vsl_text"
     if exakit_versions_schema_ahead; then
         info "This kit is older than the published manifest — update it first: exakit update exakit"
@@ -2088,19 +2120,24 @@ exakit_print_update_check() {
             # actively wrong. (A missing light component, by contrast, is exactly
             # the pyexasol repair case below.)
             _action="inspect"
+        elif [ "$_row_installed" != "not installed" ] && \
+             exakit_version_newer "$_row_installed" "$_row_available"; then
+            # Installed is ahead of the published set. The kit never moves a
+            # component backwards, so there is nothing to offer: lowering a
+            # version in versions.json is not a rollback lever, and a user who
+            # upgraded a component themselves keeps what they chose. Counts
+            # toward neither the "apply them in one go" hint nor the heavy
+            # deferral, because no command belongs in this row at all.
+            _row_display="$_row_available (older)"
+            _action="none — yours is newer than tested"
         elif [ "$_row_installed" != "$_row_available" ]; then
             _row_min_kit="$(exakit_component_min_kit "$_row_component" 2>/dev/null || true)"
             if [ -n "$_row_min_kit" ] && ! exakit_min_kit_satisfied "$_row_min_kit"; then
                 _action="update exakit first (needs kit >= $_row_min_kit)"
             else
                 _action="exakit update $_component"
-                if [ "$_row_installed" != "not installed" ] && exakit_version_newer "$_row_installed" "$_row_available"; then
-                    # The maintainers advertise something older: an advisory
-                    # rollback, offered but never applied without a confirmation.
-                    _row_display="$_row_available (older)"
-                    _row_note="advisory rollback — applying this asks for confirmation"
-                elif [ "$_row_component" = "personal" ] && \
-                     [ "$(exakit_major_version "$_row_available")" != "$(exakit_major_version "$_row_installed")" ]; then
+                if [ "$_row_component" = "personal" ] && \
+                   [ "$(exakit_major_version "$_row_available")" != "$(exakit_major_version "$_row_installed")" ]; then
                     _action="exakit update $_component --plan"
                 fi
                 if exakit_component_is_heavy "$_row_component"; then
@@ -2325,14 +2362,15 @@ exakit_update() {
             [ "$_target" = "all" ] && continue
             die "Refusing to install $_upd_actual $_avail on kit $(exakit_component_current exakit 2>/dev/null || printf unknown)."
         fi
+        # Never backwards. Skipping is the whole behaviour: no prompt, no override,
+        # and an explicit `exakit update exapump` says so and exits clean rather
+        # than failing, because there is nothing wrong with being ahead.
+        if exakit_component_is_ahead "$_upd_actual"; then
+            ok "$_upd_actual ${_cur:-unknown} is newer than the tested $_avail — keeping yours"
+            continue
+        fi
         if [ -n "$_avail" ]; then
             info "$_upd_actual ${_cur:-not installed} -> $_avail"
-        fi
-        # A refused rollback stops THAT component, not the whole run: one advisory
-        # rollback must not block every other update on an unattended machine.
-        if ! exakit_confirm_downgrade "$_upd_actual"; then
-            [ "$_target" = "all" ] && continue
-            die "Downgrade of $_upd_actual cancelled. Set EXAKIT_ALLOW_DOWNGRADE=1 to apply it non-interactively."
         fi
         exakit_update_component "$_component" "$@"
         _acted=$((_acted + 1))

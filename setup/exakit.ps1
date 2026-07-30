@@ -676,25 +676,21 @@ function Test-ExakitMinKitSatisfied {
     return (Test-ExakitVersionNewer -Latest $kit -Current $Required)
 }
 
-# Applying an older version than the installed one is a rollback. The maintainers
-# may well have advised it, but it never happens silently.
-# Returns $false when the rollback was refused; the caller decides whether that
-# ends the run or just skips this component.
-function Confirm-ExakitDowngrade {
+# Is the installed version newer than the one the manifest publishes?
+#
+# The kit never moves a component backwards: not on request, not with a
+# confirmation, not behind an env override. A user who upgraded pyexasol or
+# exapump themselves keeps what they chose, and a maintainer who lowers a version
+# in versions.json does not drag anyone back with it - to withdraw a bad release,
+# publish a higher version. Returns $true when installed is ahead, so the caller
+# can leave the component alone.
+function Test-ExakitComponentAhead {
     param([string]$Component)
     $current = Get-ExakitComponentCurrent $Component
     $available = Get-ExakitComponentAvailable $Component
-    if (-not $current -or -not $available -or $current -eq "unknown") { return $true }
-    if (-not (Test-ExakitVersionNewer -Latest $current -Current $available)) { return $true }
-    Warn2 "$Component $current is NEWER than the advertised $available - this is a rollback."
-    $note = Get-ExakitComponentNote $Component
-    if ($note) { Info $note }
-    if (Confirm-ExakitEnvPrompt -EnvName "EXAKIT_ALLOW_DOWNGRADE" `
-            -Question "Downgrade $Component $current -> $available as advised by the maintainers?" -DefaultYes $false) {
-        return $true
-    }
-    Warn2 "Rollback of $Component not applied. Set EXAKIT_ALLOW_DOWNGRADE=1 to apply it non-interactively."
-    return $false
+    if (-not $current -or -not $available) { return $false }
+    if ($current -eq "unknown" -or $current -eq "not installed") { return $false }
+    return (Test-ExakitVersionNewer -Latest $current -Current $available)
 }
 
 # Where the Available column came from, so nobody has to guess whether a stale
@@ -724,7 +720,7 @@ function Write-ExakitVersionsSourceLine {
         "baked"   { $text = "the versions manifest that shipped with this kit (no network)" }
     }
     $updated = Get-ExakitVersionsValue -Path "updated"
-    if ($updated) { $text = "$text, updated $updated" }
+    if ($updated) { $text = "$text, updated $(Format-ExakitManifestDate $updated)" }
     Info "Available versions from $text"
     if (Test-ExakitVersionsSchemaAhead) {
         Info "This kit is older than the published manifest - update it first: exakit update exakit"
@@ -826,18 +822,21 @@ function Invoke-CmdUpdateCheck {
             # actively wrong. (A missing light component, by contrast, is exactly
             # the pyexasol repair case below.)
             $action = "inspect"
+        } elseif ($current -ne "not installed" -and (Test-ExakitVersionNewer -Latest $current -Current $available)) {
+            # Installed is ahead of the published set. The kit never moves a
+            # component backwards, so there is nothing to offer: lowering a version
+            # in versions.json is not a rollback lever, and a user who upgraded a
+            # component themselves keeps what they chose. Counts toward neither the
+            # "apply them in one go" hint nor the heavy deferral, because no command
+            # belongs in this row at all.
+            $availableCell = "$available (older)"
+            $action = "none - yours is newer than tested"
         } elseif ($current -ne $available) {
             $minKit = Get-ExakitComponentMinKit $actual
             if ($minKit -and -not (Test-ExakitMinKitSatisfied -Required $minKit)) {
                 $action = "update exakit first (needs kit >= $minKit)"
             } else {
                 $action = "exakit update $component"
-                if ($current -ne "not installed" -and (Test-ExakitVersionNewer -Latest $current -Current $available)) {
-                    # The maintainers advertise something older: an advisory
-                    # rollback, offered but never applied without a confirmation.
-                    $availableCell = "$available (older)"
-                    $rowNote = "advisory rollback - applying this asks for confirmation"
-                }
                 if (Test-ExakitComponentHeavy $actual) {
                     $action = "$action (heavy)"
                     $heavyPending = $true
@@ -917,16 +916,19 @@ function Invoke-CmdUpdate {
             if ($Target -eq "all") { continue }
             Fail "Refusing to install $actual $available on kit $(Get-ExakitComponentCurrent 'exakit')."
         }
+        # Never backwards. Skipping is the whole behaviour: no prompt, no override,
+        # and an explicit `exakit update exapump` says so and exits clean rather
+        # than failing, because there is nothing wrong with being ahead.
+        if (Test-ExakitComponentAhead $actual) {
+            $shown = $current
+            if (-not $shown) { $shown = "unknown" }
+            Ok "$actual $shown is newer than the tested $available - keeping yours"
+            continue
+        }
         if ($available) {
             $shown = $current
             if (-not $shown) { $shown = "not installed" }
             Info "$actual $shown -> $available"
-        }
-        # A refused rollback stops THAT component, not the whole run: one advisory
-        # rollback must not block every other update on an unattended machine.
-        if (-not (Confirm-ExakitDowngrade $actual)) {
-            if ($Target -eq "all") { continue }
-            Fail "Downgrade of $actual cancelled. Set EXAKIT_ALLOW_DOWNGRADE=1 to apply it non-interactively."
         }
         switch ($component) {
             "exakit" {

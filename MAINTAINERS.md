@@ -53,22 +53,29 @@ version bump interrupt someone who was doing something else.
 Use `normal` for routine bumps. The notice is a budget: spend it and people stop
 reading it.
 
-## Rolling a release back
+## Withdrawing a faulty release
 
-A faulty release is withdrawn by **lowering the advertised version** and saying
-why:
+**The kit never moves a component backwards.** Lowering the advertised version is
+not a rollback lever: machines already on the higher version show `(older)` next
+to the advertised one and `none — yours is newer than tested`, and both `exakit update`
+and an explicit `exakit update exapump` leave them alone. There is no
+confirmation to give and no env override to set. A user who upgraded a component
+themselves keeps what they chose.
+
+So to withdraw a bad release, **publish a higher version** — the fixed build, or
+a re-release of the known-good one under a new number — and say why:
 
 ```json
 "exapump": {
-  "version": "0.12.0",
+  "version": "0.13.1",
   "severity": "critical",
-  "note": "0.13.0 mis-detects CSV headers; 0.12.0 is the tested build."
+  "note": "0.13.0 mis-detects CSV headers; 0.13.1 restores the 0.12.0 behaviour."
 }
 ```
 
-Users then see the row flagged `(older)`, with your note under it. Applying it
-asks them to confirm — a rollback is never silent — and `EXAKIT_ALLOW_DOWNGRADE=1`
-pre-answers that for scripted fleets. Digests are verified in both directions.
+Lowering the number still has one legitimate use: correcting a version that was
+published in error and that nobody has installed yet. Machines that never took
+the bad build simply see the corrected one.
 
 `note` is one line and appears verbatim under the row. It is the only place you
 get to explain yourself, so say what broke and what to do.

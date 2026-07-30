@@ -797,6 +797,26 @@ function Format-ExakitLocalTime {
     }
 }
 
+# Format-ExakitManifestDate - "2026-07-29" becomes "July 29, 2026".
+#
+# The twin of the bash exakit_format_manifest_date, and deliberately NOT built on
+# Format-ExakitLocalTime: the manifest's "updated" is a calendar date, not an
+# instant, so converting it to local time would render the day before on any
+# machine west of UTC. ParseExact with no timezone styles keeps the date as
+# written. Anything not of that shape is passed through untouched.
+function Format-ExakitManifestDate {
+    param([string]$Date)
+    if (-not $Date) { return "" }
+    try {
+        $culture = [System.Globalization.CultureInfo]::InvariantCulture
+        $parsed = [datetime]::ParseExact($Date.Trim(), "yyyy-MM-dd", $culture,
+                                        [System.Globalization.DateTimeStyles]::None)
+        return $parsed.ToString("MMMM d, yyyy", $culture)
+    } catch {
+        return $Date
+    }
+}
+
 # Get-ExakitKitVersionAt - kit.version as stated by a specific kit tree. The
 # installer uses it on the tree it is installing FROM, which is not necessarily
 # the copy under the kit home (that one may be an older install).
