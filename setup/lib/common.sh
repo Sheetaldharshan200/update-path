@@ -1591,6 +1591,60 @@ _exakit_probe_pyexasol_version() {
     printf '%s' "$_ppv_out"
 }
 
+# exakit_installed_mcp_version — the MCP server is never "installed": uvx
+# materialises it per launch. What exists on the machine is the SPEC pinned into each
+# AI client config, and that is what will run the next time a client connects.
+#
+# The adapters own where those configs live, so the paths come from the kit's own
+# status operation rather than from a second copy of that knowledge here. When the
+# clients disagree — one set up before an update and never refreshed — every distinct
+# pin is reported, because "which client is stale" is the useful part and
+# `exakit mcp-doctor` / `exakit mcp-repair` are where it gets fixed.
+exakit_installed_mcp_version() {
+    command -v exakit_run_mcp_operation_cli >/dev/null 2>&1 || return 1
+    exakit_can_run_python || return 1
+    _imv_result="$(mktemp "${TMPDIR:-/tmp}/exakit-mcp-pins.XXXXXX")"
+    if ! exakit_run_mcp_operation_cli status \
+            "claude_desktop,claude_code,cursor,codex,vscode_copilot,gemini_cli,opencode,continue" \
+            "$_imv_result" >/dev/null 2>&1; then
+        rm -f "$_imv_result"
+        return 1
+    fi
+    _imv_pins="$(run_python - "$_imv_result" 2>/dev/null <<'PY'
+import json, re, sys
+
+try:
+    with open(sys.argv[1], encoding="utf-8") as handle:
+        doc = json.load(handle)
+except (OSError, ValueError):
+    raise SystemExit(1)
+pins = set()
+for artifact in doc.get("artifacts", []) or []:
+    path = artifact.get("path")
+    if not path:
+        continue
+    try:
+        with open(path, encoding="utf-8") as handle:
+            body = handle.read()
+    except OSError:
+        continue
+    pins.update(re.findall(r"exasol-mcp-server@([0-9][0-9A-Za-z._+-]*)", body))
+if not pins:
+    raise SystemExit(1)
+
+
+def key(v):
+    return [int(p) if p.isdigit() else p for p in re.split(r"([0-9]+)", v)]
+
+
+print(", ".join(sorted(pins, key=key)))
+PY
+    )"
+    rm -f "$_imv_result"
+    [ -n "$_imv_pins" ] || return 1
+    printf '%s\n' "$_imv_pins"
+}
+
 exakit_component_current() {
     case "$1" in
         exakit)
@@ -1621,9 +1675,16 @@ exakit_component_current() {
                 manifest_get components.exapump.version 2>/dev/null
             fi
             ;;
-        # The MCP server runs on demand through uvx; probing it would cost a
-        # resolution (and possibly the network), so the record stands.
-        mcp)      manifest_get components.mcp_server.version 2>/dev/null ;;
+        mcp)
+            # What the clients are pinned to is what will actually run; the record is
+            # the fallback when no client is configured or the module is absent.
+            _cur_live="$(exakit_installed_mcp_version 2>/dev/null || true)"
+            if [ -n "$_cur_live" ]; then
+                printf '%s\n' "$_cur_live"
+            else
+                manifest_get components.mcp_server.version 2>/dev/null
+            fi
+            ;;
         pyexasol)
             _cur_python="$(manifest_get components.pyexasol.python 2>/dev/null || true)"
             [ -n "$_cur_python" ] && [ -x "$_cur_python" ] || _cur_python="$EXAKIT_HOME/pyexasol-venv/bin/python"

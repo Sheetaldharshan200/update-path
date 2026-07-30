@@ -167,6 +167,23 @@ cmd_uninstall() {
     info "If a PATH entry for $EXAKIT_BIN_DIR remains in your shell profile (~/.zshrc, ~/.bashrc, ~/.profile), remove it manually if you no longer need it."
 }
 
+# _version_cell <component> <recorded> — what is on the machine now, and what the
+# kit put there when they differ. A difference is not an error: it means the component
+# was changed outside the kit (a pyexasol upgrade in its venv, an exapump build from
+# GitHub, an AI client still pinned to an older MCP server), and saying so answers
+# "why does this not match what I installed?" before it has to be asked.
+_version_cell() {
+    _vc_live="$(exakit_component_current "$1" 2>/dev/null || true)"
+    _vc_recorded="$2"
+    if [ -z "$_vc_live" ]; then
+        printf '%s' "${_vc_recorded:-not installed}"
+    elif [ -n "$_vc_recorded" ] && [ "$_vc_live" != "$_vc_recorded" ]; then
+        printf '%s  (kit installed %s)' "$_vc_live" "$_vc_recorded"
+    else
+        printf '%s' "$_vc_live"
+    fi
+}
+
 # cmd_version — what is INSTALLED, nothing else. The comparison table belongs to
 # `exakit update-check` alone; when something newer is waiting, this command says
 # so in two lines instead of making three API calls on every run.
@@ -176,12 +193,22 @@ cmd_version() {
     printf 'Kit level:      %s\n' "$(manifest_get kit_level 2>/dev/null)"
     printf 'Kit source:     %s\n' "$(manifest_get kit.source 2>/dev/null)"
     printf 'Installed at:   %s\n' "$(exakit_format_local_time "$(manifest_get installed_at 2>/dev/null)")"
+    # runtime.image is a full reference (docker.io/exasol/nano:TAG) while the live
+    # probe reports the tag alone. Compare tag with tag, or every Nano install would
+    # claim a difference that is not there.
+    _ver_runtime="$(manifest_get runtime.version 2>/dev/null || true)"
+    if [ -z "$_ver_runtime" ]; then
+        _ver_runtime="$(manifest_get runtime.image 2>/dev/null || true)"
+        case "$_ver_runtime" in *:*) _ver_runtime="${_ver_runtime##*:}" ;; esac
+    fi
     printf 'Runtime:        %s %s\n' "$(manifest_get runtime.type 2>/dev/null)" \
-        "$(manifest_get runtime.version 2>/dev/null || manifest_get runtime.image 2>/dev/null)"
-    printf 'exapump:        %s\n' "$(exakit_component_current exapump 2>/dev/null)"
+        "$(_version_cell runtime "$_ver_runtime")"
+    printf 'exapump:        %s\n' \
+        "$(_version_cell exapump "$(manifest_get components.exapump.version 2>/dev/null || true)")"
     printf 'MCP server:     %s %s\n' "$(manifest_get components.mcp_server.package 2>/dev/null)" \
-        "$(manifest_get components.mcp_server.version 2>/dev/null)"
-    printf 'pyexasol:       %s\n' "$(exakit_component_current pyexasol 2>/dev/null || printf 'not installed')"
+        "$(_version_cell mcp "$(manifest_get components.mcp_server.version 2>/dev/null || true)")"
+    printf 'pyexasol:       %s\n' \
+        "$(_version_cell pyexasol "$(manifest_get components.pyexasol.version 2>/dev/null || true)")"
     if exakit_updates_pending; then
         printf '\n'
         printf 'New versions are available.\n'

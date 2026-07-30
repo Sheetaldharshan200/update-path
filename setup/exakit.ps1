@@ -272,6 +272,23 @@ function Invoke-CmdUninstall {
     Info "If a PATH entry for $script:BinDir remains in your profile, remove it manually if you no longer need it."
 }
 
+# Get-ExakitVersionCell <component> <recorded> - what is on the machine now, and what
+# the kit put there when they differ. A difference is not an error: it means the
+# component was changed outside the kit (a pyexasol upgrade in its venv, an exapump
+# build from GitHub, an AI client still pinned to an older MCP server), and saying so
+# answers "why does this not match what I installed?" before it has to be asked.
+# Twin of _version_cell in setup/exakit.
+function Get-ExakitVersionCell {
+    param([Parameter(Mandatory)][string]$Component, [string]$Recorded = "")
+    $live = Get-ExakitComponentCurrent $Component
+    if (-not $live) {
+        if ($Recorded) { return $Recorded }
+        return "not installed"
+    }
+    if ($Recorded -and $live -ne $Recorded) { return "$live  (kit installed $Recorded)" }
+    return $live
+}
+
 # Invoke-CmdVersion - what is INSTALLED, nothing else. The comparison table
 # belongs to `exakit update-check` alone; when something newer is waiting, this
 # command says so in two lines instead of calling three APIs on every run.
@@ -281,14 +298,20 @@ function Invoke-CmdVersion {
     Write-Host "Kit level:      $(Get-ExakitManifestValue 'kit_level')"
     Write-Host "Kit source:     $(Get-ExakitManifestValue 'kit.source')"
     Write-Host "Installed at:   $(Format-ExakitLocalTime (Get-ExakitManifestValue 'installed_at'))"
-    $runtimeVersion = Get-ExakitManifestValue "runtime.version"
-    if (-not $runtimeVersion) { $runtimeVersion = Get-ExakitManifestValue "runtime.image" }
-    Write-Host "Runtime:        $(Get-RuntimeType) $runtimeVersion"
-    Write-Host "exapump:        $(Get-ExakitComponentCurrent 'exapump')"
-    Write-Host "MCP server:     $(Get-ExakitManifestValue 'components.mcp_server.package') $(Get-ExakitManifestValue 'components.mcp_server.version')"
-    $pyexasol = Get-ExakitComponentCurrent "pyexasol"
-    if (-not $pyexasol) { $pyexasol = "not installed" }
-    Write-Host "pyexasol:       $pyexasol"
+    # runtime.image is a full reference (docker.io/exasol/nano:TAG) while the live
+    # probe reports the tag alone. Compare tag with tag, or every Nano install would
+    # claim a difference that is not there.
+    $runtimeRecorded = Get-ExakitManifestValue "runtime.version"
+    if (-not $runtimeRecorded) {
+        $runtimeRecorded = Get-ExakitManifestValue "runtime.image"
+        if ($runtimeRecorded -and $runtimeRecorded.Contains(":")) {
+            $runtimeRecorded = ($runtimeRecorded -split ":")[-1]
+        }
+    }
+    Write-Host "Runtime:        $(Get-RuntimeType) $(Get-ExakitVersionCell 'runtime' $runtimeRecorded)"
+    Write-Host "exapump:        $(Get-ExakitVersionCell 'exapump' (Get-ExakitManifestValue 'components.exapump.version'))"
+    Write-Host "MCP server:     $(Get-ExakitManifestValue 'components.mcp_server.package') $(Get-ExakitVersionCell 'mcp' (Get-ExakitManifestValue 'components.mcp_server.version'))"
+    Write-Host "pyexasol:       $(Get-ExakitVersionCell 'pyexasol' (Get-ExakitManifestValue 'components.pyexasol.version'))"
     if (Test-ExakitUpdatesPending) {
         Write-Host ""
         Write-Host "New versions are available."
@@ -364,6 +387,38 @@ function Get-ExakitProbedVersion {
     }
 }
 
+# Get-ExakitInstalledMcpVersion - the MCP server is never "installed": uvx
+# materialises it per launch. What exists on the machine is the SPEC pinned into each
+# AI client config, and that is what runs the next time a client connects. The
+# adapters own where those configs live, so the paths come from the kit's own status
+# operation rather than a second copy of that knowledge. Clients that disagree are all
+# reported: "which client is stale" is the useful part, and mcp-doctor/mcp-repair fix
+# it. Twin of exakit_installed_mcp_version in setup/lib/common.sh.
+function Get-ExakitInstalledMcpVersion {
+    if (-not (Get-Command Invoke-McpOperationCli -ErrorAction SilentlyContinue)) { return "" }
+    try {
+        $json = Invoke-McpOperationCli -Operation "status" -Clients @(
+            "claude_desktop", "claude_code", "cursor", "codex",
+            "vscode_copilot", "gemini_cli", "opencode", "continue")
+        if (-not $json) { return "" }
+        $doc = $json | ConvertFrom-Json
+        $pins = @{}
+        foreach ($artifact in @($doc.artifacts)) {
+            if (-not $artifact.path -or -not (Test-Path $artifact.path)) { continue }
+            $body = Get-Content $artifact.path -Raw -ErrorAction SilentlyContinue
+            if (-not $body) { continue }
+            foreach ($m in [regex]::Matches($body, 'exasol-mcp-server@([0-9][0-9A-Za-z._+-]*)')) {
+                $pins[$m.Groups[1].Value] = $true
+            }
+        }
+        if ($pins.Count -eq 0) { return "" }
+        $sorted = $pins.Keys | Sort-Object { [regex]::Replace($_, '\d+', { param($m) $m.Value.PadLeft(12, '0') }) }
+        return ($sorted -join ", ")
+    } catch {
+        return ""
+    }
+}
+
 function Get-ExakitComponentCurrent {
     param([string]$Component)
     switch ($Component) {
@@ -395,10 +450,13 @@ function Get-ExakitComponentCurrent {
             if ($live) { return $live }
             return (Get-ExakitManifestValue "components.exapump.version")
         }
-        # The MCP server runs on demand through uvx; probing it would cost a
-        # resolution (and possibly the network), so the record stands. Per-client
-        # config drift is what `exakit mcp-doctor` is for.
-        "mcp" { return (Get-ExakitManifestValue "components.mcp_server.version") }
+        "mcp" {
+            # What the clients are pinned to is what will actually run; the record is
+            # the fallback when no client is configured or the module is absent.
+            $live = Get-ExakitInstalledMcpVersion
+            if ($live) { return $live }
+            return (Get-ExakitManifestValue "components.mcp_server.version")
+        }
         "pyexasol" {
             $python = Get-ExakitManifestValue "components.pyexasol.python"
             if (-not $python -or -not (Test-Path $python)) {

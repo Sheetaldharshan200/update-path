@@ -647,6 +647,77 @@ check "nano: the container tag wins over the record" "2026.9.9-nano.7" \
 check "nano: an engine that will not answer keeps the record" "2026.2.0-nano.2" \
     "$(runtime_read nano 'nano_engine() { printf none; }')"
 
+# The MCP server is never installed as such: uvx materialises it per launch, so what
+# exists is the spec pinned into each AI client config. The status operation is stubbed
+# to hand back a config path, and the pin is read out of the file itself.
+mkdir -p "$LIVE/mcp"
+printf '{"mcpServers":{"exasol":{"command":"uvx","args":["exasol-mcp-server@1.9.0"]}}}\n' \
+    > "$LIVE/mcp/client-a.json"
+printf '{"mcpServers":{"exasol":{"command":"uvx","args":["exasol-mcp-server@1.10.1"]}}}\n' \
+    > "$LIVE/mcp/client-b.json"
+mcp_read() (
+    EXAKIT_HOME="$LIVE"
+    EXAKIT_MANIFEST="$LIVE/manifest.json"
+    exakit_run_mcp_operation_cli() {
+        printf '{"artifacts":[%s]}\n' "$MCP_ARTIFACTS" > "$3"
+    }
+    eval "${1:-}"
+    exakit_component_current mcp 2>/dev/null || printf 'not installed'
+)
+check "mcp: the pin in the client config is what will run" "1.9.0" \
+    "$(MCP_ARTIFACTS='{"path":"'"$LIVE"'/mcp/client-a.json"}' mcp_read)"
+# Clients that disagree are all reported: which one is stale is the useful part.
+check "mcp: clients that disagree are both named" "1.9.0, 1.10.1" \
+    "$(MCP_ARTIFACTS='{"path":"'"$LIVE"'/mcp/client-a.json"},{"path":"'"$LIVE"'/mcp/client-b.json"}' mcp_read)"
+check "mcp: no configured client keeps the record" "1.10.1" \
+    "$(MCP_ARTIFACTS='' mcp_read)"
+check "mcp: no mcp module at all keeps the record" "1.10.1" \
+    "$(mcp_read 'unset -f exakit_run_mcp_operation_cli')"
+
+echo "exakit version names both what is on the machine and what the kit installed:"
+# Its own fixture on purpose: the cases above delete stubs to test absence, and this
+# one needs them present. One runtime key only (a real manifest has version OR image).
+DR="$WORK/drift-home"
+mkdir -p "$DR/bin" "$DR/venv/bin" "$DR/kit/mcp"
+cp "$REAL" "$DR/kit/versions.json"
+printf '#!/bin/sh\necho "exapump 0.13.0"\n' > "$DR/bin/exapump"
+printf '#!/bin/sh\necho 2.9.9\n' > "$DR/venv/bin/python"
+chmod +x "$DR/bin/exapump" "$DR/venv/bin/python"
+drift_manifest() {
+    cat > "$DR/manifest.json" <<EOF
+{
+  "manifest_version": 1,
+  "kit_level": 1,
+  "kit": { "version": "0.2.0" },
+  "runtime": { "type": "nano", "image": "docker.io/exasol/nano:2026.2.0-nano.2" },
+  "components": {
+    "exapump": { "version": "$1", "path": "$DR/bin/exapump" },
+    "mcp_server": { "package": "exasol-mcp-server", "version": "1.10.1" },
+    "pyexasol": { "version": "$2", "python": "$DR/venv/bin/python" }
+  },
+  "steps_completed": []
+}
+EOF
+}
+# EXAKIT_HOME has to be exported into the child: `exakit version` is a separate
+# process, and a plain assignment in this shell would leave it reading the real
+# installation instead of the fixture.
+version_out() {
+    EXAKIT_HOME="$DR" bash "$ROOT/setup/exakit" version 2>&1
+}
+drift_manifest 0.11.2 2.2.2
+drift_out="$(version_out)"
+has "a hand-upgraded exapump shows both" "0.13.0  (kit installed 0.11.2)" "$drift_out"
+has "a hand-upgraded pyexasol shows both" "2.9.9  (kit installed 2.2.2)" "$drift_out"
+# Nothing changed outside the kit: the record and the machine agree, so the line stays
+# as short as it always was.
+drift_manifest 0.13.0 2.9.9
+agree_out="$(version_out)"
+lacks "and says nothing extra when they agree" "(kit installed" "$agree_out"
+# The Nano runtime records a full image reference but probes back a bare tag; the two
+# must be compared as tags, or every Nano install would claim a phantom difference.
+has "the runtime row compares tag with tag" "Runtime:        nano 2026.2.0-nano.2" "$agree_out"
+
 echo "the table's verdict binds the apply path too:"
 # uc_run <statements> — `exakit update all` against the fixture, with the real
 # component updaters replaced by a marker so the decisions are what is observed.
