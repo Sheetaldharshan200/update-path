@@ -1969,7 +1969,12 @@ _exakit_severity_cell() {
 # picture lives, and `exakit version` has its own always-on hint.
 # ⇄ twin: Show-ExakitUpdateNotice in setup/lib/exakit-common.ps1.
 EXAKIT_NOTICE_STATE="${EXAKIT_NOTICE_STATE:-$EXAKIT_CACHE_DIR/notice-state.json}"
-EXAKIT_NOTICE_INTERVAL="${EXAKIT_NOTICE_INTERVAL:-86400}"
+# 0 = show the notice after every command. A pending update that nobody is told
+# about is the same as no update mechanism at all: the machines that most need one
+# belong to people who never run `exakit update-check`. Set
+# EXAKIT_NOTICE_INTERVAL to a number of seconds to throttle it (86400 for the old
+# once-a-day behaviour), or EXAKIT_NO_UPDATE_NOTICE=1 to silence it entirely.
+EXAKIT_NOTICE_INTERVAL="${EXAKIT_NOTICE_INTERVAL:-0}"
 
 # exakit_notice_due — has enough time passed since the last notice?
 exakit_notice_due() {
@@ -2010,8 +2015,10 @@ _exakit_notice_refresh_cache() {
 
 _exakit_notice_word() {
     case "$1" in
-        critical) printf 'A critical' ;;
-        *)        printf 'A recommended' ;;
+        critical)    printf 'A critical' ;;
+        recommended) printf 'A recommended' ;;
+        # A routine bump says nothing about urgency, because it has none to claim.
+        *)           printf 'An' ;;
     esac
 }
 
@@ -2043,21 +2050,27 @@ exakit_notice_after_command() {
         _notice_cur="$(exakit_component_current "$_notice_actual" 2>/dev/null || true)"
         [ -n "$_notice_cur" ] && [ "$_notice_cur" != "unknown" ] || continue
         [ "$_notice_cur" != "$_notice_avail" ] || continue
-        # Only what the maintainers flagged. A normal bump waits to be asked about
-        # — and an advised rollback counts, which is the whole point of the flag.
+        # Every pending update is announced, whatever its severity. Severity still
+        # decides the WORDING (a critical bump says so), but no longer whether the
+        # user hears about it at all: a routine exapump bump that is never
+        # mentioned is a bump that never gets applied.
         _notice_severity="$(exakit_component_severity "$_notice_actual")"
-        case "$_notice_severity" in
-            recommended|critical) ;;
-            *) continue ;;
-        esac
+        # Keep the worst severity in the group, on the normal < recommended <
+        # critical ladder. This used to promote normal straight to recommended,
+        # which was invisible while only flagged bumps got this far and would now
+        # word every routine bump as a recommendation.
         if exakit_component_is_heavy "$_notice_actual"; then
             _notice_heavy="${_notice_heavy}${_notice_heavy:+, }$_notice_actual"
-            [ "$_notice_severity" = "critical" ] && _notice_heavy_worst="critical"
-            [ "$_notice_heavy_worst" = "normal" ] && _notice_heavy_worst="recommended"
+            case "$_notice_severity" in
+                critical)    _notice_heavy_worst="critical" ;;
+                recommended) [ "$_notice_heavy_worst" = "critical" ] || _notice_heavy_worst="recommended" ;;
+            esac
         else
             _notice_light="${_notice_light}${_notice_light:+, }$_notice_actual"
-            [ "$_notice_severity" = "critical" ] && _notice_light_worst="critical"
-            [ "$_notice_light_worst" = "normal" ] && _notice_light_worst="recommended"
+            case "$_notice_severity" in
+                critical)    _notice_light_worst="critical" ;;
+                recommended) [ "$_notice_light_worst" = "critical" ] || _notice_light_worst="recommended" ;;
+            esac
         fi
     done
     [ -n "$_notice_light" ] || [ -n "$_notice_heavy" ] || return 0

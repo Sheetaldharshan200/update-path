@@ -1084,6 +1084,10 @@ doc["components"]["exapump"]["version"] = "0.12.0"
 doc["components"]["exapump"]["severity"] = "recommended"
 doc["components"]["nano"]["version"] = "2026.3.0-nano.1"
 doc["components"]["nano"]["severity"] = "critical"
+# A genuine normal-severity bump: the recorded install is on 1.10.1, so this is
+# pending. Without the version change there was nothing to announce, and an
+# assertion about it would pass or fail for the wrong reason.
+doc["components"]["mcp"]["version"] = "1.11.0"
 doc["components"]["mcp"]["severity"] = "normal"
 with open(sys.argv[2], "w") as handle:
     json.dump(doc, handle, indent=2)
@@ -1135,8 +1139,12 @@ if [ "$NOTICE_PTY" = "none" ]; then
     for _skipped in "a recommended light bump is announced as recommended" "with the cheap command" \
                     "a critical heavy bump is announced as critical" "as a database stop, not a one-liner" \
                     "and never told to just run update" "the kill switch is advertised" \
-                    "a normal-severity bump stays quiet" "the same day it stays silent" \
-                    "nothing flagged, nothing said" "the kill switch silences it" \
+                    "a normal-severity bump is announced too" \
+                    "and it speaks again on the very next command" \
+                    "an explicit interval still shows it once" \
+                    "and then holds off for the interval" \
+                    "a routine bump is announced" "without claiming it is recommended" \
+                    "or critical" "the kill switch silences it" \
                     "latest policy has no severities to gate on"; do
         check "$_skipped" "skipped" "skipped"
     done
@@ -1151,14 +1159,31 @@ has "a critical heavy bump is announced as critical" \
 has "as a database stop, not a one-liner" "requires stopping the database" "$flagged"
 lacks "and never told to just run update" "nano — apply in seconds" "$flagged"
 has "the kill switch is advertised" "EXAKIT_NO_UPDATE_NOTICE=1" "$flagged"
-lacks "a normal-severity bump stays quiet" "mcp" "$flagged"
+# Every severity is announced now, so the routine one appears too - and appears
+# WITHOUT borrowing urgency it was never given.
+has "a normal-severity bump is announced too" "mcp" "$flagged"
 
 repeat="$(notice "$WORK/notice-versions.json")"
-check "the same day it stays silent" "" "$(printf '%s' "$repeat" | tr -d '[:space:]')"
+has "and it speaks again on the very next command" \
+    "A recommended update is available for exapump" "$repeat"
+
+# The throttle is still there for anyone who wants it, just not the default. It
+# needs a clean slate: the runs above have already recorded a "last shown".
+rm -f "$NT/cache/notice-state.json"
+throttled_first="$(notice "$WORK/notice-versions.json" 'EXAKIT_NOTICE_INTERVAL=86400')"
+has "an explicit interval still shows it once" \
+    "A recommended update is available for exapump" "$throttled_first"
+throttled_again="$(notice "$WORK/notice-versions.json" 'EXAKIT_NOTICE_INTERVAL=86400')"
+check "and then holds off for the interval" "" \
+    "$(printf '%s' "$throttled_again" | tr -d '[:space:]')"
 rm -f "$NT/cache/notice-state.json"
 
+# The shipped document against an install that is behind it: a routine bump, which
+# must now be mentioned, and must not call itself recommended or critical.
 only_normal="$(notice "$REAL")"
-check "nothing flagged, nothing said" "" "$(printf '%s' "$only_normal" | tr -d '[:space:]')"
+has "a routine bump is announced" "update is available for exapump" "$only_normal"
+lacks "without claiming it is recommended" "A recommended" "$only_normal"
+lacks "or critical" "A critical" "$only_normal"
 
 kill_switch="$(notice "$WORK/notice-versions.json" 'EXAKIT_NO_UPDATE_NOTICE=1')"
 check "the kill switch silences it" "" "$(printf '%s' "$kill_switch" | tr -d '[:space:]')"

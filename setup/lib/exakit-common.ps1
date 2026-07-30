@@ -1236,7 +1236,8 @@ function Test-ExakitCmdShimCurrent {
 # Twin of exakit_notice_after_command in setup/lib/common.sh, including the state
 # file, so the once-a-day budget is the same file on both platforms.
 $script:NoticeState = if ($env:EXAKIT_NOTICE_STATE) { $env:EXAKIT_NOTICE_STATE } else { Join-Path $script:CacheDir "notice-state.json" }
-$script:NoticeInterval = 86400
+# 0 = after every command; see the note on EXAKIT_NOTICE_INTERVAL in common.sh.
+$script:NoticeInterval = 0
 if ($env:EXAKIT_NOTICE_INTERVAL -match '^[0-9]+$') { $script:NoticeInterval = [int]$env:EXAKIT_NOTICE_INTERVAL }
 
 function Test-ExakitNoticeDue {
@@ -1276,7 +1277,9 @@ function Update-ExakitNoticeCache {
 function Get-ExakitNoticeWord {
     param([string]$Severity)
     if ($Severity -eq "critical") { return "A critical" }
-    return "A recommended"
+    if ($Severity -eq "recommended") { return "A recommended" }
+    # A routine bump says nothing about urgency, because it has none to claim.
+    return "An"
 }
 
 # Show-ExakitUpdateNotice - the whole notice, gates included. Never throws and
@@ -1313,16 +1316,19 @@ function Show-ExakitUpdateNotice {
             if ($current -eq $available) { continue }
             # Only what the maintainers flagged. A normal bump waits to be asked
             # about - and an advised rollback counts, which is the point of the flag.
+            # Every pending update is announced, whatever its severity. Severity
+            # still decides the WORDING, but no longer whether the user hears about
+            # it at all: a routine bump that is never mentioned never gets applied.
             $severity = Get-ExakitComponentSeverity $actual
-            if ($severity -ne "critical" -and $severity -ne "recommended") { continue }
             if (Test-ExakitComponentHeavy $actual) {
                 $heavy += $actual
+                # normal < recommended < critical; normal must not self-promote.
                 if ($severity -eq "critical") { $heavyWorst = "critical" }
-                elseif ($heavyWorst -eq "normal") { $heavyWorst = "recommended" }
+                elseif ($severity -eq "recommended" -and $heavyWorst -ne "critical") { $heavyWorst = "recommended" }
             } else {
                 $light += $actual
                 if ($severity -eq "critical") { $lightWorst = "critical" }
-                elseif ($lightWorst -eq "normal") { $lightWorst = "recommended" }
+                elseif ($severity -eq "recommended" -and $lightWorst -ne "critical") { $lightWorst = "recommended" }
             }
         }
         if ($light.Count -eq 0 -and $heavy.Count -eq 0) { return }
