@@ -1,0 +1,351 @@
+name: versions-bump
+
+# Proposes version bumps as a pull request, on a schedule.
+#
+# It never merges and never writes to main: it rewrites versions.json on one
+# reusable branch and opens (or updates) a single pull request, which then goes
+# through exactly the same review and the same CI as a hand-written bump --
+# including digest-verify and upstream-exists in versions.yml.
+#
+# TURNING IT ON OR OFF
+#   Repository variable EXAKIT_AUTO_BUMP (Settings > Secrets and variables >
+#   Actions > Variables). Set it to 'true' to let the schedule run; delete it, or
+#   set anything else, and the schedule does nothing. No code change, no commit.
+#   A manual run from the Actions tab always works, switch or no switch.
+#
+# CHANGING THE PERIOD
+#   The cron line below. Times are UTC. '0 6 * * 1' is Mondays at 06:00.
+#
+# WHAT IT WILL AND WILL NOT PROPOSE
+#   Stable releases only: release candidates, betas, dev builds and arch-suffixed
+#   container tags are ignored. Severity is set to 'normal' on anything it bumps
+#   (urgency is a human judgement), and a stale note is dropped rather than
+#   carried onto a version it was not written about. It never lowers a version --
+#   the kit cannot move a component backwards anyway.
+
+on:
+  schedule:
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: versions-bump
+  cancel-in-progress: false
+
+jobs:
+  propose:
+    name: propose the newest stable versions
+    if: github.event_name == 'workflow_dispatch' || vars.EXAKIT_AUTO_BUMP == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: find newer stable releases and rewrite versions.json
+        id: bump
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          import re
+          import sys
+          import time
+          import urllib.error
+          import urllib.request
+          from datetime import datetime, timezone
+
+          MANIFEST = "versions.json"
+
+          with open(MANIFEST) as handle:
+              doc = json.load(handle)
+          components = doc.get("components") or {}
+
+          notes = []      # human-readable lines for the summary and the PR body
+          bumped = {}     # component -> (old, new)
+
+          def fetch(url, token=False, raw=False):
+              request = urllib.request.Request(url, headers={
+                  "Accept": "application/json",
+                  "User-Agent": "exakit-versions-bump",
+              })
+              if token and os.environ.get("GITHUB_TOKEN"):
+                  request.add_header("Authorization", "Bearer %s" % os.environ["GITHUB_TOKEN"])
+              last = "unknown error"
+              for attempt in range(3):
+                  try:
+                      with urllib.request.urlopen(request, timeout=60) as response:
+                          if raw:
+                              return response.read(), None
+                          return json.load(response), None
+                  except urllib.error.HTTPError as error:
+                      if error.code in (403, 429) or error.code >= 500:
+                          last = "HTTP %s" % error.code
+                          time.sleep(2 * (attempt + 1))
+                          continue
+                      return None, "HTTP %s" % error.code
+                  except Exception as error:
+                      last = str(error)
+                      time.sleep(2 * (attempt + 1))
+              return None, last
+
+          def numbers(version, width=6):
+              """The leading numeric tuple, zero-padded so 2.1 and 2.1.0 rank equal."""
+              head = re.match(r"^v?(\d+(?:\.\d+)*)", version.strip())
+              if not head:
+                  return None
+              parts = tuple(int(part) for part in head.group(1).split("."))
+              return parts + (0,) * max(0, width - len(parts))
+
+          def semver_key(version):
+              """Ordering key for x.y.z releases. A suffix ranks BELOW the same
+              numbers without one, so 2.0.0 really is later than 2.0.0-rc4."""
+              base = numbers(version)
+              if base is None:
+                  return None
+              return base + (0 if re.search(r"[-+]", version.strip()) else 1,)
+
+          def nano_key(version):
+              """Ordering key for exasol/nano tags.
+
+              Its release number lives in the -nano.N suffix, and that suffix is
+              part of a STABLE tag here -- not a prerelease marker. Ranking it as
+              one made an unchanged tag look like a bump, so nano gets its own key
+              and every number in the tag is compared.
+              """
+              match = re.match(r"^(\d{4})\.(\d+)\.(\d+)-nano\.(\d+)$", version.strip())
+              if not match:
+                  return None
+              return tuple(int(part) for part in match.groups())
+
+          def pick(candidates, current, label, keyfn):
+              """The highest candidate that genuinely beats current, or None."""
+              current_key = keyfn(current)
+              if current_key is None:
+                  notes.append("- `%s`: the advertised `%s` does not match the shape this "
+                               "check understands, so it was left alone" % (label, current))
+                  return None
+              scored = [(keyfn(c), c) for c in candidates]
+              scored = [(key, c) for key, c in scored if key is not None]
+              if not scored:
+                  notes.append("- `%s`: nothing upstream matched the expected "
+                               "version shape, so it was left alone" % label)
+                  return None
+              winners = [(key, c) for key, c in scored
+                         if key > current_key and c.strip() != current.strip()]
+              if not winners:
+                  return None
+              return max(winners)[1]
+
+          # --- nano: a plain, multi-arch container tag --------------------------
+          nano = components.get("nano") or {}
+          if nano.get("version"):
+              image = nano.get("image", "exasol/nano")
+              body, reason = fetch("https://hub.docker.com/v2/repositories/%s/tags"
+                                   "?page_size=100&ordering=last_updated" % image)
+              if body is None:
+                  notes.append("- `nano`: Docker Hub did not answer (%s), left alone" % reason)
+              else:
+                  shape = re.compile(r"^\d{4}\.\d+\.\d+-nano\.\d+$")
+                  candidates = []
+                  for result in body.get("results") or []:
+                      name = result.get("name", "")
+                      if not shape.match(name):
+                          continue        # dev builds, arch suffixes, .run assets, latest
+                      arches = {i.get("architecture") for i in result.get("images") or []
+                                if i.get("os") == "linux"}
+                      if {"amd64", "arm64"} <= arches:
+                          candidates.append(name)
+                  winner = pick(candidates, nano["version"], "nano", nano_key)
+                  if winner:
+                      bumped["nano"] = (nano["version"], winner)
+                      nano["version"] = winner
+
+          # --- personal: a stable GitHub release tag ----------------------------
+          personal = components.get("personal") or {}
+          if personal.get("version"):
+              repo = personal.get("repo", "exasol/exasol-personal")
+              body, reason = fetch("https://api.github.com/repos/%s/releases?per_page=100" % repo,
+                                   token=True)
+              if body is None:
+                  notes.append("- `personal`: GitHub did not answer (%s), left alone" % reason)
+              else:
+                  shape = re.compile(r"^v(\d+\.\d+\.\d+)$")
+                  candidates = []
+                  for release in body:
+                      if release.get("draft") or release.get("prerelease"):
+                          continue
+                      match = shape.match(release.get("tag_name") or "")
+                      if match:
+                          candidates.append(match.group(1))
+                  winner = pick(candidates, personal["version"], "personal", semver_key)
+                  if winner:
+                      bumped["personal"] = (personal["version"], winner)
+                      personal["version"] = winner
+
+          # --- mcp and pyexasol: stable, non-yanked PyPI releases ---------------
+          def bump_pypi(key, default_package):
+              block = components.get(key) or {}
+              if not block.get("version"):
+                  return
+              package = block.get("package", default_package)
+              body, reason = fetch("https://pypi.org/pypi/%s/json" % package)
+              if body is None:
+                  notes.append("- `%s`: PyPI did not answer (%s), left alone" % (key, reason))
+                  return
+              shape = re.compile(r"^\d+(?:\.\d+)*$")
+              candidates = []
+              for version, files in (body.get("releases") or {}).items():
+                  if not shape.match(version):
+                      continue            # a1, b2, rc1, .dev0
+                  if not files or all(f.get("yanked") for f in files):
+                      continue            # withdrawn, or nothing to install
+                  candidates.append(version)
+              winner = pick(candidates, block["version"], key, semver_key)
+              if winner:
+                  bumped[key] = (block["version"], winner)
+                  block["version"] = winner
+
+          bump_pypi("mcp", "exasol-mcp-server")
+          bump_pypi("pyexasol", "pyexasol")
+
+          # --- exapump: a stable release, plus the five asset digests -----------
+          exapump = components.get("exapump") or {}
+          if exapump.get("version"):
+              repo = exapump.get("repo", "exasol-labs/exapump")
+              body, reason = fetch("https://api.github.com/repos/%s/releases?per_page=100" % repo,
+                                   token=True)
+              if body is None:
+                  notes.append("- `exapump`: GitHub did not answer (%s), left alone" % reason)
+              else:
+                  shape = re.compile(r"^v(\d+\.\d+\.\d+)$")
+                  candidates = []
+                  for release in body:
+                      if release.get("draft") or release.get("prerelease"):
+                          continue
+                      match = shape.match(release.get("tag_name") or "")
+                      if match:
+                          candidates.append(match.group(1))
+                  winner = pick(candidates, exapump["version"], "exapump", semver_key)
+                  if winner:
+                      # The digests are not optional: install refuses an asset that
+                      # does not match. Hash the real files, and abandon the exapump
+                      # bump entirely if any of them cannot be fetched, rather than
+                      # publish a version with stale digests.
+                      digests = {}
+                      failed = None
+                      for platform in sorted(exapump.get("sha256") or {}):
+                          asset = "exapump-%s-%s" % (winner, platform)
+                          if platform.startswith("windows-"):
+                              asset += ".exe"
+                          payload, why = fetch("https://github.com/%s/releases/download/v%s/%s"
+                                               % (repo, winner, asset), raw=True)
+                          if payload is None:
+                              failed = "%s (%s)" % (asset, why)
+                              break
+                          digests[platform] = hashlib.sha256(payload).hexdigest()
+                      if failed:
+                          notes.append("- `exapump`: %s is available but %s could not be "
+                                       "downloaded, so it was left alone" % (winner, failed))
+                      else:
+                          bumped["exapump"] = (exapump["version"], winner)
+                          exapump["version"] = winner
+                          exapump["sha256"] = digests
+
+          # --- write it back, canonically --------------------------------------
+          summary = []
+          if bumped:
+              for key in bumped:
+                  block = components[key]
+                  # Urgency is a human call, and a note written about an older
+                  # version does not describe this one.
+                  block["severity"] = "normal"
+                  block.pop("note", None)
+              doc["updated"] = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+              rendered = json.dumps(doc, indent=2) + "\n"
+              # The no-Python reader in setup/lib/common.sh depends on this exact
+              # shape, and versions.yml diffs it against json.tool. Prove the file
+              # is canonical here rather than discovering it in review.
+              import subprocess
+              canonical = subprocess.run(
+                  [sys.executable, "-m", "json.tool", "--indent", "2"],
+                  input=rendered, capture_output=True, text=True, check=True).stdout
+              if canonical != rendered:
+                  print("refusing to write a non-canonical versions.json", file=sys.stderr)
+                  raise SystemExit(1)
+              with open(MANIFEST, "w") as handle:
+                  handle.write(rendered)
+
+              summary.append("| Component | Was | Now |")
+              summary.append("|---|---|---|")
+              for key, (old, new) in sorted(bumped.items()):
+                  summary.append("| `%s` | %s | **%s** |" % (key, old, new))
+              if "exapump" in bumped:
+                  summary.append("")
+                  summary.append("The five exapump `sha256` digests were recomputed from the "
+                                 "downloaded release assets.")
+          else:
+              summary.append("Everything advertised is already the newest stable release.")
+
+          if notes:
+              summary.append("")
+              summary.append("Left alone:")
+              summary.extend(notes)
+
+          summary.append("")
+          summary.append("Before merging:")
+          summary.append("")
+          summary.append("- [ ] Severity is `normal` on everything above. Raise it to "
+                         "`recommended` or `critical` only if people need to know now.")
+          summary.append("- [ ] These versions were tested **together**, not just "
+                         "individually. The Available column is a tested set.")
+          summary.append("- [ ] `kit.version` is untouched, which is correct unless kit "
+                         "scripts changed too.")
+
+          text = "\n".join(summary) + "\n"
+          with open("bump-summary.md", "w") as handle:
+              handle.write(text)
+          print(text)
+
+          if os.environ.get("GITHUB_STEP_SUMMARY"):
+              with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as handle:
+                  handle.write(text)
+          if os.environ.get("GITHUB_OUTPUT"):
+              with open(os.environ["GITHUB_OUTPUT"], "a") as handle:
+                  handle.write("changed=%s\n" % ("true" if bumped else "false"))
+                  handle.write("title=%s\n" % (
+                      "Bump advertised versions: " + ", ".join(
+                          "%s %s" % (k, v[1]) for k, v in sorted(bumped.items()))
+                      if bumped else "no change"))
+          PY
+
+      - name: open or update the pull request
+        if: steps.bump.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TITLE: ${{ steps.bump.outputs.title }}
+        run: |
+          set -eu
+          BRANCH="chore/versions-bump"
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "$BRANCH"
+          git add versions.json
+          # The summary is a build artifact, not part of the change.
+          git commit -m "$TITLE" -m "$(cat bump-summary.md)" -- versions.json
+          # One reusable branch, force-pushed: a later run replaces the proposal
+          # instead of leaving a trail of stale pull requests behind it.
+          git push --force origin "$BRANCH"
+          existing="$(gh pr list --head "$BRANCH" --state open --json number --jq '.[0].number' || true)"
+          if [ -n "$existing" ]; then
+            gh pr edit "$existing" --title "$TITLE" --body-file bump-summary.md
+            echo "updated PR #$existing"
+          else
+            gh pr create --base main --head "$BRANCH" --title "$TITLE" --body-file bump-summary.md
+          fi

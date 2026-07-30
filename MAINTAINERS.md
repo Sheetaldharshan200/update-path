@@ -45,6 +45,36 @@ On a machine with no Python runtime, the kit reads this file line by line with
 LF endings, and `"version"` before any nested object inside a block. `python3 -m
 json.tool --indent 2` produces exactly what is required.
 
+## Letting the bump PR write itself
+
+`.github/workflows/versions-bump.yml` can do step 1 for you. On a schedule it
+checks each upstream, and if anything moved it rewrites `versions.json` on one
+reusable branch (`chore/versions-bump`) and opens — or updates — a single pull
+request. It never merges, never touches `main`, and its PR goes through the same
+review and the same CI as one you write by hand.
+
+| Knob | Where |
+|---|---|
+| On / off | Repository variable `EXAKIT_AUTO_BUMP` (Settings → Secrets and variables → Actions → Variables). `true` runs the schedule; delete it and nothing happens. |
+| How often | The `cron:` line in that file. UTC. |
+| Run it now | Actions tab → Run workflow. Works whether or not the variable is set. |
+
+What it will and will not do:
+
+- **Stable releases only.** Release candidates, betas, dev builds and
+  arch-suffixed container tags are ignored. A nano tag has to carry both `amd64`
+  and `arm64` to be considered at all.
+- **Recomputes the exapump digests** from the downloaded assets. If any asset
+  cannot be fetched it abandons the exapump bump rather than publish stale digests.
+- **Sets `severity` to `normal`** on anything it bumps and **drops a stale `note`**
+  — urgency is your judgement, and a note written about an older version does not
+  describe the new one.
+- **Never lowers a version**, and says so in the PR when it leaves something alone
+  (an unreachable upstream, or a version shape it does not recognise).
+
+It cannot know whether the set works *together*. That is what the checklist in its
+PR body is for.
+
 ## Severity: what interrupts people
 
 `severity` is your judgement about urgency, and it is the only thing that lets a
