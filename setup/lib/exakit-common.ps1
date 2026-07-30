@@ -1094,6 +1094,184 @@ function Begin-ExakitStep {
     return $true
 }
 
+# Set-ExakitCmdShim - (re)write the `exakit` command in the bin directory.
+#
+# The bare command must be ONLY this .cmd shim: when an exakit.ps1 also sits on
+# PATH, PowerShell resolves the .ps1 first, which routes around the shim's
+# -ExecutionPolicy Bypass and fails on default-policy systems. The shim therefore
+# targets the kit's copy by absolute path. Both the installer and the kit
+# self-update write it, so the content lives here rather than in two places.
+function Set-ExakitCmdShim {
+    param([Parameter(Mandatory)][string]$PsTarget)
+    New-Item -ItemType Directory -Force -Path $script:BinDir | Out-Null
+    Remove-Item -Force (Join-Path $script:BinDir "exakit.ps1") -ErrorAction SilentlyContinue
+    $shimPath = Join-Path $script:BinDir "exakit.cmd"
+    $shimContent = "@echo off`r`npowershell -NoProfile -ExecutionPolicy Bypass -File `"$PsTarget`" %*`r`n"
+    Set-Content -Path $shimPath -Value $shimContent -NoNewline
+    return $shimPath
+}
+
+# ---------------------------------------------------------------------------
+# Kit self-update (Windows)
+# ---------------------------------------------------------------------------
+# Update-ExakitSelf - replace the kit copy under the kit home with the current
+# contents of the repository, exactly as install.ps1 would fetch it. Twin of
+# exakit_update_self in setup/lib/common.sh, with one Windows-specific twist: this
+# script is itself running out of the directory being replaced, and Windows will
+# not rename a directory whose files are open. When the in-place swap is refused,
+# the swap is handed to a detached process that waits for this one to exit (the
+# same pattern uninstall uses for the CLI binaries).
+#
+# Callers pass the versions in, so the library keeps no dependency on the CLI's
+# component readers.
+function Update-ExakitSelf {
+    param([Parameter(Mandatory)][string]$Advertised, [string]$Installed = "")
+    $repo = $script:KitRepo
+    $kitDir = Join-Path $script:ExakitHome "kit"
+    $shown = $Installed
+    if (-not $shown) { $shown = "unknown" }
+    Info "Updating starter kit $shown -> $Advertised"
+
+    $tmpZip = Join-Path ([System.IO.Path]::GetTempPath()) "exakit-kit-$([guid]::NewGuid().ToString('N')).zip"
+    $stage = Join-Path ([System.IO.Path]::GetTempPath()) "exakit-kit-stage-$([guid]::NewGuid().ToString('N'))"
+    # main first - that is what install.ps1 fetches, and kit script changes live on
+    # main: a tag exists only where a release was cut. The tag URLs stay behind it
+    # so a kit installed from a tagged release still updates.
+    $refs = @("main", "v$Advertised", "$Advertised")
+    $kitRef = ""
+    foreach ($ref in $refs) {
+        if ($ref -eq "main") { $url = "https://github.com/$repo/archive/refs/heads/main.zip" }
+        else { $url = "https://github.com/$repo/archive/refs/tags/$ref.zip" }
+        try {
+            Invoke-WebRequest -Uri $url -OutFile $tmpZip -UseBasicParsing -TimeoutSec 300
+            $kitRef = $ref
+            break
+        } catch { }
+    }
+    if (-not $kitRef) {
+        Remove-Item -Force $tmpZip -ErrorAction SilentlyContinue
+        Fail "Could not download the starter kit from github.com/$repo (tried main and the $Advertised tags)."
+    }
+
+    try {
+        New-Item -ItemType Directory -Force -Path $stage | Out-Null
+        Expand-Archive -Path $tmpZip -DestinationPath $stage -Force
+    } catch {
+        Remove-Item -Force $tmpZip -ErrorAction SilentlyContinue
+        Remove-Item -Recurse -Force $stage -ErrorAction SilentlyContinue
+        Fail "Could not unpack the starter kit update; existing kit copy was left untouched."
+    }
+    Remove-Item -Force $tmpZip -ErrorAction SilentlyContinue
+    # A GitHub archive wraps everything in one <repo>-<ref> directory.
+    $staged = Get-ChildItem -Path $stage -Directory -ErrorAction SilentlyContinue | Select-Object -First 1
+    if (-not $staged) {
+        Remove-Item -Recurse -Force $stage -ErrorAction SilentlyContinue
+        Fail "Downloaded starter kit archive was empty; existing kit copy was left untouched."
+    }
+    $stagedRoot = $staged.FullName
+
+    # versions.json is on this list deliberately: without it the new kit copy has no
+    # offline version tier and cannot say what version it is. The eight paths before
+    # it are the ones v0.1.0 also validates - none may ever be renamed.
+    foreach ($required in @("setup/exakit", "setup/lib/common.sh", "setup/lib/runtime-nano.sh",
+                            "setup/lib/runtime-personal.sh", "setup/lib/exapump.sh", "setup/lib/mcp.sh",
+                            "setup/exakit.ps1", "setup/lib/exakit-common.ps1", "versions.json")) {
+        if (-not (Test-Path (Join-Path $stagedRoot ($required -replace '/', '\')))) {
+            Remove-Item -Recurse -Force $stage -ErrorAction SilentlyContinue
+            Fail "Downloaded starter kit is incomplete (missing $required); existing kit copy was left untouched."
+        }
+    }
+
+    # What actually landed is what gets recorded: GitHub's raw endpoint can serve a
+    # newer versions.json than the branch archive for a few minutes after a merge.
+    $stagedVersion = Get-ExakitKitVersionAt -KitRoot $stagedRoot
+    if (-not $stagedVersion) {
+        $stagedVersion = $Advertised
+    } elseif ($stagedVersion -ne $Advertised -and (Test-ExakitVersionNewer -Latest $Advertised -Current $stagedVersion)) {
+        Warn2 "The downloaded kit is $stagedVersion, not the advertised $Advertised - the published manifest is a few minutes ahead of $kitRef. Recording $stagedVersion."
+    }
+
+    $backup = "$kitDir.backup-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
+    $swapped = $false
+    try {
+        if (Test-Path $kitDir) { Move-Item -Path $kitDir -Destination $backup -ErrorAction Stop }
+        Move-Item -Path $stagedRoot -Destination $kitDir -ErrorAction Stop
+        $swapped = $true
+    } catch {
+        # Almost always "the process cannot access the file because it is being used
+        # by another process": this very script lives under $kitDir. Restore what we
+        # moved and let a detached process finish the job after we exit.
+        if (-not (Test-Path $kitDir) -and (Test-Path $backup)) {
+            Move-Item -Path $backup -Destination $kitDir -ErrorAction SilentlyContinue
+        }
+    }
+
+    # The shim lives in the bin directory, which is never locked, and its target
+    # path does not change across the swap - so it is safe to write either way.
+    Set-ExakitCmdShim -PsTarget (Join-Path $kitDir "setup\exakit.ps1") | Out-Null
+    Confirm-ExakitOnPath $script:BinDir
+
+    if ($swapped) {
+        Info "Previous kit copy kept at $backup"
+        Set-ExakitManifestValue "kit.source" "$repo@$kitRef"
+        Set-ExakitManifestValue "kit.version" $stagedVersion
+        Ok "exakit updated to $stagedVersion. Database data, credentials, and MCP state were not changed."
+        return
+    }
+
+    Complete-ExakitSelfUpdateDeferred -StagedRoot $stagedRoot -KitDir $kitDir -Backup $backup
+    Set-ExakitManifestValue "kit.source" "$repo@$kitRef"
+    Set-ExakitManifestValue "kit.version" $stagedVersion
+    Ok "exakit $stagedVersion is staged and will be in place the moment this command exits."
+    Info "The next `exakit` you run is the new one. Nothing else was changed."
+}
+
+# Finish the swap from a short-lived detached PowerShell that first waits for this
+# process (and the cmd.exe running exakit.cmd) to exit, so the files this script
+# is executing from are no longer open. Same approach as
+# Remove-ExakitBinariesDeferred in setup/exakit.ps1.
+function Complete-ExakitSelfUpdateDeferred {
+    param(
+        [Parameter(Mandatory)][string]$StagedRoot,
+        [Parameter(Mandatory)][string]$KitDir,
+        [Parameter(Mandatory)][string]$Backup
+    )
+    $waitPids = @($PID)
+    try {
+        $me = Get-CimInstance Win32_Process -Filter "ProcessId=$PID" -ErrorAction Stop
+        if ($me.ParentProcessId) { $waitPids += [int]$me.ParentProcessId }
+    } catch { }
+    $waitPids = @($waitPids | Sort-Object -Unique)
+    $pidList = $waitPids -join ','
+    # Single-quote the paths and double any quote they contain, exactly as
+    # Remove-ExakitBinariesDeferred does.
+    $q1 = $KitDir -replace "'", "''"
+    $q2 = $Backup -replace "'", "''"
+    $q3 = $StagedRoot -replace "'", "''"
+    # Only the directory swap is deferred; the shim was already written by the
+    # caller, and its target path is the same before and after.
+    $deferred = @"
+foreach (`$id in @($pidList)) { try { Wait-Process -Id `$id -Timeout 120 -ErrorAction SilentlyContinue } catch {} }
+Start-Sleep -Milliseconds 500
+try {
+    if (Test-Path '$q1') { Move-Item -Force -Path '$q1' -Destination '$q2' -ErrorAction Stop }
+    Move-Item -Force -Path '$q3' -Destination '$q1' -ErrorAction Stop
+} catch {
+    if (-not (Test-Path '$q1') -and (Test-Path '$q2')) {
+        Move-Item -Force -Path '$q2' -Destination '$q1' -ErrorAction SilentlyContinue
+    }
+}
+"@
+    $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($deferred))
+    try {
+        Start-Process -FilePath "powershell.exe" `
+            -ArgumentList @("-NoProfile", "-WindowStyle", "Hidden", "-EncodedCommand", $encoded) `
+            -WindowStyle Hidden | Out-Null
+    } catch {
+        Fail "Could not stage the kit update for replacement after exit ($_). The existing kit copy is untouched; re-run install.ps1 to refresh it."
+    }
+}
+
 # ---------------------------------------------------------------------------
 # Downloads and verification
 # ---------------------------------------------------------------------------

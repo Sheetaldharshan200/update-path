@@ -322,13 +322,33 @@ if grep -q 'exakit-kit-stage' "$ROOT/setup/lib/common.sh" && \
 else
     check "self_update(staged_validation)" "yes" "no"
 fi
-# A successful self-update must record the new version, not just where it came
-# from: exakit_component_current reads kit.version first, so without this write
-# the kit reports its old version forever and re-downloads on every update.
-if grep -q 'manifest_set kit.version "\$_latest"' "$ROOT/setup/lib/common.sh"; then
+# A successful self-update must record the version that actually landed, not just
+# where it came from: exakit_component_current reads kit.version first, so without
+# this write the kit reports its old version forever and re-downloads every time.
+if grep -q 'manifest_set kit.version "\$_staged_version"' "$ROOT/setup/lib/common.sh"; then
     check "self_update(records_kit_version)" "yes" "yes"
 else
     check "self_update(records_kit_version)" "yes" "no"
+fi
+# main is the primary source (kit scripts live there; a tag exists only where a
+# release was cut), and versions.json is on the required list — without it the new
+# copy has no offline version tier and cannot say what version it is.
+if grep -q 'archive/refs/heads/main.tar.gz' "$ROOT/setup/lib/common.sh" && \
+   grep -q 'exakit-common.ps1 versions.json' "$ROOT/setup/lib/common.sh"; then
+    check "self_update(main_and_manifest)" "yes" "yes"
+else
+    check "self_update(main_and_manifest)" "yes" "no"
+fi
+# Windows is no longer warn-only: the same flow exists there, including the
+# deferred swap for the files this very script runs from.
+if grep -q 'function Update-ExakitSelf' "$ROOT/setup/lib/exakit-common.ps1" && \
+   grep -q 'archive/refs/heads/main.zip' "$ROOT/setup/lib/exakit-common.ps1" && \
+   grep -q '"versions.json"' "$ROOT/setup/lib/exakit-common.ps1" && \
+   grep -q 'Complete-ExakitSelfUpdateDeferred' "$ROOT/setup/lib/exakit-common.ps1" && \
+   grep -q 'Update-ExakitSelf -Advertised' "$ROOT/setup/exakit.ps1"; then
+    check "self_update(windows_path)" "yes" "yes"
+else
+    check "self_update(windows_path)" "yes" "no"
 fi
 
 echo "Windows parity guards:"
@@ -394,6 +414,8 @@ else
 fi
 if grep -q 'Update-ExakitVersionsCache' "$ROOT/setup/lib/exakit-common.ps1" && \
    grep -q 'Get-ExakitVersionsValue' "$ROOT/setup/lib/exakit-common.ps1" && \
+   grep -q 'Update-ExakitSelf' "$ROOT/setup/lib/exakit-common.ps1" && \
+   grep -q 'Set-ExakitCmdShim' "$ROOT/setup/setup-windows-docker.ps1" && \
    grep -q 'Get-ExakitKitVersionAt' "$ROOT/setup/setup-windows-docker.ps1" && \
    grep -q 'Get-ExapumpExpectedSha256' "$ROOT/setup/lib/exapump.ps1"; then
     check "windows_install(manifest_wiring)" "yes" "yes"

@@ -1731,11 +1731,25 @@ exakit_update_self() {
     _stage="$(mktemp -d "${TMPDIR:-/tmp}/exakit-kit-stage.XXXXXX")"
     _backup="${_kit_dir}.backup-$(date +%Y%m%d-%H%M%S)"
     info "Updating starter kit ${_current:-unknown} -> $_latest"
-    if ! curl -fL --proto '=https' --retry 3 --connect-timeout 15 -sS \
-            -o "$_tmp" "https://github.com/${_repo}/archive/refs/tags/v${_latest}.tar.gz"; then
-        curl -fL --proto '=https' --retry 3 --connect-timeout 15 -sS \
-            -o "$_tmp" "https://github.com/${_repo}/archive/refs/tags/${_latest}.tar.gz" || \
-            die "Could not download the starter kit release $_latest from $_repo."
+    # main first — that is what install.sh fetches, and kit script changes live on
+    # main: a tag exists only where a release was cut. The tag URLs stay behind it
+    # so a kit installed from a tagged release still updates, and so a v0.1.0 field
+    # kit (which only ever knew tags) keeps working.
+    _kit_ref=""
+    for _kit_candidate in "main" "v${_latest}" "${_latest}"; do
+        case "$_kit_candidate" in
+            main) _kit_url="https://github.com/${_repo}/archive/refs/heads/main.tar.gz" ;;
+            *)    _kit_url="https://github.com/${_repo}/archive/refs/tags/${_kit_candidate}.tar.gz" ;;
+        esac
+        if curl -fL --proto '=https' --retry 3 --connect-timeout 15 -sS -o "$_tmp" "$_kit_url"; then
+            _kit_ref="$_kit_candidate"
+            break
+        fi
+    done
+    if [ -z "$_kit_ref" ]; then
+        rm -f "$_tmp"
+        rm -rf "$_stage"
+        die "Could not download the starter kit from $_repo (tried main and the $_latest tags)."
     fi
     tar -xzf "$_tmp" -C "$_stage" --strip-components 1 || {
         rm -rf "$_stage"
@@ -1743,12 +1757,26 @@ exakit_update_self() {
         die "Could not unpack the starter kit update; existing kit copy was left untouched."
     }
     rm -f "$_tmp"
-    for _required in setup/exakit setup/lib/common.sh setup/lib/runtime-nano.sh setup/lib/runtime-personal.sh setup/lib/exapump.sh setup/lib/mcp.sh setup/exakit.ps1 setup/lib/exakit-common.ps1; do
+    # versions.json is on this list deliberately: without it the new kit copy has
+    # no offline version tier and cannot say what version it is. The eight paths
+    # before it are the ones v0.1.0 also validates — none of them may ever be
+    # renamed, or an old kit refuses the upgrade.
+    for _required in setup/exakit setup/lib/common.sh setup/lib/runtime-nano.sh setup/lib/runtime-personal.sh setup/lib/exapump.sh setup/lib/mcp.sh setup/exakit.ps1 setup/lib/exakit-common.ps1 versions.json; do
         [ -f "$_stage/$_required" ] || {
             rm -rf "$_stage"
             die "Downloaded starter kit is incomplete (missing $_required); existing kit copy was left untouched."
         }
     done
+    # What actually landed is what gets recorded. GitHub's raw endpoint can serve a
+    # newer versions.json than the branch tarball for a few minutes after a merge,
+    # and claiming a version that is not on disk would make every later comparison
+    # lie (and re-download this kit on every update).
+    _staged_version="$(exakit_kit_version_at "$_stage" 2>/dev/null || true)"
+    if [ -z "$_staged_version" ]; then
+        _staged_version="$_latest"
+    elif [ "$_staged_version" != "$_latest" ] && exakit_version_newer "$_latest" "$_staged_version"; then
+        warn "The downloaded kit is $_staged_version, not the advertised $_latest — the published manifest is a few minutes ahead of $_kit_ref. Recording $_staged_version."
+    fi
     if [ -d "$_kit_dir" ]; then
         mv "$_kit_dir" "$_backup" || {
             rm -rf "$_stage"
@@ -1770,14 +1798,14 @@ exakit_update_self() {
         [ -d "$_backup" ] && { rm -rf "$_kit_dir"; mv "$_backup" "$_kit_dir"; }
         die "Updated kit did not contain setup/exakit after staging; previous kit copy was restored."
     fi
-    manifest_set kit.source "${_repo}@${_latest}"
+    manifest_set kit.source "${_repo}@${_kit_ref}"
     # Record the version too, not just where it came from. exakit_component_current
     # reads kit.version first, so without this the kit would report its old
     # version forever: update-check would keep offering the same update, `exakit
     # version` would keep nagging, and `exakit update` would re-download the whole
     # kit on every run.
-    manifest_set kit.version "$_latest"
-    ok "exakit updated. Database data, credentials, and MCP state were not changed."
+    manifest_set kit.version "$_staged_version"
+    ok "exakit updated to $_staged_version. Database data, credentials, and MCP state were not changed."
 }
 
 exakit_update_component() {

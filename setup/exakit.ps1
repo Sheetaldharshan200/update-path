@@ -754,7 +754,7 @@ function Invoke-CmdUpdate {
         }
         switch ($component) {
             "exakit" {
-                Warn2 "Starter-kit self-update is not automated on the Windows PowerShell path yet. Re-run install.ps1 with the desired tag to refresh the kit scripts."
+                Update-ExakitSelf -Advertised $available -Installed $current
             }
             "runtime" {
                 if ((Get-RuntimeType) -eq "nano" -and $available) { Update-Nano -LatestTag $available }

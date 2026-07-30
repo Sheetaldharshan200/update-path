@@ -652,6 +652,100 @@ allowed="$( EXAKIT_HOME="$UC"
     exakit_confirm_downgrade exapump </dev/null >/dev/null 2>&1; printf 'rc=%s' "$?" )"
 check "EXAKIT_ALLOW_DOWNGRADE=1 lets it through" "rc=0" "$allowed"
 
+echo "kit self-update (stubbed download, no network):"
+# A real tarball of a fake kit: the download is stubbed, but everything after it —
+# unpacking, the required-file gate, the staged-version gate, the backup/swap and
+# the recorded identity — is the production code path.
+# make_kit_tarball <dest.tgz> <kit-version> [omit-path]
+make_kit_tarball() {
+    _mk_dest="$1"
+    _mk_version="$2"
+    _mk_omit="${3:-}"
+    # Keyed by the archive being built, not by the version: two archives of the
+    # same version (one deliberately incomplete) must not share a source tree.
+    _mk_src="$WORK/kit-src-$(basename "$_mk_dest" | tr -c 'A-Za-z0-9' '_')"
+    rm -rf "$_mk_src"
+    MK_LAST_SRC="$_mk_src/repo-main"
+    mkdir -p "$_mk_src/repo-main/setup/lib"
+    for _mk_file in setup/exakit setup/lib/common.sh setup/lib/runtime-nano.sh \
+                    setup/lib/runtime-personal.sh setup/lib/exapump.sh setup/lib/mcp.sh \
+                    setup/exakit.ps1 setup/lib/exakit-common.ps1; do
+        [ "$_mk_file" = "$_mk_omit" ] && continue
+        printf '# fake %s from kit %s\n' "$_mk_file" "$_mk_version" > "$_mk_src/repo-main/$_mk_file"
+    done
+    if [ "$_mk_omit" != "versions.json" ]; then
+        sed 's/"version": "0.2.0"/"version": "'"$_mk_version"'"/' "$REAL" > "$_mk_src/repo-main/versions.json"
+    fi
+    ( cd "$_mk_src" && tar -czf "$_mk_dest" repo-main )
+}
+
+# self_update <served-tarball> <advertised> — run the real updater against a
+# sandbox kit home and report what it did.
+self_update() (
+    EXAKIT_HOME="$WORK/su-home"
+    EXAKIT_MANIFEST="$WORK/su-home/manifest.json"
+    EXAKIT_BIN_DIR="$WORK/su-home/bin"
+    rm -rf "$EXAKIT_HOME"
+    mkdir -p "$EXAKIT_HOME/kit/mcp" "$EXAKIT_BIN_DIR"
+    printf 'the kit copy that is about to be replaced\n' > "$EXAKIT_HOME/kit/marker.txt"
+    cp "$REAL" "$EXAKIT_HOME/kit/versions.json"
+    manifest_init >/dev/null 2>&1
+    manifest_set kit.version 0.2.0 >/dev/null 2>&1
+    SU_ADVERTISED="$2"
+    SU_SERVE="$1"
+    exakit_component_available() { printf '%s\n' "$SU_ADVERTISED"; }
+    curl() {
+        _co=""
+        while [ "$#" -gt 0 ]; do
+            case "$1" in
+                -o) _co="$2"; shift 2 ;;
+                https://*) _su_url="$1"; shift ;;
+                *) shift ;;
+            esac
+        done
+        # Only the main branch archive exists in this world; the tag fallbacks 404.
+        case "$_su_url" in
+            *refs/heads/main.tar.gz) cp "$SU_SERVE" "$_co" ;;
+            *) return 22 ;;
+        esac
+    }
+    ( exakit_update_self >"$WORK/su-out.txt" 2>&1 ); printf 'rc=%s ' "$?"
+    printf 'version=%s source=%s ' "$(manifest_get kit.version 2>/dev/null || printf none)" \
+        "$(manifest_get kit.source 2>/dev/null || printf none)"
+    [ -f "$EXAKIT_HOME/kit/versions.json" ] && printf 'kit-present ' || printf 'NO-KIT '
+    grep -q 'fake setup/exakit ' "$EXAKIT_HOME/kit/setup/exakit" 2>/dev/null && printf 'replaced ' || printf 'not-replaced '
+    [ -x "$EXAKIT_BIN_DIR/exakit" ] && printf 'cli-installed ' || printf 'NO-CLI '
+    ls -d "$EXAKIT_HOME"/kit.backup-* >/dev/null 2>&1 && printf 'backup-kept' || printf 'NO-BACKUP'
+)
+
+make_kit_tarball "$WORK/kit-0.3.0.tgz" 0.3.0
+PS_KIT_SRC="$MK_LAST_SRC"       # reused by the PowerShell self-update check below
+check "a newer kit replaces the copy and records itself" \
+    "rc=0 version=0.3.0 source=exasol-labs/exasol-personal-local-starterkit@main kit-present replaced cli-installed backup-kept" \
+    "$(self_update "$WORK/kit-0.3.0.tgz" 0.3.0)"
+
+# The raw endpoint can be minutes ahead of the branch archive: record what landed.
+make_kit_tarball "$WORK/kit-0.2.5.tgz" 0.2.5
+lag_state="$(self_update "$WORK/kit-0.2.5.tgz" 0.3.0)"
+check "a lagging archive records the version that landed" \
+    "rc=0 version=0.2.5 source=exasol-labs/exasol-personal-local-starterkit@main kit-present replaced cli-installed backup-kept" \
+    "$lag_state"
+has "and says the manifest was ahead" "not the advertised 0.3.0" "$(cat "$WORK/su-out.txt")"
+
+# An archive without versions.json is refused: the new copy would have no offline
+# version tier and could not say what it is.
+make_kit_tarball "$WORK/kit-no-manifest.tgz" 0.3.0 versions.json
+check "an archive without versions.json is refused" \
+    "rc=1 version=0.2.0 source=none kit-present not-replaced NO-CLI NO-BACKUP" \
+    "$(self_update "$WORK/kit-no-manifest.tgz" 0.3.0)"
+has "and says the kit copy was left alone" "existing kit copy was left untouched" "$(cat "$WORK/su-out.txt")"
+
+# One of v0.1.0's eight required paths missing must fail the same way.
+make_kit_tarball "$WORK/kit-no-common.tgz" 0.3.0 setup/lib/common.sh
+check "an archive missing a v0.1.0 required file is refused" \
+    "rc=1 version=0.2.0 source=none kit-present not-replaced NO-CLI NO-BACKUP" \
+    "$(self_update "$WORK/kit-no-common.tgz" 0.3.0)"
+
 echo "Windows parity (versions manifest):"
 if command -v pwsh >/dev/null 2>&1; then
     PS_HOME="$WORK/ps-home"
@@ -725,6 +819,50 @@ if command -v pwsh >/dev/null 2>&1; then
         pwsh -NoProfile -File "$ROOT/setup/exakit.ps1" update-check exapump 2>&1 | tr -d '\r')"
     has "powershell: an override is credited" "EXAKIT_* environment overrides" "$ps_override"
     lacks "powershell: and withholds the maintainer note" "mis-detects CSV headers" "$ps_override"
+    # The Windows self-update, for real: the download cmdlet is shadowed by a
+    # function in the same session, so everything after it - the required-file
+    # gate, the staged-version gate, the backup/swap, the shim and the recorded
+    # identity - is the production path. (The deferred swap is Windows-only: it
+    # exists because Windows will not rename a directory whose files are open, so
+    # it cannot be provoked here.)
+    PS_SU="$WORK/ps-su"
+    rm -rf "$PS_SU"
+    mkdir -p "$PS_SU/home/kit/mcp" "$PS_SU/home/bin"
+    printf 'the kit copy that is about to be replaced\n' > "$PS_SU/home/kit/marker.txt"
+    cp "$REAL" "$PS_SU/home/kit/versions.json"
+    python3 - "$PS_KIT_SRC" "$PS_SU/kit-0.3.0.zip" <<'PY'
+import pathlib, sys, zipfile
+src, dest = pathlib.Path(sys.argv[1]), sys.argv[2]
+with zipfile.ZipFile(dest, "w") as archive:
+    for path in sorted(src.rglob("*")):
+        if path.is_file():
+            archive.write(path, pathlib.Path("repo-main") / path.relative_to(src))
+PY
+    ps_self="$(EXAKIT_HOME="$PS_SU/home" EXAKIT_BIN_DIR="$PS_SU/home/bin" \
+        VM_ROOT="$ROOT" SU_ZIP="$PS_SU/kit-0.3.0.zip" pwsh -NoProfile -Command '
+        . "$env:VM_ROOT/setup/lib/exakit-common.ps1"
+        # Only the main-branch archive exists in this world; the tags 404.
+        function Invoke-WebRequest {
+            param($Uri, $OutFile, [switch]$UseBasicParsing, $TimeoutSec, $UserAgent)
+            if ($Uri -notlike "*refs/heads/main.zip") { throw "404" }
+            Copy-Item -Force $env:SU_ZIP $OutFile
+        }
+        Initialize-ExakitManifest
+        Set-ExakitManifestValue "kit.version" "0.2.0"
+        Update-ExakitSelf -Advertised "0.3.0" -Installed "0.2.0" | Out-Null
+        $kit = Join-Path $env:EXAKIT_HOME "kit"
+        $out = @()
+        $out += (Get-ExakitManifestValue "kit.version")
+        $out += (Get-ExakitManifestValue "kit.source")
+        if (Test-Path (Join-Path $kit "versions.json")) { $out += "kit-present" } else { $out += "NO-KIT" }
+        if ((Get-Content -Raw (Join-Path $kit "setup/exakit")) -like "*fake setup/exakit*") { $out += "replaced" } else { $out += "not-replaced" }
+        if (Test-Path (Join-Path $env:EXAKIT_BIN_DIR "exakit.cmd")) { $out += "shim-written" } else { $out += "NO-SHIM" }
+        if (Get-ChildItem -Path $env:EXAKIT_HOME -Filter "kit.backup-*" -ErrorAction SilentlyContinue) { $out += "backup-kept" } else { $out += "NO-BACKUP" }
+        Write-Output ($out -join " ")
+    ' 2>&1 | tail -1 | tr -d '\r')"
+    check "powershell(self_update)" \
+        "0.3.0 exasol-labs/exasol-personal-local-starterkit@main kit-present replaced shim-written backup-kept" \
+        "$ps_self"
     ps_version="$(EXAKIT_HOME="$UC" EXAKIT_BIN_DIR="$UC/bin" \
         EXAKIT_VERSIONS_CACHE="$UC/cache/versions.json" \
         EXAKIT_VERSIONS_URL="http://offline.invalid/versions.json" \
@@ -742,7 +880,7 @@ else
                     "pinned policy uses the fallback" "an override is credited" \
                     "and withholds the maintainer note" \
                     "version reports the kit version" "version prints no table" \
-                    "version says something is waiting"; do
+                    "version says something is waiting" "(self_update)"; do
         check "powershell: $_skipped" "skipped" "skipped"
     done
 fi

@@ -133,18 +133,10 @@ try {
         # version resolution and the record of which kit version this is.
         Copy-ExakitAsset -Source (Join-Path $KitRoot "versions.json") -Destination (Join-Path $script:ExakitHome "kit\versions.json")
 
-        # The bare `exakit` command must be ONLY the .cmd shim. The .ps1 is
-        # deliberately NOT placed in the bin dir: when both sit on PATH,
-        # PowerShell resolves the .ps1 ahead of the .cmd, which routes
-        # `exakit` around the shim's -ExecutionPolicy Bypass and fails on
-        # default-policy systems with "running scripts is disabled". The
-        # shim targets the kit's copy by absolute path instead.
-        # (Remove-Item also self-heals installs made before this fix.)
-        Remove-Item -Force (Join-Path $script:BinDir "exakit.ps1") -ErrorAction SilentlyContinue
-        $psTarget = Join-Path $kitSetupDir "exakit.ps1"
-        $shimPath = Join-Path $script:BinDir "exakit.cmd"
-        $shimContent = "@echo off`r`npowershell -NoProfile -ExecutionPolicy Bypass -File `"$psTarget`" %*`r`n"
-        Set-Content -Path $shimPath -Value $shimContent -NoNewline
+        # Set-ExakitCmdShim owns the shim's content (the kit self-update writes the
+        # same file, so it must not drift): the bare `exakit` command is ONLY the
+        # .cmd, pointing at the kit's copy by absolute path.
+        $shimPath = Set-ExakitCmdShim -PsTarget (Join-Path $kitSetupDir "exakit.ps1")
 
         Confirm-ExakitOnPath $script:BinDir
         Set-ExakitStepDone "exakit_helper"
