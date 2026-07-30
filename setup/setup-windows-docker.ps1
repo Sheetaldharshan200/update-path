@@ -60,10 +60,13 @@ try {
 
     # --- step 3: exapump (data loading CLI) ------------------------------------
     if ($exapumpSupported -and (Begin-ExakitStep "exapump" "Step 2/5  exapump (data loading CLI)")) {
-        Install-Exapump
-        New-ExapumpProfile
-        Test-ExapumpConnection
-        Set-ExakitStepDone "exapump"
+        if (Invoke-ExakitSoftStep -Component "exapump" -Repair "exakit update exapump" -Body {
+                Install-Exapump
+                New-ExapumpProfile
+                Test-ExapumpConnection
+            }) {
+            Set-ExakitStepDone "exapump"
+        }
     }
 
     # Load the sample data before any MCP configuration. exapump is now up
@@ -72,7 +75,9 @@ try {
     # that already holds the sample tables - and the AI client has data to
     # query the moment it connects. Wrapped so a failed/declined load never
     # aborts the rest of setup (mirrors kit_shared_steps' `|| true` in bash).
-    if ($exapumpSupported) {
+    if ($exapumpSupported -and (Test-ExakitSoftFailed "exapump")) {
+        Info "Skipping the sample data - it is loaded with exapump, which is not installed"
+    } elseif ($exapumpSupported) {
         try {
             Request-ExakitDataLoadOffer -KitRoot $KitRoot
         } catch [ExakitFailException] {
@@ -82,9 +87,12 @@ try {
 
     # --- step 4: MCP server (AI agent bridge) ----------------------------------
     if ($exapumpSupported -and (Begin-ExakitStep "mcp" "Step 3/5  MCP server (AI agent bridge)")) {
-        Install-Mcp
-        Test-McpServer
-        Set-ExakitStepDone "mcp"
+        if (Invoke-ExakitSoftStep -Component "mcp" -Repair "exakit update mcp" -Body {
+                Install-Mcp
+                Test-McpServer
+            }) {
+            Set-ExakitStepDone "mcp"
+        }
     }
 
     # --- step 5: pyexasol (Exasol Python driver) --------------------------------
@@ -94,7 +102,9 @@ try {
     # below still has to happen, or the user is left without the command that
     # manages everything else. The step stays unmarked so a re-run retries it.
     if (Begin-ExakitStep "pyexasol" "Step 4/5  pyexasol (Exasol Python driver)") {
-        if (Install-Pyexasol) {
+        if (Invoke-ExakitSoftStep -Component "pyexasol" -Repair "exakit update pyexasol" -Body {
+                Install-Pyexasol
+            }) {
             Test-PyexasolConnection
             Set-ExakitStepDone "pyexasol"
         }
@@ -150,6 +160,8 @@ try {
         Set-ExakitStepDone "exakit_helper"
         Ok "exakit installed ($(Join-Path $script:BinDir 'exakit.cmd'))"
     }
+
+    Write-ExakitSoftFailures
 
     try {
         Request-ExakitMcpSetupOffer

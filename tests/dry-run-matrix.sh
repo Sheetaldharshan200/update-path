@@ -462,6 +462,21 @@ if grep -q 'Update-ExakitVersionsCache' "$ROOT/setup/lib/exakit-common.ps1" && \
 else
     check "windows_install(manifest_wiring)" "yes" "no"
 fi
+# Soft-failing components, both sides. A component that dies must not take the run
+# down with it: the exakit command is installed last, and without it a user whose
+# exapump download broke has no way to repair anything.
+if grep -q 'exakit_soft_step exapump' "$ROOT/setup/lib/common.sh" && \
+   grep -q 'exakit_soft_step mcp' "$ROOT/setup/lib/common.sh" && \
+   grep -q 'exakit_soft_step pyexasol' "$ROOT/setup/lib/common.sh" && \
+   grep -q 'exakit_print_soft_failures' "$ROOT/setup/lib/common.sh" && \
+   grep -q 'Invoke-ExakitSoftStep -Component "exapump"' "$ROOT/setup/setup-windows-docker.ps1" && \
+   grep -q 'Invoke-ExakitSoftStep -Component "mcp"' "$ROOT/setup/setup-windows-docker.ps1" && \
+   grep -q 'Invoke-ExakitSoftStep -Component "pyexasol"' "$ROOT/setup/setup-windows-docker.ps1" && \
+   grep -q 'Write-ExakitSoftFailures' "$ROOT/setup/setup-windows-docker.ps1"; then
+    check "install(components_soft_fail)" "yes" "yes"
+else
+    check "install(components_soft_fail)" "yes" "no"
+fi
 # Bounded engine probes, both sides. `docker info` does not return while Docker
 # Desktop is starting, so every read-path probe has to be able to give up. The
 # PowerShell half must use .Arguments and not .ArgumentList, which exists only on

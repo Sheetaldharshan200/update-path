@@ -817,6 +817,57 @@ function Format-ExakitManifestDate {
     }
 }
 
+# Invoke-ExakitSoftStep - run one component's install without letting it end the
+# run. The twin of bash exakit_soft_step, and there for the same reason: the
+# component installers Fail() on error, and a broken exapump used to stop setup
+# before the exakit command existed, leaving a deployed database with nothing to
+# repair it.
+$script:ExakitSoftFailed = @{}
+
+function Invoke-ExakitSoftStep {
+    param(
+        [Parameter(Mandatory)][string]$Component,
+        [Parameter(Mandatory)][string]$Repair,
+        [Parameter(Mandatory)][scriptblock]$Body
+    )
+    try {
+        $result = & $Body
+        # Install-Pyexasol reports a soft miss by returning $false rather than
+        # throwing, so a returned $false counts as a failure too.
+        if ($result -is [bool] -and -not $result) {
+            throw "reported failure"
+        }
+        return $true
+    } catch {
+        $script:ExakitSoftFailed[$Component] = $Repair
+        Write-ExakitLog "WARN" "$Component did not finish: $_"
+        Warn2 "$Component did not finish - carrying on so the rest of the install completes"
+        return $false
+    }
+}
+
+function Test-ExakitSoftFailed {
+    param([Parameter(Mandatory)][string]$Component)
+    return $script:ExakitSoftFailed.ContainsKey($Component)
+}
+
+# The closing account of what did not make it, with the one line that fixes each.
+function Write-ExakitSoftFailures {
+    if ($script:ExakitSoftFailed.Count -eq 0) { return }
+    Write-Host ""
+    if ($script:ExakitSoftFailed.Count -eq 1) {
+        Warn2 "The install finished, but one component is missing:"
+    } else {
+        Warn2 "The install finished, but $($script:ExakitSoftFailed.Count) components are missing:"
+    }
+    foreach ($component in ($script:ExakitSoftFailed.Keys | Sort-Object)) {
+        Write-Host ("      {0,-10} {1}" -f $component, $script:ExakitSoftFailed[$component])
+    }
+    Write-Host ""
+    Info "Everything else is ready - the database, and the exakit command itself."
+    Info "See where you stand any time with: exakit status"
+}
+
 # Invoke-ExakitBounded - run an external command and give up on it after
 # -TimeoutSeconds, returning $null if it had to be cut off.
 #

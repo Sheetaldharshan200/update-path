@@ -4041,6 +4041,79 @@ exakit_maybe_offer_data_load() {
 # client setup offer. Data is loaded before MCP so the read-only user is
 # provisioned against a populated schema. One implementation so the per-OS
 # setup scripts cannot drift apart.
+# exakit_soft_step <component> <repair-command> <function...> — run one
+# component's install without letting it end the run.
+#
+# The component installers die() on failure, and die() exits. exapump alone has 32
+# of them, and it runs three steps before the `exakit` command is installed: a
+# broken download left the user with a deployed database, no CLI, and no way to
+# repair it except re-running the whole installer. So each component runs in a
+# subshell, and a failure is recorded and stepped over instead of ending the run.
+#
+# Nothing is lost to the subshell: these functions keep their state in the manifest
+# and on disk, not in shell variables, and no component reads a global set by
+# another one.
+exakit_soft_step() {
+    _ss_component="$1"
+    _ss_repair="$2"
+    shift 2
+    if ( "$@" ); then
+        return 0
+    fi
+    EXAKIT_SOFT_FAILED="${EXAKIT_SOFT_FAILED:-}${EXAKIT_SOFT_FAILED:+ }$_ss_component"
+    # The repair command travels with the failure, so the summary never has to
+    # guess it back.
+    eval "EXAKIT_SOFT_REPAIR_${_ss_component}=\"\$_ss_repair\""
+    warn "$_ss_component did not finish — carrying on so the rest of the install completes"
+    return 1
+}
+
+# exakit_soft_failed <component> — did this component fail earlier in the run?
+exakit_soft_failed() {
+    case " ${EXAKIT_SOFT_FAILED:-} " in
+        *" $1 "*) return 0 ;;
+        *)        return 1 ;;
+    esac
+}
+
+# exakit_print_soft_failures — the closing account of what did not make it.
+#
+# Said plainly and with the exact repair command: the install is usable, some of it
+# is missing, and here is the one line that fixes each piece.
+exakit_print_soft_failures() {
+    [ -n "${EXAKIT_SOFT_FAILED:-}" ] || return 0
+    _sf_count=0
+    for _sf in $EXAKIT_SOFT_FAILED; do
+        _sf_count=$((_sf_count + 1))
+    done
+    printf '\n'
+    if [ "$_sf_count" = "1" ]; then
+        warn "The install finished, but one component is missing:"
+    else
+        warn "The install finished, but $_sf_count components are missing:"
+    fi
+    for _sf in $EXAKIT_SOFT_FAILED; do
+        eval "_sf_repair=\"\${EXAKIT_SOFT_REPAIR_${_sf}:-}\""
+        printf '      %-10s %s\n' "$_sf" "${_sf_repair:-see the log}"
+    done
+    printf '\n'
+    info "Everything else is ready — the database, and the exakit command itself."
+    info "See where you stand any time with: exakit status"
+    return 0
+}
+
+# The component chains, named so exakit_soft_step has something to isolate.
+_exakit_install_exapump() {
+    exapump_install || return 1
+    exapump_create_profile || return 1
+    exapump_validate_connection
+}
+
+_exakit_install_mcp() {
+    mcp_install || return 1
+    mcp_validate
+}
+
 kit_shared_steps() {
     _step_no="$1"
     _total="$2"
@@ -4049,10 +4122,10 @@ kit_shared_steps() {
 
     if command -v exapump_install >/dev/null 2>&1; then
         if begin_step exapump "Step ${_step_no}/${_total}  exapump (data loading CLI)"; then
-            exapump_install
-            exapump_create_profile
-            exapump_validate_connection
-            mark_step exapump
+            if exakit_soft_step exapump "exakit update exapump" \
+                    _exakit_install_exapump; then
+                mark_step exapump
+            fi
         fi
     else
         info "Step ${_step_no}/${_total}  exapump — not part of this installation, skipping"
@@ -4064,13 +4137,17 @@ kit_shared_steps() {
     # user is provisioned, granted, and posture-checked against a schema
     # that already holds the sample tables — and the AI client has data to
     # query the moment it connects.
-    exakit_maybe_offer_data_load "$_kit_root" || true
+    if exakit_soft_failed exapump; then
+        info "Skipping the sample data — it is loaded with exapump, which is not installed"
+    else
+        exakit_maybe_offer_data_load "$_kit_root" || true
+    fi
 
     if command -v mcp_install >/dev/null 2>&1; then
         if begin_step mcp "Step ${_step_no}/${_total}  MCP server (AI agent bridge)"; then
-            mcp_install
-            mcp_validate
-            mark_step mcp
+            if exakit_soft_step mcp "exakit update mcp" _exakit_install_mcp; then
+                mark_step mcp
+            fi
         fi
     else
         info "Step ${_step_no}/${_total}  MCP server — not part of this installation, skipping"
@@ -4084,7 +4161,7 @@ kit_shared_steps() {
             # the user is left without the command that fixes everything else. A
             # soft failure explains itself, records validated=false, and leaves
             # the step unmarked so a re-run (or `exakit update pyexasol`) retries.
-            if pyexasol_install; then
+            if exakit_soft_step pyexasol "exakit update pyexasol" pyexasol_install; then
                 pyexasol_validate
                 mark_step pyexasol
             fi
@@ -4152,6 +4229,7 @@ kit_shared_steps() {
 
     exakit_maybe_offer_mcp_setup || true
     exakit_maybe_offer_skills_install || true
+    exakit_print_soft_failures
 }
 
 # connection_panel — the payoff screen: everything needed to connect.

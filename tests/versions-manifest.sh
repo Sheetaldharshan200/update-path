@@ -982,6 +982,65 @@ lacks "and applies nothing" "APPLIED exapump" "$one_ahead"
 lacks "without asking anything" "Downgrade" "$one_ahead"
 has "and exits clean" "rc=0" "$one_ahead"
 
+echo "a failed component cannot strand the install:"
+# The failure this prevents: exapump has 32 die() calls and runs three steps before
+# the exakit command is installed, so a broken download used to leave a deployed
+# database, no CLI, and nothing to repair it with but the whole installer again.
+mkdir -p "$WORK/soft-kit"
+cp "$REAL" "$WORK/soft-kit/versions.json"
+soft="$( EXAKIT_HOME="$WORK/soft-home"
+    EXAKIT_MANIFEST="$WORK/soft-home/manifest.json"
+    EXAKIT_BIN_DIR="$WORK/soft-home/bin"
+    mkdir -p "$EXAKIT_HOME"
+    . "$ROOT/setup/lib/pyexasol.sh"
+    manifest_init >/dev/null 2>&1
+    # exapump dies the way a bad download does; MCP works; pyexasol misses softly.
+    exapump_install() { die "Could not install exapump"; }
+    exapump_create_profile() { :; }
+    exapump_validate_connection() { :; }
+    mcp_install() { :; }
+    mcp_validate() { :; }
+    pyexasol_install() { return 1; }
+    pyexasol_validate() { :; }
+    exakit_maybe_offer_data_load() { printf 'OFFERED-DATA-LOAD\n'; }
+    exakit_maybe_offer_mcp_setup() { :; }
+    exakit_maybe_offer_skills_install() { :; }
+    ensure_path_hint() { :; }
+    _out="$(kit_shared_steps 3 6 "$ROOT/setup" "$WORK/soft-kit" 2>&1)"
+    [ -x "$EXAKIT_BIN_DIR/exakit" ] && printf 'cli ' || printf 'NO-CLI '
+    printf '%s ' "$(manifest_get steps_completed | tr -d '\" []' )"
+    printf '%s\n' "$_out" | grep -q 'OFFERED-DATA-LOAD' && printf 'data-offered' || printf 'data-skipped'
+    printf ' '
+    printf '%s\n' "$_out" | grep -q 'exakit update exapump' && printf 'repair-exapump' || printf 'NO-REPAIR-EXAPUMP'
+    printf ' '
+    printf '%s\n' "$_out" | grep -q 'exakit update pyexasol' && printf 'repair-pyexasol' || printf 'NO-REPAIR-PYEXASOL' )"
+check "a dying component leaves a working CLI, a repair line, and no half-marked step" \
+    "cli mcp,exakit_helper data-skipped repair-exapump repair-pyexasol" "$soft"
+
+# Nothing failing must not produce a summary out of thin air.
+quiet="$( EXAKIT_HOME="$WORK/soft-ok-home"
+    EXAKIT_MANIFEST="$WORK/soft-ok-home/manifest.json"
+    EXAKIT_BIN_DIR="$WORK/soft-ok-home/bin"
+    mkdir -p "$EXAKIT_HOME"
+    . "$ROOT/setup/lib/pyexasol.sh"
+    manifest_init >/dev/null 2>&1
+    exapump_install() { :; }
+    exapump_create_profile() { :; }
+    exapump_validate_connection() { :; }
+    mcp_install() { :; }
+    mcp_validate() { :; }
+    pyexasol_install() { :; }
+    pyexasol_validate() { :; }
+    exakit_maybe_offer_data_load() { :; }
+    exakit_maybe_offer_mcp_setup() { :; }
+    exakit_maybe_offer_skills_install() { :; }
+    ensure_path_hint() { :; }
+    _out="$(kit_shared_steps 3 6 "$ROOT/setup" "$WORK/soft-kit" 2>&1)"
+    printf '%s\n' "$_out" | grep -q 'components are missing\|component is missing' && printf 'SPURIOUS' || printf 'silent'
+    printf ' %s' "$(manifest_get steps_completed | tr -d '\" []' )" )"
+check "a clean run says nothing and marks everything" \
+    "silent exapump,mcp,pyexasol,exakit_helper" "$quiet"
+
 echo "a hanging container engine cannot stall a version lookup:"
 # The failure this prevents: `docker info` and `docker container inspect` do not
 # return while Docker Desktop is starting, and an unbounded probe left
