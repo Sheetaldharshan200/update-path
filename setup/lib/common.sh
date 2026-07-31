@@ -2082,9 +2082,9 @@ _exakit_notice_plan_write() {
     {
         printf 'computed_at=%s\n' "$(date +%s)"
         printf 'sig=%s\n' "$(_exakit_notice_signature)"
-        printf 'light=%s\n' "$_notice_light"
+        printf 'light=%s\n' "$_notice_light_detail"
         printf 'light_worst=%s\n' "$_notice_light_worst"
-        printf 'heavy=%s\n' "$_notice_heavy"
+        printf 'heavy=%s\n' "$_notice_heavy_detail"
         printf 'heavy_worst=%s\n' "$_notice_heavy_worst"
     } > "$_npw_tmp" 2>/dev/null || { rm -f "$_npw_tmp"; return 0; }
     mv "$_npw_tmp" "$EXAKIT_NOTICE_PLAN" 2>/dev/null || rm -f "$_npw_tmp"
@@ -2122,12 +2122,17 @@ exakit_notice_after_command() {
     exakit_notice_due || return 0
 
     if _exakit_notice_plan_fresh; then
-        _notice_light="$(_exakit_notice_plan_field light)"
-        _notice_heavy="$(_exakit_notice_plan_field heavy)"
         _notice_light_worst="$(_exakit_notice_plan_field light_worst)"
         _notice_heavy_worst="$(_exakit_notice_plan_field heavy_worst)"
         [ -n "$_notice_light_worst" ] || _notice_light_worst="normal"
         [ -n "$_notice_heavy_worst" ] || _notice_heavy_worst="normal"
+        # Confirm each cached candidate is STILL behind before repeating it. A plan
+        # written while a component was mid-install kept announcing an update the
+        # user had already taken, and disagreed with `exakit update-check` run
+        # seconds later. Costs one probe per pending component -- and when nothing
+        # is pending, which is the normal case, it costs nothing at all.
+        _notice_light="$(_exakit_notice_still_behind "$(_exakit_notice_plan_field light)")"
+        _notice_heavy="$(_exakit_notice_still_behind "$(_exakit_notice_plan_field heavy)")"
         _exakit_notice_say
         return 0
     fi
@@ -2140,6 +2145,8 @@ exakit_notice_after_command() {
     # happens to have a critical one pending in the same breath.
     _notice_light=""
     _notice_heavy=""
+    _notice_light_detail=""
+    _notice_heavy_detail=""
     _notice_light_worst="normal"
     _notice_heavy_worst="normal"
     for _notice_component in $(exakit_update_targets all); do
@@ -2160,12 +2167,14 @@ exakit_notice_after_command() {
         # word every routine bump as a recommendation.
         if exakit_component_is_heavy "$_notice_actual"; then
             _notice_heavy="${_notice_heavy}${_notice_heavy:+, }$_notice_actual"
+            _notice_heavy_detail="${_notice_heavy_detail:-}${_notice_heavy_detail:+, }$_notice_actual:$_notice_avail"
             case "$_notice_severity" in
                 critical)    _notice_heavy_worst="critical" ;;
                 recommended) [ "$_notice_heavy_worst" = "critical" ] || _notice_heavy_worst="recommended" ;;
             esac
         else
             _notice_light="${_notice_light}${_notice_light:+, }$_notice_actual"
+            _notice_light_detail="${_notice_light_detail:-}${_notice_light_detail:+, }$_notice_actual:$_notice_avail"
             case "$_notice_severity" in
                 critical)    _notice_light_worst="critical" ;;
                 recommended) [ "$_notice_light_worst" = "critical" ] || _notice_light_worst="recommended" ;;
@@ -2175,6 +2184,41 @@ exakit_notice_after_command() {
     _exakit_notice_plan_write
     _exakit_notice_say
     return 0
+}
+
+# _exakit_notice_still_behind <name:advertised, name:advertised> — the names that are
+# genuinely still behind, as a display list.
+#
+# The advertised version is stored with each candidate so this needs no document and
+# no severity lookup: probe what is installed, compare, drop whatever has caught up.
+_exakit_notice_still_behind() {
+    _nsb_in="$1"
+    [ -n "$_nsb_in" ] || return 0
+    _nsb_out=""
+    _nsb_rest="$_nsb_in"
+    while [ -n "$_nsb_rest" ]; do
+        case "$_nsb_rest" in
+            *,*) _nsb_entry="${_nsb_rest%%,*}"; _nsb_rest="${_nsb_rest#*,}" ;;
+            *)   _nsb_entry="$_nsb_rest"; _nsb_rest="" ;;
+        esac
+        # trim the space after a comma
+        _nsb_entry="${_nsb_entry# }"
+        _nsb_name="${_nsb_entry%%:*}"
+        _nsb_want="${_nsb_entry#*:}"
+        [ -n "$_nsb_name" ] || continue
+        if [ -z "$_nsb_want" ] || [ "$_nsb_want" = "$_nsb_name" ]; then
+            # A plan written before versions were recorded with the names: keep the
+            # entry rather than silently dropping a real pending update.
+            _nsb_out="${_nsb_out}${_nsb_out:+, }$_nsb_name"
+            continue
+        fi
+        _nsb_now="$(exakit_component_current "$_nsb_name" 2>/dev/null || true)"
+        if [ -z "$_nsb_now" ] || [ "$_nsb_now" = "unknown" ] || [ "$_nsb_now" = "$_nsb_want" ]; then
+            continue
+        fi
+        _nsb_out="${_nsb_out}${_nsb_out:+, }$_nsb_name"
+    done
+    printf '%s' "$_nsb_out"
 }
 
 # _exakit_notice_say — print whatever the plan says, freshly computed or cached.
@@ -2320,6 +2364,9 @@ exakit_print_update_check() {
         [ -n "$_row_maint_note" ] && printf '    %s%s%s\n' "${UI_DIM:-}" "$_row_maint_note" "${UI_RESET:-}"
     done
     printf '\n'
+    # This command just worked out the truth the long way. Retire the cached plan so
+    # the next notice cannot repeat something the table above has just contradicted.
+    rm -f "$EXAKIT_NOTICE_PLAN" 2>/dev/null || true
     exakit_print_versions_source_line
     exakit_print_kit2_discovery_line
     if [ "$_updates" -gt 1 ]; then
