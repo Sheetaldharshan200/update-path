@@ -32,6 +32,9 @@ $kitSource = if ($env:EXAKIT_KIT_SOURCE) { $env:EXAKIT_KIT_SOURCE } else { "chec
 Set-ExakitManifestValue "kit.source" $kitSource
 # The kit's own version comes from the versions manifest shipping with THIS
 # tree, not from whatever copy an earlier install left under the kit home.
+# What the previous install recorded, captured BEFORE it is overwritten: the end of
+# the run uses it to tell an upgrading user what changed.
+$script:UpgradedFrom = Get-ExakitManifestValue "kit.version"
 $kitVersion = Get-ExakitKitVersionAt -KitRoot $KitRoot
 if ($kitVersion) { Set-ExakitManifestValue "kit.version" $kitVersion }
 
@@ -150,6 +153,7 @@ try {
         # The versions manifest travels with the copy: it is the offline tier of
         # version resolution and the record of which kit version this is.
         Copy-ExakitAsset -Source (Join-Path $KitRoot "versions.json") -Destination (Join-Path $script:ExakitHome "kit\versions.json")
+        Copy-ExakitAsset -Source (Join-Path $KitRoot "WHATS-NEW.md") -Destination (Join-Path $script:ExakitHome "kit\WHATS-NEW.md")
 
         # Set-ExakitCmdShim owns the shim's content (the kit self-update writes the
         # same file, so it must not drift): the bare `exakit` command is ONLY the
@@ -162,6 +166,11 @@ try {
     }
 
     Write-ExakitSoftFailures
+
+    if ($script:UpgradedFrom -and $kitVersion -and $script:UpgradedFrom -ne $kitVersion) {
+        [void](Write-ExakitWhatsNew -Version $kitVersion `
+            -Heading "What's new in $kitVersion (upgraded from $($script:UpgradedFrom))")
+    }
 
     try {
         Request-ExakitMcpSetupOffer

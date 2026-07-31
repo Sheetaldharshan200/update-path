@@ -1040,6 +1040,57 @@ quiet="$( EXAKIT_HOME="$WORK/soft-ok-home"
     printf ' %s' "$(manifest_get steps_completed | tr -d '\" []' )" )"
 check "a clean run says nothing and marks everything" \
     "silent exapump,mcp,pyexasol,exakit_helper" "$quiet"
+echo "release notes travel with the kit:"
+mkdir -p "$WORK/wn-kit"
+printf '# What is new\n\n## 0.3.0\n\n- the newer thing\n\n## 0.2.0\n\n- the older thing\n' \
+    > "$WORK/wn-kit/WHATS-NEW.md"
+check "a section is read whole and stops at the next heading" "- the older thing" \
+    "$(exakit_whats_new_section "$WORK/wn-kit" 0.2.0 | tr -d '[:space:]' | sed 's/^-*//;s/^/- /;s/\(.\)$/\1/' >/dev/null; \
+       exakit_whats_new_section "$WORK/wn-kit" 0.2.0 | grep -v '^$' | head -1)"
+check "the later section is separate" "- the newer thing" \
+    "$(exakit_whats_new_section "$WORK/wn-kit" 0.3.0 | grep -v '^$' | head -1)"
+# Silence, not noise, for the two cases a real upgrade meets.
+check "an unknown version is silent" "rc=1" \
+    "$(exakit_whats_new_section "$WORK/wn-kit" 9.9.9 >/dev/null 2>&1; printf 'rc=%s' "$?")"
+check "a kit copy without the file is silent" "rc=1" \
+    "$(exakit_whats_new_section "$WORK" 0.2.0 >/dev/null 2>&1; printf 'rc=%s' "$?")"
+# A heading with nothing under it must not print an empty panel.
+printf '# What is new\n\n## 0.4.0\n\n\n## 0.3.0\n\n- real\n' > "$WORK/wn-kit/WHATS-NEW.md"
+check "an empty section counts as no section" "rc=1" \
+    "$(exakit_whats_new_section "$WORK/wn-kit" 0.4.0 >/dev/null 2>&1; printf 'rc=%s' "$?")"
+
+# An installer re-run that moved the kit version says what changed; one that did
+# not must stay quiet, or every idempotent re-run reads like an upgrade.
+wn_kit_root="$WORK/wn-run-kit"
+mkdir -p "$wn_kit_root"
+cp "$REAL" "$wn_kit_root/versions.json"
+printf '# What is new\n\n## 0.2.0\n\n- upgraded-line-only-here\n' > "$wn_kit_root/WHATS-NEW.md"
+wn_run() {
+    # The kit copy IS the repo root as far as exakit_repo_root is concerned, as long
+    # as kit/mcp exists. Building it that way beats stubbing the resolver - and
+    # without it the lookup would fall through to the real WHATS-NEW.md in this
+    # checkout, which has a 0.2.0 section and would pass for the wrong reason. The
+    # sentinel line below only exists in the fixture.
+    ( EXAKIT_HOME="$WORK/wn-home-$1"
+      EXAKIT_MANIFEST="$WORK/wn-home-$1/manifest.json"
+      EXAKIT_BIN_DIR="$WORK/wn-home-$1/bin"
+      mkdir -p "$EXAKIT_HOME/kit/mcp"
+      cp "$wn_kit_root/versions.json" "$wn_kit_root/WHATS-NEW.md" "$EXAKIT_HOME/kit/"
+      . "$ROOT/setup/lib/pyexasol.sh"
+      manifest_init >/dev/null 2>&1
+      exapump_install() { :; }; exapump_create_profile() { :; }; exapump_validate_connection() { :; }
+      mcp_install() { :; }; mcp_validate() { :; }
+      pyexasol_install() { :; }; pyexasol_validate() { :; }
+      exakit_maybe_offer_data_load() { :; }
+      exakit_maybe_offer_mcp_setup() { :; }
+      exakit_maybe_offer_skills_install() { :; }
+      ensure_path_hint() { :; }
+      EXAKIT_UPGRADED_FROM="$1"
+      kit_shared_steps 3 6 "$ROOT/setup" "$wn_kit_root" 2>&1 )
+}
+has "an upgrading re-run prints the notes" "upgraded-line-only-here" "$(wn_run 0.1.0)"
+has "and says where it came from" "upgraded from 0.1.0" "$(wn_run 0.1.0)"
+lacks "an unchanged re-run stays quiet" "upgraded-line-only-here" "$(wn_run 0.2.0)"
 
 echo "a hanging container engine cannot stall a version lookup:"
 # The failure this prevents: `docker info` and `docker container inspect` do not
@@ -1470,6 +1521,10 @@ make_kit_tarball() {
     if [ "$_mk_omit" != "versions.json" ]; then
         sed 's/"version": "0.2.0"/"version": "'"$_mk_version"'"/' "$REAL" > "$_mk_src/repo-main/versions.json"
     fi
+    # Release notes for the version this archive carries: the update prints them
+    # from the copy it just staged, so they have to travel with it.
+    printf '# What is new\n\n## %s\n\n- a line only kit %s could print\n' \
+        "$_mk_version" "$_mk_version" > "$_mk_src/repo-main/WHATS-NEW.md"
     ( cd "$_mk_src" && tar -czf "$_mk_dest" repo-main )
 }
 

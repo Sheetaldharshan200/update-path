@@ -477,6 +477,22 @@ if grep -q 'exakit_soft_step exapump' "$ROOT/setup/lib/common.sh" && \
 else
     check "install(components_soft_fail)" "yes" "no"
 fi
+# Release notes, both sides: the command, the print after a self-update, and the
+# file travelling into the kit copy (without that last part `exakit whats-new`
+# works from a checkout and then dies with it).
+if grep -q 'cmd_whats_new' "$ROOT/setup/exakit" && \
+   grep -q 'exakit_whats_new_section' "$ROOT/setup/lib/common.sh" && \
+   grep -q 'exakit_print_whats_new "$_staged_version"' "$ROOT/setup/lib/common.sh" && \
+   grep -q 'WHATS-NEW.md" "$EXAKIT_HOME/kit/' "$ROOT/setup/lib/common.sh" && \
+   grep -q 'Invoke-CmdWhatsNew' "$ROOT/setup/exakit.ps1" && \
+   grep -q 'Get-ExakitWhatsNewSection' "$ROOT/setup/lib/exakit-common.ps1" && \
+   grep -q 'Write-ExakitWhatsNew -Version $stagedVersion' "$ROOT/setup/lib/exakit-common.ps1" && \
+   grep -q 'WHATS-NEW.md' "$ROOT/setup/setup-windows-docker.ps1" && \
+   [ -f "$ROOT/WHATS-NEW.md" ]; then
+    check "whats_new(both_sides)" "yes" "yes"
+else
+    check "whats_new(both_sides)" "yes" "no"
+fi
 # Bounded engine probes, both sides. `docker info` does not return while Docker
 # Desktop is starting, so every read-path probe has to be able to give up. The
 # PowerShell half must use .Arguments and not .ArgumentList, which exists only on

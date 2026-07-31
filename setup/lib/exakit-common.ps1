@@ -920,6 +920,39 @@ function Invoke-ExakitBounded {
     }
 }
 
+# Get-ExakitWhatsNewSection / Write-ExakitWhatsNew - the twins of
+# exakit_whats_new_section and exakit_print_whats_new. Silence when there is no
+# section is deliberate on both sides: a kit meeting a copy of the file that does
+# not mention its version is not an error worth a word on screen.
+function Get-ExakitWhatsNewSection {
+    param([Parameter(Mandatory)][string]$KitRoot, [Parameter(Mandatory)][string]$Version)
+    $file = Join-Path $KitRoot "WHATS-NEW.md"
+    if (-not (Test-Path $file)) { return $null }
+    $want = "## $Version"
+    $inside = $false
+    $lines = @()
+    foreach ($line in (Get-Content -Path $file)) {
+        if ($line -eq $want) { $inside = $true; continue }
+        if ($inside -and $line.StartsWith("## ")) { break }
+        if ($inside) { $lines += $line }
+    }
+    if (($lines -join "").Trim() -eq "") { return $null }
+    return ($lines -join [Environment]::NewLine)
+}
+
+function Write-ExakitWhatsNew {
+    param([Parameter(Mandatory)][string]$Version, [string]$Heading = "")
+    $root = Get-ExakitRepoRoot
+    if (-not $root) { return $false }
+    $body = Get-ExakitWhatsNewSection -KitRoot $root -Version $Version
+    if (-not $body) { return $false }
+    Write-Host ""
+    if ($Heading) { Write-Host "  $Heading"; Write-Host "" }
+    Write-Host $body
+    Write-Host ""
+    return $true
+}
+
 # Get-ExakitKitVersionAt - kit.version as stated by a specific kit tree. The
 # installer uses it on the tree it is installing FROM, which is not necessarily
 # the copy under the kit home (that one may be an older install).
@@ -1595,6 +1628,8 @@ function Update-ExakitSelf {
         Set-ExakitManifestValue "kit.source" "$repo@$kitRef"
         Set-ExakitManifestValue "kit.version" $stagedVersion
         Ok "exakit updated to $stagedVersion. Database data, credentials, and MCP state were not changed."
+        # The kit that just landed describes itself, from the new copy in place.
+        [void](Write-ExakitWhatsNew -Version $stagedVersion -Heading "What's new in $stagedVersion")
         return
     }
 

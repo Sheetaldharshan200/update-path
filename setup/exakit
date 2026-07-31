@@ -35,6 +35,7 @@
 #                       data, MCP client configs, skills, exapump, the kit home
 #                       and the CLI binaries. --dry-run previews; --yes skips
 #                       the typed confirmation
+#   whats-new [version] what changed in this kit version
 #   logs                print the path of the latest setup log
 #   catalog [search]    browse/search every exakit, exapump & exasol command
 #   help                this text
@@ -353,6 +354,29 @@ Everyday commands:
 EOF
 }
 
+# cmd_whats_new [version] — what changed, for this kit or a named one.
+#
+# Defaults to the version actually installed rather than the newest section in the
+# file: a user on 0.2.0 asking what is new wants their own release notes, not a
+# preview of one they do not have yet.
+cmd_whats_new() {
+    _cwn_version="${1:-}"
+    if [ -z "$_cwn_version" ]; then
+        _cwn_version="$(exakit_kit_bundled_version 2>/dev/null || true)"
+        [ -n "$_cwn_version" ] || _cwn_version="$(manifest_get kit.version 2>/dev/null || true)"
+    fi
+    [ -n "$_cwn_version" ] || die "Could not tell which kit version this is. Name one: exakit whats-new 0.2.0"
+    if ! exakit_print_whats_new "$_cwn_version" "What's new in $_cwn_version"; then
+        _cwn_root="$(exakit_repo_root 2>/dev/null || true)"
+        if [ -n "$_cwn_root" ] && [ -f "$_cwn_root/WHATS-NEW.md" ]; then
+            info "No notes for $_cwn_version. Versions covered:"
+            sed -n 's/^## \(.*\)$/      \1/p' "$_cwn_root/WHATS-NEW.md"
+        else
+            info "This kit copy does not carry WHATS-NEW.md."
+        fi
+    fi
+}
+
 # cmd_catalog [search] — render the searchable command catalog from the shared
 # catalog.tsv (one source of truth for both the bash and PowerShell CLIs).
 cmd_catalog() {
@@ -450,6 +474,7 @@ case "${1:-help}" in
     upgrade-kit2)  cmd_kit2_script upgrade-kit2.sh ;;
     rollback-kit2) cmd_kit2_script rollback-kit2.sh ;;
     uninstall) shift; cmd_uninstall "$@" ;;
+    whats-new) shift; cmd_whats_new "${1:-}" ;;
     logs)     _with_notice cmd_logs ;;
     catalog)  shift; cmd_catalog "${1:-}" ;;
     help|-h|--help) shift; usage "${1:-}" ;;

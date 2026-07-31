@@ -2420,6 +2420,9 @@ exakit_update_self() {
     # kit on every run.
     manifest_set kit.version "$_staged_version"
     ok "exakit updated to $_staged_version. Database data, credentials, and MCP state were not changed."
+    # The kit that just landed describes itself: read the section out of the NEW
+    # copy, which is already in place at this point.
+    exakit_print_whats_new "$_staged_version" "What's new in $_staged_version" || true
 }
 
 exakit_update_component() {
@@ -4114,6 +4117,46 @@ _exakit_install_mcp() {
     mcp_validate
 }
 
+# exakit_whats_new_section <kit-root> <version> — the WHATS-NEW.md section for one
+# version, or nothing.
+#
+# Nothing is the important half. An older kit updating to a newer one runs the NEW
+# file, but a newer kit could just as easily meet an old copy with no section for
+# it, and neither case is an error worth a word on screen. awk rather than Python:
+# this runs at the end of an update, where a missing interpreter must not turn a
+# successful upgrade into a failure.
+exakit_whats_new_section() {
+    _wn_root="$1"
+    _wn_version="$2"
+    [ -n "$_wn_version" ] || return 1
+    _wn_file="$_wn_root/WHATS-NEW.md"
+    [ -f "$_wn_file" ] || return 1
+    _wn_body="$(awk -v want="## $_wn_version" '
+        $0 == want { inside = 1; next }
+        inside && /^## / { exit }
+        inside { print }
+    ' "$_wn_file" 2>/dev/null)"
+    # Strip to nothing if the section held only blank lines.
+    [ -n "$(printf '%s' "$_wn_body" | tr -d '[:space:]')" ] || return 1
+    printf '%s\n' "$_wn_body"
+}
+
+# exakit_print_whats_new <version> [heading] — show what changed, if we can.
+exakit_print_whats_new() {
+    _pwn_version="$1"
+    _pwn_heading="${2:-}"
+    _pwn_root="$(exakit_repo_root 2>/dev/null || true)"
+    [ -n "$_pwn_root" ] || return 1
+    _pwn_body="$(exakit_whats_new_section "$_pwn_root" "$_pwn_version")" || return 1
+    printf '\n'
+    if [ -n "$_pwn_heading" ]; then
+        printf '  %s%s%s\n\n' "${UI_BOLD:-}" "$_pwn_heading" "${UI_RESET:-}"
+    fi
+    printf '%s\n' "$_pwn_body"
+    printf '\n'
+    return 0
+}
+
 kit_shared_steps() {
     _step_no="$1"
     _total="$2"
@@ -4217,6 +4260,7 @@ kit_shared_steps() {
             # manifest (the offline tier of version resolution, and the record of
             # which kit version this is).
             [ -f "$_kit_root/versions.json" ] && cp "$_kit_root/versions.json" "$EXAKIT_HOME/kit/"
+            [ -f "$_kit_root/WHATS-NEW.md" ] && cp "$_kit_root/WHATS-NEW.md" "$EXAKIT_HOME/kit/"
             [ -d "$_kit_root/mcp" ] && cp -R "$_kit_root/mcp" "$EXAKIT_HOME/kit/"
             [ -d "$_kit_root/sql" ] && cp -R "$_kit_root/sql" "$EXAKIT_HOME/kit/"
             [ -d "$_kit_root/data" ] && cp -R "$_kit_root/data" "$EXAKIT_HOME/kit/"
@@ -4230,6 +4274,16 @@ kit_shared_steps() {
     exakit_maybe_offer_mcp_setup || true
     exakit_maybe_offer_skills_install || true
     exakit_print_soft_failures
+    # An installer re-run over an older install is an upgrade, and the user has no
+    # other way to learn what changed: the setup script records what the previous
+    # copy said, and only a real move gets announced.
+    if [ -n "${EXAKIT_UPGRADED_FROM:-}" ]; then
+        _kss_now="$(exakit_kit_version_at "$_kit_root" 2>/dev/null || true)"
+        if [ -n "$_kss_now" ] && [ "$_kss_now" != "$EXAKIT_UPGRADED_FROM" ]; then
+            exakit_print_whats_new "$_kss_now" \
+                "What's new in $_kss_now (upgraded from $EXAKIT_UPGRADED_FROM)" || true
+        fi
+    fi
 }
 
 # connection_panel — the payoff screen: everything needed to connect.

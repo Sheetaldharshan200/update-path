@@ -33,6 +33,7 @@
 #                         data, MCP client configs, skills, exapump, the kit
 #                         home and the CLI binaries. -DryRun previews; -Yes
 #                         skips the typed confirmation
+#   whats-new [version]   what changed in this kit version
 #   logs                  print the path of the latest setup log
 #   catalog [search]      browse/search every exakit, exapump & exasol command
 #   help                  this text
@@ -990,6 +991,30 @@ function Write-ExakitKit2NotAvailable {
     Info "The Kit 2 add-on ships with the macOS, Linux and WSL paths; it is planned for Windows."
 }
 
+# Defaults to the version actually installed rather than the newest section in the
+# file: a user asking what is new wants their own release notes, not a preview of a
+# release they do not have.
+function Invoke-CmdWhatsNew {
+    param([string]$Version = "")
+    if (-not $Version) { $Version = Get-ExakitKitBundledVersion }
+    if (-not $Version) { $Version = Get-ExakitManifestValue "kit.version" }
+    if (-not $Version) {
+        Fail "Could not tell which kit version this is. Name one: exakit whats-new 0.2.0"
+    }
+    if (-not (Write-ExakitWhatsNew -Version $Version -Heading "What's new in $Version")) {
+        $root = Get-ExakitRepoRoot
+        $file = if ($root) { Join-Path $root "WHATS-NEW.md" } else { $null }
+        if ($file -and (Test-Path $file)) {
+            Info "No notes for $Version. Versions covered:"
+            foreach ($line in (Get-Content -Path $file)) {
+                if ($line.StartsWith("## ")) { Write-Host ("      " + $line.Substring(3)) }
+            }
+        } else {
+            Info "This kit copy does not carry WHATS-NEW.md."
+        }
+    }
+}
+
 function Invoke-CmdLogs {
     $latest = Get-ChildItem -Path $script:LogDir -Filter "*.log" -ErrorAction SilentlyContinue |
         Sort-Object LastWriteTime -Descending | Select-Object -First 1
@@ -1166,6 +1191,7 @@ try {
         "upgrade-kit2"  { Write-ExakitKit2NotAvailable -Command "exakit upgrade-kit2" }
         "rollback-kit2" { Write-ExakitKit2NotAvailable -Command "exakit rollback-kit2" }
         "uninstall"    { Invoke-CmdUninstall -AssumeYes:($RestArgs -contains "-Yes" -or $RestArgs -contains "--yes" -or $RestArgs -contains "-y") -DryRun:($RestArgs -contains "-DryRun" -or $RestArgs -contains "--dry-run" -or $RestArgs -contains "-n") }
+        "whats-new"    { Invoke-CmdWhatsNew -Version ($RestArgs | Select-Object -First 1) }
         "logs"         { Invoke-CmdLogs }
         "catalog"      { Invoke-CmdCatalog -Search ($RestArgs | Select-Object -First 1) }
         { $_ -in @("help", "-h", "--help") } { Show-ExakitUsage -All:($RestArgs -contains "--all" -or $RestArgs -contains "-a") }
