@@ -1240,6 +1240,92 @@ $script:NoticeState = if ($env:EXAKIT_NOTICE_STATE) { $env:EXAKIT_NOTICE_STATE }
 $script:NoticeInterval = 0
 if ($env:EXAKIT_NOTICE_INTERVAL -match '^[0-9]+$') { $script:NoticeInterval = [int]$env:EXAKIT_NOTICE_INTERVAL }
 
+# The twin of the bash notice plan cache. Working out WHAT to say costs a live
+# probe per component; the answer barely changes, so it is computed occasionally and
+# printed from a cached plan. See the note on EXAKIT_NOTICE_PLAN in common.sh for
+# what the cache can and cannot notice.
+$script:NoticePlanPath = Join-Path $script:CacheDir "notice-plan"
+if ($env:EXAKIT_NOTICE_PLAN) { $script:NoticePlanPath = $env:EXAKIT_NOTICE_PLAN }
+$script:NoticePlanTtl = 900
+if ($env:EXAKIT_NOTICE_PLAN_TTL -match '^[0-9]+$') { $script:NoticePlanTtl = [int]$env:EXAKIT_NOTICE_PLAN_TTL }
+
+# Content, not timestamps: an update that rewrote the manifest in the same second
+# the plan was written must still retire it.
+function Get-ExakitNoticeSignature {
+    # The kit's own copy of the document counts too: it is the tier that answers when
+    # there is no cache, and a self-update replaces it.
+    $baked = Join-Path $script:ExakitHome "kit\versions.json"
+    $parts = @()
+    foreach ($file in @($script:ManifestPath, $script:VersionsCachePath, $baked)) {
+        if ($file -and (Test-Path $file)) {
+            try {
+                $parts += (Get-FileHash -Path $file -Algorithm MD5 -ErrorAction Stop).Hash
+            } catch {
+                $parts += ""
+            }
+        } else {
+            $parts += ""
+        }
+    }
+    return ($parts -join ":")
+}
+
+function Get-ExakitNoticePlanField {
+    param([Parameter(Mandatory)][string]$Name)
+    if (-not (Test-Path $script:NoticePlanPath)) { return "" }
+    foreach ($line in (Get-Content -Path $script:NoticePlanPath -ErrorAction SilentlyContinue)) {
+        if ($line.StartsWith("$Name=")) { return $line.Substring($Name.Length + 1) }
+    }
+    return ""
+}
+
+function Test-ExakitNoticePlanFresh {
+    if (-not (Test-Path $script:NoticePlanPath)) { return $false }
+    if ((Get-ExakitNoticePlanField -Name "sig") -ne (Get-ExakitNoticeSignature)) { return $false }
+    $at = Get-ExakitNoticePlanField -Name "computed_at"
+    if ($at -notmatch '^[0-9]+$') { return $false }
+    $now = [int][double]::Parse((Get-Date -UFormat %s))
+    return (($now - [int]$at) -lt $script:NoticePlanTtl)
+}
+
+function Write-ExakitNoticePlan {
+    param([string[]]$Light, [string]$LightWorst, [string[]]$Heavy, [string]$HeavyWorst)
+    try {
+        New-Item -ItemType Directory -Force -Path (Split-Path -Parent $script:NoticePlanPath) | Out-Null
+        $now = [int][double]::Parse((Get-Date -UFormat %s))
+        $lines = @(
+            "computed_at=$now",
+            "sig=$(Get-ExakitNoticeSignature)",
+            "light=$($Light -join ', ')",
+            "light_worst=$LightWorst",
+            "heavy=$($Heavy -join ', ')",
+            "heavy_worst=$HeavyWorst"
+        )
+        Set-Content -Path $script:NoticePlanPath -Value $lines
+    } catch { }
+}
+
+# Printing is shared by the freshly-computed and the cached path.
+function Write-ExakitNoticeLines {
+    param([string[]]$Light, [string]$LightWorst, [string[]]$Heavy, [string]$HeavyWorst)
+    if ($Light.Count -eq 0 -and $Heavy.Count -eq 0) { return }
+    $dim = $script:UiDim
+    $reset = $script:UiReset
+    [Console]::Error.WriteLine("")
+    if ($Light.Count -gt 0) {
+        $word = Get-ExakitNoticeWord $LightWorst
+        [Console]::Error.WriteLine("$dim$word update is available for $($Light -join ', ') - apply in seconds:  exakit update$reset")
+    }
+    if ($Heavy.Count -gt 0) {
+        # Never "run update now" for the runtime: it stops the database, so the user
+        # picks the moment after seeing what it involves.
+        $word = Get-ExakitNoticeWord $HeavyWorst
+        [Console]::Error.WriteLine("$dim$word update is available for $($Heavy -join ', ') - requires stopping the database, details:  exakit update-check$reset")
+    }
+    [Console]::Error.WriteLine("${dim}Silence this with EXAKIT_NO_UPDATE_NOTICE=1$reset")
+    Set-ExakitNoticeShown
+}
+
 function Test-ExakitNoticeDue {
     if (-not (Test-Path $script:NoticeState)) { return $true }
     try {
@@ -1298,6 +1384,21 @@ function Show-ExakitUpdateNotice {
     if (-not (Get-Command Get-ExakitComponentAvailable -ErrorAction SilentlyContinue)) { return }
 
     try {
+        if (Test-ExakitNoticePlanFresh) {
+            $cachedLight = @()
+            $cachedHeavy = @()
+            $lightField = Get-ExakitNoticePlanField -Name "light"
+            $heavyField = Get-ExakitNoticePlanField -Name "heavy"
+            if ($lightField) { $cachedLight = $lightField -split ",\s*" }
+            if ($heavyField) { $cachedHeavy = $heavyField -split ",\s*" }
+            $cachedLightWorst = Get-ExakitNoticePlanField -Name "light_worst"
+            $cachedHeavyWorst = Get-ExakitNoticePlanField -Name "heavy_worst"
+            if (-not $cachedLightWorst) { $cachedLightWorst = "normal" }
+            if (-not $cachedHeavyWorst) { $cachedHeavyWorst = "normal" }
+            Write-ExakitNoticeLines -Light $cachedLight -LightWorst $cachedLightWorst `
+                -Heavy $cachedHeavy -HeavyWorst $cachedHeavyWorst
+            return
+        }
         Update-ExakitNoticeCache
         if (-not (Resolve-ExakitVersionsDoc)) { return }
         # Severity is tracked per group, not once for the whole notice: a routine
@@ -1331,23 +1432,10 @@ function Show-ExakitUpdateNotice {
                 elseif ($severity -eq "recommended" -and $lightWorst -ne "critical") { $lightWorst = "recommended" }
             }
         }
-        if ($light.Count -eq 0 -and $heavy.Count -eq 0) { return }
-
-        $dim = $script:UiDim
-        $reset = $script:UiReset
-        [Console]::Error.WriteLine("")
-        if ($light.Count -gt 0) {
-            $word = Get-ExakitNoticeWord $lightWorst
-            [Console]::Error.WriteLine("$dim$word update is available for $($light -join ', ') - apply in seconds:  exakit update$reset")
-        }
-        if ($heavy.Count -gt 0) {
-            # Never "run update now" for the runtime: it stops the database, so the
-            # user picks the moment after seeing what it involves.
-            $word = Get-ExakitNoticeWord $heavyWorst
-            [Console]::Error.WriteLine("$dim$word update is available for $($heavy -join ', ') - requires stopping the database, details:  exakit update-check$reset")
-        }
-        [Console]::Error.WriteLine("${dim}Silence this with EXAKIT_NO_UPDATE_NOTICE=1$reset")
-        Set-ExakitNoticeShown
+        # Written even when nothing is pending: "nothing to say" is exactly the
+        # answer worth not recomputing on every command.
+        Write-ExakitNoticePlan -Light $light -LightWorst $lightWorst -Heavy $heavy -HeavyWorst $heavyWorst
+        Write-ExakitNoticeLines -Light $light -LightWorst $lightWorst -Heavy $heavy -HeavyWorst $heavyWorst
     } catch { }
 }
 

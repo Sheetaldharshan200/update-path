@@ -1969,6 +1969,20 @@ _exakit_severity_cell() {
 # picture lives, and `exakit version` has its own always-on hint.
 # ⇄ twin: Show-ExakitUpdateNotice in setup/lib/exakit-common.ps1.
 EXAKIT_NOTICE_STATE="${EXAKIT_NOTICE_STATE:-$EXAKIT_CACHE_DIR/notice-state.json}"
+# The notice is printed after every command, but working out WHAT to say costs
+# real time: nine manifest reads and a live probe per component, about 600ms. The
+# answer barely changes, so it is computed occasionally and printed from a cached
+# plan. EXAKIT_NOTICE_PLAN_TTL is how long a plan is trusted; it is also thrown away
+# the moment the manifest or the versions cache changes, which covers every update
+# applied through the kit.
+#
+# What it cannot see is a component upgraded behind the kit's back -- `uv tool
+# upgrade` on the MCP server, say -- because that moves only the binary on disk,
+# which is the reading the cache exists to stop repeating. Such a machine is told
+# about an update it has already taken, until the TTL runs out. That is the trade:
+# one stale line for at most fifteen minutes, against 600ms on every command.
+EXAKIT_NOTICE_PLAN="${EXAKIT_NOTICE_PLAN:-$EXAKIT_CACHE_DIR/notice-plan}"
+EXAKIT_NOTICE_PLAN_TTL="${EXAKIT_NOTICE_PLAN_TTL:-900}"
 # 0 = show the notice after every command. A pending update that nobody is told
 # about is the same as no update mechanism at all: the machines that most need one
 # belong to people who never run `exakit update-check`. Set
@@ -2003,6 +2017,80 @@ exakit_notice_record() {
 # A notice may never make an unrelated command feel slow. The cache is normally
 # warm (update-check, version and update all refresh it); when it is not, this is
 # one very short attempt that gives up almost immediately.
+# _exakit_notice_signature — what the plan was derived from, as content.
+#
+# Timestamps were the obvious choice and the wrong one: bash compares mtimes with
+# whole-second granularity, so an `exakit update` that rewrote the manifest in the
+# same second the plan was written left the plan looking fresh. cksum is two forks
+# and a few milliseconds, and it cannot be fooled by the clock.
+# The files are passed as arguments, not redirected in: `cksum < missing` makes the
+# SHELL report the failed redirection on its own stderr, which no 2>/dev/null inside
+# the substitution can suppress, and a version notice must never leak a diagnostic
+# about its own bookkeeping.
+_exakit_notice_signature() {
+    _ns_manifest=""
+    _ns_cache=""
+    if [ -f "$EXAKIT_MANIFEST" ]; then
+        _ns_manifest="$(cksum "$EXAKIT_MANIFEST" 2>/dev/null | awk '{print $1"-"$2}')"
+    fi
+    if [ -f "$EXAKIT_VERSIONS_CACHE" ]; then
+        _ns_cache="$(cksum "$EXAKIT_VERSIONS_CACHE" 2>/dev/null | awk '{print $1"-"$2}')"
+    fi
+    # The kit's own copy of the document counts too. It is the tier that answers
+    # when there is no cache, and a self-update replaces it -- without this, a kit
+    # whose baked document changed would keep announcing the previous one's news.
+    _ns_baked=""
+    _ns_baked_doc="$(exakit_versions_baked_doc 2>/dev/null || true)"
+    if [ -n "$_ns_baked_doc" ] && [ -f "$_ns_baked_doc" ]; then
+        _ns_baked="$(cksum "$_ns_baked_doc" 2>/dev/null | awk '{print $1"-"$2}')"
+    fi
+    printf '%s:%s:%s' "$_ns_manifest" "$_ns_cache" "$_ns_baked"
+}
+
+# _exakit_notice_plan_fresh — is the cached plan still worth believing?
+#
+# The TTL is the least of it. What matters is that applying an update silences the
+# notice on the very next command: the manifest is rewritten by every install and
+# every update, and the versions cache by every refresh, so a change to either
+# retires the plan. Without that, `exakit update` would be followed by fifteen
+# minutes of being told to run `exakit update`.
+_exakit_notice_plan_fresh() {
+    [ -f "$EXAKIT_NOTICE_PLAN" ] || return 1
+    _npf_sig="$(_exakit_notice_plan_field sig)"
+    [ "$_npf_sig" = "$(_exakit_notice_signature)" ] || return 1
+    _npf_at="$(sed -n 's/^computed_at=\([0-9][0-9]*\)$/\1/p' "$EXAKIT_NOTICE_PLAN" 2>/dev/null | head -1)"
+    case "$_npf_at" in
+        ''|*[!0-9]*) return 1 ;;
+    esac
+    case "$EXAKIT_NOTICE_PLAN_TTL" in
+        ''|*[!0-9]*) return 1 ;;
+    esac
+    [ "$(( $(date +%s) - _npf_at ))" -lt "$EXAKIT_NOTICE_PLAN_TTL" ]
+}
+
+# _exakit_notice_plan_field <name> — one line out of the cached plan.
+_exakit_notice_plan_field() {
+    sed -n "s/^$1=//p" "$EXAKIT_NOTICE_PLAN" 2>/dev/null | head -1
+}
+
+# _exakit_notice_plan_write — key=value lines, not JSON: this is read on every
+# single command, and a sed call beats parsing.
+_exakit_notice_plan_write() {
+    [ -n "$EXAKIT_NOTICE_PLAN" ] || return 0
+    mkdir -p "$(dirname "$EXAKIT_NOTICE_PLAN")" 2>/dev/null || return 0
+    _npw_tmp="$(mktemp "${EXAKIT_NOTICE_PLAN}.XXXXXX" 2>/dev/null)" || return 0
+    {
+        printf 'computed_at=%s\n' "$(date +%s)"
+        printf 'sig=%s\n' "$(_exakit_notice_signature)"
+        printf 'light=%s\n' "$_notice_light"
+        printf 'light_worst=%s\n' "$_notice_light_worst"
+        printf 'heavy=%s\n' "$_notice_heavy"
+        printf 'heavy_worst=%s\n' "$_notice_heavy_worst"
+    } > "$_npw_tmp" 2>/dev/null || { rm -f "$_npw_tmp"; return 0; }
+    mv "$_npw_tmp" "$EXAKIT_NOTICE_PLAN" 2>/dev/null || rm -f "$_npw_tmp"
+    return 0
+}
+
 _exakit_notice_refresh_cache() {
     exakit_versions_cache_fresh && return 0
     (
@@ -2032,6 +2120,17 @@ exakit_notice_after_command() {
     [ -t 2 ] || return 0
     [ -f "$EXAKIT_MANIFEST" ] || return 0
     exakit_notice_due || return 0
+
+    if _exakit_notice_plan_fresh; then
+        _notice_light="$(_exakit_notice_plan_field light)"
+        _notice_heavy="$(_exakit_notice_plan_field heavy)"
+        _notice_light_worst="$(_exakit_notice_plan_field light_worst)"
+        _notice_heavy_worst="$(_exakit_notice_plan_field heavy_worst)"
+        [ -n "$_notice_light_worst" ] || _notice_light_worst="normal"
+        [ -n "$_notice_heavy_worst" ] || _notice_heavy_worst="normal"
+        _exakit_notice_say
+        return 0
+    fi
 
     _exakit_notice_refresh_cache
     exakit_versions_resolve_doc >/dev/null 2>&1 || return 0
@@ -2073,6 +2172,14 @@ exakit_notice_after_command() {
             esac
         fi
     done
+    _exakit_notice_plan_write
+    _exakit_notice_say
+    return 0
+}
+
+# _exakit_notice_say — print whatever the plan says, freshly computed or cached.
+# Reads the same four variables either path fills in.
+_exakit_notice_say() {
     [ -n "$_notice_light" ] || [ -n "$_notice_heavy" ] || return 0
 
     printf '\n' >&2

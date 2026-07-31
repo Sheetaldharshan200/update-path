@@ -477,6 +477,19 @@ if grep -q 'exakit_run_bounded' "$ROOT/setup/lib/common.sh" && \
 else
     check "engine_probe(bounded_both_sides)" "yes" "no"
 fi
+# The notice plan cache, both sides. Keyed on content rather than mtime, because
+# bash compares mtimes by the second and an update that rewrote the manifest in the
+# same second the plan was written would otherwise look fresh.
+if grep -q '_exakit_notice_plan_fresh' "$ROOT/setup/lib/common.sh" && \
+   grep -q '_exakit_notice_signature' "$ROOT/setup/lib/common.sh" && \
+   grep -q 'cksum "$EXAKIT_MANIFEST"' "$ROOT/setup/lib/common.sh" && \
+   grep -q 'Test-ExakitNoticePlanFresh' "$ROOT/setup/lib/exakit-common.ps1" && \
+   grep -q 'Get-ExakitNoticeSignature' "$ROOT/setup/lib/exakit-common.ps1" && \
+   grep -q 'Get-FileHash' "$ROOT/setup/lib/exakit-common.ps1"; then
+    check "notice(plan_cached_both_sides)" "yes" "yes"
+else
+    check "notice(plan_cached_both_sides)" "yes" "no"
+fi
 # Re-run freshness, both sides: the exakit_helper flag says "installed", not
 # "current", so a re-run over an older install has to compare what is on disk with
 # what this kit would write. bash compares the installed COPY of setup/exakit; the

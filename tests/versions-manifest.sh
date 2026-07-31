@@ -1185,6 +1185,53 @@ has "a routine bump is announced" "update is available for exapump" "$only_norma
 lacks "without claiming it is recommended" "A recommended" "$only_normal"
 lacks "or critical" "A critical" "$only_normal"
 
+# The plan cache: printed every run, computed rarely. Counted by a probe stub that
+# appends a line each time it is asked, which is the only way to tell "said the same
+# thing again" from "worked it out again".
+# Counted at the exapump stub itself rather than by overriding a reader: the test
+# then cannot pass because it guessed the wrong internal function name.
+rm -f "$NT/cache/notice-plan" "$NT/cache/notice-state.json" "$WORK/probe-count"
+printf '#!/bin/sh\nprintf x >> "%s"\necho "exapump 0.11.2"\n' "$WORK/probe-count" > "$NT/bin/exapump"
+chmod +x "$NT/bin/exapump"
+probe_count() { [ -f "$WORK/probe-count" ] && wc -c < "$WORK/probe-count" | tr -d ' ' || printf 0; }
+cached_first="$(notice "$WORK/notice-versions.json")"
+has "the first run still says its piece" "update is available" "$cached_first"
+probes_after_first="$(probe_count)"
+check "and it did probe" "yes" "$([ "$probes_after_first" -gt 0 ] && printf yes || printf no)"
+cached_second="$(notice "$WORK/notice-versions.json")"
+has "the second run says the same thing" "update is available" "$cached_second"
+check "and does not work it out again" "$probes_after_first" "$(probe_count)"
+
+# A TTL of zero is how you ask for the old behaviour of always recomputing.
+notice "$WORK/notice-versions.json" 'EXAKIT_NOTICE_PLAN_TTL=0' >/dev/null
+check "a zero TTL recomputes every time" "yes" \
+    "$([ "$(probe_count)" -gt "$probes_after_first" ] && printf yes || printf no)"
+
+# Applying an update must silence it on the NEXT command, not fifteen minutes later.
+# The manifest is what every update rewrites, so a change to it retires the plan --
+# and it has to work when both happen inside the same second, which is why the plan
+# is keyed on content and not on a timestamp.
+rm -f "$NT/cache/notice-plan"
+notice "$WORK/notice-versions.json" >/dev/null
+plan_sig_before="$(sed -n 's/^sig=//p' "$NT/cache/notice-plan" | head -1)"
+printf ' ' >> "$NT/manifest.json"
+plan_still_fresh="$( EXAKIT_HOME="$NT"
+    EXAKIT_MANIFEST="$NT/manifest.json"
+    EXAKIT_NOTICE_PLAN="$NT/cache/notice-plan"
+    EXAKIT_VERSIONS_CACHE="$NT/cache/versions.json"
+    if _exakit_notice_plan_fresh; then printf 'STILL-FRESH'; else printf 'retired'; fi )"
+check "a rewritten manifest retires the plan within the same second" "retired" "$plan_still_fresh"
+check "the plan records what it was derived from" "yes" \
+    "$([ -n "$plan_sig_before" ] && printf yes || printf no)"
+
+# The bookkeeping must not leak: cksum on a missing cache file used to make the
+# SHELL print a failed-redirection error, straight past the notice's own stderr.
+no_cache_leak="$( EXAKIT_HOME="$NT"
+    EXAKIT_MANIFEST="$NT/manifest.json"
+    EXAKIT_VERSIONS_CACHE="$WORK/definitely-not-here.json"
+    _exakit_notice_signature 2>&1 >/dev/null )"
+check "a missing versions cache prints nothing" "" "$no_cache_leak"
+
 kill_switch="$(notice "$WORK/notice-versions.json" 'EXAKIT_NO_UPDATE_NOTICE=1')"
 check "the kill switch silences it" "" "$(printf '%s' "$kill_switch" | tr -d '[:space:]')"
 
