@@ -858,6 +858,11 @@ function Invoke-CmdUpdateCheck {
         if ($note) { Write-Host ("    " + $note) }
     }
     Write-Host ""
+    # This command just worked out the truth the long way. Retire the cached plan so
+    # the next notice cannot repeat something the table above has contradicted.
+    if ($script:NoticePlanPath -and (Test-Path $script:NoticePlanPath)) {
+        Remove-Item -Force $script:NoticePlanPath -ErrorAction SilentlyContinue
+    }
     Write-ExakitVersionsSourceLine
     if ($updates -gt 1) { Info "Apply the quick ones in one go with: exakit update" }
     if ($heavyPending) { Info "A runtime change stops the database - run it when convenient: exakit update runtime" }

@@ -1389,7 +1389,40 @@ function Write-ExakitNoticePlan {
     } catch { }
 }
 
-# Printing is shared by the freshly-computed and the cached path.
+# Get-ExakitNoticeStillBehind - the names from a cached candidate list that are
+# genuinely still behind.
+#
+# The advertised version travels with each candidate, so this needs no document and
+# no severity lookup: probe what is installed, compare, drop whatever caught up. A
+# plan written while a component was mid-install used to keep announcing an update
+# the user had already taken, and contradicted `exakit update-check` seconds later.
+function Get-ExakitNoticeStillBehind {
+    param([string]$Entries)
+    if (-not $Entries) { return @() }
+    $survivors = @()
+    foreach ($entry in ($Entries -split ",")) {
+        $trimmed = $entry.Trim()
+        if (-not $trimmed) { continue }
+        $name = $trimmed
+        $want = ""
+        if ($trimmed.Contains(":")) {
+            $name = $trimmed.Substring(0, $trimmed.IndexOf(":"))
+            $want = $trimmed.Substring($trimmed.IndexOf(":") + 1)
+        }
+        if (-not $want) {
+            # A plan from before versions travelled with the names: keep it rather
+            # than silently dropping a real pending update.
+            $survivors += $name
+            continue
+        }
+        $now = Get-ExakitComponentCurrent $name
+        if (-not $now -or $now -eq "unknown" -or $now -eq $want) { continue }
+        $survivors += $name
+    }
+    return $survivors
+}
+
+# Printing is shared by the freshly-computed and the cached path.# Printing is shared by the freshly-computed and the cached path.
 function Write-ExakitNoticeLines {
     param([string[]]$Light, [string]$LightWorst, [string[]]$Heavy, [string]$HeavyWorst)
     if ($Light.Count -eq 0 -and $Heavy.Count -eq 0) { return }
@@ -1473,8 +1506,8 @@ function Show-ExakitUpdateNotice {
             $cachedHeavy = @()
             $lightField = Get-ExakitNoticePlanField -Name "light"
             $heavyField = Get-ExakitNoticePlanField -Name "heavy"
-            if ($lightField) { $cachedLight = $lightField -split ",\s*" }
-            if ($heavyField) { $cachedHeavy = $heavyField -split ",\s*" }
+            $cachedLight = Get-ExakitNoticeStillBehind -Entries $lightField
+            $cachedHeavy = Get-ExakitNoticeStillBehind -Entries $heavyField
             $cachedLightWorst = Get-ExakitNoticePlanField -Name "light_worst"
             $cachedHeavyWorst = Get-ExakitNoticePlanField -Name "heavy_worst"
             if (-not $cachedLightWorst) { $cachedLightWorst = "normal" }
@@ -1490,6 +1523,8 @@ function Show-ExakitUpdateNotice {
         # happens to have a critical one pending in the same breath.
         $light = @()
         $heavy = @()
+        $lightDetail = @()
+        $heavyDetail = @()
         $lightWorst = "normal"
         $heavyWorst = "normal"
         foreach ($component in (Get-ExakitUpdateTargets -Target "all")) {
@@ -1507,18 +1542,20 @@ function Show-ExakitUpdateNotice {
             $severity = Get-ExakitComponentSeverity $actual
             if (Test-ExakitComponentHeavy $actual) {
                 $heavy += $actual
+                $heavyDetail += "${actual}:${available}"
                 # normal < recommended < critical; normal must not self-promote.
                 if ($severity -eq "critical") { $heavyWorst = "critical" }
                 elseif ($severity -eq "recommended" -and $heavyWorst -ne "critical") { $heavyWorst = "recommended" }
             } else {
                 $light += $actual
+                $lightDetail += "${actual}:${available}"
                 if ($severity -eq "critical") { $lightWorst = "critical" }
                 elseif ($severity -eq "recommended" -and $lightWorst -ne "critical") { $lightWorst = "recommended" }
             }
         }
         # Written even when nothing is pending: "nothing to say" is exactly the
         # answer worth not recomputing on every command.
-        Write-ExakitNoticePlan -Light $light -LightWorst $lightWorst -Heavy $heavy -HeavyWorst $heavyWorst
+        Write-ExakitNoticePlan -Light $lightDetail -LightWorst $lightWorst -Heavy $heavyDetail -HeavyWorst $heavyWorst
         Write-ExakitNoticeLines -Light $light -LightWorst $lightWorst -Heavy $heavy -HeavyWorst $heavyWorst
     } catch { }
 }

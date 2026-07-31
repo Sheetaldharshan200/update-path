@@ -1308,9 +1308,45 @@ cached_first="$(notice "$WORK/notice-versions.json")"
 has "the first run still says its piece" "update is available" "$cached_first"
 probes_after_first="$(probe_count)"
 check "and it did probe" "yes" "$([ "$probes_after_first" -gt 0 ] && printf yes || printf no)"
+plan_stamp() { sed -n 's/^computed_at=//p' "$NT/cache/notice-plan" 2>/dev/null | head -1; }
+stamp_after_first="$(plan_stamp)"
 cached_second="$(notice "$WORK/notice-versions.json")"
 has "the second run says the same thing" "update is available" "$cached_second"
-check "and does not work it out again" "$probes_after_first" "$(probe_count)"
+# Served from the plan, not worked out again. The probe count is no longer the signal:
+# the cached path deliberately re-probes its pending candidates so it can never repeat
+# an update that has already been taken.
+check "and did not recompute the verdict" "$stamp_after_first" "$(plan_stamp)"
+
+# A cached plan must not repeat an update the user has already taken. This is the
+# real-world failure it fixes: a plan computed while MCP was mid-install kept saying
+# "an update is available for mcp" while `exakit update-check`, run seconds later in
+# the same session, reported everything current.
+plan_detail="$(sed -n 's/^light=//p' "$NT/cache/notice-plan" | head -1)"
+has "the plan records the advertised version with each candidate" "exapump:" "$plan_detail"
+# The stub catches up. Nothing else changes -- not the manifest, not the document --
+# which is precisely the blind spot a signature alone cannot see.
+printf '#!/bin/sh\nprintf x >> "%s"\necho "exapump 0.12.0"\n' "$WORK/probe-count" > "$NT/bin/exapump"
+chmod +x "$NT/bin/exapump"
+caught_up="$(notice "$WORK/notice-versions.json")"
+lacks "a candidate that caught up is dropped" "for exapump" "$caught_up"
+has "and the ones still behind are kept" "mcp" "$caught_up"
+# Back to behind, so what follows sees the same fixture as before.
+printf '#!/bin/sh\nprintf x >> "%s"\necho "exapump 0.11.2"\n' "$WORK/probe-count" > "$NT/bin/exapump"
+chmod +x "$NT/bin/exapump"
+
+# update-check computes the truth the long way, so it retires the plan: nothing it
+# just contradicted may be repeated by the next command.
+notice "$WORK/notice-versions.json" >/dev/null
+retired="$( EXAKIT_HOME="$NT"
+    EXAKIT_MANIFEST="$NT/manifest.json"
+    EXAKIT_NOTICE_PLAN="$NT/cache/notice-plan"
+    EXAKIT_VERSIONS_CACHE="$NT/cache/versions.json"
+    EXAKIT_VERSIONS_URL="http://offline.invalid/versions.json"
+    _EXAKIT_VERSIONS_DOC=""; _EXAKIT_VERSIONS_SOURCE=""
+    [ -f "$EXAKIT_NOTICE_PLAN" ] && printf 'had-plan '
+    exakit_print_update_check all >/dev/null 2>&1
+    [ -f "$EXAKIT_NOTICE_PLAN" ] && printf 'STILL-THERE' || printf 'retired' )"
+check "update-check retires the cached plan" "had-plan retired" "$retired"
 
 # A TTL of zero is how you ask for the old behaviour of always recomputing.
 notice "$WORK/notice-versions.json" 'EXAKIT_NOTICE_PLAN_TTL=0' >/dev/null

@@ -180,6 +180,11 @@ manifest_get() {
     *) return 1 ;;
   esac
 }
+# The MCP version is read LIVE, so without this the fixture reads whatever MCP this
+# machine happens to have installed. The day a real install went past the advertised
+# 1.11.0, that turned the mcp row into \"yours is newer than tested\" and quietly cost
+# this check one of its five update commands.
+exakit_installed_mcp_version() { printf '%s\n' 1.10.1 ; }
 exakit_component_available() {
   case \"\$1\" in
     nano) printf '%s\n' 2026.3.0-nano.1 ;;
@@ -516,7 +521,11 @@ if grep -q '_exakit_notice_plan_fresh' "$ROOT/setup/lib/common.sh" && \
    grep -q 'cksum "$EXAKIT_MANIFEST"' "$ROOT/setup/lib/common.sh" && \
    grep -q 'Test-ExakitNoticePlanFresh' "$ROOT/setup/lib/exakit-common.ps1" && \
    grep -q 'Get-ExakitNoticeSignature' "$ROOT/setup/lib/exakit-common.ps1" && \
-   grep -q 'Get-FileHash' "$ROOT/setup/lib/exakit-common.ps1"; then
+   grep -q 'Get-FileHash' "$ROOT/setup/lib/exakit-common.ps1" && \
+   grep -q '_exakit_notice_still_behind' "$ROOT/setup/lib/common.sh" && \
+   grep -q 'Get-ExakitNoticeStillBehind' "$ROOT/setup/lib/exakit-common.ps1" && \
+   grep -q 'rm -f "$EXAKIT_NOTICE_PLAN"' "$ROOT/setup/lib/common.sh" && \
+   grep -q 'Remove-Item -Force $script:NoticePlanPath' "$ROOT/setup/exakit.ps1"; then
     check "notice(plan_cached_both_sides)" "yes" "yes"
 else
     check "notice(plan_cached_both_sides)" "yes" "no"
