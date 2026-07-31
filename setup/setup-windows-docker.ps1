@@ -187,7 +187,7 @@ try {
 
     Ok "Setup complete"
     Show-ExakitConnectionPanel
-    Info "Next: exakit status | exakit info | exakit help"
+    Info "Next: exakit status | exakit info | exakit version | exakit update | exakit help"
 } catch [ExakitFailException] {
     exit 1
 } catch {

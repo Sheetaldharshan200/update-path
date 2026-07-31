@@ -77,4 +77,4 @@ kit_shared_steps 2 5 "$SCRIPT_DIR" "$KIT_ROOT"
 exakit_finish
 ok "Setup complete"
 connection_panel
-info "Next: exakit status | exakit info | exakit help"
+info "Next: exakit status | exakit info | exakit version | exakit update | exakit help"
