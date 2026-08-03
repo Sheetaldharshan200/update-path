@@ -505,10 +505,10 @@ fi
 # is a mirrored string array, so it is read.
 short_help="$(EXAKIT_NO_UPDATE_NOTICE=1 bash "$ROOT/setup/exakit" help 2>&1 || true)"
 ps_help_lines=0
-for _hl in "Keeping current:" "  version " "  update-check " "  update "; do
+for _hl in "Keeping up to date:" "  version " "  update-check " "  update "; do
     grep -qF "\"$_hl" "$ROOT/setup/exakit.ps1" && ps_help_lines=$((ps_help_lines + 1))
 done
-if printf '%s' "$short_help" | grep -q 'Keeping current:' && \
+if printf '%s' "$short_help" | grep -q 'Keeping up to date:' && \
    printf '%s' "$short_help" | grep -qE '^  version {2,}' && \
    printf '%s' "$short_help" | grep -qE '^  update-check {2,}' && \
    printf '%s' "$short_help" | grep -qE '^  update {2,}' && \
