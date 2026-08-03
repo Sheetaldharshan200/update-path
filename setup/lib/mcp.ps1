@@ -670,6 +670,18 @@ function Show-McpSetupSummary {
         $label = if ($script:McpClientLabels.ContainsKey($artifact.client)) { $script:McpClientLabels[$artifact.client] } else { $artifact.client }
         Write-ExakitPanelLine "File:     $label -> $($artifact.path)"
     }
+    # A client whose own config file could not be used is skipped on its own;
+    # the other clients are still configured, so name it here instead of
+    # leaving a silent gap in the File: list. Twin of the Skipped: lines in
+    # exakit_print_mcp_setup_summary (common.sh).
+    $skippedClients = @()
+    if ($doc.details -and $doc.details.skipped_clients) { $skippedClients = @($doc.details.skipped_clients) }
+    foreach ($skipped in $skippedClients) {
+        $skippedLabel = if ($script:McpClientLabels.ContainsKey($skipped.client)) { $script:McpClientLabels[$skipped.client] } else { $skipped.client }
+        $reason = $skipped.reason
+        if (-not $reason) { $reason = "unknown reason" }
+        Write-ExakitPanelLine "Skipped:  $skippedLabel -> $reason"
+    }
     if (@($doc.findings).Count -gt 0) {
         Write-ExakitPanelLine ""
         Write-ExakitPanelLine "Notes:"
@@ -734,6 +746,20 @@ function Show-McpOperationSummary {
     Write-Host "  Status:    $($doc.status)"
     Write-Host "  Summary:   $($doc.summary)"
     if ($doc.backup_reference) { Write-Host "  Snapshot:  $($doc.backup_reference)" }
+    # Clients left alone because their own config file could not be used. The
+    # rest of the selection is still configured, so report this per client
+    # (mirrors exakit_print_mcp_operation_summary in common.sh).
+    $skippedClients = @()
+    if ($doc.details -and $doc.details.skipped_clients) { $skippedClients = @($doc.details.skipped_clients) }
+    if ($skippedClients.Count -gt 0) {
+        Write-Host ""; Write-Host "  Skipped clients:"
+        foreach ($skipped in $skippedClients) {
+            $skippedLabel = if ($script:McpClientLabels.ContainsKey($skipped.client)) { $script:McpClientLabels[$skipped.client] } else { $skipped.client }
+            $reason = $skipped.reason
+            if (-not $reason) { $reason = "unknown reason" }
+            Write-Host "  - ${skippedLabel}: $reason"
+        }
+    }
     # Doctor carries per-client discovery plus the managed-artifact list:
     # render a state map in the same vocabulary as the setup menu, so "not
     # installed" reads as expected state instead of a warning (mirrors
