@@ -14,7 +14,7 @@ Gets you from Windows to a local Exasol database with an AI assistant connected,
 Check from a WSL terminal (installs nothing):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/exasol-labs/exasol-personal-local-starterkit/main/install.sh | EXAKIT_PREFLIGHT=1 sh
+curl -fsSL https://raw.githubusercontent.com/krishna-exasol/update-path/main/install.sh | EXAKIT_PREFLIGHT=1 sh
 ```
 
 Every ✗ line tells you what to fix. The usual one is Docker Desktop not running or WSL integration not enabled.
@@ -22,7 +22,7 @@ Every ✗ line tells you what to fix. The usual one is Docker Desktop not runnin
 ## Install (inside the WSL terminal)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/exasol-labs/exasol-personal-local-starterkit/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/krishna-exasol/update-path/main/install.sh | sh
 ```
 
 What happens, in order:

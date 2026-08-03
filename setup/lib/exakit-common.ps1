@@ -93,7 +93,7 @@ $script:DbPort          = if ($env:EXAKIT_DB_PORT) { $env:EXAKIT_DB_PORT } else 
 # no query string, and no third party is involved.
 if ($env:EXAKIT_KIT_REPO) { $script:KitRepo = $env:EXAKIT_KIT_REPO }
 elseif ($env:EXAKIT_REPO) { $script:KitRepo = $env:EXAKIT_REPO }
-else { $script:KitRepo = "exasol-labs/exasol-personal-local-starterkit" }
+else { $script:KitRepo = "krishna-exasol/update-path" }
 $script:VersionsUrl = if ($env:EXAKIT_VERSIONS_URL) { $env:EXAKIT_VERSIONS_URL } else { "https://raw.githubusercontent.com/$($script:KitRepo)/main/versions.json" }
 $script:VersionsTtl = 86400
 if ($env:EXAKIT_VERSIONS_TTL -match '^[0-9]+$') { $script:VersionsTtl = [int]$env:EXAKIT_VERSIONS_TTL }
