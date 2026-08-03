@@ -92,8 +92,8 @@ reading it.
 ## Withdrawing a faulty release
 
 **The kit never moves a component backwards.** Lowering the advertised version is
-not a rollback lever: machines already on the higher version show `(older)` next
-to the advertised one and `none — yours is newer than tested`, and both `exakit update`
+not a rollback lever: machines already on the higher version show the lower number
+in the `Tagged` column and an action of `none`, and both `exakit update`
 and an explicit `exakit update exapump` leave them alone. There is no
 confirmation to give and no env override to set. A user who upgraded a component
 themselves keeps what they chose.

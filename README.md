@@ -192,7 +192,7 @@ exakit update runtime  # the database itself — stops it briefly, keeps your da
 update is waiting, it says so and leaves the moment to you.
 
 ```
-Component  Installed         Available         Severity    Action
+Component  Installed         Tagged            Severity    Action
 exakit     0.2.0             0.2.0             -           current
 nano       2026.2.0-nano.2   2026.3.0-nano.1   -           exakit update runtime (heavy)
 exapump    0.11.2            0.12.0            recommended exakit update exapump
@@ -205,9 +205,10 @@ A few things worth knowing:
 - **Severity is the maintainers' judgement.** Only `recommended` and `critical`
   changes ever interrupt another command, at most once a day, on `stderr`.
   Silence them for good with `EXAKIT_NO_UPDATE_NOTICE=1`.
-- **Sometimes the advice is to go back.** If a release turns out to be faulty, the
-  advertised version goes *down* and the row shows `(older)`. Applying it asks you
-  to confirm first — it is never silent.
+- **`Tagged` is the version set the maintainers tested together.** It is usually
+  the newer number, but not always: if a release is withdrawn the tagged version
+  goes *down*, and a machine already on the higher one simply shows both numbers
+  with an action of `none`. The kit never moves a component backwards.
 - **Offline is fine.** Version resolution falls back to a cached copy, then to the
   copy that shipped with your kit. No command ever fails because an update check
   could not reach the network.
