@@ -670,6 +670,24 @@ has "the question promises the restart" "started again and checked" "$offer_yes"
 has "the question says the data survives" "the same data volume is reused" "$offer_yes"
 has "yes applies the runtime in this run" "APPLIED runtime" "$offer_yes"
 has "and reports the result" "Runtime updated" "$offer_yes"
+
+# A runtime AHEAD of the tested set must never reach the question. The heavy
+# branch gated on "different" and then continued, so the never-backwards guard
+# further down was unreachable for it: an installed 2.1.0 against a tested 2.0.0
+# was offered as a runtime update -- a DOWNGRADE, behind a prompt promising the
+# data would survive it -- while `exakit update-check` rendered that same row as
+# "none" and every light component said "keeping yours". Answer "y" here on
+# purpose: if the question is ever asked again, this run applies the downgrade
+# and the APPLIED assertion catches it rather than passing on a silent skip.
+offer_ahead="$(offer_run y '
+    exakit_component_current() { printf "9.9.9\n"; }
+    exakit_component_available() { printf "1.0.0\n"; }
+')"
+lacks "a runtime ahead of the tested set is never offered" \
+    "Stop the database and update the runtime now?" "$offer_ahead"
+lacks "and nothing is applied, downgrade or otherwise" "APPLIED" "$offer_ahead"
+lacks "and no database is described as going down" "goes down while the container is recreated" "$offer_ahead"
+has "it says it is keeping what is installed" "is newer than the tested 1.0.0" "$offer_ahead"
 lacks "and demands no second command" "exakit update runtime" "$offer_yes"
 has "while the light components still run" "APPLIED mcp" "$offer_yes"
 

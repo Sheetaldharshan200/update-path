@@ -1122,6 +1122,20 @@ function Invoke-CmdUpdate {
             Warn2 "No advertised version for $actual - skipping it. Details: exakit update-check"
             continue
         }
+        # Never backwards, and this has to be settled BEFORE the heavy branch.
+        # That branch gates on $current -ne $available and then continues, so it
+        # used to reach the runtime offer with the installed version AHEAD of the
+        # tested one and ask to stop the database for a downgrade - while
+        # `exakit update-check` rendered the same row as "none" and every light
+        # component said "keeping yours". Different is not behind. Asked once
+        # here, for every component, so no later branch can reach an update path
+        # by skipping the question.
+        if (Test-ExakitComponentAhead $actual) {
+            $shown = $current
+            if (-not $shown) { $shown = "unknown" }
+            Ok "$actual $shown is newer than the tested $available - keeping yours"
+            continue
+        }
         # A blanket update stops the database only for an answer it was given: on a
         # console it asks, with -AssumeYes or the env var it was already told, and
         # with neither it defers exactly as it always did. See
@@ -1148,15 +1162,6 @@ function Invoke-CmdUpdate {
             Warn2 "$actual $available needs kit >= $minKit - update the kit first: exakit update exakit"
             if ($Target -eq "all") { continue }
             Fail "Refusing to install $actual $available on kit $(Get-ExakitComponentCurrent 'exakit')."
-        }
-        # Never backwards. Skipping is the whole behaviour: no prompt, no override,
-        # and an explicit `exakit update exapump` says so and exits clean rather
-        # than failing, because there is nothing wrong with being ahead.
-        if (Test-ExakitComponentAhead $actual) {
-            $shown = $current
-            if (-not $shown) { $shown = "unknown" }
-            Ok "$actual $shown is newer than the tested $available - keeping yours"
-            continue
         }
         if ($available) {
             $shown = $current
