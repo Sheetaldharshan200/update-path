@@ -120,8 +120,30 @@ mcp_install() {
 mcp_update() {
     _latest="$(exakit_component_available mcp)"
     [ -n "$_latest" ] || die "Could not resolve the advertised ${EXAKIT_MCP_PACKAGE} version."
-    _current="$(manifest_get components.mcp_server.version 2>/dev/null || true)"
+    # The already-current guard reads the same thing `exakit update-check` prints in
+    # its Installed column: the pin in the AI client configs, which is the spec uvx
+    # will materialise the next time a client starts. The manifest record is only
+    # what a previous run WROTE DOWN, and mcp_install writes it before the client
+    # configs are refreshed (it has to — the config renderer reads the record to
+    # build the pin). Comparing against the record therefore let a half-finished
+    # update look complete: the dispatcher announced "mcp 1.10.1 -> 2.0.0" from the
+    # live pin, and this function answered "already current (2.0.0)" from the record
+    # while every client was still launching 1.10.1.
+    _mcp_recorded="$(manifest_get components.mcp_server.version 2>/dev/null || true)"
+    if command -v exakit_component_current >/dev/null 2>&1; then
+        _current="$(exakit_component_current mcp 2>/dev/null || true)"
+    else
+        _current=""
+    fi
+    [ -n "$_current" ] || _current="$_mcp_recorded"
     if [ "$_latest" = "$_current" ]; then
+        # Genuinely already current, so this stays a clean skip — but a record that
+        # disagrees with the configs is still reconciled, because that record is what
+        # the renderer would write into the next client the user connects.
+        if [ "$_mcp_recorded" != "$_current" ]; then
+            info "Reconciling the recorded MCP version (${_mcp_recorded:-unrecorded}) with the pin in the AI client configs"
+            manifest_set components.mcp_server.version "$_current"
+        fi
         ok "MCP server is already current ($_current)"
         return 0
     fi
@@ -130,10 +152,87 @@ mcp_update() {
     EXAKIT_MCP_VERSION="$_latest"
     export EXAKIT_MCP_VERSION
     mcp_install
-    warn "Run exakit mcp-setup to refresh AI client configs with the new MCP version."
+    mcp_refresh_client_pins || true
     mcp_validate || true
     manifest_set desired.mcp "$EXAKIT_MCP_VERSION"
     ok "MCP server updated; database data was not changed"
+}
+
+# mcp_managed_clients — the client ids that already carry a managed MCP entry, as
+# a comma-separated list. Empty when nothing is connected, the module is missing,
+# or Python is unavailable; callers treat that as "nothing to refresh".
+mcp_managed_clients() {
+    command -v exakit_run_mcp_operation_cli >/dev/null 2>&1 || return 0
+    exakit_can_run_python || return 0
+    _mmc_result="$(mktemp "${TMPDIR:-/tmp}/exakit-mcp-managed.XXXXXX")"
+    if ! exakit_run_mcp_operation_cli status \
+            "claude_desktop,claude_code,cursor,codex,vscode_copilot,gemini_cli,opencode,continue" \
+            "$_mmc_result" >/dev/null 2>&1; then
+        rm -f "$_mmc_result"
+        return 0
+    fi
+    _mmc_clients="$(run_python - "$_mmc_result" 2>/dev/null <<'PY'
+import json, sys
+
+try:
+    with open(sys.argv[1], encoding="utf-8") as handle:
+        doc = json.load(handle)
+except (OSError, ValueError):
+    raise SystemExit(0)
+seen = []
+for artifact in doc.get("artifacts", []) or []:
+    client = artifact.get("client")
+    if client and client not in seen:
+        seen.append(client)
+print(",".join(seen))
+PY
+    )"
+    rm -f "$_mmc_result"
+    printf '%s\n' "$_mmc_clients"
+}
+
+# mcp_refresh_client_pins — re-render the managed entry in the clients that are
+# already connected, so the version they launch is the one this update installed.
+# Without this the update moved nothing a client can see: only the manifest record
+# changed, and the next `exakit update` used to trust that record and skip.
+#
+# It has to be the configure operation (what `exakit mcp-setup` runs). `repair`
+# gates on a hash comparison against the hash recorded at the last write, so a
+# config that is intact but pinned to an older version reads as consistent and
+# repair returns no_change (mcp/service.py). Only configure re-renders
+# unconditionally.
+#
+# Scoped to already-managed clients on purpose: configure would happily create a
+# config for a client the user never chose to connect.
+mcp_refresh_client_pins() {
+    if ! command -v exakit_run_mcp_setup_cli >/dev/null 2>&1; then
+        warn "Run exakit mcp-setup to refresh AI client configs with the new MCP version."
+        return 1
+    fi
+    _refresh_clients="$(mcp_managed_clients)"
+    if [ -z "$_refresh_clients" ]; then
+        info "No AI client is connected yet — connect one any time with: exakit mcp-setup"
+        return 0
+    fi
+    info "Refreshing AI client configs to ${EXAKIT_MCP_PACKAGE}@${EXAKIT_MCP_VERSION}"
+    _refresh_result="$(mktemp "${TMPDIR:-/tmp}/exakit-mcp-refresh.XXXXXX")"
+    if ! exakit_run_mcp_setup_cli "$_refresh_clients" "$_refresh_result"; then
+        rm -f "$_refresh_result"
+        warn "Could not refresh the AI client configs — run exakit mcp-setup to finish the update."
+        return 1
+    fi
+    if [ -s "$_refresh_result" ]; then
+        exakit_print_mcp_setup_summary "$_refresh_result"
+    fi
+    rm -f "$_refresh_result"
+    # Confirm from the configs, not from the record: mcp_install already wrote the
+    # record, so only the live pin can say whether the clients actually moved.
+    _refresh_pin="$(exakit_installed_mcp_version 2>/dev/null || true)"
+    if [ -n "$_refresh_pin" ] && [ "$_refresh_pin" != "$EXAKIT_MCP_VERSION" ]; then
+        warn "An AI client is still pinned to ${EXAKIT_MCP_PACKAGE}@${_refresh_pin} — see exakit mcp-doctor."
+        return 1
+    fi
+    ok "AI client configs now launch ${EXAKIT_MCP_PACKAGE}@${EXAKIT_MCP_VERSION}"
 }
 
 mcp_update_snapshot() {
