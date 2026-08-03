@@ -8,9 +8,12 @@
 #   version               kit source, install date, component versions
 #   update-check [what]   compare installed vs advertised versions
 #                         (all, runtime, exakit, exapump, mcp, pyexasol)
-#   update [what]         apply the advertised versions without deleting database
-#                         data; a runtime change is announced, not applied, by
-#                         `update all`
+#   update [what] [-Yes]  apply the advertised versions without deleting database
+#                         data. A runtime change stops the database, so on a
+#                         console it is offered ("stop the database and update it
+#                         now?") and applied on yes; without a console it is
+#                         deferred unless -Yes (or EXAKIT_CONFIRM_RUNTIME_UPDATE=1)
+#                         says otherwise
 #   info [--json]         print the connection details panel; --json prints the
 #                         install record (manifest.json) verbatim, nothing else
 #   guide                 friendly walkthrough: connect AI clients (MCP), SQL
@@ -873,18 +876,225 @@ function Invoke-CmdUpdateCheck {
     }
     Write-ExakitVersionsSourceLine
     if ($updates -gt 1) { Info "Apply the quick ones in one go with: exakit update" }
-    if ($heavyPending) { Info "A runtime change stops the database - run it when convenient: exakit update runtime" }
+    if ($heavyPending) { Info "A runtime change stops the database - exakit update offers it on a console, or run it directly: exakit update runtime" }
+}
+
+# --- the heavy (runtime) update, offered inline instead of handed back --------
+#
+# `exakit update` used to refuse the heavy part outright: it printed "needs the
+# database stopped, so it is not part of a routine update" and left the user to
+# run `exakit update runtime` themselves, after stopping nothing and updating
+# nothing. The work was never the problem - the second command was. On a console
+# the offer is now made where the user already is, and one "y" runs the whole
+# sequence: stop the database, update the runtime, bring it back up, say so.
+#
+# Both entry points run the SAME implementation:
+# Invoke-ExakitRuntimeComponentUpdate below is what the update loop's runtime
+# branch calls and what the inline offer calls.
+
+# Invoke-ExakitRuntimeComponentUpdate - the runtime component updater itself, in
+# one place. Twin of the runtime/nano/personal arms of exakit_update_component in
+# setup/lib/common.sh.
+function Invoke-ExakitRuntimeComponentUpdate {
+    param([Parameter(Mandatory)][string]$Component, [string]$Advertised)
+    switch ($Component) {
+        "runtime" {
+            if ((Get-RuntimeType) -eq "nano" -and $Advertised) { Update-Nano -LatestTag $Advertised }
+        }
+        "nano" {
+            if ($Advertised) { Update-Nano -LatestTag $Advertised }
+        }
+        "personal" {
+            Warn2 "Exasol Personal local deployments are macOS-only in this kit. On Windows this target is reported for catalog parity but cannot be applied."
+        }
+    }
+}
+
+# Get-ExakitRuntimeStatus / Start-ExakitRuntime - the runtime-agnostic pair the
+# inline offer needs to keep its promise ("the database is running again
+# afterwards"). Only Nano exists on this path; anything else answers "" for
+# "cannot tell", which is not the same as "not running".
+# Twins of exakit_runtime_status / exakit_runtime_start in setup/lib/common.sh.
+function Get-ExakitRuntimeStatus {
+    if ((Get-RuntimeType) -eq "nano") {
+        try { return (Get-NanoStatus) } catch { return "" }
+    }
+    return ""
+}
+
+function Start-ExakitRuntime {
+    if ((Get-RuntimeType) -eq "nano") { Start-Nano }
+}
+
+# Test-ExakitRuntimeUpdateStaged - true for an Exasol Personal MAJOR upgrade: a
+# data migration with its own backup-gated three-step flow (--plan, --backup,
+# --apply), which a single y/N is not informed consent for. Personal is macOS-only
+# in this kit, so on Windows this is false in practice; it stays here so both
+# sides of the mirror make the same decision from the same inputs.
+# Twin of exakit_runtime_update_is_staged in setup/lib/common.sh.
+function Test-ExakitRuntimeUpdateStaged {
+    param([string]$Installed, [string]$Advertised)
+    if ((Get-RuntimeType) -ne "personal") { return $false }
+    $installedMajor = Get-ExakitMajorVersion $Installed
+    $advertisedMajor = Get-ExakitMajorVersion $Advertised
+    if (-not $installedMajor -or -not $advertisedMajor) { return $false }
+    return ($installedMajor -ne $advertisedMajor)
+}
+
+# Get-ExakitMajorVersion - "2.1.0" -> "2", "v2026.2.0-nano.2" -> "2026". Empty
+# when the string does not start with a number.
+# Twin of exakit_major_version in setup/lib/common.sh.
+function Get-ExakitMajorVersion {
+    param([string]$Version)
+    if (-not $Version) { return "" }
+    $match = [regex]::Match($Version.TrimStart("v"), '^\d+')
+    if ($match.Success) { return $match.Value }
+    return ""
+}
+
+# Get-ExakitRuntimeUpdatePreanswer - "yes", "no", or "" when nobody has answered
+# yet. Two ways to answer without a prompt, and they are the ways this kit already
+# uses: `exakit update -Yes` (the uninstall flag spelling, and -y/--yes too) and
+# EXAKIT_CONFIRM_RUNTIME_UPDATE, the variable that already pre-answers
+# `exakit update runtime`. One opt-in, both entry points.
+# Twin of exakit_runtime_update_preanswer in setup/lib/common.sh.
+function Get-ExakitRuntimeUpdatePreanswer {
+    param([bool]$AssumeYes = $false)
+    if ($AssumeYes) { return "yes" }
+    $preset = [Environment]::GetEnvironmentVariable("EXAKIT_CONFIRM_RUNTIME_UPDATE")
+    if ($preset) {
+        if ($preset -cmatch '^(1|y|Y|yes|YES|Yes)$') { return "yes" }
+        if ($preset -cmatch '^(0|n|N|no|NO|No)$') { return "no" }
+    }
+    return ""
+}
+
+# Write-ExakitRuntimeUpdateExplanation - what the user is about to agree to,
+# before they agree to it: that the database goes down, roughly for how long, that
+# it comes back up, and what happens to the data. Stopping a database is
+# disruptive and outward-facing; a bare "[y/N]" is not enough to consent to it.
+# Twin of exakit_runtime_update_explain in setup/lib/common.sh.
+function Write-ExakitRuntimeUpdateExplanation {
+    param([string]$Actual, [string]$Installed, [string]$Advertised)
+    Warn2 "$Actual $Installed -> $Advertised needs the database stopped."
+    switch ($Actual) {
+        "nano" {
+            Info "The database goes down while the container is recreated, then it is started again and checked - usually a minute or two, longer if the new image still has to be pulled."
+            Info "Your data is kept: the same data volume is reused, and the previous image is put back if the new container does not come up."
+        }
+        "personal" {
+            Info "The launcher is replaced; the database is checked afterwards and started again if it ends up down - usually under a minute."
+            Info "Your data is kept: this update neither deletes nor migrates the deployment's database content."
+        }
+        default {
+            Info "The database goes down for the update and is started again afterwards."
+            Info "Your data is kept."
+        }
+    }
+}
+
+# Invoke-ExakitRuntimeUpdateApply - stop, update, start, report. Update-Nano owns
+# the sequence itself (it pulls the new image, stops the container, recreates it
+# on the SAME data volume, waits for readiness and puts the previous image back if
+# it never becomes ready), and it is called here exactly as
+# `exakit update runtime` calls it. What this adds is the one thing the prompt
+# promises: a database that was up before this command is up after it.
+# Twin of exakit_apply_runtime_update in setup/lib/common.sh.
+function Invoke-ExakitRuntimeUpdateApply {
+    param([Parameter(Mandatory)][string]$Component, [string]$Advertised)
+    $wasRunning = ((Get-ExakitRuntimeStatus) -eq "running")
+    # The offer above IS the confirmation the runtime updater asks for. Asking one
+    # question twice is not a safety feature, so the answer is passed down.
+    $env:EXAKIT_CONFIRM_RUNTIME_UPDATE = "1"
+    Invoke-ExakitRuntimeComponentUpdate -Component $Component -Advertised $Advertised
+    $status = Get-ExakitRuntimeStatus
+    if ($wasRunning -and $status -and $status -ne "running" -and $status -ne "starting") {
+        Info "Bringing the database back up"
+        Start-ExakitRuntime
+        $status = Get-ExakitRuntimeStatus
+    }
+    if ($status -eq "running") {
+        Ok "Runtime updated and the database is running again."
+    } elseif ($status -eq "starting") {
+        Ok "Runtime updated; the database is still coming up - check it with: exakit status"
+    } elseif (-not $status) {
+        Ok "Runtime updated."
+    } else {
+        Warn2 "Runtime updated, but the database reports '$status' - start it with: exakit start"
+    }
+}
+
+# Invoke-ExakitRuntimeUpdateOffer - the heavy part of a routine `exakit update`,
+# decided here instead of being handed to the user as homework. Returns $true when
+# it was applied, $false when it was deferred (and then prints the exact command
+# that applies it later).
+#
+# On backups: the kit has no data-export facility, and this path needs none.
+# Update-Nano recreates the container over the persisted data volume, records a
+# pre-update snapshot of the runtime metadata under
+# ~\.exasol-starter-kit\backups\nano-update\, and restores the previous image if
+# the new one will not start. The one runtime change that IS a data migration is
+# the Exasol Personal major upgrade, which already has a real backup inside its
+# own three-step flow - which is why this function refuses to start it from a y/N.
+# Twin of exakit_offer_runtime_update in setup/lib/common.sh.
+function Invoke-ExakitRuntimeUpdateOffer {
+    param(
+        [Parameter(Mandatory)][string]$Component,
+        [string]$Actual,
+        [string]$Installed,
+        [string]$Advertised,
+        [bool]$AssumeYes = $false
+    )
+    if (Test-ExakitRuntimeUpdateStaged -Installed $Installed -Advertised $Advertised) {
+        Warn2 "$Actual $Installed -> $Advertised is a major upgrade: it needs a backup and a data migration, so a routine update does not start it."
+        Info "See the steps first:  exakit update runtime --plan"
+        return $false
+    }
+    $preanswer = Get-ExakitRuntimeUpdatePreanswer -AssumeYes $AssumeYes
+    if ($preanswer -eq "no") {
+        Warn2 "$Actual $Installed -> $Advertised was left alone: the runtime update is answered 'no' (EXAKIT_CONFIRM_RUNTIME_UPDATE)."
+        Info "Apply it when convenient:  exakit update runtime"
+        return $false
+    }
+    if ($preanswer -eq "yes") {
+        Write-ExakitRuntimeUpdateExplanation -Actual $Actual -Installed $Installed -Advertised $Advertised
+    } else {
+        # No console, no answer: a prompt nobody can answer must never turn into a
+        # stopped database, so a redirected run, a CI job and a scheduled task all
+        # get exactly today's safe deferral.
+        if (-not (Test-ExakitInteractive)) {
+            Warn2 "$Actual $Installed -> $Advertised needs the database stopped, so it is not part of a routine update."
+            Info "Apply it when convenient:  exakit update runtime"
+            Info "Unattended runs can opt in:  exakit update -Yes  (or EXAKIT_CONFIRM_RUNTIME_UPDATE=1)"
+            return $false
+        }
+        Write-ExakitRuntimeUpdateExplanation -Actual $Actual -Installed $Installed -Advertised $Advertised
+        if (-not (Confirm-ExakitPrompt "Stop the database and update the runtime now?" $false)) {
+            Info "Nothing was stopped. Apply it when convenient:  exakit update runtime"
+            return $false
+        }
+    }
+    Invoke-ExakitRuntimeUpdateApply -Component $Component -Advertised $Advertised
+    return $true
 }
 
 # Invoke-CmdUpdate - apply the advertised versions. Prints its work plan, not the
-# full table, and never stops the database on its own: a pending runtime change is
-# announced with the exact command and left for the user to run when it suits
-# them. Twin of exakit_update in setup/lib/common.sh.
+# full table. A pending runtime change stops the database, so it is applied only
+# for an answer this run was given: the console is asked, -AssumeYes and
+# EXAKIT_CONFIRM_RUNTIME_UPDATE answer without asking, and an unattended run with
+# neither defers it with the exact command that applies it later.
+# Twin of exakit_update in setup/lib/common.sh.
 function Invoke-CmdUpdate {
-    param([string]$Target = "all")
+    param([string]$Target = "all", [bool]$AssumeYes = $false)
     Assert-ExakitInstalled
     Initialize-ExakitLogging
     if (-not $Target) { $Target = "all" }
+    if ($AssumeYes) {
+        # -Yes answers the only question this command asks: may it stop the
+        # database. Update-Nano reads the same variable, so an explicit
+        # `exakit update runtime -Yes` is unprompted for the same reason.
+        $env:EXAKIT_CONFIRM_RUNTIME_UPDATE = "1"
+    }
     # An explicit update applies what is advertised RIGHT NOW.
     if ($script:VersionPolicy -eq "manifest") {
         Update-ExakitVersionsCache -Force | Out-Null
@@ -912,11 +1122,18 @@ function Invoke-CmdUpdate {
             Warn2 "No advertised version for $actual - skipping it. Details: exakit update-check"
             continue
         }
+        # A blanket update stops the database only for an answer it was given: on a
+        # console it asks, with -AssumeYes or the env var it was already told, and
+        # with neither it defers exactly as it always did. See
+        # Invoke-ExakitRuntimeUpdateOffer.
         if ($Target -eq "all" -and (Test-ExakitComponentHeavy $actual)) {
             if ($current -and $available -and $current -ne "unknown" -and $current -ne $available) {
-                Warn2 "$actual $current -> $available needs the database stopped, so it is not part of a routine update."
-                Info "Apply it when convenient:  exakit update runtime"
-                $deferred += 1
+                # [-1]: the verdict is the LAST thing the offer returns. The
+                # updaters it calls can put objects on the pipeline of their own,
+                # and an array is truthy no matter what it holds.
+                $applied = @(Invoke-ExakitRuntimeUpdateOffer -Component $component -Actual $actual `
+                    -Installed $current -Advertised $available -AssumeYes $AssumeYes)[-1]
+                if ($applied -eq $true) { $acted += 1 } else { $deferred += 1 }
             }
             continue
         }
@@ -950,15 +1167,9 @@ function Invoke-CmdUpdate {
             "exakit" {
                 Update-ExakitSelf -Advertised $available -Installed $current
             }
-            "runtime" {
-                if ((Get-RuntimeType) -eq "nano" -and $available) { Update-Nano -LatestTag $available }
-            }
-            "nano" {
-                if ($available) { Update-Nano -LatestTag $available }
-            }
-            "personal" {
-                Warn2 "Exasol Personal local deployments are macOS-only in this kit. On Windows this target is reported for catalog parity but cannot be applied."
-            }
+            "runtime" { Invoke-ExakitRuntimeComponentUpdate -Component "runtime" -Advertised $available }
+            "nano"    { Invoke-ExakitRuntimeComponentUpdate -Component "nano" -Advertised $available }
+            "personal" { Invoke-ExakitRuntimeComponentUpdate -Component "personal" -Advertised $available }
             "exapump" {
                 if ($available) {
                     $script:ExapumpVersion = $available
@@ -1217,7 +1428,8 @@ function Show-ExakitUsage {
         "Keeping current:"
         "  version              what you have installed, and what is available"
         "  update-check         what would change, and what it costs"
-        "  update               apply the updates that are waiting"
+        "  update               apply the updates that are waiting (it offers the"
+        "                       database update too, instead of leaving it to you)"
     ) | ForEach-Object { Write-Host $_ }
 }
 
@@ -1229,7 +1441,13 @@ try {
         "--version"    { Invoke-CmdVersion }
         "-v"           { Invoke-CmdVersion }
         "update-check"  { Invoke-CmdUpdateCheck -Target ($RestArgs | Select-Object -First 1) }
-        "update"        { Invoke-CmdUpdate -Target ($RestArgs | Select-Object -First 1) }
+        "update"        {
+            # -y/--yes/-Yes answers the runtime offer, so it must not be mistaken
+            # for the target when it is the only argument given.
+            $updateYes = ($RestArgs -contains "-Yes" -or $RestArgs -contains "--yes" -or $RestArgs -contains "-y")
+            $updateArgs = @($RestArgs | Where-Object { $_ -notin @("-Yes", "--yes", "-y") })
+            Invoke-CmdUpdate -Target ($updateArgs | Select-Object -First 1) -AssumeYes $updateYes
+        }
         "info"         {
             if ($RestArgs -contains "--json" -or $RestArgs -contains "-j") {
                 $script:JsonOutput = $true

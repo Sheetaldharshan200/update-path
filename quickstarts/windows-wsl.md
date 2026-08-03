@@ -63,9 +63,14 @@ Then continue with the [first workflow](../demo/first-revenue-analysis.md).
 
 ```bash
 exakit update-check    # installed vs the versions the maintainers advertise
-exakit update          # the quick ones, in seconds, database untouched
-exakit update runtime  # recreates the Nano container; the data volume is kept
+exakit update          # the quick ones in seconds, then it asks before touching the database
+exakit update runtime  # recreates the Nano container, on its own; the data volume is kept
 ```
+
+A waiting database update is offered inline — `Stop the database and update the
+runtime now? [y/N]` — and `y` recreates the container and brings the database back
+up for you. Unattended runs are never asked and never stopped: opt in with
+`exakit update --yes` or `EXAKIT_CONFIRM_RUNTIME_UPDATE=1`.
 
 Full detail: [Staying up to date](../README.md#staying-up-to-date).
 

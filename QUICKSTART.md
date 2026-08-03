@@ -69,13 +69,16 @@ exakit stop                # stop the database (your data is kept)
 exakit start               # bring it back
 exakit mcp-doctor          # AI connection health check
 exakit update-check        # what is installed vs what the maintainers advertise
-exakit update              # apply the quick updates (seconds, no downtime)
+exakit update              # apply the updates that are waiting
 exakit uninstall           # remove everything the kit installed
 ```
 
-`exakit update` never stops your database. When a database update is waiting it
-tells you and leaves the timing to you (`exakit update runtime`, which keeps your
-data). Full detail: [Staying up to date](README.md#staying-up-to-date).
+The quick updates take seconds and no downtime. When a **database** update is
+waiting, `exakit update` asks — `Stop the database and update the runtime now?
+[y/N]` — and on `y` it stops the database, updates it, brings it back up and says
+so. On `n` nothing is stopped and `exakit update runtime` applies it later. Your
+data is kept either way. Full detail:
+[Staying up to date](README.md#staying-up-to-date).
 
 Re-running the installer is safe. It skips what is done and repairs what is not.
 
