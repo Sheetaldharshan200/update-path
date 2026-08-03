@@ -688,6 +688,39 @@ lacks "a runtime ahead of the tested set is never offered" \
 lacks "and nothing is applied, downgrade or otherwise" "APPLIED" "$offer_ahead"
 lacks "and no database is described as going down" "goes down while the container is recreated" "$offer_ahead"
 has "it says it is keeping what is installed" "is newer than the tested 1.0.0" "$offer_ahead"
+
+# The choke point refuses on its own, called DIRECTLY with no exakit_update above
+# it to have vetted the request. The updaters it dispatches to hold no version
+# opinion at all -- they install whatever they are handed -- so without this a
+# caller that forgets to ask is one edit away from reintroducing the downgrade.
+chokepoint="$( EXAKIT_HOME="$UC"
+    EXAKIT_MANIFEST="$UC/manifest.json"
+    EXAKIT_VERSIONS_CACHE="$UC/cache/versions.json"
+    EXAKIT_VERSIONS_URL="http://offline.invalid/versions.json"
+    _EXAKIT_VERSIONS_DOC=""; _EXAKIT_VERSIONS_SOURCE=""
+    exakit_init_logging() { :; }
+    exakit_component_current() { printf '9.9.9\n'; }
+    exakit_component_available() { printf '1.0.0\n'; }
+    exapump_update() { printf 'APPLIED exapump\n'; }
+    mcp_update() { printf 'APPLIED mcp\n'; }
+    exakit_update_component exapump 2>&1
+    exakit_update_component mcp 2>&1 )"
+lacks "the choke point applies nothing when the install is ahead" "APPLIED" "$chokepoint"
+has "and says so once per component asked for" "keeping yours" "$chokepoint"
+# An env override must not resurrect it either: the flow it used to pre-answer is
+# gone, so the variable is inert and has to stay inert.
+choke_override="$( EXAKIT_HOME="$UC"
+    EXAKIT_MANIFEST="$UC/manifest.json"
+    EXAKIT_VERSIONS_CACHE="$UC/cache/versions.json"
+    EXAKIT_VERSIONS_URL="http://offline.invalid/versions.json"
+    _EXAKIT_VERSIONS_DOC=""; _EXAKIT_VERSIONS_SOURCE=""
+    EXAKIT_ALLOW_DOWNGRADE=1
+    exakit_init_logging() { :; }
+    exakit_component_current() { printf '9.9.9\n'; }
+    exakit_component_available() { printf '1.0.0\n'; }
+    exapump_update() { printf 'APPLIED exapump\n'; }
+    exakit_update_component exapump 2>&1 )"
+lacks "and no override can buy a downgrade" "APPLIED" "$choke_override"
 lacks "and demands no second command" "exakit update runtime" "$offer_yes"
 has "while the light components still run" "APPLIED mcp" "$offer_yes"
 

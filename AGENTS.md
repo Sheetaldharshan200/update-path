@@ -43,7 +43,6 @@ Version and update behaviour (all optional, sensible defaults):
 | `EXAKIT_VERSIONS_URL=...` | Where that document is fetched from (must be `https://`). Defaults to the kit repository's `versions.json` on `main` |
 | `EXAKIT_VERSIONS_TTL=86400` | Seconds before the cached copy is refreshed. `0` fetches every time |
 | `EXAKIT_<COMPONENT>_VERSION=...` | Pin one component by hand: `EXAKIT_EXAPUMP_VERSION`, `EXAKIT_MCP_VERSION`, `EXAKIT_PYEXASOL_VERSION`, `EXAKIT_PERSONAL_VERSION`, `EXAKIT_NANO_TAG`. Outranks the manifest, on install **and** on update |
-| `EXAKIT_ALLOW_DOWNGRADE=1` | Pre-answer the confirmation when the advertised version is OLDER than the installed one (a maintainer-advised rollback). Without it, an unattended run declines and moves on |
 | `EXAKIT_CONFIRM_RUNTIME_UPDATE=1` | Pre-answer "yes, you may stop the database and recreate the container". Covers both entry points: it skips the confirmation in `exakit update runtime`, and it opts an unattended `exakit update` into the runtime change it would otherwise defer (`exakit update --yes` does the same for one run). `=0` is a deliberate "no" and outranks the prompt |
 | `EXAKIT_NO_UPDATE_NOTICE=1` | Never print the once-a-day update notice after other commands |
 
@@ -91,7 +90,7 @@ What an agent needs to know:
 - The runtime update keeps your data: the container is recreated over the same data volume and the previous image is put back if the new one does not come up. There is no data backup step because nothing deletes data. The one exception is an Exasol Personal **major** upgrade, which is a real data migration: `exakit update` never starts it, and `exakit update runtime --plan` prints its backup-gated steps.
 - Nothing here can hang. Version resolution degrades to a cached copy, then to the copy that shipped with the kit; no command fails because an update check could not reach the network.
 - `exakit update-check` is the only command that prints the full table. `exakit version` prints what is installed plus a short hint.
-- If the advertised version is **older** than the installed one, the maintainers are advising a rollback. Applying it asks for confirmation; unattended runs need `EXAKIT_ALLOW_DOWNGRADE=1`.
+- If the advertised version is **older** than the installed one, nothing is offered and nothing is applied: `exakit update-check` shows an action of `none`, and asking for that component by name succeeds and does nothing. The kit has no downgrade path, by any route or override. To withdraw a faulty release, publish a higher version.
 - A component that reports `not installed` (most often `pyexasol`, whose install step is deliberately non-fatal) is repaired by the same command: `exakit update pyexasol`.
 
 ## Where things live
