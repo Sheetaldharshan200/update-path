@@ -1366,6 +1366,12 @@ if [ "$NOTICE_PTY" = "none" ]; then
                     "and then holds off for the interval" \
                     "a routine bump is announced" "without claiming it is recommended" \
                     "or critical" "the kill switch silences it" \
+                    "an install ahead of the tagged set is not announced" \
+                    "nor the other component that overshot" \
+                    "and no light line is printed at all" \
+                    "while a component genuinely behind is still announced" \
+                    "and a cached plan does not resurrect it" \
+                    "while the cached plan keeps the real one" \
                     "latest policy has no severities to gate on"; do
         check "$_skipped" "skipped" "skipped"
     done
@@ -1405,6 +1411,42 @@ only_normal="$(notice "$REAL")"
 has "a routine bump is announced" "update is available for exapump" "$only_normal"
 lacks "without claiming it is recommended" "A recommended" "$only_normal"
 lacks "or critical" "A critical" "$only_normal"
+
+# An install that has overshot the advertised set has nothing pending, and the
+# notice must not claim otherwise: `exakit update-check` renders those rows as
+# "none" and `exakit update` says "keeping yours", so announcing them made the
+# three commands disagree and pointed the user at a command that could do
+# nothing. exapump and mcp are advertised BELOW the recorded 0.0.1 install;
+# nano stays genuinely behind, to prove the skip is targeted and not a mute
+# button. exapump is also flagged 'recommended', so if it were still counted the
+# light line would appear and borrow that word.
+python3 - "$REAL" "$WORK/notice-ahead.json" <<'PY'
+import collections, json, sys
+with open(sys.argv[1]) as handle:
+    doc = json.load(handle, object_pairs_hook=collections.OrderedDict)
+doc["components"]["exapump"]["version"] = "0.0.0"
+doc["components"]["exapump"]["severity"] = "recommended"
+doc["components"]["mcp"]["version"] = "0.0.0"
+doc["components"]["mcp"]["severity"] = "normal"
+doc["components"]["nano"]["version"] = "2026.3.0-nano.1"
+doc["components"]["nano"]["severity"] = "critical"
+with open(sys.argv[2], "w") as handle:
+    json.dump(doc, handle, indent=2)
+    handle.write("\n")
+PY
+rm -f "$NT/cache/notice-state.json" "$NT/cache/notice-plan"
+ahead_notice="$(notice "$WORK/notice-ahead.json")"
+lacks "an install ahead of the tagged set is not announced" "exapump" "$ahead_notice"
+lacks "nor the other component that overshot" "mcp" "$ahead_notice"
+lacks "and no light line is printed at all" "apply in seconds" "$ahead_notice"
+has "while a component genuinely behind is still announced" \
+    "A critical update is available for nano" "$ahead_notice"
+# The cached plan re-verification carried the same equality-only flaw, which is
+# why the phantom line reappeared on every command instead of clearing itself.
+ahead_cached="$(notice "$WORK/notice-ahead.json")"
+lacks "and a cached plan does not resurrect it" "exapump" "$ahead_cached"
+has "while the cached plan keeps the real one" \
+    "A critical update is available for nano" "$ahead_cached"
 
 # The plan cache: printed every run, computed rarely. Counted by a probe stub that
 # appends a line each time it is asked, which is the only way to tell "said the same

@@ -1417,6 +1417,11 @@ function Get-ExakitNoticeStillBehind {
         }
         $now = Get-ExakitComponentCurrent $name
         if (-not $now -or $now -eq "unknown" -or $now -eq $want) { continue }
+        # "Caught up" is not only "landed on exactly the advertised version" - an
+        # install that overshot it has nothing pending either. Testing equality
+        # alone kept such a component alive as a candidate, so a cached plan went
+        # on announcing an update on every command with nothing able to clear it.
+        if (Test-ExakitVersionNewer -Latest $now -Current $want) { continue }
         $survivors += $name
     }
     return $survivors
@@ -1499,6 +1504,10 @@ function Show-ExakitUpdateNotice {
     # hooked from that dispatcher, but never assume it when the library is used
     # on its own (the installer dot-sources it too).
     if (-not (Get-Command Get-ExakitComponentAvailable -ErrorAction SilentlyContinue)) { return }
+    # Both notice paths now compare versions, and that comparison also lives in
+    # the dispatcher. Named in the same gate so a library-only load returns
+    # quietly rather than throwing into the catch below.
+    if (-not (Get-Command Test-ExakitVersionNewer -ErrorAction SilentlyContinue)) { return }
 
     try {
         if (Test-ExakitNoticePlanFresh) {
@@ -1534,6 +1543,14 @@ function Show-ExakitUpdateNotice {
             $current = Get-ExakitComponentCurrent $actual
             if (-not $current -or $current -eq "unknown" -or $current -eq "not installed") { continue }
             if ($current -eq $available) { continue }
+            # Different is not the same as behind. An install that is PAST the
+            # advertised version has nothing pending: the kit never moves a
+            # component backwards, so `exakit update-check` renders that row as
+            # "none" and `exakit update` says "keeping yours". Announcing an
+            # update here made the three commands contradict each other, and
+            # pointed the user at a command that could not do anything. Skipped
+            # before severity is read, so the row cannot colour the group wording.
+            if (Test-ExakitVersionNewer -Latest $current -Current $available) { continue }
             # Only what the maintainers flagged. A normal bump waits to be asked
             # about - and an advised rollback counts, which is the point of the flag.
             # Every pending update is announced, whatever its severity. Severity

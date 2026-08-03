@@ -2156,6 +2156,16 @@ exakit_notice_after_command() {
         _notice_cur="$(exakit_component_current "$_notice_actual" 2>/dev/null || true)"
         [ -n "$_notice_cur" ] && [ "$_notice_cur" != "unknown" ] || continue
         [ "$_notice_cur" != "$_notice_avail" ] || continue
+        # Different is not the same as behind. An install that is PAST the
+        # advertised version has nothing pending: the kit never moves a component
+        # backwards, so `exakit update-check` renders that row as "none" and
+        # `exakit update` says "keeping yours". Announcing an update here made the
+        # three commands contradict each other, and pointed the user at a command
+        # that could not do anything. Compared in place rather than through
+        # exakit_component_is_ahead, which would re-probe what is already in hand.
+        if exakit_version_newer "$_notice_cur" "$_notice_avail"; then
+            continue
+        fi
         # Every pending update is announced, whatever its severity. Severity still
         # decides the WORDING (a critical bump says so), but no longer whether the
         # user hears about it at all: a routine exapump bump that is never
@@ -2214,6 +2224,13 @@ _exakit_notice_still_behind() {
         fi
         _nsb_now="$(exakit_component_current "$_nsb_name" 2>/dev/null || true)"
         if [ -z "$_nsb_now" ] || [ "$_nsb_now" = "unknown" ] || [ "$_nsb_now" = "$_nsb_want" ]; then
+            continue
+        fi
+        # "Caught up" is not only "landed on exactly the advertised version" — an
+        # install that overshot it has nothing pending either. Testing equality
+        # alone kept such a component alive as a candidate, so a cached plan went
+        # on announcing an update on every command with nothing able to clear it.
+        if exakit_version_newer "$_nsb_now" "$_nsb_want"; then
             continue
         fi
         _nsb_out="${_nsb_out}${_nsb_out:+, }$_nsb_name"
