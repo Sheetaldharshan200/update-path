@@ -709,14 +709,30 @@ class MCPAccessSubsystem:
     ) -> OperationStatus:
         """Status for a configure run that applied at least one client.
 
-        Skipped clients' findings never reach here: they are reported, but a
-        per-client failure must not turn a run that did configure other
+        A skipped client's own findings never reach here: they are reported, but
+        a per-client failure must not turn a run that did configure other
         clients into a blocked one. A skip still costs the run its clean
         SUCCESS, and a genuine validation failure still wins.
+
+        Post-apply validation needs the same treatment, and does not get it for
+        free. It walks the manifest, which still carries the record a skipped
+        client earned on an earlier successful run, so it reports drift for a
+        file this run deliberately refused to touch. Left in the status that
+        turns the second run into failed_recoverable -- CLI exit 1, "MCP
+        configure failed" -- for a run that configured every client it could and
+        correctly declined the one it could not. Those findings stay in the
+        result, because the drift is real and worth showing; they just do not
+        get to decide the status of the clients we did configure.
         """
 
+        skipped_ids = {record["client"] for record in skipped_clients}
+        own_validation = [
+            finding
+            for finding in validation_findings
+            if finding.scope.get("client") not in skipped_ids
+        ]
         status = MCPAccessSubsystem._status_from_findings(
-            list(status_findings) + list(validation_findings)
+            list(status_findings) + own_validation
         )
         if skipped_clients and status == OperationStatus.SUCCESS:
             return OperationStatus.SUCCESS_WITH_WARNINGS
