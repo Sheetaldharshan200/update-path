@@ -2848,6 +2848,76 @@ sys.exit(0 if sys.argv[2] in doc.get("steps_completed", []) else 1)
 PY
 }
 
+# step_artifact_state <step> — prints "present", "missing", or "unknown".
+#
+# The tick in steps_completed records that a step RAN once, not that what it
+# produced is still on disk. A machine turned up with steps_completed:
+# ["launcher"] and no ~/.local/bin/exasol, and every re-run then skipped the
+# launcher step and failed the deployment step that needs it — the one step that
+# could have repaired the install was the one being skipped. begin_step consults
+# this so a completed step can be re-run when its artifact is gone.
+#
+# Three rules hold this function together:
+#
+#   1. "unknown" NEVER overrides the manifest. There is no cheap way to prove a
+#      database deployment exists, and re-running the runtime step on a guess
+#      would stop a working database — far worse than the bug this fixes. A
+#      wrong "missing" is destructive; a wrong "unknown" just leaves today's
+#      behaviour in place. Anything not cheaply provable is "unknown".
+#   2. FILE TESTS ONLY. This runs once per step on every install, so no network,
+#      no PyPI, no GitHub and above all nothing that could wake or probe a
+#      container engine (a starting Docker is why the kit's own probes are
+#      bounded).
+#   3. "present" means what the NEXT step will actually resolve. The launcher
+#      case mirrors personal_cli(), which is what the deployment step calls.
+step_artifact_state() {
+    case "$1" in
+        launcher)
+            # personal_install_launcher deliberately keeps an existing launcher
+            # on PATH that supports the `local` preset instead of installing its
+            # own, and personal_cli() then resolves that one — so a launcher on
+            # PATH is "present" even with no kit-managed binary. command -v is a
+            # PATH lookup, not an execution.
+            if [ -n "${EXAKIT_PERSONAL_BIN:-}" ] && [ -x "$EXAKIT_PERSONAL_BIN" ]; then
+                printf 'present\n'
+            elif command -v exasol >/dev/null 2>&1; then
+                printf 'present\n'
+            elif [ -n "${EXAKIT_PERSONAL_BIN:-}" ]; then
+                printf 'missing\n'
+            else
+                # runtime-personal.sh is not loaded: this platform has no
+                # launcher step, so there is nothing to judge.
+                printf 'unknown\n'
+            fi
+            ;;
+        exakit_helper)
+            if [ -x "$EXAKIT_BIN_DIR/exakit" ]; then
+                printf 'present\n'
+            else
+                printf 'missing\n'
+            fi
+            ;;
+        exapump)
+            # The install records the exact path it resolved. No record means an
+            # older install (or a soft failure) we cannot judge: "unknown".
+            _sas_path="$(manifest_get components.exapump.path 2>/dev/null || true)"
+            if [ -z "$_sas_path" ]; then
+                printf 'unknown\n'
+            elif [ -x "$_sas_path" ]; then
+                printf 'present\n'
+            else
+                printf 'missing\n'
+            fi
+            ;;
+        *)
+            # runtime (a deployed database or container), mcp, pyexasol and the
+            # kit2 asset steps: nothing a file test can settle without risking a
+            # destructive false "missing". See rule 1 above.
+            printf 'unknown\n'
+            ;;
+    esac
+}
+
 # mark_step <name> — records a completed step (idempotent). Completing a
 # step also discards the undo entries registered during it: rollback only
 # ever covers the step that actually failed, never a finished one (a late
@@ -2911,24 +2981,41 @@ rollback_discard() {
     EXAKIT_ROLLBACK_FILE=""
 }
 
-# begin_step <name> <description> — announce a step; skips if already done.
-# Returns 1 when the step can be skipped (caller should honor it).
+# begin_step <name> <description> — announce a step; skips if already done AND
+# what it installed is still there. Returns 1 when the step can be skipped
+# (caller should honor it).
+#
+# A step is skipped only when the manifest tick and the disk agree. When the tick
+# says done but step_artifact_state() proves the artifact is gone, the step is
+# announced and run again — that is what makes "re-running the installer is safe
+# and resumes" (AGENTS.md) true even after something removed an artifact from
+# under a completed install.
 begin_step() {
     EXAKIT_CURRENT_STEP="$1"
     EXAKIT_ACTIVE_LABEL="$2"     # spinner label for run_logged inside this step
+    _bs_rerun=0
     if step_done "$1"; then
-        # Step-level line (a whole step's status, not a nested outcome).
-        printf '\n  %s%s%s %s%s%s %s— already done, skipping%s\n' \
-            "${UI_OK:-}" "${UI_TICK:-[ok]}" "${UI_RESET:-}" \
-            "${UI_BOLD:-}" "$2" "${UI_RESET:-}" "${UI_DIM:-}" "${UI_RESET:-}"
-        _exakit_log_file "OK    $2 — already done, skipping"
-        return 1
+        # "unknown" (and "present") keep the manifest's answer: only a proven
+        # "missing" is allowed to override the tick.
+        if [ "$(step_artifact_state "$1")" = "missing" ]; then
+            _bs_rerun=1
+        else
+            # Step-level line (a whole step's status, not a nested outcome).
+            printf '\n  %s%s%s %s%s%s %s— already done, skipping%s\n' \
+                "${UI_OK:-}" "${UI_TICK:-[ok]}" "${UI_RESET:-}" \
+                "${UI_BOLD:-}" "$2" "${UI_RESET:-}" "${UI_DIM:-}" "${UI_RESET:-}"
+            _exakit_log_file "OK    $2 — already done, skipping"
+            return 1
+        fi
     fi
     # Styled step header: accent arrow + bold title, set off by a blank line.
     printf '\n  %s%s%s %s%s%s\n' \
         "${UI_ACCENT:-}" "${UI_ARROW:->}" "${UI_RESET:-}" \
         "${UI_BOLD:-}" "$2" "${UI_RESET:-}"
     _exakit_log_file "STEP  $2"
+    if [ "$_bs_rerun" -eq 1 ]; then
+        info "Recorded as done, but what it installed is missing — running it again"
+    fi
     return 0
 }
 
