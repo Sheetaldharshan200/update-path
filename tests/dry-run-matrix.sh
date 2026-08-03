@@ -498,6 +498,52 @@ if grep -q 'cmd_whats_new' "$ROOT/setup/exakit" && \
 else
     check "whats_new(both_sides)" "yes" "no"
 fi
+# The short help is the only command list most people ever read: a bare `exakit`,
+# `exakit help` and any unknown command all print it, while the full reference is
+# behind `--all`. Staying current has to be visible there, or the update path
+# exists and nobody finds it. The bash half is run for real; the PowerShell half
+# is a mirrored string array, so it is read.
+short_help="$(EXAKIT_NO_UPDATE_NOTICE=1 bash "$ROOT/setup/exakit" help 2>&1 || true)"
+ps_help_lines=0
+for _hl in "Keeping current:" "  version " "  update-check " "  update "; do
+    grep -qF "\"$_hl" "$ROOT/setup/exakit.ps1" && ps_help_lines=$((ps_help_lines + 1))
+done
+if printf '%s' "$short_help" | grep -q 'Keeping current:' && \
+   printf '%s' "$short_help" | grep -qE '^  version {2,}' && \
+   printf '%s' "$short_help" | grep -qE '^  update-check {2,}' && \
+   printf '%s' "$short_help" | grep -qE '^  update {2,}' && \
+   [ "$ps_help_lines" = 4 ]; then
+    check "help(update_path_listed_both_sides)" "yes" "yes"
+else
+    check "help(update_path_listed_both_sides)" "yes" "no"
+fi
+# `exakit info --json` is the machine-readable surface: the install record, byte for
+# byte, and nothing else on stdout. Two things break that - re-serialising it (the
+# output would be free to disagree with the file), and anything printing alongside
+# it. The update notice is the standing risk there, which is why the json branch
+# stays outside `_with_notice` and sets $script:JsonOutput on the PowerShell side.
+# Missing record: a non-zero exit and an empty stdout, never a half-document.
+_ij="$(mktemp -d)"
+mkdir -p "$_ij/have" "$_ij/none"
+printf '{\n  "kit": {\n    "version": "0.2.0"\n  }\n}\n' > "$_ij/have/manifest.json"
+_ij_out="$(EXAKIT_HOME="$_ij/have" bash "$ROOT/setup/exakit" info --json 2>"$_ij/err")"
+_ij_alias="$(EXAKIT_HOME="$_ij/have" bash "$ROOT/setup/exakit" info -j 2>/dev/null)"
+_ij_none="$(EXAKIT_HOME="$_ij/none" bash "$ROOT/setup/exakit" info --json 2>/dev/null)"; _ij_rc=$?
+if [ "$_ij_out" = "$(cat "$_ij/have/manifest.json")" ] && \
+   [ "$_ij_alias" = "$_ij_out" ] && \
+   [ ! -s "$_ij/err" ] && \
+   [ -z "$_ij_none" ] && [ "$_ij_rc" != 0 ] && \
+   grep -q 'cmd_info_json' "$ROOT/setup/exakit" && \
+   ! grep -q '_with_notice cmd_info_json' "$ROOT/setup/exakit" && \
+   grep -q 'Invoke-CmdInfoJson' "$ROOT/setup/exakit.ps1" && \
+   grep -q 'JsonOutput = \$true' "$ROOT/setup/exakit.ps1" && \
+   grep -q 'if (-not \$script:JsonOutput -and' "$ROOT/setup/exakit.ps1" && \
+   grep -qF 'Get-Content -Raw -Encoding UTF8 -Path $script:ManifestPath' "$ROOT/setup/exakit.ps1"; then
+    check "info(json_is_the_record_verbatim)" "yes" "yes"
+else
+    check "info(json_is_the_record_verbatim)" "yes" "no"
+fi
+rm -rf "$_ij"
 # Bounded engine probes, both sides. `docker info` does not return while Docker
 # Desktop is starting, so every read-path probe has to be able to give up. The
 # PowerShell half must use .Arguments and not .ArgumentList, which exists only on
