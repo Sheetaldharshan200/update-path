@@ -123,9 +123,17 @@ ui_link() {
 # line carrying colour (CSI) or hyperlink (OSC 8) codes still lines up inside a
 # panel box. Strips CSI `ESC [ … m` and OSC 8 `ESC ] 8 ; ; … (BEL|ESC\)`.
 _ui_visible_len() {
+    # One -e per terminator, never a BRE alternation. `\|` is a GNU sed
+    # extension: BSD sed (macOS, the platform this kit targets first) does not
+    # support it, so the OSC 8 branch silently matched nothing there and this
+    # returned the RAW byte length. A two-link line measured 124 instead of 37,
+    # which made it the widest line in ui_panel_end's first pass -- drawing the
+    # box to 124 columns -- and left its own padding at ~0 in the second, so its
+    # right border closed early. Every hyperlinked panel line was affected.
     _uvl_clean="$(printf '%s' "$1" | LC_ALL=C sed \
         -e 's/'"$(printf '\033')"'\[[0-9;]*m//g' \
-        -e 's/'"$(printf '\033')"']8;;[^'"$(printf '\007\033')"']*\('"$(printf '\007')"'\|'"$(printf '\033')"'\\\)//g')"
+        -e 's/'"$(printf '\033')"']8;;[^'"$(printf '\007\033')"']*'"$(printf '\007')"'//g' \
+        -e 's/'"$(printf '\033')"']8;;[^'"$(printf '\007\033')"']*'"$(printf '\033')"'\\//g')"
     printf '%s' "${#_uvl_clean}"
 }
 
