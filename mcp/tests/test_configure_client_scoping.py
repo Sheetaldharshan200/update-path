@@ -153,6 +153,47 @@ class PerClientScopingTests(unittest.TestCase):
         codes = {finding.code for finding in result.findings}
         self.assertIn("invalid_client_config", codes)
 
+    def test_second_run_after_a_client_breaks_is_not_reported_as_failed(self) -> None:
+        """The field sequence: the client breaks AFTER it was configured once.
+
+        Every other test here starts from a fresh sandbox, where the broken
+        client has no manifest record. That hides this: post-apply validation
+        walks the manifest, finds the record the client earned on run 1, and
+        reports drift for the file run 2 deliberately refused to touch. Counted
+        into the status it made a correct partial success come out as
+        failed_recoverable, so the CLI exited 1 and said "MCP configure failed"
+        about a run that did the right thing.
+        """
+
+        healthy = ["claude_desktop", "cursor"]
+        clients = healthy + ["vscode_copilot"]
+
+        # Run 1: everything works, and every client earns a manifest record.
+        with self._mock_connectivity():
+            first = self._subsystem().execute(self._request(clients))
+        self.assertEqual(first.status, OperationStatus.SUCCESS)
+        self.assertEqual(self._clients_carrying_entry(clients), set(clients))
+
+        # Then something outside the kit truncates one config file.
+        self.paths["vscode_copilot"].write_text(EMPTY_FILE, encoding="utf-8")
+
+        # Run 2: the healthy clients are reconfigured, the broken one is skipped.
+        with self._mock_connectivity():
+            second = self._subsystem().execute(self._request(clients))
+
+        self.assertEqual(second.status, OperationStatus.SUCCESS_WITH_WARNINGS)
+        self.assertEqual(self._skipped_ids(second), {"vscode_copilot"})
+        self.assertEqual(self._clients_carrying_entry(healthy), set(healthy))
+        self.assertEqual(self.paths["vscode_copilot"].read_text(encoding="utf-8"), EMPTY_FILE)
+
+        # The drift is still REPORTED — it is real, and hiding it would be worse
+        # than mis-ranking it. It just does not decide the status any more.
+        scoped = [
+            finding for finding in second.findings
+            if finding.scope.get("client") == "vscode_copilot"
+        ]
+        self.assertTrue(scoped, "the skipped client's findings must still be reported")
+
     def test_healthy_clients_are_identical_whatever_the_broken_position(self) -> None:
         """Bug B: order-dependence.
 
