@@ -2495,6 +2495,23 @@ exakit_update_self() {
 exakit_update_component() {
     _component="$1"
     shift || true
+    # Defence in depth, and the last word on the subject. exakit_update settles
+    # this before it gets here, but the updaters below hold no version opinion of
+    # their own -- they install whatever they are handed, older included -- so a
+    # caller that forgets to ask is one edit away from a downgrade. That is how
+    # the runtime offer came to ask permission to stop a database and replace
+    # 2.1.0 with 2.0.0.
+    #
+    # There is no downgrade in this kit: not on request, not by naming a
+    # component explicitly, not with an env override, and not as a
+    # maintainer-advised rollback. Lowering a version in versions.json is a way
+    # to describe a tested set, never a lever to drag installs backwards -- to
+    # withdraw a bad release, publish a higher version.
+    _uc_actual="$(exakit_update_actual_target "$_component" 2>/dev/null || printf '%s\n' "$_component")"
+    if exakit_component_is_ahead "$_uc_actual"; then
+        ok "$_uc_actual is newer than the tested version -- keeping yours"
+        return 0
+    fi
     case "$_component" in
         exakit) exakit_update_self ;;
         exapump)

@@ -897,6 +897,13 @@ function Invoke-CmdUpdateCheck {
 # setup/lib/common.sh.
 function Invoke-ExakitRuntimeComponentUpdate {
     param([Parameter(Mandatory)][string]$Component, [string]$Advertised)
+    # Defence in depth, mirroring exakit_update_component. The updaters below
+    # install whatever version they are handed, so the refusal lives here too and
+    # not only in the caller: there is no downgrade in this kit, by any route.
+    if (Test-ExakitComponentAhead $Component) {
+        Ok "$Component is newer than the tested version - keeping yours"
+        return
+    }
     switch ($Component) {
         "runtime" {
             if ((Get-RuntimeType) -eq "nano" -and $Advertised) { Update-Nano -LatestTag $Advertised }
