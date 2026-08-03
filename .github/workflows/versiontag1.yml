@@ -1,0 +1,421 @@
+name: versiontag1
+
+# Makes this repo advertise one fixed, pinned version set, on demand.
+#
+#   Set A: personal 2.0.0, nano 2026.2.0-nano.2, exapump 0.11.0, mcp 1.9.0,
+#   pyexasol 2.2.1.
+#
+# WHY IT EXISTS
+#   The update path is tested by installing the kit while the repo advertises
+#   one set, then making the repo advertise a different one, so the installed
+#   kit sees an update and can be walked through taking it. By hand that is a
+#   four-file edit plus five downloaded digests, every single time. versiontag1
+#   and versiontag2 are the two ends of that loop: install with versiontag1
+#   advertised, run versiontag2, watch the installed kit notice.
+#
+# IT MAY MOVE A VERSION DOWNWARD, ON PURPOSE
+#   versions-bump.yml never lowers a version, because the kit cannot move a
+#   component backwards. This workflow deliberately can: flipping back down to
+#   the lower set is exactly how the next test run is set up. That makes it a
+#   test-harness tool and not a release tool -- what it produces is a repo
+#   state to test against, which is why 'pull-request' is the default mode.
+#
+# WHAT IT TOUCHES
+#   The same things a hand-written flip touches, and nothing else: versions.json
+#   (the five component versions, exapump's five sha256 digests, severity,
+#   updated) and the coupled fallback constants in setup/lib/common.sh,
+#   setup/lib/exakit-common.ps1 and mcp/runtime/exakit.py. kit.version is never
+#   touched -- the kit scripts are not what is being flipped.
+#
+# MODES
+#   pull-request (default)  Rewrite on one reusable branch and open, or update,
+#                           one pull request -- reviewed by versions.yml just
+#                           like a hand-written flip.
+#   commit                  Push the rewrite straight at target_branch. Needs a
+#                           branch that accepts a push from GITHUB_TOKEN; a
+#                           protected main will refuse, and that refusal is the
+#                           protection working.
+#
+# THE TAG INPUT
+#   Optional, and honoured in 'commit' mode only: in 'pull-request' mode the new
+#   commit sits on an unmerged branch, so a tag there would name a commit that
+#   may never land. It is a lightweight tag, force-moved, so one name can be
+#   re-pointed at every later flip. When the repo already advertises the set
+#   there is no new commit, and the tag is moved to the commit that already
+#   advertises it.
+#
+# IT IS IDEMPOTENT
+#   If the repo already advertises this set exactly -- versions, digests and
+#   severity -- nothing is committed and nothing is pushed. Re-running is free,
+#   and a run that finds nothing to do says so and succeeds.
+#
+# RUNNING IT
+#   Actions > versiontag1 > Run workflow. Nothing gates it: no repository
+#   variable, no schedule. GitHub only lists a workflow_dispatch workflow once
+#   the file is on the default branch, so it appears in the Actions tab after
+#   this file is merged, not while it is still on a branch.
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'pull-request opens or updates a PR; commit pushes straight at target_branch'
+        type: choice
+        default: pull-request
+        options:
+          - pull-request
+          - commit
+      target_branch:
+        description: 'The branch to rewrite: the pull request base, or the push target'
+        type: string
+        default: main
+      tag:
+        description: 'Optional lightweight tag to create or move at the resulting commit (commit mode only)'
+        type: string
+        default: ''
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  advertise:
+    name: advertise the pinned version set
+    runs-on: ubuntu-latest
+    env:
+      # The pinned set. This block is the only thing that differs between
+      # versiontag1 and versiontag2 -- everything below it is byte-identical in
+      # both files, so a diff between the two shows the set and nothing else.
+      SET_LABEL: 'Set A'
+      SET_PERSONAL: '2.0.0'
+      SET_NANO: '2026.2.0-nano.2'
+      SET_EXAPUMP: '0.11.0'
+      SET_MCP: '1.9.0'
+      SET_PYEXASOL: '2.2.1'
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.target_branch }}
+
+      - name: rewrite versions.json and the coupled constants
+        id: apply
+        env:
+          MODE: ${{ inputs.mode }}
+          TARGET_BRANCH: ${{ inputs.target_branch }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          import pathlib
+          import re
+          import subprocess
+          import sys
+          import time
+          import urllib.error
+          import urllib.request
+          from datetime import datetime, timezone
+
+          MANIFEST = "versions.json"
+          # The manifest's own order, so the summary reads like the file.
+          ORDER = ("personal", "nano", "exapump", "mcp", "pyexasol")
+
+          WANTED = {
+              "personal": os.environ["SET_PERSONAL"],
+              "nano": os.environ["SET_NANO"],
+              "exapump": os.environ["SET_EXAPUMP"],
+              "mcp": os.environ["SET_MCP"],
+              "pyexasol": os.environ["SET_PYEXASOL"],
+          }
+          LABEL = os.environ["SET_LABEL"]
+          MODE = os.environ["MODE"]
+          TARGET = os.environ["TARGET_BRANCH"]
+          TAG = os.environ.get("TAG", "").strip()
+          WORKFLOW = os.environ.get("GITHUB_WORKFLOW", "versiontag")
+
+          # The five platforms versions.yml's schema job insists on.
+          PLATFORMS = ("linux-aarch64", "linux-x86_64", "macos-aarch64",
+                       "macos-x86_64", "windows-x86_64")
+
+          def download(url):
+              """Fetch url as bytes, or (None, reason). Retries the transient
+              failures only: a 404 is an answer, not a flake."""
+              request = urllib.request.Request(url, headers={
+                  "User-Agent": "exakit-versiontag",
+              })
+              last = "unknown error"
+              for attempt in range(3):
+                  try:
+                      with urllib.request.urlopen(request, timeout=60) as response:
+                          return response.read(), None
+                  except urllib.error.HTTPError as error:
+                      if error.code in (403, 429) or error.code >= 500:
+                          last = "HTTP %s" % error.code
+                          time.sleep(2 * (attempt + 1))
+                          continue
+                      return None, "HTTP %s" % error.code
+                  except Exception as error:                      # network, DNS, timeout
+                      last = str(error)
+                      time.sleep(2 * (attempt + 1))
+              return None, last
+
+          original = pathlib.Path(MANIFEST).read_text()
+          doc = json.loads(original)
+          components = doc.get("components") or {}
+
+          absent = [key for key in ORDER if not (components.get(key) or {}).get("version")]
+          if absent:
+              print("versions.json advertises no version for %s -- the manifest shape "
+                    "changed and this workflow needs updating" % ", ".join(absent),
+                    file=sys.stderr)
+              raise SystemExit(1)
+          before = dict((key, components[key]["version"]) for key in ORDER)
+
+          # --- exapump: the digests belong to the version -----------------------
+          # Each sha256 is the hash of one release asset of one exapump version,
+          # so flipping 0.11.0 <-> 0.11.2 while keeping the old digests would
+          # leave install refusing the binary it just downloaded (or, with
+          # EXAKIT_ALLOW_UNVERIFIED_EXAPUMP=1, waving a wrong one through). The
+          # assets are the ground truth, so download them and hash them, every
+          # run -- there is no version to fall back to here, so a digest that
+          # cannot be resolved stops the run instead of shipping a stale one.
+          exapump = components["exapump"]
+          repo = exapump.get("repo", "exasol-labs/exapump")
+          digests = {}
+          for platform in PLATFORMS:
+              asset = "exapump-%s-%s" % (WANTED["exapump"], platform)
+              if platform.startswith("windows-"):
+                  asset += ".exe"
+              url = "https://github.com/%s/releases/download/v%s/%s" % (
+                  repo, WANTED["exapump"], asset)
+              payload, why = download(url)
+              if payload is None:
+                  print("could not download %s (%s), so the sha256 for %s cannot be "
+                        "resolved -- refusing to write a stale or wrong digest"
+                        % (url, why, platform), file=sys.stderr)
+                  raise SystemExit(1)
+              digests[platform] = hashlib.sha256(payload).hexdigest()
+              print("  %s  %s" % (digests[platform], asset))
+          digests_before = exapump.get("sha256") or {}
+
+          # --- apply the set to the manifest ------------------------------------
+          for key in ORDER:
+              block = components[key]
+              if block["version"] != WANTED[key]:
+                  block["version"] = WANTED[key]
+                  # A note written about another version does not describe this one.
+                  block.pop("note", None)
+              # Urgency is a human judgement, and a test-harness flip is never one.
+              block["severity"] = "normal"
+          exapump["sha256"] = digests
+
+          # --- the constants that must move with the manifest -------------------
+          # A version lives in more than one place. mcp/runtime/exakit.py's
+          # DEFAULT_MCP_VERSION is asserted equal to components.mcp.version by
+          # versions.yml, so a manifest-only flip of mcp would fail its own CI.
+          # The *_FALLBACK constants are the last tier of resolution -- what a
+          # machine with no network, no cache and no kit copy installs -- and they
+          # are in lockstep with the manifest today. Every component is retuned,
+          # not only the ones that moved, so a constant that has drifted out of
+          # step is pulled back into it.
+          COUPLED = {
+              "personal": [
+                  ("setup/lib/common.sh", "bash", "EXAKIT_PERSONAL_VERSION_FALLBACK"),
+              ],
+              "nano": [
+                  ("setup/lib/common.sh", "bash", "EXAKIT_NANO_TAG_FALLBACK"),
+                  ("setup/lib/exakit-common.ps1", "pwsh", "NanoTagFallback"),
+              ],
+              "exapump": [
+                  ("setup/lib/common.sh", "bash", "EXAKIT_EXAPUMP_VERSION_FALLBACK"),
+                  ("setup/lib/exakit-common.ps1", "pwsh", "ExapumpVersionFallback"),
+              ],
+              "mcp": [
+                  ("setup/lib/common.sh", "bash", "EXAKIT_MCP_VERSION_FALLBACK"),
+                  ("setup/lib/exakit-common.ps1", "pwsh", "McpVersionFallback"),
+                  ("mcp/runtime/exakit.py", "python", "DEFAULT_MCP_VERSION"),
+              ],
+              "pyexasol": [
+                  ("setup/lib/common.sh", "bash", "EXAKIT_PYEXASOL_VERSION_FALLBACK"),
+                  ("setup/lib/exakit-common.ps1", "pwsh", "PyexasolVersionFallback"),
+              ],
+          }
+          touched = set()
+
+          def retune(path, dialect, name, version):
+              """Point one constant at version. Loud on anything unexpected: a
+              renamed constant must stop the run, not produce a half-done flip."""
+              if dialect == "bash":
+                  pattern = re.compile(r'(%s="\$\{%s:-)([^}"]*)(\}")' % (name, name))
+              elif dialect == "pwsh":
+                  pattern = re.compile(
+                      r'(\$script:%s = if \(\$env:[A-Z_]+\) \{ \$env:[A-Z_]+ \} else \{ ")([^"]*)(" \})'
+                      % name)
+              else:
+                  pattern = re.compile(r'(^%s = ")([^"]*)(")' % name, re.MULTILINE)
+              text = pathlib.Path(path).read_text()
+              found = pattern.findall(text)
+              if len(found) != 1:
+                  print("expected exactly one %s in %s, found %d"
+                        % (name, path, len(found)), file=sys.stderr)
+                  raise SystemExit(1)
+              if found[0][1] == version:
+                  return
+              pathlib.Path(path).write_text(
+                  pattern.sub(lambda m: m.group(1) + version + m.group(3), text, count=1))
+              touched.add(path)
+
+          for key in ORDER:
+              for path, dialect, name in COUPLED[key]:
+                  retune(path, dialect, name, WANTED[key])
+
+          # --- write it back, canonically ---------------------------------------
+          # 'updated' is set only when something else actually changed: stamping
+          # today's date on an otherwise identical file is what would turn a
+          # re-run into a commit, and re-running has to be free.
+          rendered = json.dumps(doc, indent=2) + "\n"
+          manifest_dirty = rendered != original
+          if manifest_dirty:
+              doc["updated"] = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+              rendered = json.dumps(doc, indent=2) + "\n"
+              # The no-Python reader in setup/lib/common.sh depends on this exact
+              # shape, and versions.yml diffs it against json.tool. Prove the file
+              # is canonical here rather than discovering it in review.
+              canonical = subprocess.run(
+                  [sys.executable, "-m", "json.tool", "--indent", "2"],
+                  input=rendered, capture_output=True, text=True, check=True).stdout
+              if canonical != rendered:
+                  print("refusing to write a non-canonical versions.json", file=sys.stderr)
+                  raise SystemExit(1)
+              pathlib.Path(MANIFEST).write_text(rendered)
+
+          changed = manifest_dirty or bool(touched)
+          files = sorted(touched | (set([MANIFEST]) if manifest_dirty else set()))
+
+          # --- the run summary, which is also the commit body and the PR body ----
+          summary = []
+          summary.append("### %s: %s" % (WORKFLOW, LABEL))
+          summary.append("")
+          summary.append("Mode `%s`, target branch `%s`." % (MODE, TARGET))
+          summary.append("")
+          summary.append("| Component | Was | Now |")
+          summary.append("|---|---|---|")
+          for key in ORDER:
+              if before[key] == WANTED[key]:
+                  summary.append("| `%s` | %s | %s (unchanged) |"
+                                 % (key, before[key], WANTED[key]))
+              else:
+                  summary.append("| `%s` | %s | **%s** |" % (key, before[key], WANTED[key]))
+          summary.append("")
+          if digests_before != digests:
+              summary.append("The five exapump `sha256` digests were recomputed from the "
+                             "downloaded v%s release assets." % WANTED["exapump"])
+          else:
+              summary.append("The five exapump `sha256` digests already matched the "
+                             "downloaded v%s release assets." % WANTED["exapump"])
+
+          if changed:
+              summary.append("")
+              summary.append("Files changed:")
+              summary.append("")
+              for path in files:
+                  summary.append("- `%s`" % path)
+              summary.append("")
+              summary.append("`kit.version` is untouched, which is correct: this flips "
+                             "what the repo advertises, not the kit itself.")
+          else:
+              summary.append("")
+              summary.append("**Already advertised, nothing to do.** versions.json and the "
+                             "coupled constants name this set exactly, so there is no "
+                             "commit, no push and no pull request.")
+
+          if TAG and MODE != "commit":
+              summary.append("")
+              summary.append("Tag `%s` was **not** created. In `pull-request` mode the "
+                             "commit sits on a branch that is not merged yet, so a tag "
+                             "there would point at a commit that may never land -- re-run "
+                             "in `commit` mode to tag." % TAG)
+
+          text = "\n".join(summary) + "\n"
+          pathlib.Path("versiontag-summary.md").write_text(text)
+          print(text)
+
+          if os.environ.get("GITHUB_STEP_SUMMARY"):
+              with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as handle:
+                  handle.write(text)
+          if os.environ.get("GITHUB_OUTPUT"):
+              moved = ", ".join("%s %s" % (key, WANTED[key]) for key in ORDER
+                                if before[key] != WANTED[key])
+              if not moved:
+                  moved = "digests and constants only"
+              with open(os.environ["GITHUB_OUTPUT"], "a") as handle:
+                  handle.write("changed=%s\n" % ("true" if changed else "false"))
+                  handle.write("title=Advertise %s: %s\n" % (LABEL, moved))
+          PY
+
+      - name: push the rewrite at the target branch
+        if: inputs.mode == 'commit' && (steps.apply.outputs.changed == 'true' || inputs.tag != '')
+        env:
+          CHANGED: ${{ steps.apply.outputs.changed }}
+          TARGET_BRANCH: ${{ inputs.target_branch }}
+          TAG: ${{ inputs.tag }}
+          TITLE: ${{ steps.apply.outputs.title }}
+        run: |
+          set -eu
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if [ "$CHANGED" = "true" ]; then
+            # Everything the flip touched, never the summary (a build artifact).
+            git add versions.json setup/lib/common.sh setup/lib/exakit-common.ps1 \
+                    mcp/runtime/exakit.py
+            git commit -m "$TITLE" -m "$(cat versiontag-summary.md)" \
+                -- versions.json setup/lib/common.sh setup/lib/exakit-common.ps1 \
+                   mcp/runtime/exakit.py
+            git push origin "HEAD:refs/heads/$TARGET_BRANCH"
+            printf '\nCommitted `%s` to `%s`.\n' "$(git rev-parse HEAD)" "$TARGET_BRANCH" \
+                >> "$GITHUB_STEP_SUMMARY"
+          fi
+          if [ -n "$TAG" ]; then
+            # Lightweight and force-moved: one name, re-pointed at whichever
+            # commit advertises this set right now.
+            git tag -f "$TAG"
+            git push --force origin "refs/tags/$TAG"
+            printf '\nTag `%s` points at `%s`.\n' "$TAG" "$(git rev-parse HEAD)" \
+                >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: open or update the pull request
+        if: inputs.mode == 'pull-request' && steps.apply.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BRANCH: chore/${{ github.workflow }}
+          TARGET_BRANCH: ${{ inputs.target_branch }}
+          TITLE: ${{ steps.apply.outputs.title }}
+        run: |
+          set -eu
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "$BRANCH"
+          git add versions.json setup/lib/common.sh setup/lib/exakit-common.ps1 \
+                  mcp/runtime/exakit.py
+          git commit -m "$TITLE" -m "$(cat versiontag-summary.md)" \
+              -- versions.json setup/lib/common.sh setup/lib/exakit-common.ps1 \
+                 mcp/runtime/exakit.py
+          # One reusable branch, force-pushed: a later run replaces the proposal
+          # instead of leaving a trail of stale pull requests behind it.
+          git push --force origin "$BRANCH"
+          existing="$(gh pr list --head "$BRANCH" --base "$TARGET_BRANCH" --state open \
+              --json number --jq '.[0].number' || true)"
+          if [ -n "$existing" ]; then
+            gh pr edit "$existing" --title "$TITLE" --body-file versiontag-summary.md
+            url="$(gh pr view "$existing" --json url --jq .url)"
+          else
+            url="$(gh pr create --base "$TARGET_BRANCH" --head "$BRANCH" \
+                --title "$TITLE" --body-file versiontag-summary.md)"
+          fi
+          printf '\nPull request: %s\n' "$url" >> "$GITHUB_STEP_SUMMARY"
