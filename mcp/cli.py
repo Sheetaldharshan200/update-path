@@ -235,6 +235,7 @@ def _record_client_setup(
     clients: list[str],
     payload: dict,
 ) -> None:
+    details = payload.get("details") or {}
     repository.record_client_setup(
         {
             "completed": True,
@@ -243,6 +244,13 @@ def _record_client_setup(
             "status": payload.get("status"),
             "updated_at": utc_now(),
             "artifacts": [artifact["path"] for artifact in payload.get("artifacts", [])],
+            # A client can be skipped on its own (unparseable config file, or
+            # unsupported platform) while the rest are configured, so the
+            # record has to say which clients were actually written.
+            "configured_clients": details.get("configured_clients", []),
+            "skipped_clients": [
+                item.get("client") for item in details.get("skipped_clients", [])
+            ],
         }
     )
 
