@@ -6,7 +6,7 @@
   },
   "components": {
     "personal": {
-      "version": "2.0.0",
+      "version": "2.1.0",
       "severity": "normal"
     },
     "nano": {
@@ -15,24 +15,24 @@
       "severity": "normal"
     },
     "exapump": {
-      "version": "0.11.0",
+      "version": "0.11.3",
       "repo": "exasol-labs/exapump",
       "severity": "normal",
       "sha256": {
-        "linux-aarch64": "4227a42901a4a45e87a125d823e838206b6e3aaf8f19af149492834f62e7775f",
-        "linux-x86_64": "0ee731f52ef75dd7a81eef3c452c2edbe1d5d400404862fe72dfad201b28111b",
-        "macos-aarch64": "7f6e77e47bf9272e457cb252258a59ef18564d3651b2dd9695ad1073dca799fd",
-        "macos-x86_64": "080c4049197985d6e35991808e4115198b6d12ad98c9f4e009630dc43e80e420",
-        "windows-x86_64": "646d9b178047215c949060bfa5857983f1c1b6fa2e0c3f772bcdb3ea62c1e12f"
+        "linux-aarch64": "2d2caf1476e8f66c083429437b1a29d5186adaa2adf115924e873814d72b7ca5",
+        "linux-x86_64": "b1f7c1c876e48a780b83188f998e4b266a3473cadd81d2a5d3ac8dcaa941d92a",
+        "macos-aarch64": "56fe3afcb84b2e4ea36fdd0e65e819887770b7088c55783ad6e89df9bed298c5",
+        "macos-x86_64": "57912026aa3b591f02a8efda48abe1f410dec3391677ab7c07965bd9091db1fe",
+        "windows-x86_64": "7a1ab709539c8c071eb8e9803e3aa8dfcb7f79228ce87d920d11e641421ce135"
       }
     },
     "mcp": {
-      "version": "1.9.0",
+      "version": "2.0.0",
       "package": "exasol-mcp-server",
       "severity": "normal"
     },
     "pyexasol": {
-      "version": "2.2.1",
+      "version": "2.3.0",
       "package": "pyexasol",
       "severity": "normal"
     }
