@@ -444,6 +444,21 @@ Behavior:
 - must snapshot before destructive mutation
 - must validate after apply unless explicitly disabled by policy
 - must fail fast if the request omits a transport-compatible `server_definition`
+- a per-client failure is scoped to that client: request- and policy-level
+  preflight failures still stop the whole operation, but one client whose own
+  config file cannot be parsed, or which is unsupported on this platform, is
+  skipped while every other requested client is configured
+
+Per-client outcome:
+
+- every skip decision is taken from the findings of that client alone, so the
+  result never depends on the order the clients are processed in
+- `details.configured_clients` and `details.skipped_clients` report the split;
+  each skip entry carries `client`, `display_name`, `reason_code`, `reason` and
+  `recommended_action`
+- status: nothing rendered -> `blocked`; some rendered and some skipped ->
+  `success_with_warnings` with the rendered clients applied; all rendered ->
+  `success` (or the status the post-apply validation returns)
 
 Success conditions:
 

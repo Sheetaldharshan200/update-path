@@ -154,7 +154,7 @@ class MCPAccessSubsystem:
         validator: ValidatorService,
     ) -> OperationResult:
         runtime_paths.ensure()
-        findings = self._security.preflight(request)
+        findings = list(self._security.preflight(request))
         blocking = [finding for finding in findings if finding.blocking]
         if blocking:
             return OperationResult(
@@ -175,31 +175,21 @@ class MCPAccessSubsystem:
         changes: list[ChangeRecord] = []
         artifacts: list[ArtifactReference] = []
         snapshot_paths: list[Path] = []
+        skipped_clients: list[dict[str, str]] = []
+        # `findings` is the reporting list: everything, including per-client
+        # complaints. `status_findings` drives the run status and deliberately
+        # excludes the complaints of clients we skipped — one client's broken
+        # or unsupported config says nothing about the others.
+        status_findings: list[Finding] = list(findings)
 
         for adapter in adapters:
-            location = adapter.locate(self._environment)
-            if not location.available or location.path is None:
-                findings.append(
-                    Finding(
-                        code="client_not_supported",
-                        severity=Severity.ERROR,
-                        message=f"{adapter.display_name()} is not supported on this platform.",
-                        scope={"client": adapter.adapter_id()},
-                        evidence=location.evidence,
-                        recommended_action="Choose a supported client or use a supported platform.",
-                        blocking=True,
-                    )
-                )
+            rendered, config_path, client_findings = self._render_for_client(adapter, request)
+            findings.extend(client_findings)
+            if rendered is None or config_path is None:
+                skipped_clients.append(self._skip_record(adapter, client_findings))
                 continue
-            inspection = adapter.inspect(location.path, request.server_definition.name)
-            findings.extend(inspection.findings)
-            if any(finding.blocking for finding in inspection.findings):
-                continue
-            rendered = adapter.render(request.server_definition, inspection)
-            findings.extend(adapter.validate_render(rendered))
-            if any(finding.blocking for finding in findings):
-                continue
-            path_exists = location.path.exists()
+            status_findings.extend(client_findings)
+            path_exists = config_path.exists()
             change_kind = ChangeKind.UPDATE if path_exists else ChangeKind.CREATE
             rendered_item = self._build_artifact(adapter, rendered, request)
             rendered_items.append((adapter, rendered, rendered_item, path_exists))
@@ -214,17 +204,35 @@ class MCPAccessSubsystem:
                 )
             )
             if path_exists:
-                snapshot_paths.append(location.path)
+                snapshot_paths.append(config_path)
 
-        if any(finding.blocking for finding in findings):
+        configured_adapters = [adapter for adapter, _, _, _ in rendered_items]
+        details = {
+            "configured_clients": [adapter.adapter_id() for adapter in configured_adapters],
+            "skipped_clients": skipped_clients,
+        }
+        # Activation instructions only for the clients we actually rendered:
+        # telling someone to restart a client we skipped is noise.
+        next_actions = [
+            action
+            for adapter in configured_adapters
+            for action in adapter.activation_instructions()
+        ]
+
+        if not rendered_items:
+            # Nothing could be rendered for any requested client: the honest
+            # answer is that the whole operation did nothing.
             return OperationResult(
                 request_id=request.request_id,
                 operation=request.operation,
                 status=OperationStatus.BLOCKED,
-                summary="Configuration was blocked by existing client state.",
+                summary=self._configure_summary(
+                    "Configuration was blocked by existing client state.", skipped_clients
+                ),
                 findings=findings,
                 changes=changes,
                 artifacts=artifacts,
+                details=details,
             )
 
         if request.dry_run:
@@ -232,11 +240,15 @@ class MCPAccessSubsystem:
                 request_id=request.request_id,
                 operation=request.operation,
                 status=OperationStatus.NO_CHANGE,
-                summary=f"Planned configuration changes for {len(rendered_items)} client(s).",
+                summary=self._configure_summary(
+                    f"Planned configuration changes for {len(rendered_items)} client(s).",
+                    skipped_clients,
+                ),
                 findings=findings,
                 changes=changes,
                 artifacts=artifacts,
-                next_actions=[action for adapter in adapters for action in adapter.activation_instructions()],
+                next_actions=next_actions,
+                details=details,
             )
 
         snapshot_reference = None
@@ -259,14 +271,18 @@ class MCPAccessSubsystem:
             request_id=request.request_id,
             operation=request.operation,
             status=OperationStatus.SUCCESS_WITH_WARNINGS
-            if findings
+            if (status_findings or skipped_clients)
             else OperationStatus.SUCCESS,
-            summary=f"Configured {len(rendered_items)} client(s) for Exasol MCP access.",
+            summary=self._configure_summary(
+                f"Configured {len(rendered_items)} client(s) for Exasol MCP access.",
+                skipped_clients,
+            ),
             findings=findings,
             changes=changes,
             artifacts=artifacts,
             backup_reference=snapshot_reference,
-            next_actions=[action for adapter in adapters for action in adapter.activation_instructions()],
+            next_actions=next_actions,
+            details=details,
         )
         if request.validate_after_apply:
             validation = self._run_validation(
@@ -278,7 +294,9 @@ class MCPAccessSubsystem:
             )
             result.findings.extend(validation.findings)
             result.verification_evidence.extend(validation.verification_evidence)
-            result.status = self._combine_status(result.findings, validation.findings)
+            result.status = self._configure_status(
+                status_findings, validation.findings, skipped_clients
+            )
         return result
 
     def _validate(
@@ -609,6 +627,100 @@ class MCPAccessSubsystem:
             artifacts=active_artifacts,
             backup_reference=latest_snapshot,
         )
+
+    def _render_for_client(
+        self, adapter: ClientAdapter, request: OperationRequest
+    ) -> tuple[RenderResult | None, Path | None, list[Finding]]:
+        """Locate, inspect and render ONE client.
+
+        Every skip decision here is taken from this adapter's own findings and
+        nothing else. Deciding from a shared, cross-client list made the
+        outcome depend on the order the clients happened to be processed in:
+        one client with an unparseable config file (a 0-byte ``mcp.json`` left
+        behind by a VS Code update is the case seen in the field) silenced
+        every client that came after it.
+
+        Returns ``(rendered, config_path, findings)``; ``rendered`` is ``None``
+        when this client has to be skipped.
+        """
+
+        findings: list[Finding] = []
+        location = adapter.locate(self._environment)
+        if not location.available or location.path is None:
+            # Not blocking, and not an error for the run: "this client is not
+            # supported on this platform" is a fact about this one client. As a
+            # blocking (or even ERROR) finding it dragged every other client's
+            # configuration down with it.
+            findings.append(
+                Finding(
+                    code="client_not_supported",
+                    severity=Severity.WARNING,
+                    message=f"{adapter.display_name()} is not supported on this platform (skipped).",
+                    scope={"client": adapter.adapter_id()},
+                    evidence=location.evidence,
+                    recommended_action="Choose a supported client or use a supported platform.",
+                )
+            )
+            return None, None, findings
+        if request.server_definition is None:  # pragma: no cover - guarded by the caller
+            raise BlockingOperationError(
+                "missing_server_definition",
+                "Server definition is required for configure.",
+            )
+        inspection = adapter.inspect(location.path, request.server_definition.name)
+        findings.extend(inspection.findings)
+        if any(finding.blocking for finding in findings):
+            return None, location.path, findings
+        rendered = adapter.render(request.server_definition, inspection)
+        findings.extend(adapter.validate_render(rendered))
+        if any(finding.blocking for finding in findings):
+            return None, location.path, findings
+        return rendered, location.path, findings
+
+    @staticmethod
+    def _skip_record(adapter: ClientAdapter, client_findings: list[Finding]) -> dict[str, str]:
+        """Describe one skipped client so callers can report it per client."""
+
+        reason = next(
+            (finding for finding in client_findings if finding.blocking),
+            client_findings[0] if client_findings else None,
+        )
+        return {
+            "client": adapter.adapter_id(),
+            "display_name": adapter.display_name(),
+            "reason_code": reason.code if reason else "unknown",
+            "reason": reason.message if reason else "Client was skipped.",
+            "recommended_action": (reason.recommended_action or "") if reason else "",
+        }
+
+    @staticmethod
+    def _configure_summary(sentence: str, skipped_clients: list[dict[str, str]]) -> str:
+        summary = sentence
+        if skipped_clients:
+            names = ", ".join(item["display_name"] for item in skipped_clients)
+            summary += f" Skipped {len(skipped_clients)} client(s): {names}."
+        return summary
+
+    @staticmethod
+    def _configure_status(
+        status_findings: list[Finding],
+        validation_findings: list[Finding],
+        skipped_clients: list[dict[str, str]],
+    ) -> OperationStatus:
+        """Status for a configure run that applied at least one client.
+
+        Skipped clients' findings never reach here: they are reported, but a
+        per-client failure must not turn a run that did configure other
+        clients into a blocked one. A skip still costs the run its clean
+        SUCCESS, and a genuine validation failure still wins.
+        """
+
+        status = MCPAccessSubsystem._status_from_findings(
+            list(status_findings) + list(validation_findings)
+        )
+        if skipped_clients and status == OperationStatus.SUCCESS:
+            return OperationStatus.SUCCESS_WITH_WARNINGS
+        return status
 
     def _resolve_target_adapters(self, request: OperationRequest) -> list[ClientAdapter]:
         if request.target_clients:
