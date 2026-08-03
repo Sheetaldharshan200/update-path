@@ -1160,7 +1160,16 @@ echo "after-command notice (severity-gated, once a day, stderr only):"
 NT="$WORK/notice-home"
 mkdir -p "$NT/kit/mcp" "$NT/cache" "$NT/bin"
 cp "$REAL" "$NT/kit/versions.json"
-printf '#!/bin/sh\necho "exapump 0.11.2"\n' > "$NT/bin/exapump"
+# What this install is ON, and what the fixture document advertises. Deliberately
+# ancient rather than one step below whatever versions.json says today: the checks
+# below need an install that is behind the SHIPPED document, and a version set
+# lowered by the maintainers (a withdrawn release, a test set) would otherwise
+# catch up with the fixture and quietly delete the premise instead of failing.
+NOTICE_INSTALLED_EXAPUMP="0.0.1"
+NOTICE_INSTALLED_MCP="0.0.1"
+NOTICE_ADVERTISED_EXAPUMP="0.12.0"
+NOTICE_ADVERTISED_MCP="1.11.0"
+printf '#!/bin/sh\necho "exapump %s"\n' "$NOTICE_INSTALLED_EXAPUMP" > "$NT/bin/exapump"
 chmod +x "$NT/bin/exapump"
 cat > "$NT/manifest.json" <<EOF
 {
@@ -1175,29 +1184,30 @@ cat > "$NT/manifest.json" <<EOF
   },
   "components": {
     "exapump": {
-      "version": "0.11.2",
+      "version": "$NOTICE_INSTALLED_EXAPUMP",
       "path": "$NT/bin/exapump"
     },
     "mcp_server": {
-      "version": "1.10.1"
+      "version": "$NOTICE_INSTALLED_MCP"
     }
   },
   "steps_completed": []
 }
 EOF
 # Advertise one recommended light bump and one critical heavy bump.
-python3 - "$REAL" "$WORK/notice-versions.json" <<'PY'
+python3 - "$REAL" "$WORK/notice-versions.json" \
+    "$NOTICE_ADVERTISED_EXAPUMP" "$NOTICE_ADVERTISED_MCP" <<'PY'
 import collections, json, sys
 with open(sys.argv[1]) as handle:
     doc = json.load(handle, object_pairs_hook=collections.OrderedDict)
-doc["components"]["exapump"]["version"] = "0.12.0"
+doc["components"]["exapump"]["version"] = sys.argv[3]
 doc["components"]["exapump"]["severity"] = "recommended"
 doc["components"]["nano"]["version"] = "2026.3.0-nano.1"
 doc["components"]["nano"]["severity"] = "critical"
-# A genuine normal-severity bump: the recorded install is on 1.10.1, so this is
+# A genuine normal-severity bump: the recorded install is far behind this, so it is
 # pending. Without the version change there was nothing to announce, and an
 # assertion about it would pass or fail for the wrong reason.
-doc["components"]["mcp"]["version"] = "1.11.0"
+doc["components"]["mcp"]["version"] = sys.argv[4]
 doc["components"]["mcp"]["severity"] = "normal"
 with open(sys.argv[2], "w") as handle:
     json.dump(doc, handle, indent=2)
@@ -1301,7 +1311,8 @@ lacks "or critical" "A critical" "$only_normal"
 # Counted at the exapump stub itself rather than by overriding a reader: the test
 # then cannot pass because it guessed the wrong internal function name.
 rm -f "$NT/cache/notice-plan" "$NT/cache/notice-state.json" "$WORK/probe-count"
-printf '#!/bin/sh\nprintf x >> "%s"\necho "exapump 0.11.2"\n' "$WORK/probe-count" > "$NT/bin/exapump"
+printf '#!/bin/sh\nprintf x >> "%s"\necho "exapump %s"\n' "$WORK/probe-count" \
+    "$NOTICE_INSTALLED_EXAPUMP" > "$NT/bin/exapump"
 chmod +x "$NT/bin/exapump"
 probe_count() { [ -f "$WORK/probe-count" ] && wc -c < "$WORK/probe-count" | tr -d ' ' || printf 0; }
 cached_first="$(notice "$WORK/notice-versions.json")"
@@ -1325,13 +1336,15 @@ plan_detail="$(sed -n 's/^light=//p' "$NT/cache/notice-plan" | head -1)"
 has "the plan records the advertised version with each candidate" "exapump:" "$plan_detail"
 # The stub catches up. Nothing else changes -- not the manifest, not the document --
 # which is precisely the blind spot a signature alone cannot see.
-printf '#!/bin/sh\nprintf x >> "%s"\necho "exapump 0.12.0"\n' "$WORK/probe-count" > "$NT/bin/exapump"
+printf '#!/bin/sh\nprintf x >> "%s"\necho "exapump %s"\n' "$WORK/probe-count" \
+    "$NOTICE_ADVERTISED_EXAPUMP" > "$NT/bin/exapump"
 chmod +x "$NT/bin/exapump"
 caught_up="$(notice "$WORK/notice-versions.json")"
 lacks "a candidate that caught up is dropped" "for exapump" "$caught_up"
 has "and the ones still behind are kept" "mcp" "$caught_up"
 # Back to behind, so what follows sees the same fixture as before.
-printf '#!/bin/sh\nprintf x >> "%s"\necho "exapump 0.11.2"\n' "$WORK/probe-count" > "$NT/bin/exapump"
+printf '#!/bin/sh\nprintf x >> "%s"\necho "exapump %s"\n' "$WORK/probe-count" \
+    "$NOTICE_INSTALLED_EXAPUMP" > "$NT/bin/exapump"
 chmod +x "$NT/bin/exapump"
 
 # update-check computes the truth the long way, so it retires the plan: nothing it
