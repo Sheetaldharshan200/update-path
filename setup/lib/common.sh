@@ -2101,6 +2101,13 @@ for artifact in doc.get("artifacts", []):
     client = LABELS.get(artifact.get("client"), artifact.get("client", "unknown"))
     lines.append(f"File:     {client} -> {artifact.get('path', 'unknown')}")
 
+# A client whose own config file could not be used is skipped on its own; the
+# other clients are still configured, so name it here instead of leaving a
+# silent gap in the File: list.
+for skipped in doc.get("details", {}).get("skipped_clients", []):
+    client = LABELS.get(skipped.get("client"), skipped.get("client", "unknown"))
+    lines.append(f"Skipped:  {client} -> {skipped.get('reason', 'unknown reason')}")
+
 findings = doc.get("findings", [])
 if findings:
     lines.append(" ")
@@ -2196,6 +2203,16 @@ print(f"  Status:    {doc.get('status', 'unknown')}")
 print(f"  Summary:   {doc.get('summary', 'No summary returned')}")
 if doc.get("backup_reference"):
     print(f"  Snapshot:  {doc.get('backup_reference')}")
+
+# Clients left alone because their own config file could not be used. The rest
+# of the selection is still configured, so report this per client.
+skipped_clients = doc.get("details", {}).get("skipped_clients", [])
+if skipped_clients:
+    print("")
+    print("  Skipped clients:")
+    for skipped in skipped_clients:
+        name = LABELS.get(skipped.get("client"), skipped.get("client", "unknown"))
+        print(f"  - {name}: {skipped.get('reason', 'unknown reason')}")
 
 # Doctor carries per-client discovery plus the managed-artifact list: render
 # a state map in the same vocabulary as the setup menu, so "not installed"
