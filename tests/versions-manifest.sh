@@ -535,6 +535,14 @@ cat > "$UC/kit/versions.json" <<'EOF'
 }
 EOF
 
+# row <table> <first column> — one row of a rendered table, colour escapes
+# removed and runs of spaces squeezed to one, so a whole row can be compared
+# exactly. The Severity cell is coloured when the suite is run on a terminal
+# (UI_FANCY), and an exact comparison must hold either way.
+row() {
+    printf '%s\n' "$1" | grep -m1 "^$2 " | sed "s/$(printf '\033')\[[0-9;]*m//g" | tr -s ' '
+}
+
 # has <label> <needle> <haystack>
 has() {
     case "$3" in
@@ -556,7 +564,11 @@ uc_table="$( EXAKIT_HOME="$UC"
     _EXAKIT_VERSIONS_DOC=""; _EXAKIT_VERSIONS_SOURCE=""
     exakit_print_update_check all 2>&1 )"
 
-has "the column is Available, not Latest" "Available" "$uc_table"
+# The header line itself, squeezed: the middle column is Tagged. Matching the
+# bare word would also match the "Available versions from ..." source line below
+# it, so the whole header is pinned instead — including its order.
+check "the column is Tagged, not Available or Latest" \
+    "Component Installed Tagged Severity Action" "$(row "$uc_table" Component)"
 lacks "the old Latest header is gone" "Latest" "$uc_table"
 has "there is a Severity column" "Severity" "$uc_table"
 has "the kit row compares its own version" "exakit     0.2.0" "$uc_table"
@@ -569,8 +581,14 @@ has "installed stays installed (nano)" "nano       2026.2.0-nano.2" "$uc_table"
 has "installed stays installed (mcp)" "mcp        1.10.1" "$uc_table"
 lacks "no row is stuck on inspect" "inspect" "$uc_table"
 has "a runtime change is marked heavy" "exakit update runtime (heavy)" "$uc_table"
-has "an older advertised version is flagged" "0.12.0 (older)" "$uc_table"
-has "and the row offers nothing" "none — yours is newer than tested" "$uc_table"
+# The whole ahead row, squeezed: the tagged version is shown bare (the column
+# name says what the number is, so the old "(older)" suffix is gone) and the
+# action is exactly "none". It used to read "none — yours is newer than tested",
+# which apologised for the install and made the tested set sound abandoned.
+check "an install ahead of the tagged set says only none" \
+    "exapump 0.13.0 0.12.0 recommended none" "$(row "$uc_table" exapump)"
+lacks "no version cell is annotated (older)" "(older)" "$uc_table"
+lacks "and nothing apologises for the install" "newer than tested" "$uc_table"
 lacks "no downgrade is offered" "exakit update exapump" "$uc_table"
 lacks "and no confirmation is promised" "advisory rollback" "$uc_table"
 has "a critical severity is shown" "critical" "$uc_table"
@@ -922,7 +940,7 @@ personal_row="$( EXAKIT_HOME="$UC"
 has "a runtime this machine does not run is listed" "personal   not installed" "$personal_row"
 lacks "but never offered for installation" "exakit update personal" "$personal_row"
 
-echo "the Available column matches the policy in force:"
+echo "the Tagged column matches the policy in force:"
 pinned_row="$( EXAKIT_HOME="$UC"
     EXAKIT_MANIFEST="$UC/manifest.json"
     EXAKIT_VERSIONS_CACHE="$UC/cache/versions.json"
@@ -940,7 +958,7 @@ override_row="$( EXAKIT_HOME="$UC"
     _EXAKIT_VERSIONS_DOC=""; _EXAKIT_VERSIONS_SOURCE=""
     EXAKIT_EXAPUMP_VERSION=9.9.9
     exakit_print_update_check exapump 2>&1 )"
-has "an override reaches the Available column" "9.9.9" "$override_row"
+has "an override reaches the Tagged column" "9.9.9" "$override_row"
 has "and is credited as an override" "EXAKIT_* environment overrides" "$override_row"
 lacks "the maintainers' note is withheld from it" "mis-detects CSV headers" "$override_row"
 
@@ -1706,11 +1724,13 @@ PS_CACHE_PY
         EXAKIT_VERSIONS_CACHE="$UC/cache/versions.json" \
         EXAKIT_VERSIONS_URL="http://offline.invalid/versions.json" \
         pwsh -NoProfile -File "$ROOT/setup/exakit.ps1" update-check all 2>&1 | tr -d '\r')"
-    has "powershell: Available column" "Available" "$ps_table"
+    check "powershell: Tagged column" \
+        "Component Installed Tagged Severity Action" "$(row "$ps_table" Component)"
     has "powershell: kit row is comparable" "exakit     0.2.0             0.2.0" "$ps_table"
     has "powershell: installed stays installed" "exapump    0.13.0" "$ps_table"
     has "powershell: heavy runtime row" "exakit update runtime (heavy)" "$ps_table"
-    has "powershell: older advertised version" "0.12.0 (older)" "$ps_table"
+    check "powershell: older advertised version" \
+        "exapump 0.13.0 0.12.0 recommended none" "$(row "$ps_table" exapump)"
     has "powershell: critical severity" "critical" "$ps_table"
     has "powershell: maintainer note" "0.13.0 mis-detects CSV headers" "$ps_table"
     has "powershell: repair action for a missing component" "exakit update pyexasol" "$ps_table"
@@ -1818,7 +1838,7 @@ PSEOF
 else
     check "powershell(versions_manifest)" "skipped" "skipped"
     check "powershell(non_https_refused)" "skipped" "skipped"
-    for _skipped in "Available column" "kit row is comparable" "installed stays installed" \
+    for _skipped in "Tagged column" "kit row is comparable" "installed stays installed" \
                     "heavy runtime row" "older advertised version" "critical severity" \
                     "maintainer note" "repair action for a missing component" \
                     "an absent runtime is listed" "but never offered for installation" \

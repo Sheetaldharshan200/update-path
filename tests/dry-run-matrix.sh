@@ -182,8 +182,8 @@ manifest_get() {
 }
 # The MCP version is read LIVE, so without this the fixture reads whatever MCP this
 # machine happens to have installed. The day a real install went past the advertised
-# 1.11.0, that turned the mcp row into \"yours is newer than tested\" and quietly cost
-# this check one of its five update commands.
+# 1.11.0, that turned the mcp row into an installed-is-newer row with an action of
+# \"none\" and quietly cost this check one of its five update commands.
 exakit_installed_mcp_version() { printf '%s\n' 1.10.1 ; }
 exakit_component_available() {
   case \"\$1\" in

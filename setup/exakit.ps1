@@ -581,7 +581,7 @@ function Get-ExakitComponentEnvOverride {
 }
 
 # Get-ExakitComponentAvailable - the version this kit would install NOW, under the
-# policy in force. That is the promise the Available column makes, so each policy
+# policy in force. That is the promise the Tagged column makes, so each policy
 # answers from the same place its install path would:
 #   env override  the version the user asked for
 #   manifest      versions.json
@@ -701,7 +701,7 @@ function Test-ExakitComponentAhead {
     return (Test-ExakitVersionNewer -Latest $current -Current $available)
 }
 
-# Where the Available column came from, so nobody has to guess whether a stale
+# Where the Tagged column came from, so nobody has to guess whether a stale
 # answer is being shown.
 function Write-ExakitVersionsSourceLine {
     if ($script:VersionPolicy -eq "latest") {
@@ -804,7 +804,7 @@ function Invoke-CmdUpdateCheck {
     Write-Host ""
     Write-Host "  Component update check"
     Write-Host "  ----------------------"
-    "{0,-10} {1,-17} {2,-17} {3,-11} {4}" -f "Component", "Installed", "Available", "Severity", "Action" | Write-Host
+    "{0,-10} {1,-17} {2,-17} {3,-11} {4}" -f "Component", "Installed", "Tagged", "Severity", "Action" | Write-Host
     $updates = 0
     $heavyPending = $false
     foreach ($component in $targets) {
@@ -813,7 +813,7 @@ function Invoke-CmdUpdateCheck {
         if (-not $current) { $current = "not installed" }
         $available = Get-ExakitComponentAvailable $actual
         if (-not $available) { $available = "unknown" }
-        $availableCell = $available
+        $taggedCell = $available
         $rowNote = ""
         $action = "current"
         if (-not (Test-ExakitComponentSupported $actual)) {
@@ -837,8 +837,11 @@ function Invoke-CmdUpdateCheck {
             # component themselves keeps what they chose. Counts toward neither the
             # "apply them in one go" hint nor the heavy deferral, because no command
             # belongs in this row at all.
-            $availableCell = "$available (older)"
-            $action = "none - yours is newer than tested"
+            #
+            # The row says only "none". The Tagged column already shows the lower
+            # number next to the installed one, so the reader can see why; adding an
+            # apology for it made the kit sound untested rather than current.
+            $action = "none"
         } elseif ($current -ne $available) {
             $minKit = Get-ExakitComponentMinKit $actual
             if ($minKit -and -not (Test-ExakitMinKitSatisfied -Required $minKit)) {
@@ -856,7 +859,7 @@ function Invoke-CmdUpdateCheck {
                 }
             }
         }
-        "{0,-10} {1,-17} {2,-17} {3} {4}" -f $actual, $current, $availableCell,
+        "{0,-10} {1,-17} {2,-17} {3} {4}" -f $actual, $current, $taggedCell,
             (Get-ExakitSeverityCell (Get-ExakitComponentSeverity $actual)), $action | Write-Host
         if ($rowNote) { Write-Host ("    " + $rowNote) }
         $note = Get-ExakitComponentNote $actual

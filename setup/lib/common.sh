@@ -1538,7 +1538,7 @@ _exakit_component_env_override() {
 }
 
 # exakit_component_available <component> — the version this kit would install
-# NOW, under the policy in force. That is the promise the Available column makes,
+# NOW, under the policy in force. That is the promise the Tagged column makes,
 # so each policy answers from the same place its install path would:
 #   env override  the version the user asked for
 #   manifest      versions.json
@@ -1885,7 +1885,7 @@ exakit_component_is_ahead() {
     exakit_version_newer "$_cia_current" "$_cia_available"
 }
 
-# exakit_print_versions_source_line — where the Available column came from, so
+# exakit_print_versions_source_line — where the Tagged column came from, so
 # nobody has to guess whether a stale answer is being shown.
 exakit_print_versions_source_line() {
     case "${EXAKIT_VERSION_POLICY:-manifest}" in
@@ -2300,7 +2300,7 @@ exakit_print_update_check() {
     fi
     printf '\n  Component update check\n'
     printf '  ----------------------\n'
-    printf '%-10s %-17s %-17s %-11s %s\n' "Component" "Installed" "Available" "Severity" "Action"
+    printf '%-10s %-17s %-17s %-11s %s\n' "Component" "Installed" "Tagged" "Severity" "Action"
     _updates=0
     _heavy_pending=0
     for _component in $_targets; do
@@ -2334,8 +2334,11 @@ exakit_print_update_check() {
             # upgraded a component themselves keeps what they chose. Counts
             # toward neither the "apply them in one go" hint nor the heavy
             # deferral, because no command belongs in this row at all.
-            _row_display="$_row_available (older)"
-            _action="none — yours is newer than tested"
+            #
+            # The row says only "none". The Tagged column already shows the lower
+            # number next to the installed one, so the reader can see why; adding
+            # an apology for it made the kit sound untested rather than current.
+            _action="none"
         elif [ "$_row_installed" != "$_row_available" ]; then
             _row_min_kit="$(exakit_component_min_kit "$_row_component" 2>/dev/null || true)"
             if [ -n "$_row_min_kit" ] && ! exakit_min_kit_satisfied "$_row_min_kit"; then
