@@ -1605,15 +1605,18 @@ self_update() (
 
 make_kit_tarball "$WORK/kit-0.3.0.tgz" 0.3.0
 PS_KIT_SRC="$MK_LAST_SRC"       # reused by the PowerShell self-update check below
+# The recorded source is the kit repository the library defaults to, not a literal:
+# which repository that is can be retargeted (a fork, for testing), and none of
+# these checks are about its name.
 check "a newer kit replaces the copy and records itself" \
-    "rc=0 version=0.3.0 source=exasol-labs/exasol-personal-local-starterkit@main kit-present replaced cli-installed backup-kept" \
+    "rc=0 version=0.3.0 source=$EXAKIT_KIT_REPO@main kit-present replaced cli-installed backup-kept" \
     "$(self_update "$WORK/kit-0.3.0.tgz" 0.3.0)"
 
 # The raw endpoint can be minutes ahead of the branch archive: record what landed.
 make_kit_tarball "$WORK/kit-0.2.5.tgz" 0.2.5
 lag_state="$(self_update "$WORK/kit-0.2.5.tgz" 0.3.0)"
 check "a lagging archive records the version that landed" \
-    "rc=0 version=0.2.5 source=exasol-labs/exasol-personal-local-starterkit@main kit-present replaced cli-installed backup-kept" \
+    "rc=0 version=0.2.5 source=$EXAKIT_KIT_REPO@main kit-present replaced cli-installed backup-kept" \
     "$lag_state"
 has "and says the manifest was ahead" "not the advertised 0.3.0" "$(cat "$WORK/su-out.txt")"
 
@@ -1756,8 +1759,10 @@ PY
         if (Get-ChildItem -Path $env:EXAKIT_HOME -Filter "kit.backup-*" -ErrorAction SilentlyContinue) { $out += "backup-kept" } else { $out += "NO-BACKUP" }
         Write-Output ($out -join " ")
     ' 2>&1 | tail -1 | tr -d '\r')"
+    # Nothing above sets EXAKIT_KIT_REPO for pwsh, so the slug in this line is the
+    # PowerShell default measured against the bash one: the two must not drift.
     check "powershell(self_update)" \
-        "0.3.0 exasol-labs/exasol-personal-local-starterkit@main kit-present replaced shim-written backup-kept" \
+        "0.3.0 $EXAKIT_KIT_REPO@main kit-present replaced shim-written backup-kept" \
         "$ps_self"
     # The notice is mirrored code and its wording carries the cost of the update, so
     # compare the real thing against the same fixture the bash lines came from.
