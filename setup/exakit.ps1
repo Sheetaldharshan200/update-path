@@ -970,8 +970,15 @@ function Invoke-CmdUpdate {
                     New-McpUpdateSnapshot | Out-Null
                     $script:McpVersion = $available
                     Install-Mcp
+                    # $current above came from Get-ExakitComponentCurrent, i.e. the pin
+                    # in the AI client configs - never the manifest record. Install-Mcp
+                    # writes that record before the configs are refreshed (the renderer
+                    # reads it to build the pin), so the record can say the update
+                    # landed while every client still launches the old version. The
+                    # refresh below is what actually moves them; mcp_update in
+                    # setup/lib/mcp.sh keeps the same order.
+                    Update-McpClientPins | Out-Null
                     Test-McpServer
-                    Warn2 "Run exakit mcp-setup to refresh AI client configs with the new MCP version."
                     Set-ExakitManifestValue "desired.mcp" $script:McpVersion
                 }
             }

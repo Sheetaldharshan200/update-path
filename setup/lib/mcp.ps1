@@ -963,6 +963,70 @@ function New-McpUpdateSnapshot {
     return ""
 }
 
+# Get-McpManagedClients - the client ids that already carry a managed MCP entry.
+# Empty when nothing is connected or the status operation is unavailable, which
+# callers treat as "nothing to refresh". Twin of mcp_managed_clients in
+# setup/lib/mcp.sh.
+function Get-McpManagedClients {
+    $resultJson = Invoke-McpOperationCli -Operation "status" -Clients @(
+        "claude_desktop", "claude_code", "cursor", "codex",
+        "vscode_copilot", "gemini_cli", "opencode", "continue")
+    if (-not $resultJson) { return @() }
+    try {
+        $doc = $resultJson | ConvertFrom-Json
+        $clients = @()
+        foreach ($artifact in @($doc.artifacts)) {
+            if ($artifact.client -and ($clients -notcontains $artifact.client)) { $clients += $artifact.client }
+        }
+        return $clients
+    } catch {
+        return @()
+    }
+}
+
+# Update-McpClientPins - re-render the managed entry in the clients that are
+# already connected, so the version they launch is the one this update installed.
+# Without it an update moved nothing a client can see: only the manifest record
+# changed, and a guard that trusted that record would skip the next attempt.
+#
+# It has to be the configure operation (what `exakit mcp-setup` runs). `repair`
+# gates on a hash comparison against the hash recorded at the last write, so a
+# config that is intact but pinned to an older version reads as consistent and
+# repair answers no_change (mcp/service.py). Only configure re-renders
+# unconditionally.
+#
+# Scoped to already-managed clients on purpose: configure would happily create a
+# config for a client the user never chose to connect. Twin of
+# mcp_refresh_client_pins in setup/lib/mcp.sh.
+function Update-McpClientPins {
+    $clients = Get-McpManagedClients
+    if (@($clients).Count -eq 0) {
+        Info "No AI client is connected yet - connect one any time with: exakit mcp-setup"
+        return $true
+    }
+    Info "Refreshing AI client configs to $($script:McpPackage)@$($script:McpVersion)"
+    $resultJson = Invoke-McpSetupCli -Clients $clients
+    if (-not $resultJson) {
+        Warn2 "Could not refresh the AI client configs - run exakit mcp-setup to finish the update."
+        return $false
+    }
+    Show-McpSetupSummary $resultJson
+    # Confirm from the configs, not from the record: Install-Mcp already wrote the
+    # record, so only the live pin can say whether the clients actually moved.
+    # The reader lives in setup/exakit.ps1, which is not dot-sourced by the
+    # installer entry point - skip the confirmation there rather than failing.
+    $pin = ""
+    if (Get-Command Get-ExakitInstalledMcpVersion -ErrorAction SilentlyContinue) {
+        $pin = Get-ExakitInstalledMcpVersion
+    }
+    if ($pin -and $pin -ne $script:McpVersion) {
+        Warn2 "An AI client is still pinned to $($script:McpPackage)@$pin - see exakit mcp-doctor."
+        return $false
+    }
+    Ok "AI client configs now launch $($script:McpPackage)@$($script:McpVersion)"
+    return $true
+}
+
 # Request-ExakitMcpSetupOffer - connect the user's AI client(s) during
 # install. A required step: the client checkbox menu handles the choice
 # (Claude + Codex preselected), and non-interactive installs keep those

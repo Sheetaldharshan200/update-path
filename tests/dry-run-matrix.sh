@@ -618,6 +618,20 @@ if grep -q 'mcp_update_snapshot' "$ROOT/setup/lib/mcp.sh" && \
 else
     check "mcp_update(snapshot)" "yes" "no"
 fi
+# The MCP update must judge itself by the pin in the AI client configs — what uvx
+# will actually launch, and what update-check reports as Installed — and it must be
+# the thing that rewrites those configs. A guard that read
+# components.mcp_server.version instead answered "already current" for a version no
+# client was running. Both sides carry the same two halves.
+if grep -q 'exakit_component_current mcp' "$ROOT/setup/lib/mcp.sh" && \
+   grep -q 'mcp_refresh_client_pins' "$ROOT/setup/lib/mcp.sh" && \
+   grep -q 'Update-McpClientPins' "$ROOT/setup/lib/mcp.ps1" && \
+   grep -q 'Update-McpClientPins' "$ROOT/setup/exakit.ps1" && \
+   ! grep -q 'Run exakit mcp-setup to refresh AI client configs' "$ROOT/setup/exakit.ps1"; then
+    check "mcp_update(live_pin_guard)" "yes" "yes"
+else
+    check "mcp_update(live_pin_guard)" "yes" "no"
+fi
 
 echo
 echo "passed: $PASS, failed: $FAIL"

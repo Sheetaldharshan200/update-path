@@ -817,6 +817,89 @@ check "mcp: no configured client keeps the record" "1.10.1" \
 check "mcp: no mcp module at all keeps the record" "1.10.1" \
     "$(mcp_read 'unset -f exakit_run_mcp_operation_cli')"
 
+echo "the MCP update compares against the client pin, not the record:"
+# The record only says what a previous run WROTE DOWN, and it is written before the
+# client configs are refreshed — so it can name a version no client is launching.
+# update-check already reports the live pin; the updater has to agree with it, or it
+# announces "mcp 1.10.1 -> 2.0.0" from the pin and then declines the work it just
+# announced because the record already says 2.0.0.
+DIV="$WORK/divergent-home"
+mkdir -p "$DIV/mcp" "$DIV/kit/mcp" "$DIV/cache"
+cp "$REAL" "$DIV/kit/versions.json"
+printf '{"mcpServers":{"exasol":{"command":"uvx","args":["exasol-mcp-server@1.10.1"]}}}\n' \
+    > "$DIV/mcp/client.json"
+cat > "$DIV/manifest.json" <<EOF
+{
+  "manifest_version": 1,
+  "kit_level": 1,
+  "runtime": {
+    "type": "nano",
+    "image": "docker.io/exasol/nano:2026.2.0-nano.2"
+  },
+  "components": {
+    "mcp_server": {
+      "package": "exasol-mcp-server",
+      "version": "2.0.0"
+    }
+  },
+  "steps_completed": []
+}
+EOF
+# mcp_update itself runs for real. Only the seams are stubbed: the advertised
+# version, the client-config listing, the config rewrite, and the three steps that
+# would touch the machine (uvx prime, snapshot, stdio handshake). The stubbed
+# rewrite moves the pin in the fixture config exactly as the real configure
+# operation does, so the assertions below read the file, not a promise.
+mcp_update_run() (
+    EXAKIT_HOME="$DIV"
+    EXAKIT_MANIFEST="$DIV/manifest.json"
+    # shellcheck source=/dev/null
+    . "$ROOT/setup/lib/mcp.sh"
+    exakit_component_available() { printf '%s\n' "$ADVERTISED"; }
+    exakit_run_mcp_operation_cli() {
+        printf '{"artifacts":[{"path":"%s","client":"claude_code"}]}\n' \
+            "$DIV/mcp/client.json" > "$3"
+    }
+    exakit_run_mcp_setup_cli() {
+        printf 'REFRESHED %s\n' "$1"
+        printf '{"mcpServers":{"exasol":{"command":"uvx","args":["exasol-mcp-server@%s"]}}}\n' \
+            "$EXAKIT_MCP_VERSION" > "$DIV/mcp/client.json"
+        printf '{"status":"success","selected_clients":["claude_code"],"artifacts":[]}\n' > "$2"
+    }
+    exakit_print_mcp_setup_summary() { :; }
+    mcp_update_snapshot() { :; }
+    mcp_install() {
+        printf 'PRIMED %s\n' "$EXAKIT_MCP_VERSION"
+        manifest_set components.mcp_server.version "$EXAKIT_MCP_VERSION"
+    }
+    mcp_validate() { :; }
+    eval "${1:-}"
+    mcp_update 2>&1
+)
+div_pin() { grep -o 'exasol-mcp-server@[0-9.]*' "$DIV/mcp/client.json" | cut -d@ -f2; }
+div_record() ( EXAKIT_MANIFEST="$DIV/manifest.json"; manifest_get components.mcp_server.version )
+
+divergent="$(ADVERTISED=2.0.0 mcp_update_run)"
+lacks "a record that already names the target is not proof" "already current" "$divergent"
+has "the update runs anyway" "PRIMED 2.0.0" "$divergent"
+has "and the client configs are the thing it rewrites" "REFRESHED claude_code" "$divergent"
+check "the pin the next client launch would use has moved" "2.0.0" "$(div_pin)"
+
+# Idempotent for the real case: the configs now agree with the advertised version,
+# so a second run must do nothing at all rather than re-prime and re-render.
+current="$(ADVERTISED=2.0.0 mcp_update_run)"
+has "a genuinely current install skips cleanly" "already current (2.0.0)" "$current"
+lacks "and nothing is reinstalled" "PRIMED" "$current"
+lacks "and no client config is touched" "REFRESHED" "$current"
+
+# The other direction of the same divergence: the configs are current and the record
+# lags. Nothing to install, but the record is what the renderer reads to pin the NEXT
+# client the user connects, so it is reconciled instead of left lying.
+reconciled="$(ADVERTISED=2.0.0 mcp_update_run 'manifest_set components.mcp_server.version 1.9.0')"
+has "a lagging record is reconciled, not left lying" "Reconciling the recorded MCP version" "$reconciled"
+has "and the skip is still clean" "already current (2.0.0)" "$reconciled"
+check "the record now matches the configs" "2.0.0" "$(div_record)"
+
 echo "exakit version names both what is on the machine and what the kit installed:"
 # Its own fixture on purpose: the cases above delete stubs to test absence, and this
 # one needs them present. One runtime key only (a real manifest has version OR image).
