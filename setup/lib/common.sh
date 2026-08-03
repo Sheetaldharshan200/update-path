@@ -2786,6 +2786,18 @@ exakit_update() {
             warn "No advertised version for $_upd_actual — skipping it. Details: exakit update-check"
             continue
         fi
+        # Never backwards, and this has to be settled BEFORE the heavy branch.
+        # That branch gates on "$_cur" != "$_avail" and then continues, so it used
+        # to reach the runtime offer with the installed version AHEAD of the
+        # tested one and ask to stop the database for a downgrade -- while
+        # `exakit update-check` rendered the same row as "none" and every light
+        # component said "keeping yours". Different is not behind. Asked once
+        # here, for every component, so no later branch can reach an update path
+        # by skipping the question.
+        if exakit_component_is_ahead "$_upd_actual"; then
+            ok "$_upd_actual ${_cur:-unknown} is newer than the tested $_avail — keeping yours"
+            continue
+        fi
         # A blanket update stops the database only for an answer it was given: on a
         # terminal it asks, with a flag or the env var it was already told, and with
         # neither it defers exactly as it always did. See
@@ -2813,13 +2825,6 @@ exakit_update() {
             warn "$_upd_actual $_avail needs kit >= $_upd_min_kit — update the kit first: exakit update exakit"
             [ "$_target" = "all" ] && continue
             die "Refusing to install $_upd_actual $_avail on kit $(exakit_component_current exakit 2>/dev/null || printf unknown)."
-        fi
-        # Never backwards. Skipping is the whole behaviour: no prompt, no override,
-        # and an explicit `exakit update exapump` says so and exits clean rather
-        # than failing, because there is nothing wrong with being ahead.
-        if exakit_component_is_ahead "$_upd_actual"; then
-            ok "$_upd_actual ${_cur:-unknown} is newer than the tested $_avail — keeping yours"
-            continue
         fi
         if [ -n "$_avail" ]; then
             info "$_upd_actual ${_cur:-not installed} -> $_avail"
