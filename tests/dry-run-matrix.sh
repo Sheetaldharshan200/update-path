@@ -335,6 +335,146 @@ else
     check "mcp_update(snapshot)" "yes" "no"
 fi
 
+echo "step re-verification before skipping:"
+# A manifest saying steps_completed: ["launcher"] with no launcher on disk made
+# every re-run skip step 1 and then fail step 2 (which needs the launcher), for
+# ever: the one step that could repair the install was the one being skipped.
+# begin_step now skips only when the tick AND the disk agree, and an artifact it
+# cannot prove is gone ("unknown") must never override the tick — re-running the
+# runtime step on a guess would stop a working database.
+#
+# _sv_state <home> <step> <extra-shell> — step_artifact_state's verdict.
+# _sv_step  <home> <step> <extra-shell> — what begin_step decides:
+#   "skip"  begin_step returned 1 (caller skips the step)
+#   "rerun" begin_step returned 0 and said why (recorded done, artifact gone)
+#   "run"   begin_step returned 0 with no re-run notice (never recorded done)
+_sv_state() {
+    bash -c "
+set -u
+EXAKIT_HOME='$1'
+EXAKIT_BIN_DIR='$1/bin'
+. '$ROOT/setup/lib/common.sh'
+$3
+step_artifact_state '$2'
+" 2>/dev/null
+}
+_sv_step() {
+    bash -c "
+set -u
+EXAKIT_HOME='$1'
+EXAKIT_BIN_DIR='$1/bin'
+. '$ROOT/setup/lib/common.sh'
+$3
+if begin_step '$2' 'Step 1/1  probe' > '$1/begin.out' 2>&1; then
+    if grep -q 'what it installed is missing' '$1/begin.out'; then
+        printf rerun
+    else
+        printf run
+    fi
+else
+    printf skip
+fi
+"
+}
+# The launcher cases must not see a launcher this machine happens to have on
+# PATH: personal_cli() would resolve it, so step_artifact_state counts it as
+# present (and is right to). Drop any PATH entry holding one — python3, which
+# step_done needs, stays reachable.
+_sv_path_without_exasol() {
+    _svp=""
+    _svp_ifs="$IFS"
+    IFS=:
+    for _svp_dir in $PATH; do
+        [ -x "$_svp_dir/exasol" ] && continue
+        _svp="${_svp:+$_svp:}$_svp_dir"
+    done
+    IFS="$_svp_ifs"
+    printf '%s\n' "$_svp"
+}
+_SV_CLEAN_PATH="$(_sv_path_without_exasol)"
+
+# launcher, recorded done, binary gone -> the bug: must re-run, not skip.
+_sv_home="$(mktemp -d)"
+mkdir -p "$_sv_home/bin"
+printf '{"steps_completed": ["launcher"], "components": {}}\n' > "$_sv_home/manifest.json"
+_sv_launcher_setup="PATH='$_SV_CLEAN_PATH'; . '$ROOT/setup/lib/detect.sh'; . '$ROOT/setup/lib/runtime-personal.sh'"
+check "step_state(launcher missing)" "missing" \
+    "$(_sv_state "$_sv_home" launcher "$_sv_launcher_setup")"
+check "begin_step(launcher missing)" "rerun" \
+    "$(_sv_step "$_sv_home" launcher "$_sv_launcher_setup")"
+# ...and with the binary back, the completed step must still be skipped.
+printf '#!/bin/sh\nexit 0\n' > "$_sv_home/bin/exasol"
+chmod +x "$_sv_home/bin/exasol"
+check "step_state(launcher present)" "present" \
+    "$(_sv_state "$_sv_home" launcher "$_sv_launcher_setup")"
+check "begin_step(launcher present)" "skip" \
+    "$(_sv_step "$_sv_home" launcher "$_sv_launcher_setup")"
+rm -rf "$_sv_home"
+
+# exakit_helper: the same shape, on the artifact the helper step installs.
+_sv_home="$(mktemp -d)"
+mkdir -p "$_sv_home/bin"
+printf '{"steps_completed": ["exakit_helper"], "components": {}}\n' > "$_sv_home/manifest.json"
+check "step_state(exakit_helper missing)" "missing" "$(_sv_state "$_sv_home" exakit_helper "")"
+check "begin_step(exakit_helper missing)" "rerun" "$(_sv_step "$_sv_home" exakit_helper "")"
+printf '#!/bin/sh\nexit 0\n' > "$_sv_home/bin/exakit"
+chmod +x "$_sv_home/bin/exakit"
+check "step_state(exakit_helper present)" "present" "$(_sv_state "$_sv_home" exakit_helper "")"
+check "begin_step(exakit_helper present)" "skip" "$(_sv_step "$_sv_home" exakit_helper "")"
+rm -rf "$_sv_home"
+
+# runtime is the "unknown" case that matters most: no file test can prove a
+# database deployment is gone, so a completed runtime step is ALWAYS skipped.
+_sv_home="$(mktemp -d)"
+mkdir -p "$_sv_home/bin"
+printf '{"steps_completed": ["runtime", "mcp", "pyexasol"], "components": {}}\n' > "$_sv_home/manifest.json"
+for _sv_unknown in runtime mcp pyexasol; do
+    check "step_state($_sv_unknown)" "unknown" "$(_sv_state "$_sv_home" "$_sv_unknown" "")"
+    check "begin_step($_sv_unknown recorded)" "skip" "$(_sv_step "$_sv_home" "$_sv_unknown" "")"
+done
+# A step that was never recorded runs, with no re-run notice.
+check "begin_step(launcher not recorded)" "run" "$(_sv_step "$_sv_home" launcher "$_sv_launcher_setup")"
+rm -rf "$_sv_home"
+
+# exapump is judged by the path the install recorded. No recorded path is
+# "unknown" (an older install, or a soft failure) — never "missing".
+_sv_home="$(mktemp -d)"
+mkdir -p "$_sv_home/bin"
+printf '{"steps_completed": ["exapump"], "components": {}}\n' > "$_sv_home/manifest.json"
+check "step_state(exapump unrecorded)" "unknown" "$(_sv_state "$_sv_home" exapump "")"
+check "begin_step(exapump unrecorded)" "skip" "$(_sv_step "$_sv_home" exapump "")"
+printf '{"steps_completed": ["exapump"], "components": {"exapump": {"path": "%s"}}}\n' \
+    "$_sv_home/bin/exapump" > "$_sv_home/manifest.json"
+check "step_state(exapump missing)" "missing" "$(_sv_state "$_sv_home" exapump "")"
+check "begin_step(exapump missing)" "rerun" "$(_sv_step "$_sv_home" exapump "")"
+printf '#!/bin/sh\nexit 0\n' > "$_sv_home/bin/exapump"
+chmod +x "$_sv_home/bin/exapump"
+check "step_state(exapump present)" "present" "$(_sv_state "$_sv_home" exapump "")"
+check "begin_step(exapump present)" "skip" "$(_sv_step "$_sv_home" exapump "")"
+rm -rf "$_sv_home"
+
+# The check must cost nothing on every install: file tests only. Anything that
+# could wake a container engine, or reach the network, belongs nowhere near it.
+_sv_body="$(awk '/^step_artifact_state\(\) \{/ { inside = 1 } inside { print } inside && /^}/ { exit }' \
+    "$ROOT/setup/lib/common.sh")"
+if printf '%s\n' "$_sv_body" | grep -q 'launcher)' && \
+   ! printf '%s\n' "$_sv_body" | grep -Eq 'docker|podman|curl|fetch |nano_status|personal_status|exasol info'; then
+    check "step_state(file_tests_only)" "yes" "yes"
+else
+    check "step_state(file_tests_only)" "yes" "no"
+fi
+
+# Both sides carry the same two halves: the artifact table and a begin_step that
+# only lets a proven "missing" override the manifest tick.
+if grep -q 'step_artifact_state' "$ROOT/setup/lib/common.sh" && \
+   grep -q 'Get-ExakitStepArtifactState' "$ROOT/setup/lib/exakit-common.ps1" && \
+   grep -q 'what it installed is missing' "$ROOT/setup/lib/common.sh" && \
+   grep -q 'what it installed is missing' "$ROOT/setup/lib/exakit-common.ps1"; then
+    check "step_state(ps_parity)" "yes" "yes"
+else
+    check "step_state(ps_parity)" "yes" "no"
+fi
+
 echo
 echo "passed: $PASS, failed: $FAIL"
 [ "$FAIL" -eq 0 ]
