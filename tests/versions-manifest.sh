@@ -627,12 +627,123 @@ update_out="$( EXAKIT_HOME="$UC"
     _EXAKIT_VERSIONS_DOC=""; _EXAKIT_VERSIONS_SOURCE=""
     exakit_init_logging() { :; }
     exakit_update_component() { printf 'APPLIED %s\n' "$1"; }
-    exakit_update all 2>&1 )"
+    # </dev/null on purpose: this is the unattended case, and stdin decides
+    # whether the runtime update is offered inline (see the offer tests below).
+    exakit_update all </dev/null 2>&1 )"
 lacks "update prints no comparison table either" "Component update check" "$update_out"
 has "update states its work plan" "mcp 1.10.1 -> 1.11.0" "$update_out"
 has "update applies the light components" "APPLIED mcp" "$update_out"
-lacks "update never applies the runtime by itself" "APPLIED runtime" "$update_out"
+lacks "an unattended update never applies the runtime by itself" "APPLIED runtime" "$update_out"
 has "update explains the deferred runtime" "needs the database stopped" "$update_out"
+
+echo "the runtime update is offered inline, not handed back as homework:"
+# The old flow refused the heavy part outright — "not part of a routine update",
+# followed by `exakit update runtime` for the user to run themselves after
+# stopping nothing. These cases cover the whole decision: a terminal is asked and
+# a "y" does the work here; a "no" keeps exactly the old deferral; no terminal
+# never asks and never stops a database; and the two explicit opt-ins apply it
+# unattended.
+#
+# exakit_stdin_is_tty and _exakit_prompt_tty are stubbed rather than allocating a
+# pty: they are the two functions that decide "is there anyone to ask", and with
+# both pointing at stdin the answer piped in below is read exactly as a typed one
+# would be.
+offer_run() ( # offer_run <answer> [statements]
+    EXAKIT_HOME="$UC"
+    EXAKIT_MANIFEST="$UC/manifest.json"
+    EXAKIT_VERSIONS_CACHE="$UC/cache/versions.json"
+    EXAKIT_VERSIONS_URL="http://offline.invalid/versions.json"
+    _EXAKIT_VERSIONS_DOC=""; _EXAKIT_VERSIONS_SOURCE=""
+    unset EXAKIT_CONFIRM_RUNTIME_UPDATE
+    exakit_init_logging() { :; }
+    exakit_update_component() { printf 'APPLIED %s\n' "$1"; }
+    exakit_stdin_is_tty() { return 0; }
+    _exakit_prompt_tty() { printf 'stdin\n'; }
+    eval "${2:-}"
+    printf '%s\n' "$1" | ( exakit_update all 2>&1 )
+)
+
+offer_yes="$(offer_run y)"
+has "a terminal is asked before anything is stopped" "Stop the database and update the runtime now?" "$offer_yes"
+has "the question names the outage" "goes down while the container is recreated" "$offer_yes"
+has "the question promises the restart" "started again and checked" "$offer_yes"
+has "the question says the data survives" "the same data volume is reused" "$offer_yes"
+has "yes applies the runtime in this run" "APPLIED runtime" "$offer_yes"
+has "and reports the result" "Runtime updated" "$offer_yes"
+lacks "and demands no second command" "exakit update runtime" "$offer_yes"
+has "while the light components still run" "APPLIED mcp" "$offer_yes"
+
+offer_no="$(offer_run n)"
+lacks "no stops nothing" "APPLIED runtime" "$offer_no"
+has "no says so plainly" "Nothing was stopped." "$offer_no"
+has "no keeps the exact command for later" "Apply it when convenient:  exakit update runtime" "$offer_no"
+has "and points at the full picture" "including the deferred runtime change" "$offer_no"
+has "the light components are applied either way" "APPLIED mcp" "$offer_no"
+
+# Enter (empty answer) is not consent: the default is no.
+offer_default="$(offer_run '')"
+lacks "an empty answer stops nothing" "APPLIED runtime" "$offer_default"
+has "the prompt shows no as the default" "[y/N]" "$offer_default"
+
+# The safety case. A prompt nobody can answer must never become a stopped
+# database, so the unattended run above (update_out, with real stdin redirected
+# from /dev/null) must not even print the question.
+lacks "an unattended run is never asked" "Stop the database and update the runtime now?" "$update_out"
+has "an unattended run defers as it always did" "not part of a routine update" "$update_out"
+has "and names the opt-in for scripts" "exakit update --yes" "$update_out"
+
+offer_flag="$( EXAKIT_HOME="$UC"
+    EXAKIT_MANIFEST="$UC/manifest.json"
+    EXAKIT_VERSIONS_CACHE="$UC/cache/versions.json"
+    EXAKIT_VERSIONS_URL="http://offline.invalid/versions.json"
+    _EXAKIT_VERSIONS_DOC=""; _EXAKIT_VERSIONS_SOURCE=""
+    unset EXAKIT_CONFIRM_RUNTIME_UPDATE
+    exakit_init_logging() { :; }
+    exakit_update_component() { printf 'APPLIED %s\n' "$1"; }
+    exakit_update all --yes </dev/null 2>&1 )"
+has "--yes applies the runtime without a terminal" "APPLIED runtime" "$offer_flag"
+lacks "and asks nothing" "Stop the database and update the runtime now?" "$offer_flag"
+has "but still says what it did to the database" "needs the database stopped" "$offer_flag"
+has "and the rest of the run is unaffected" "APPLIED mcp" "$offer_flag"
+
+offer_env="$( EXAKIT_HOME="$UC"
+    EXAKIT_MANIFEST="$UC/manifest.json"
+    EXAKIT_VERSIONS_CACHE="$UC/cache/versions.json"
+    EXAKIT_VERSIONS_URL="http://offline.invalid/versions.json"
+    _EXAKIT_VERSIONS_DOC=""; _EXAKIT_VERSIONS_SOURCE=""
+    EXAKIT_CONFIRM_RUNTIME_UPDATE=1
+    exakit_init_logging() { :; }
+    exakit_update_component() { printf 'APPLIED %s\n' "$1"; }
+    exakit_update all </dev/null 2>&1 )"
+has "EXAKIT_CONFIRM_RUNTIME_UPDATE=1 is the same opt-in" "APPLIED runtime" "$offer_env"
+
+# =0 is a deliberate no, and it outranks the terminal: a fleet that has said "not
+# the database" must not be asked again on every machine that has a console.
+offer_env_no="$(offer_run y 'EXAKIT_CONFIRM_RUNTIME_UPDATE=0')"
+lacks "EXAKIT_CONFIRM_RUNTIME_UPDATE=0 stops nothing" "APPLIED runtime" "$offer_env_no"
+lacks "and is not asked anyway" "Stop the database and update the runtime now?" "$offer_env_no"
+has "and says why it was left alone" "was left alone" "$offer_env_no"
+
+# A Personal MAJOR upgrade is a data migration with its own backup-gated flow. One
+# y/N is not informed consent for it, so it keeps the deferral.
+offer_major="$(offer_run y '
+    exakit_installation_runtime_type() { printf personal; }
+    exakit_component_current() { [ "$1" = personal ] && printf "1.5.0\n"; return 0; }
+    exakit_component_available() { [ "$1" = personal ] && printf "2.0.0\n"; return 0; }')"
+has "a Personal major upgrade is named as such" "is a major upgrade" "$offer_major"
+has "and routes to the staged flow" "exakit update runtime --plan" "$offer_major"
+lacks "and is never started from a y/N" "APPLIED runtime" "$offer_major"
+lacks "and does not ask the inline question at all" "Stop the database and update the runtime now?" "$offer_major"
+
+# The promise the question makes: a database that was up before is up afterwards.
+# The updaters do that themselves; this covers the case where one comes back down.
+rm -f "$WORK/rt-down"
+offer_restart="$(offer_run y '
+    exakit_runtime_status() { if [ -f "$WORK/rt-down" ]; then printf "stopped\n"; else printf "running\n"; fi; }
+    exakit_runtime_start() { printf "STARTED\n"; rm -f "$WORK/rt-down"; }
+    exakit_update_component() { printf "APPLIED %s\n" "$1"; [ "$1" = runtime ] && : > "$WORK/rt-down"; return 0; }')"
+has "a database left down is brought back up" "STARTED" "$offer_restart"
+has "and the run says it is running again" "the database is running again" "$offer_restart"
 
 echo "the user's own choice still wins:"
 # The install path honours EXAKIT_*_VERSION; the update path must too, or the
@@ -1866,6 +1977,41 @@ PS_CACHE_PY
         pwsh -NoProfile -File "$ROOT/setup/exakit.ps1" update-check personal 2>&1 | tr -d '\r')"
     has "powershell: an absent runtime is listed" "personal   not installed" "$ps_personal"
     lacks "powershell: but never offered for installation" "exakit update personal" "$ps_personal"
+    # The inline runtime offer is mirrored code, and the half that decides whether a
+    # database may be stopped is the half that must not drift. The decision
+    # functions are called directly (running `update all` here would download a real
+    # kit), and the wording of the offer is compared against the bash lines above.
+    ps_offer="$(EXAKIT_HOME="$UC" EXAKIT_BIN_DIR="$UC/bin" \
+        EXAKIT_VERSIONS_CACHE="$UC/cache/versions.json" \
+        EXAKIT_VERSIONS_URL="http://offline.invalid/versions.json" \
+        VM_ROOT="$ROOT" pwsh -NoProfile -Command '
+        . (Join-Path $env:VM_ROOT "setup/lib/exakit-common.ps1")
+        # The offer helpers live in the CLI; load it with a harmless command.
+        . (Join-Path $env:VM_ROOT "setup/exakit.ps1") -Command "help" *> $null
+        $out = @()
+        $out += (Get-ExakitRuntimeUpdatePreanswer -AssumeYes $true)
+        $env:EXAKIT_CONFIRM_RUNTIME_UPDATE = "1"
+        $out += (Get-ExakitRuntimeUpdatePreanswer)
+        $env:EXAKIT_CONFIRM_RUNTIME_UPDATE = "no"
+        $out += (Get-ExakitRuntimeUpdatePreanswer)
+        $env:EXAKIT_CONFIRM_RUNTIME_UPDATE = ""
+        $answer = (Get-ExakitRuntimeUpdatePreanswer)
+        if ($answer) { $out += $answer } else { $out += "unanswered" }
+        $out += (Get-ExakitMajorVersion "2026.2.0-nano.2")
+        # This fixture records the Nano runtime, so the staged (Personal major)
+        # route must not claim it - same verdict the bash side reaches.
+        $out += (Test-ExakitRuntimeUpdateStaged -Installed "1.5.0" -Advertised "2.0.0")
+        Write-Output ($out -join " ")
+    ' | tail -1 | tr -d '\r')"
+    check "powershell(runtime_offer_decisions)" "yes yes no unanswered 2026 False" "$ps_offer"
+    ps_explain="$(VM_ROOT="$ROOT" pwsh -NoProfile -Command '
+        . (Join-Path $env:VM_ROOT "setup/lib/exakit-common.ps1")
+        . (Join-Path $env:VM_ROOT "setup/exakit.ps1") -Command "help" *> $null
+        Write-ExakitRuntimeUpdateExplanation -Actual "nano" -Installed "2026.2.0-nano.2" -Advertised "2026.3.0-nano.1"
+    ' 2>&1 | tr -d '\r')"
+    has "powershell: the offer names the outage" "goes down while the container is recreated" "$ps_explain"
+    has "powershell: the offer promises the restart" "started again and checked" "$ps_explain"
+    has "powershell: the offer says the data survives" "the same data volume is reused" "$ps_explain"
     ps_pinned="$(EXAKIT_HOME="$UC" EXAKIT_BIN_DIR="$UC/bin" EXAKIT_VERSION_POLICY=pinned \
         pwsh -NoProfile -File "$ROOT/setup/exakit.ps1" update-check exapump 2>&1 | tr -d '\r')"
     has "powershell: pinned policy uses the fallback" "built-in fallbacks" "$ps_pinned"
@@ -1963,12 +2109,15 @@ PSEOF
 else
     check "powershell(versions_manifest)" "skipped" "skipped"
     check "powershell(non_https_refused)" "skipped" "skipped"
+    check "powershell(runtime_offer_decisions)" "skipped" "skipped"
     for _skipped in "Tagged column" "kit row is comparable" "installed stays installed" \
                     "heavy runtime row" "older advertised version" "critical severity" \
                     "maintainer note" "repair action for a missing component" \
                     "an absent runtime is listed" "but never offered for installation" \
                     "pinned policy uses the fallback" "an override is credited" \
                     "and withholds the maintainer note" \
+                    "the offer names the outage" "the offer promises the restart" \
+                    "the offer says the data survives" \
                     "version reports the kit version" "version prints no table" \
                     "version frames the waiting updates" "version points at update-check" "(self_update)" \
                     "recommended light bump" "critical heavy bump" \

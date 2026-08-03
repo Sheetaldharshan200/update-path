@@ -8,8 +8,12 @@
 #   version             kit source, install date, component versions
 #   update-check [what] compare installed vs advertised versions
 #                       (all, runtime, exakit, exapump, mcp, pyexasol)
-#   update [what]       apply the advertised versions without deleting database data;
-#                       a runtime change is announced, not applied, by `update all`
+#   update [what] [--yes]
+#                       apply the advertised versions without deleting database data.
+#                       A runtime change stops the database, so on a terminal it is
+#                       offered ("stop the database and update it now?") and applied
+#                       on yes; without a terminal it is deferred unless --yes (or
+#                       EXAKIT_CONFIRM_RUNTIME_UPDATE=1) says otherwise
 #                       Personal major upgrades support --plan, --backup, --apply
 #   info [--json]       print the connection details panel; --json prints the
 #                       install record (manifest.json) verbatim, nothing else
@@ -356,7 +360,8 @@ Everyday commands:
 Keeping current:
   version              what you have installed, and what is available
   update-check         what would change, and what it costs
-  update               apply the updates that are waiting
+  update               apply the updates that are waiting (it offers the
+                       database update too, instead of leaving it to you)
 EOF
 }
 

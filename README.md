@@ -184,12 +184,27 @@ releases work with each other".
 
 ```bash
 exakit update-check    # what is installed vs what is available, and why
-exakit update          # apply the quick ones: kit scripts, exapump, MCP server, pyexasol
-exakit update runtime  # the database itself — stops it briefly, keeps your data
+exakit update          # apply everything that is waiting; it asks before it stops the database
+exakit update runtime  # the database itself, on its own — stops it briefly, keeps your data
 ```
 
-`exakit update` finishes in seconds and never stops your database. If a database
-update is waiting, it says so and leaves the moment to you.
+`exakit update` applies the quick components (kit scripts, exapump, MCP server,
+pyexasol) in seconds. If a **database** update is waiting it asks you first,
+because that one stops the database for a minute or two:
+
+```
+? Stop the database and update the runtime now? [y/N]
+```
+
+Answer `y` and it does the whole job — stops the database, updates the runtime,
+brings it back up and tells you it is running again. Answer `n` and nothing is
+stopped; `exakit update runtime` applies it whenever you like. Your data is kept
+either way: the update reuses the same data volume, and the previous version is
+put back if the new one does not come up.
+
+In a script, a pipe or CI there is nobody to ask, so the database update is
+**never** started on its own — it is deferred exactly as above. Opt in
+deliberately with `exakit update --yes` (or `EXAKIT_CONFIRM_RUNTIME_UPDATE=1`).
 
 ```
 Component  Installed         Tagged            Severity    Action

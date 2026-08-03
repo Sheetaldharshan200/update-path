@@ -2393,7 +2393,7 @@ exakit_print_update_check() {
         info "Apply the quick ones in one go with: exakit update"
     fi
     if [ "$_heavy_pending" -eq 1 ]; then
-        info "A runtime change stops the database — run it when convenient: exakit update runtime"
+        info "A runtime change stops the database — exakit update offers it on a terminal, or run it directly: exakit update runtime"
     fi
     return 0
 }
@@ -2529,7 +2529,223 @@ exakit_update_component() {
     esac
 }
 
+# --- the heavy (runtime) update, offered inline instead of handed back --------
+#
+# `exakit update` used to refuse the heavy part outright: it printed "needs the
+# database stopped, so it is not part of a routine update" and left the user to
+# run `exakit update runtime` themselves, after stopping nothing and updating
+# nothing. The work was never the problem — the second command was. On a
+# terminal the offer is now made where the user already is, and one "y" runs the
+# whole sequence: stop the database, update the runtime, bring it back up, say so.
+#
+# Both entry points run the SAME implementation: everything below ends at
+# exakit_update_component, which is exactly what `exakit update runtime` calls.
+# `exakit update runtime` itself is untouched — still standalone, still
+# unprompted beyond the runtime updater's own confirmation.
+
+# exakit_runtime_status / exakit_runtime_start — the runtime-agnostic pair the
+# inline offer needs to keep its promise ("the database is running again
+# afterwards"). Guarded on purpose: common.sh is sourced without the runtime
+# modules (the test suites do it, and so does any caller that only needs version
+# state), and an absent module means "cannot tell", not "not running".
+# ⇄ twins: Get-ExakitRuntimeStatus / Start-ExakitRuntime in setup/exakit.ps1.
+exakit_runtime_status() {
+    case "$(exakit_installation_runtime_type 2>/dev/null || true)" in
+        nano)     command -v nano_status >/dev/null 2>&1 && nano_status 2>/dev/null ;;
+        personal) command -v personal_status >/dev/null 2>&1 && personal_status 2>/dev/null ;;
+    esac
+    return 0
+}
+
+exakit_runtime_start() {
+    case "$(exakit_installation_runtime_type 2>/dev/null || true)" in
+        nano)     command -v nano_start >/dev/null 2>&1 && nano_start ;;
+        personal) command -v personal_start >/dev/null 2>&1 && personal_start ;;
+    esac
+    return 0
+}
+
+# exakit_stdin_is_tty — is there a terminal this run can actually ask a question
+# on? Deliberately stricter than confirm()'s _exakit_prompt_tty, which falls back
+# to /dev/tty: a piped or redirected run must not have a database-stopping
+# question put on a terminal it is not reading from.
+# ⇄ twin: Test-ExakitInteractive in setup/lib/exakit-common.ps1.
+exakit_stdin_is_tty() {
+    [ -t 0 ]
+}
+
+# exakit_runtime_update_is_staged <installed> <advertised> — true for an Exasol
+# Personal MAJOR upgrade. That one is a data migration with its own backup-gated
+# three-step flow (personal_upgrade_plan: --plan, --backup, --apply). A single
+# y/N is not informed consent for it, so it keeps the deferral it has today.
+# ⇄ twin: Test-ExakitRuntimeUpdateStaged in setup/exakit.ps1.
+exakit_runtime_update_is_staged() {
+    [ "$(exakit_installation_runtime_type 2>/dev/null || true)" = "personal" ] || return 1
+    _rus_cur="$(exakit_major_version "${1:-}" 2>/dev/null || true)"
+    _rus_new="$(exakit_major_version "${2:-}" 2>/dev/null || true)"
+    case "$_rus_cur$_rus_new" in ''|*[!0-9]*) return 1 ;; esac
+    [ "$_rus_cur" != "$_rus_new" ]
+}
+
+# exakit_runtime_update_preanswer — "yes", "no", or empty when nobody has
+# answered yet. Two ways to answer without a prompt, and they are the ways this
+# kit already uses: `exakit update --yes` (the uninstall flag spelling) and
+# EXAKIT_CONFIRM_RUNTIME_UPDATE, the variable that already pre-answers
+# `exakit update runtime`. One opt-in, both entry points — a fleet that has said
+# "yes, you may recreate the database container" has said it once.
+# ⇄ twin: Get-ExakitRuntimeUpdatePreanswer in setup/exakit.ps1.
+exakit_runtime_update_preanswer() {
+    if [ "${_upd_assume_yes:-0}" = "1" ]; then
+        printf 'yes\n'
+        return 0
+    fi
+    case "${EXAKIT_CONFIRM_RUNTIME_UPDATE:-}" in
+        1|y|Y|yes|YES|Yes) printf 'yes\n' ;;
+        0|n|N|no|NO|No)    printf 'no\n' ;;
+    esac
+    return 0
+}
+
+# exakit_runtime_update_explain <actual> <installed> <advertised> — what the user
+# is about to agree to, before they agree to it: that the database goes down,
+# roughly for how long, that it comes back up, and what happens to the data.
+# Stopping a database is disruptive and outward-facing; a bare "[y/N]" is not
+# enough to consent to it.
+# ⇄ twin: Write-ExakitRuntimeUpdateExplanation in setup/exakit.ps1.
+exakit_runtime_update_explain() {
+    warn "$1 $2 -> $3 needs the database stopped."
+    case "$1" in
+        nano)
+            info "The database goes down while the container is recreated, then it is started again and checked — usually a minute or two, longer if the new image still has to be pulled."
+            info "Your data is kept: the same data volume is reused, and the previous image is put back if the new container does not come up."
+            ;;
+        personal)
+            info "The launcher is replaced; the database is checked afterwards and started again if it ends up down — usually under a minute."
+            info "Your data is kept: this update neither deletes nor migrates the deployment's database content."
+            ;;
+        *)
+            info "The database goes down for the update and is started again afterwards."
+            info "Your data is kept."
+            ;;
+    esac
+}
+
+# exakit_apply_runtime_update <component> — stop, update, start, report.
+#
+# The runtime updaters own the sequence itself and are called here exactly as
+# `exakit update runtime` calls them: nano_update pulls the new image, stops the
+# container, recreates it on the SAME data volume, waits for readiness and puts
+# the previous image back if it never becomes ready; personal_update replaces the
+# launcher and leaves the deployment's data alone. There is no separate copy of
+# that logic here, and no separate copy of the backup story either — see the
+# comment on exakit_offer_runtime_update.
+#
+# What this adds is the one thing the prompt promises and the updaters do not
+# guarantee across runtimes: a database that was up before this command is up
+# after it.
+# ⇄ twin: Invoke-ExakitRuntimeUpdateApply in setup/exakit.ps1.
+exakit_apply_runtime_update() {
+    _aru_was_running=no
+    [ "$(exakit_runtime_status)" = "running" ] && _aru_was_running=yes
+    # The offer above IS the confirmation the runtime updater asks for. Asking one
+    # question twice is not a safety feature, so the answer is passed down.
+    EXAKIT_CONFIRM_RUNTIME_UPDATE=1
+    export EXAKIT_CONFIRM_RUNTIME_UPDATE
+    exakit_update_component "$1"
+    _aru_status="$(exakit_runtime_status)"
+    if [ "$_aru_was_running" = "yes" ] && [ -n "$_aru_status" ] && [ "$_aru_status" != "running" ] && [ "$_aru_status" != "starting" ]; then
+        info "Bringing the database back up"
+        exakit_runtime_start
+        _aru_status="$(exakit_runtime_status)"
+    fi
+    case "$_aru_status" in
+        running)  ok "Runtime updated and the database is running again." ;;
+        starting) ok "Runtime updated; the database is still coming up — check it with: exakit status" ;;
+        '')       ok "Runtime updated." ;;
+        *)        warn "Runtime updated, but the database reports '$_aru_status' — start it with: exakit start" ;;
+    esac
+    return 0
+}
+
+# exakit_offer_runtime_update <component> <actual> <installed> <advertised> —
+# the heavy part of a routine `exakit update`, decided here instead of being
+# handed to the user as homework. Returns 0 when it was applied, 1 when it was
+# deferred (and then prints the exact command that applies it later).
+#
+# On backups: the kit has no data-export facility, and this path needs none.
+# Neither runtime update touches the database content — Nano recreates the
+# container over the persisted data volume and records a pre-update snapshot of
+# the runtime metadata under ~/.exasol-starter-kit/backups/nano-update/, with an
+# automatic restore of the previous image if the new one will not start; Personal
+# replaces the launcher binary and says so. The one runtime change that IS a data
+# migration is the Personal major upgrade, and that already has a real backup
+# (personal_upgrade_backup tars the whole deployment) inside its own three-step
+# flow — which is exactly why this function refuses to start it from a y/N.
+# ⇄ twin: Invoke-ExakitRuntimeUpdateOffer in setup/exakit.ps1.
+exakit_offer_runtime_update() {
+    _oru_component="$1"
+    _oru_actual="$2"
+    _oru_cur="$3"
+    _oru_avail="$4"
+
+    if exakit_runtime_update_is_staged "$_oru_cur" "$_oru_avail"; then
+        warn "$_oru_actual $_oru_cur -> $_oru_avail is a major upgrade: it needs a backup and a data migration, so a routine update does not start it."
+        info "See the steps first:  exakit update runtime --plan"
+        return 1
+    fi
+
+    case "$(exakit_runtime_update_preanswer)" in
+        yes)
+            exakit_runtime_update_explain "$_oru_actual" "$_oru_cur" "$_oru_avail"
+            ;;
+        no)
+            warn "$_oru_actual $_oru_cur -> $_oru_avail was left alone: the runtime update is answered 'no' (EXAKIT_CONFIRM_RUNTIME_UPDATE)."
+            info "Apply it when convenient:  exakit update runtime"
+            return 1
+            ;;
+        *)
+            # No terminal, no answer: a prompt nobody can answer must never turn
+            # into a stopped database, so a pipe, a CI job, a cron entry and a
+            # scripted install all get exactly today's safe deferral.
+            if ! exakit_stdin_is_tty; then
+                warn "$_oru_actual $_oru_cur -> $_oru_avail needs the database stopped, so it is not part of a routine update."
+                info "Apply it when convenient:  exakit update runtime"
+                info "Unattended runs can opt in:  exakit update --yes  (or EXAKIT_CONFIRM_RUNTIME_UPDATE=1)"
+                return 1
+            fi
+            exakit_runtime_update_explain "$_oru_actual" "$_oru_cur" "$_oru_avail"
+            if ! confirm "Stop the database and update the runtime now?" n; then
+                info "Nothing was stopped. Apply it when convenient:  exakit update runtime"
+                return 1
+            fi
+            ;;
+    esac
+
+    exakit_apply_runtime_update "$_oru_component"
+}
+
 exakit_update() {
+    # -y/--yes answers the runtime offer below and may appear anywhere in the
+    # arguments; everything else keeps its position, so the target and the
+    # Personal upgrade options arrive exactly as they did. Rebuilt by rotating
+    # the positional parameters — no arrays, so bash 3.2 and dash both cope.
+    _upd_assume_yes=0
+    _upd_left="$#"
+    while [ "$_upd_left" -gt 0 ]; do
+        case "$1" in
+            -y|--yes) _upd_assume_yes=1 ;;
+            *) set -- "$@" "$1" ;;
+        esac
+        shift
+        _upd_left=$((_upd_left - 1))
+    done
+    if [ "$_upd_assume_yes" = "1" ]; then
+        # --yes answers the only question this command asks: may it stop the
+        # database. The runtime updaters read the same variable, so an explicit
+        # `exakit update runtime --yes` is unprompted for the same reason.
+        EXAKIT_CONFIRM_RUNTIME_UPDATE=1
+        export EXAKIT_CONFIRM_RUNTIME_UPDATE
+    fi
     _target="${1:-all}"
     if [ "$#" -gt 0 ]; then shift; fi
     if [ "$#" -gt 0 ]; then
@@ -2570,13 +2786,17 @@ exakit_update() {
             warn "No advertised version for $_upd_actual — skipping it. Details: exakit update-check"
             continue
         fi
-        # A blanket update never stops the database: the runtime is announced with
-        # its exact command and left for the user to run when it suits them.
+        # A blanket update stops the database only for an answer it was given: on a
+        # terminal it asks, with a flag or the env var it was already told, and with
+        # neither it defers exactly as it always did. See
+        # exakit_offer_runtime_update.
         if [ "$_target" = "all" ] && exakit_component_is_heavy "$_upd_actual"; then
             if [ -n "$_cur" ] && [ -n "$_avail" ] && [ "$_cur" != "unknown" ] && [ "$_cur" != "$_avail" ]; then
-                warn "$_upd_actual $_cur -> $_avail needs the database stopped, so it is not part of a routine update."
-                info "Apply it when convenient:  exakit update runtime"
-                _deferred=$((_deferred + 1))
+                if exakit_offer_runtime_update "$_component" "$_upd_actual" "$_cur" "$_avail"; then
+                    _acted=$((_acted + 1))
+                else
+                    _deferred=$((_deferred + 1))
+                fi
             fi
             continue
         fi

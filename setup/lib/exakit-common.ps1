@@ -437,11 +437,22 @@ function Invoke-ExakitLogged {
         Stop-ExakitSpinner
     }
 }
+# Test-ExakitInteractive - is there a console this run can actually ask a
+# question on? One expression, one place: the prompts below take their default
+# when it is false, and the runtime update offer in setup/exakit.ps1 refuses to
+# stop a database when it is false. Twin of bash's `[ -t 0 ]` test in
+# exakit_offer_runtime_update.
+function Test-ExakitInteractive {
+    if (-not [Environment]::UserInteractive) { return $false }
+    if ([Console]::IsInputRedirected) { return $false }
+    return $true
+}
+
 # Confirm-ExakitPrompt "Question?" [DefaultYes] - non-interactive runs
 # (no console input available, e.g. piped install) take the default.
 function Confirm-ExakitPrompt {
     param([string]$Question, [bool]$DefaultYes = $true)
-    if (-not [Environment]::UserInteractive -or [Console]::IsInputRedirected) {
+    if (-not (Test-ExakitInteractive)) {
         return $DefaultYes
     }
     $hint = if ($DefaultYes) { "[Y/n]" } else { "[y/N]" }
@@ -481,7 +492,7 @@ function Confirm-ExakitEnvPrompt {
 # default immediately (mirrors bash's prompt_text over /dev/tty).
 function Read-ExakitPrompt {
     param([string]$Question, [string]$Default = "")
-    if (-not [Environment]::UserInteractive -or [Console]::IsInputRedirected) {
+    if (-not (Test-ExakitInteractive)) {
         return $Default
     }
     if ($script:UiFancy) {

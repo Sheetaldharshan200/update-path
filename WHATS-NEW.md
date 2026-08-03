@@ -18,7 +18,7 @@ behind, and applies it without touching your data.
 | Command | What it does |
 |---|---|
 | `exakit update-check [what]` | Compares what is installed against the tested set, with a severity column and the exact command for each row |
-| `exakit update [what]` | Applies the tested versions. A runtime change is announced rather than applied, because it stops the database |
+| `exakit update [what]` | Applies the tested versions. A database (runtime) change stops the database, so it asks first — `Stop the database and update the runtime now? [y/N]` — and on yes stops it, updates it and brings it back up. A run with no terminal defers it instead of stopping anything; `--yes` opts in |
 | `exakit whats-new [version]` | This text |
 | `exakit upgrade-kit2` / `rollback-kit2` | Adds or removes the Trusted AI Workflow assets, once they are published |
 
