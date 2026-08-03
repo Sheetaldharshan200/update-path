@@ -1263,14 +1263,67 @@ function Set-ExakitStepDone {
     Write-ExakitLog "STEP" "completed: $Step"
 }
 
+# Get-ExakitStepArtifactState <step> - returns "present", "missing" or "unknown".
+# Peer of step_artifact_state in common.sh.
+#
+# The tick in steps_completed records that a step RAN once, not that what it
+# produced is still on disk. A machine turned up with a completed launcher step
+# and no launcher binary, and every re-run then skipped that step and failed the
+# deployment step that needs it - the one step that could have repaired the
+# install was the one being skipped. Begin-ExakitStep consults this so a
+# completed step can be re-run when its artifact is gone.
+#
+# Three rules hold this function together:
+#
+#   1. "unknown" NEVER overrides the manifest. There is no cheap way to prove a
+#      database container is deployed, and re-running the runtime step on a guess
+#      would stop a working database - far worse than the bug this fixes. A wrong
+#      "missing" is destructive; a wrong "unknown" just leaves today's behaviour
+#      in place. Anything not cheaply provable is "unknown".
+#   2. FILE TESTS ONLY. This runs once per step on every install, so no network,
+#      no PyPI, no GitHub and above all nothing that could wake or probe Docker.
+#   3. "present" means what the NEXT step will actually resolve.
+function Get-ExakitStepArtifactState {
+    param([Parameter(Mandatory)][string]$Step)
+    if ($Step -eq "exakit_helper") {
+        if (Test-Path (Join-Path $script:BinDir "exakit.cmd")) { return "present" }
+        return "missing"
+    }
+    if ($Step -eq "exapump") {
+        # The install records the exact path it resolved. No record means an
+        # older install (or a soft failure) we cannot judge: "unknown".
+        $recorded = Get-ExakitManifestValue "components.exapump.path"
+        if (-not $recorded) { return "unknown" }
+        if (Test-Path $recorded) { return "present" }
+        return "missing"
+    }
+    # runtime (the Nano container), mcp, pyexasol - and "launcher", which is a
+    # macOS-only step with no Windows peer: nothing a file test can settle
+    # without risking a destructive false "missing". See rule 1 above.
+    return "unknown"
+}
+
 # Begin-ExakitStep <name> <description> - announces a step, returns $false
-# (caller should skip) if already done.
+# (caller should skip) if already done AND what it installed is still there.
+#
+# A step is skipped only when the manifest tick and the disk agree. When the tick
+# says done but Get-ExakitStepArtifactState proves the artifact is gone, the step
+# is announced and run again - that is what makes "re-running the installer is
+# safe and resumes" (AGENTS.md) true even after something removed an artifact
+# from under a completed install.
 function Begin-ExakitStep {
     param([Parameter(Mandatory)][string]$Name, [Parameter(Mandatory)][string]$Description)
     $script:ExakitActiveLabel = $Description   # spinner label for Invoke-ExakitLogged in this step
+    $rerun = $false
     if (Test-ExakitStepDone $Name) {
-        Ok "$Description - already done, skipping"
-        return $false
+        # "unknown" (and "present") keep the manifest's answer: only a proven
+        # "missing" is allowed to override the tick.
+        if ((Get-ExakitStepArtifactState $Name) -eq "missing") {
+            $rerun = $true
+        } else {
+            Ok "$Description - already done, skipping"
+            return $false
+        }
     }
     Write-Host ""
     if ($script:UiFancy) {
@@ -1279,6 +1332,9 @@ function Begin-ExakitStep {
         Write-Host ("  {0} {1}" -f $script:UiArrow, $Description) -ForegroundColor Blue
     }
     Write-ExakitLog "STEP" $Description
+    if ($rerun) {
+        Info "Recorded as done, but what it installed is missing - running it again"
+    }
     return $true
 }
 
