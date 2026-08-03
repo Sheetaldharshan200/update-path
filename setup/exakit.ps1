@@ -11,7 +11,8 @@
 #   update [what]         apply the advertised versions without deleting database
 #                         data; a runtime change is announced, not applied, by
 #                         `update all`
-#   info                  print the connection details panel
+#   info [--json]         print the connection details panel; --json prints the
+#                         install record (manifest.json) verbatim, nothing else
 #   guide                 friendly walkthrough: connect AI clients (MCP), SQL
 #                         clients (DBeaver), and Python (pyexasol)
 #   start                 start the local database
@@ -47,6 +48,10 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+
+# Set by the machine-readable paths (`info --json`) so the update notice at the
+# bottom of the dispatcher stays off stdout and the output remains parseable.
+$script:JsonOutput = $false
 
 # --- locate the kit's lib directory -----------------------------------------
 $scriptDir = Split-Path -Parent $PSCommandPath
@@ -1137,6 +1142,36 @@ function Invoke-CmdSkillsInstall {
     if (-not (Install-ExakitSkills)) { Fail "Could not install the kit's AI skills" }
 }
 
+# Invoke-CmdInfoJson - the install record, verbatim, on stdout. Mirrors cmd_info_json.
+#
+# manifest.json is what every other command reads: which runtime, which versions,
+# which paths, what the last data load did. `exakit info --json` hands that to a
+# script or a support thread without anyone having to know where the file lives.
+#
+# Printed as read rather than through ConvertFrom-Json/ConvertTo-Json: this is a
+# copy of the file, and a round trip could only make it disagree with the file
+# (PowerShell 5.1's converter also flattens deep nesting and reorders nothing
+# predictably). Read as UTF-8 explicitly - 5.1 would otherwise decode the bytes
+# as the system ANSI codepage and corrupt any non-ASCII path in there.
+#
+# Nothing else may reach stdout on this path - no banner, no update notice, no
+# hint - or the output stops being JSON. The caller sets $script:JsonOutput so the
+# notice gate at the bottom of the dispatcher skips it, and Fail writes to stderr.
+#
+# Secrets are not a concern here: the manifest stores password *file paths*
+# (runtime.password_file, components.mcp_server.connection.password_file), never a
+# password. Keep it that way.
+function Invoke-CmdInfoJson {
+    if (-not (Test-Path $script:ManifestPath)) {
+        Fail "No install record to print ($($script:ManifestPath)). Install the kit first."
+    }
+    $raw = Get-Content -Raw -Encoding UTF8 -Path $script:ManifestPath
+    if ([string]::IsNullOrWhiteSpace($raw)) {
+        Fail "No install record to print ($($script:ManifestPath)). Install the kit first."
+    }
+    Write-Output $raw.TrimEnd("`r", "`n")
+}
+
 function Show-ExakitUsage {
     param([switch]$All)
     # `exakit help --all` prints the full command reference: every leading
@@ -1168,6 +1203,11 @@ function Show-ExakitUsage {
         "  start | stop         run or pause the local database"
         "  data-load            load the sample data or your own CSV / Parquet"
         "  mcp-doctor           check the AI (MCP) connection"
+        ""
+        "Keeping current:"
+        "  version              what you have installed, and what is available"
+        "  update-check         what would change, and what it costs"
+        "  update               apply the updates that are waiting"
     ) | ForEach-Object { Write-Host $_ }
 }
 
@@ -1180,7 +1220,14 @@ try {
         "-v"           { Invoke-CmdVersion }
         "update-check"  { Invoke-CmdUpdateCheck -Target ($RestArgs | Select-Object -First 1) }
         "update"        { Invoke-CmdUpdate -Target ($RestArgs | Select-Object -First 1) }
-        "info"         { Show-ExakitConnectionPanel }
+        "info"         {
+            if ($RestArgs -contains "--json" -or $RestArgs -contains "-j") {
+                $script:JsonOutput = $true
+                Invoke-CmdInfoJson
+            } else {
+                Show-ExakitConnectionPanel
+            }
+        }
         "guide"        { Show-ExakitGuide }
         "start"        { Invoke-CmdStart }
         "stop"         { Invoke-CmdStop }
@@ -1210,8 +1257,10 @@ try {
     # version state themselves, `version` has its own always-on hint, uninstall is
     # a farewell, and help/catalog are reference screens that stay instant and
     # clean. A command that failed reaches the catch below instead, so the notice
-    # never talks over an error.
-    if (@("status", "info", "guide", "start", "stop", "data-load", "preflight",
+    # never talks over an error - and $script:JsonOutput excludes `info --json`,
+    # where a notice on stdout would stop the output being parseable JSON.
+    if (-not $script:JsonOutput -and
+        @("status", "info", "guide", "start", "stop", "data-load", "preflight",
           "skills-install", "logs", "mcp-setup", "mcp-doctor", "mcp-status",
           "mcp-repair", "mcp-validate", "mcp-restore", "mcp-remove") -contains $Command) {
         Show-ExakitUpdateNotice
