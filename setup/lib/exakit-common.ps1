@@ -301,7 +301,8 @@ function Show-ExakitNoAiPanel {
     Write-Host ""
     Start-ExakitPanel "Using your database without an AI client"
     Write-ExakitPanelLine "Your database works great on its own - three easy ways in:"
-    Write-ExakitPanelLine "GUI client:  DBeaver (recommended) - https://dbeaver.io/download/"
+    Write-ExakitPanelLine "GUI client:  DBeaver - https://dbeaver.io/download/"
+    Write-ExakitPanelLine "             or DbVisualizer - https://www.dbvis.com/download/"
     Write-ExakitPanelLine "             New Connection > Exasol > Host $hostName Port $port"
     Write-ExakitPanelLine "Python:      pyexasol is preinstalled in its own environment:"
     Write-ExakitPanelLine "             $(Get-ExakitTilde (Join-Path $script:ExakitHome 'pyexasol-venv'))"
@@ -313,7 +314,7 @@ function Show-ExakitNoAiPanel {
 }
 
 # Show-ExakitGuide - friendly how-to-connect walkthrough (mirrors exakit_guide
-# in common.sh): AI clients over MCP, GUI SQL clients (DBeaver), and Python.
+# in common.sh): AI clients over MCP, GUI SQL clients (DBeaver, DbVisualizer), and Python.
 function Show-ExakitGuide {
     if (-not (Test-Path $script:ManifestPath)) { Warn2 "No installation found. Run the installer first."; return }
     $dsn = Get-ExakitManifestValue "runtime.dsn"
@@ -337,7 +338,8 @@ function Show-ExakitGuide {
     Complete-ExakitPanel
 
     Start-ExakitPanel "2 - Browse and query with a SQL client (GUI)"
-    Write-ExakitPanelLine "DBeaver (recommended, free): https://dbeaver.io/download/"
+    Write-ExakitPanelLine "Both free: DBeaver - https://dbeaver.io/download/"
+    Write-ExakitPanelLine "           or DbVisualizer - https://www.dbvis.com/download/"
     Write-ExakitPanelLine "In DBeaver: Database > New Database Connection > search 'Exasol'"
     Write-ExakitPanelLine "  Host:      $hostName"
     Write-ExakitPanelLine "  Port:      $port"
@@ -2064,6 +2066,7 @@ function Show-ExakitConnectionPanel {
     }
     Write-ExakitPanelLine "Manifest:     $(Get-ExakitTilde $script:ManifestPath)"
     Write-ExakitPanelLine "Logs:         $(Get-ExakitTilde $script:LogDir)"
+    Write-ExakitPanelLine "SQL client:   DBeaver or DbVisualizer"
     Complete-ExakitPanel
     Write-Host ""
 }
