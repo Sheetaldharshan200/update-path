@@ -1080,6 +1080,102 @@ has "a lagging record is reconciled, not left lying" "Reconciling the recorded M
 has "and the skip is still clean" "already current (2.0.0)" "$reconciled"
 check "the record now matches the configs" "2.0.0" "$(div_record)"
 
+echo "the exapump update compares against the binary on disk, not the record:"
+# components.exapump.version is only what a previous run WROTE DOWN, and
+# exapump_record_manifest writes it from the version that run asked for — so it can
+# name a release that never landed, and it says nothing about a binary someone
+# replaced by hand. update-check and the dispatcher both report what the binary says;
+# the updater has to agree with them, or it announces "exapump 8.1.0 -> 8.2.0" from
+# the probe and then declines that exact work because the record already says 8.2.0.
+XP="$WORK/exapump-divergent"
+mkdir -p "$XP/bin" "$XP/kit" "$XP/cache"
+cp "$REAL" "$XP/kit/versions.json"
+# Versions no part of the shipped document uses, so a bump cannot make these pass or
+# fail for the wrong reason.
+xp_binary() { printf '#!/bin/sh\necho "exapump %s"\n' "$1" > "$XP/bin/exapump"; chmod +x "$XP/bin/exapump"; }
+xp_binary 8.1.0
+cat > "$XP/manifest.json" <<EOF
+{
+  "manifest_version": 1,
+  "kit_level": 1,
+  "runtime": {
+    "type": "nano",
+    "image": "docker.io/exasol/nano:2026.2.0-nano.2"
+  },
+  "components": {
+    "exapump": {
+      "version": "8.2.0",
+      "path": "$XP/bin/exapump"
+    }
+  },
+  "steps_completed": []
+}
+EOF
+# exapump_update itself runs for real. Only the seams are stubbed: the advertised
+# version, the download, and the profile write. The stubbed install replaces the
+# fixture binary exactly as a real one would, so the assertions below read what the
+# binary reports, not a promise.
+xp_update_run() (
+    EXAKIT_HOME="$XP"
+    EXAKIT_MANIFEST="$XP/manifest.json"
+    EXAKIT_BIN_DIR="$XP/bin"
+    # shellcheck source=/dev/null
+    . "$ROOT/setup/lib/exapump.sh"
+    exakit_component_available() { printf '%s\n' "$ADVERTISED"; }
+    exapump_install() {
+        printf 'INSTALLED %s\n' "$EXAKIT_EXAPUMP_VERSION"
+        printf '#!/bin/sh\necho "exapump %s"\n' "$EXAKIT_EXAPUMP_VERSION" > "$EXAKIT_EXAPUMP_BIN"
+        chmod +x "$EXAKIT_EXAPUMP_BIN"
+        exapump_record_manifest
+    }
+    exapump_create_profile() { printf 'PROFILE\n'; }
+    eval "${1:-}"
+    "${XP_ENTRY:-exapump_update}" exapump 2>&1
+)
+xp_live() { "$XP/bin/exapump" --version 2>/dev/null | sed 's/^exapump //'; }
+xp_record() ( EXAKIT_MANIFEST="$XP/manifest.json"; manifest_get components.exapump.version )
+
+xp_divergent="$(ADVERTISED=8.2.0 xp_update_run)"
+lacks "a record that already names the target is not proof" "already current" "$xp_divergent"
+has "the work is announced against the binary" "Updating exapump 8.1.0 -> 8.2.0" "$xp_divergent"
+has "and the install actually runs" "INSTALLED 8.2.0" "$xp_divergent"
+check "the binary a user would run has moved" "8.2.0" "$(xp_live)"
+
+# Idempotent for the real case: the binary now reports the advertised version, so a
+# second run must do nothing at all rather than re-download and rewrite the profile.
+xp_current="$(ADVERTISED=8.2.0 xp_update_run)"
+has "a genuinely current install skips cleanly" "already current (8.2.0)" "$xp_current"
+lacks "and nothing is reinstalled" "INSTALLED" "$xp_current"
+lacks "and no profile is rewritten" "PROFILE" "$xp_current"
+
+# The other direction of the same divergence: the binary is current and the record
+# lags. Nothing to install, but `exakit version` credits the kit with that record, so
+# it is reconciled instead of left lying.
+xp_reconciled="$(ADVERTISED=8.2.0 xp_update_run 'manifest_set components.exapump.version 7.0.0')"
+has "a lagging record is reconciled, not left lying" "Reconciling the recorded exapump version" "$xp_reconciled"
+has "and the skip is still clean" "already current (8.2.0)" "$xp_reconciled"
+check "the record now matches the binary" "8.2.0" "$(xp_record)"
+
+# A record naming the target with no binary behind it is the other half of the same
+# bug: the record must not vouch for something that is gone. PATH is stripped to the
+# python3 the manifest reads need, or the probe's PATH fallback finds the tester's own
+# exapump and this reads as installed.
+xp_absent="$(ADVERTISED=8.2.0 xp_update_run \
+    'rm -f "$XP/bin/exapump"; PATH="$(dirname "$(command -v python3)"):/usr/bin:/bin"')"
+lacks "a record with no binary behind it is not current" "already current" "$xp_absent"
+has "the missing binary is reinstalled" "INSTALLED 8.2.0" "$xp_absent"
+
+# An install AHEAD of the tested set must still not be dragged back — and this now
+# matters more, because the guard inside exapump_update no longer accidentally
+# refuses it via a matching record. The refusal belongs to the one hard guard in
+# exakit_update_component, which reads the same probe, so this drives the real
+# updater through that choke point rather than calling it directly.
+xp_binary 9.9.9
+xp_ahead="$( XP_ENTRY=exakit_update_component ADVERTISED=8.2.0 xp_update_run )"
+has "an install ahead of the tested set is kept" "is newer than the tested" "$xp_ahead"
+lacks "and nothing is installed over it" "INSTALLED" "$xp_ahead"
+check "and the binary is untouched" "9.9.9" "$(xp_live)"
+
 echo "exakit version names both what is on the machine and what the kit installed:"
 # Its own fixture on purpose: the cases above delete stubs to test absence, and this
 # one needs them present. One runtime key only (a real manifest has version OR image).

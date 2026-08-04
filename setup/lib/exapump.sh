@@ -489,22 +489,83 @@ exapump_record_manifest() {
     manifest_set components.exapump.path "$(exapump_cli)"
 }
 
+# exapump_confirm_installed_version — ask the binary what it is, now that this run
+# has installed one, and make the record agree with the answer.
+# exapump_record_manifest writes the version the run INTENDED to install; only the
+# binary can say what is actually there (the recorded path can be gone by the time
+# anyone looks, leaving an exapump the user manages themselves on PATH as the answer,
+# and the glibc shim runs whatever the container image holds). Returns non-zero when
+# they disagree, so the caller does not announce a move that did not happen.
+#
+# Silence is left alone deliberately: exakit_component_current answers nothing only
+# when there is no runnable binary at all, exapump_install already fails loudly for
+# that, and a correction invented from silence would be worse than the record.
+# ⇄ twin: Confirm-ExapumpInstalledVersion in exapump.ps1.
+exapump_confirm_installed_version() {
+    command -v exakit_component_current >/dev/null 2>&1 || return 0
+    _ecv_live="$(exakit_component_current exapump 2>/dev/null || true)"
+    [ -n "$_ecv_live" ] || return 0
+    [ "$_ecv_live" != "$EXAKIT_EXAPUMP_VERSION" ] || return 0
+    warn "The exapump on disk reports $_ecv_live, not the $EXAKIT_EXAPUMP_VERSION this update installed — recording what is there"
+    manifest_set components.exapump.version "$_ecv_live"
+    return 1
+}
+
 exapump_update() {
     _latest="$(exakit_component_available exapump)"
     [ -n "$_latest" ] || die "Could not resolve the advertised exapump version."
-    _current="$(manifest_get components.exapump.version 2>/dev/null || true)"
+    # The already-current guard reads the same thing `exakit update-check` prints in
+    # its Installed column: the version the binary on disk reports when asked. The
+    # manifest record is only what a previous run WROTE DOWN — exapump_record_manifest
+    # writes it from EXAKIT_EXAPUMP_VERSION, before the download it describes is
+    # proven — so it can name a version that was never installed, and it says nothing
+    # at all about a binary someone replaced by hand. Comparing against the record
+    # made this function decline the work the dispatcher had just announced from the
+    # live probe ("exapump 0.11.0 -> 0.11.2", then "already current (0.11.2)"), and
+    # call an install current at a version nobody is running.
+    _exapump_recorded="$(manifest_get components.exapump.version 2>/dev/null || true)"
+    if command -v exakit_component_current >/dev/null 2>&1; then
+        # An empty answer is NOT "cannot tell", so it must not fall back to the
+        # record: for exapump the reader answers nothing only when there is no
+        # executable binary at the recorded path or on PATH, and it already falls
+        # back to the record itself when a binary IS there but will not run (a
+        # release built against a newer glibc). Provably absent means install —
+        # the record must not vouch for a binary that is gone.
+        _current="$(exakit_component_current exapump 2>/dev/null || true)"
+    else
+        # The reader lives in common.sh, which every entry point sources before this
+        # module. This is the sourced-alone case, where the record is all there is.
+        _current="$_exapump_recorded"
+    fi
     if [ "$_latest" = "$_current" ]; then
+        # Genuinely already current, so this stays a clean skip — but a record that
+        # disagrees with the binary is still reconciled, because that record is what
+        # `exakit version` credits the kit with having installed, and what a
+        # subsequent exapump_install would leave untouched on its already-installed
+        # path.
+        if [ "$_exapump_recorded" != "$_current" ]; then
+            info "Reconciling the recorded exapump version (${_exapump_recorded:-unrecorded}) with the binary on disk"
+            manifest_set components.exapump.version "$_current"
+        fi
         ok "exapump is already current ($_current)"
         return 0
     fi
-    info "Updating exapump ${_current:-unknown} -> $_latest"
+    # Not the place to ask whether $_latest is a step BACKWARDS from $_current. That
+    # is settled once, for every component, at the choke point in
+    # exakit_update_component (exakit_component_is_ahead), which reads the same live
+    # probe this guard now reads and returns before exapump_update is called at all.
+    # A second copy of the rule here would be one more thing to keep in step with it.
+    info "Updating exapump ${_current:-not installed} -> $_latest"
     EXAKIT_EXAPUMP_VERSION="$_latest"
     EXAKIT_FORCE_COMPONENT_INSTALL=1
     export EXAKIT_EXAPUMP_VERSION EXAKIT_FORCE_COMPONENT_INSTALL
     exapump_install
     exapump_create_profile
     manifest_set desired.exapump "$EXAKIT_EXAPUMP_VERSION"
-    ok "exapump updated without changing database data"
+    # Confirm from the binary, not from the record exapump_install just wrote.
+    if exapump_confirm_installed_version; then
+        ok "exapump updated without changing database data"
+    fi
 }
 
 exakit_table_name_from_path() {
