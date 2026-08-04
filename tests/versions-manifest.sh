@@ -73,7 +73,69 @@ SHIPPED_PY
 # --- fixtures ----------------------------------------------------------------
 # Variants are derived from the shipped document so they keep its canonical
 # shape; only the property under test differs.
-sed 's/"schema_version": 1/"schema_version": 2/' "$REAL" > "$FIX/schema2.json"
+#
+# A derived fixture is worth something only while it actually DIFFERS from what it
+# came from, and a rewrite that stops matching does not say so: it copies the
+# document straight through and every check downstream keeps passing with its
+# premise deleted. So two rules hold for everything below.
+#
+# 1. Synthetic versions are out of reach of any release -- major 99, year 2099, or
+#    a 0.0.x floor -- never the next plausible number. The synthetic exapump in the
+#    cache and notice fixtures used to be 0.12.0, one routine release above what the
+#    document advertised, and versions-bump.yml runs weekly and does not edit tests.
+# 2. Every rewrite proves it changed something. That is the half that survives the
+#    next person picking a plausible-looking literal: the fixture fails loudly
+#    instead of quietly becoming a copy of the document it was derived from.
+
+# derive <sed-expression> <source> <destination> — a sed-derived fixture that must
+# not come out byte-identical to its source.
+derive() {
+    sed "$1" "$2" > "$3"
+    if cmp -s "$2" "$3"; then
+        _dv_state="NO-OP: $1 matched nothing in $2"
+    else
+        _dv_state="differs"
+    fi
+    check "fixture $(basename "$3")" "differs" "$_dv_state"
+}
+
+# fixture_doc <label> <destination> <dotted.path=value>... — a fixture document
+# built from the SHIPPED versions.json with the named paths replaced.
+#
+# Paths are addressed by key, never by matching the text that happens to be there,
+# so a rewrite cannot silently half-apply. A *.version replacement must also CHANGE
+# the value: every version fixture in this file exists in order to differ from the
+# shipped set, so one the document has caught up with is a broken fixture, not a
+# passing test. Other properties (severity, note) may legitimately already agree.
+fixture_doc() {
+    _fx_label="$1"
+    _fx_dest="$2"
+    shift 2
+    check "fixture $_fx_label" "rewritten" \
+        "$(python3 - "$REAL" "$_fx_dest" "$@" 2>&1 <<'FIXTURE_PY'
+import collections, json, sys
+with open(sys.argv[1]) as handle:
+    doc = json.load(handle, object_pairs_hook=collections.OrderedDict)
+for spec in sys.argv[3:]:
+    path, _, value = spec.partition("=")
+    keys = path.split(".")
+    node = doc
+    for key in keys[:-1]:
+        node = node.setdefault(key, collections.OrderedDict())
+    if keys[-1] == "version" and node.get(keys[-1]) == value:
+        sys.exit("NO-OP: the shipped document already says %s = %s -- this fixture "
+                 "needs a version no release can reach" % (path, value))
+    node[keys[-1]] = value
+with open(sys.argv[2], "w") as handle:
+    json.dump(doc, handle, indent=2)
+    handle.write("\n")
+print("rewritten")
+FIXTURE_PY
+)"
+}
+
+echo "fixtures (a derived variant must really differ from what it came from):"
+derive 's/"schema_version": 1/"schema_version": 2/' "$REAL" "$FIX/schema2.json"
 python3 - "$REAL" "$FIX/bad-charset.json" <<'CHARSET_PY'
 import json, sys
 doc = json.load(open(sys.argv[1]))
@@ -82,7 +144,8 @@ with open(sys.argv[2], "w") as handle:
     json.dump(doc, handle, indent=2)
     handle.write("\n")
 CHARSET_PY
-sed 's/"macos-aarch64": "[0-9a-f]*"/"macos-aarch64": "nothexnothexnothex"/' "$REAL" > "$FIX/bad-digest.json"
+derive 's/"macos-aarch64": "[0-9a-f]*"/"macos-aarch64": "nothexnothexnothex"/' \
+    "$REAL" "$FIX/bad-digest.json"
 printf 'this is not json\n' > "$FIX/corrupt.json"
 printf '[{"schema_version": 1}]\n' > "$FIX/array.json"
 cat > "$FIX/no-kit.json" <<'EOF'
@@ -119,7 +182,7 @@ cat > "$FIX/kit2.json" <<'EOF'
   }
 }
 EOF
-sed 's/"version": "0.1.0"/"version": "0.1.0 evil"/' "$FIX/kit2.json" > "$FIX/kit2-bad.json"
+derive 's/"version": "0.1.0"/"version": "0.1.0 evil"/' "$FIX/kit2.json" "$FIX/kit2-bad.json"
 
 # no_python <command...> — run one reader with every Python route closed, so
 # the awk fallback is the only thing that can answer.
@@ -200,14 +263,8 @@ mkdir -p "$EXAKIT_HOME/cache"
 # A sentinel, not a plausible version: it has to be impossible for the cached
 # answer to coincide with the baked one, or this proves nothing.
 V_CACHED_EXAPUMP="0.0.0-from-the-cache"
-python3 - "$REAL" "$EXAKIT_VERSIONS_CACHE" "$V_CACHED_EXAPUMP" <<'CACHE_PY'
-import json, sys
-doc = json.load(open(sys.argv[1]))
-doc["components"]["exapump"]["version"] = sys.argv[3]
-with open(sys.argv[2], "w") as handle:
-    json.dump(doc, handle, indent=2)
-    handle.write("\n")
-CACHE_PY
+fixture_doc "cached exapump sentinel" "$EXAKIT_VERSIONS_CACHE" \
+    "components.exapump.version=$V_CACHED_EXAPUMP"
 check "cache wins over the kit copy" "cache" "$( exakit_versions_source )"
 check "cached value is used" "$V_CACHED_EXAPUMP" "$( exakit_versions_value components.exapump.version )"
 printf 'corrupted by hand\n' > "$EXAKIT_VERSIONS_CACHE"
@@ -309,9 +366,15 @@ check "no document at all -> the fallback constants" \
     "fallback $EXAKIT_PERSONAL_VERSION_FALLBACK $EXAKIT_NANO_TAG_FALLBACK $EXAKIT_EXAPUMP_VERSION_FALLBACK $EXAKIT_MCP_VERSION_FALLBACK $EXAKIT_PYEXASOL_VERSION_FALLBACK" \
     "$(resolve_set 'exakit_repo_root() { return 1; }')"
 mkdir -p "$EXAKIT_HOME/cache"
-sed 's/"version": "'"$V_EXAPUMP"'"/"version": "0.12.0"/' "$REAL" > "$EXAKIT_VERSIONS_CACHE"
+# The cached answer has to be one the baked copy cannot also be giving, so this is
+# an unreachable major rather than the next plausible exapump release: the previous
+# 0.12.0 was a rewrite that would have become a no-op the week the document reached
+# it, leaving this check comparing the baked set to itself and still passing.
+V_CACHE_ONLY_EXAPUMP="99.0.0"
+fixture_doc "cache-only exapump" "$EXAKIT_VERSIONS_CACHE" \
+    "components.exapump.version=$V_CACHE_ONLY_EXAPUMP"
 check "a cached document beats the kit copy" \
-    "cache $V_PERSONAL $V_NANO 0.12.0 $V_MCP $V_PYEXASOL" "$(resolve_set)"
+    "cache $V_PERSONAL $V_NANO $V_CACHE_ONLY_EXAPUMP $V_MCP $V_PYEXASOL" "$(resolve_set)"
 check "pinned policy ignores the document entirely" \
     "fallback $EXAKIT_PERSONAL_VERSION_FALLBACK $EXAKIT_NANO_TAG_FALLBACK $EXAKIT_EXAPUMP_VERSION_FALLBACK $EXAKIT_MCP_VERSION_FALLBACK $EXAKIT_PYEXASOL_VERSION_FALLBACK" \
     "$(resolve_set 'EXAKIT_VERSION_POLICY=pinned')"
@@ -1423,15 +1486,22 @@ echo "after-command notice (severity-gated, once a day, stderr only):"
 NT="$WORK/notice-home"
 mkdir -p "$NT/kit/mcp" "$NT/cache" "$NT/bin"
 cp "$REAL" "$NT/kit/versions.json"
-# What this install is ON, and what the fixture document advertises. Deliberately
-# ancient rather than one step below whatever versions.json says today: the checks
-# below need an install that is behind the SHIPPED document, and a version set
-# lowered by the maintainers (a withdrawn release, a test set) would otherwise
-# catch up with the fixture and quietly delete the premise instead of failing.
+# What this install is ON, and what the fixture document advertises. Both ends are
+# deliberately out of reach of any release rather than a step either side of
+# whatever versions.json says today.
+#
+# The install is ancient because these checks need it behind the SHIPPED document,
+# and a version set lowered by the maintainers (a withdrawn release, a test set)
+# would otherwise catch up with the fixture and quietly delete the premise.
+# The advertised values are unreachable for the mirror-image reason: 0.12.0 was the
+# next plausible exapump release, and 2026.3.0-nano.1 the next plausible nano tag, so
+# a weekly bump could walk into either and turn "the advertised set differs from the
+# shipped set" into a fiction that no assertion here would notice.
 NOTICE_INSTALLED_EXAPUMP="0.0.1"
 NOTICE_INSTALLED_MCP="0.0.1"
-NOTICE_ADVERTISED_EXAPUMP="0.12.0"
-NOTICE_ADVERTISED_MCP="1.11.0"
+NOTICE_ADVERTISED_EXAPUMP="99.1.0"
+NOTICE_ADVERTISED_MCP="99.2.0"
+NOTICE_ADVERTISED_NANO="2099.1.0-nano.1"
 printf '#!/bin/sh\necho "exapump %s"\n' "$NOTICE_INSTALLED_EXAPUMP" > "$NT/bin/exapump"
 chmod +x "$NT/bin/exapump"
 cat > "$NT/manifest.json" <<EOF
@@ -1457,25 +1527,18 @@ cat > "$NT/manifest.json" <<EOF
   "steps_completed": []
 }
 EOF
-# Advertise one recommended light bump and one critical heavy bump.
-python3 - "$REAL" "$WORK/notice-versions.json" \
-    "$NOTICE_ADVERTISED_EXAPUMP" "$NOTICE_ADVERTISED_MCP" <<'PY'
-import collections, json, sys
-with open(sys.argv[1]) as handle:
-    doc = json.load(handle, object_pairs_hook=collections.OrderedDict)
-doc["components"]["exapump"]["version"] = sys.argv[3]
-doc["components"]["exapump"]["severity"] = "recommended"
-doc["components"]["nano"]["version"] = "2026.3.0-nano.1"
-doc["components"]["nano"]["severity"] = "critical"
-# A genuine normal-severity bump: the recorded install is far behind this, so it is
-# pending. Without the version change there was nothing to announce, and an
-# assertion about it would pass or fail for the wrong reason.
-doc["components"]["mcp"]["version"] = sys.argv[4]
-doc["components"]["mcp"]["severity"] = "normal"
-with open(sys.argv[2], "w") as handle:
-    json.dump(doc, handle, indent=2)
-    handle.write("\n")
-PY
+# Advertise one recommended light bump and one critical heavy bump. The mcp bump is
+# a genuine normal-severity one: the recorded install is far behind it, so it is
+# pending. Without the version change there is nothing to announce, and an assertion
+# about it would pass or fail for the wrong reason -- which is why fixture_doc
+# refuses a version the shipped document has already reached.
+fixture_doc "notice: an advertised set the install is behind" "$WORK/notice-versions.json" \
+    "components.exapump.version=$NOTICE_ADVERTISED_EXAPUMP" \
+    "components.exapump.severity=recommended" \
+    "components.nano.version=$NOTICE_ADVERTISED_NANO" \
+    "components.nano.severity=critical" \
+    "components.mcp.version=$NOTICE_ADVERTISED_MCP" \
+    "components.mcp.severity=normal"
 
 # The notice refuses to speak unless stderr is a terminal, so the harness has to
 # provide one. script(1) does that, with two different command lines in the wild:
@@ -1582,20 +1645,13 @@ lacks "or critical" "A critical" "$only_normal"
 # nano stays genuinely behind, to prove the skip is targeted and not a mute
 # button. exapump is also flagged 'recommended', so if it were still counted the
 # light line would appear and borrow that word.
-python3 - "$REAL" "$WORK/notice-ahead.json" <<'PY'
-import collections, json, sys
-with open(sys.argv[1]) as handle:
-    doc = json.load(handle, object_pairs_hook=collections.OrderedDict)
-doc["components"]["exapump"]["version"] = "0.0.0"
-doc["components"]["exapump"]["severity"] = "recommended"
-doc["components"]["mcp"]["version"] = "0.0.0"
-doc["components"]["mcp"]["severity"] = "normal"
-doc["components"]["nano"]["version"] = "2026.3.0-nano.1"
-doc["components"]["nano"]["severity"] = "critical"
-with open(sys.argv[2], "w") as handle:
-    json.dump(doc, handle, indent=2)
-    handle.write("\n")
-PY
+fixture_doc "notice: an advertised set the install has overshot" "$WORK/notice-ahead.json" \
+    "components.exapump.version=0.0.0" \
+    "components.exapump.severity=recommended" \
+    "components.mcp.version=0.0.0" \
+    "components.mcp.severity=normal" \
+    "components.nano.version=$NOTICE_ADVERTISED_NANO" \
+    "components.nano.severity=critical"
 rm -f "$NT/cache/notice-state.json" "$NT/cache/notice-plan"
 ahead_notice="$(notice "$WORK/notice-ahead.json")"
 lacks "an install ahead of the tagged set is not announced" "exapump" "$ahead_notice"
@@ -1873,7 +1929,20 @@ make_kit_tarball() {
         printf '# fake %s from kit %s\n' "$_mk_file" "$_mk_version" > "$_mk_src/repo-main/$_mk_file"
     done
     if [ "$_mk_omit" != "versions.json" ]; then
-        sed 's/"version": "0.2.0"/"version": "'"$_mk_version"'"/' "$REAL" > "$_mk_src/repo-main/versions.json"
+        # kit.version is set by key, not by matching the version the shipped
+        # document happens to carry today: an archive is allowed to advertise the
+        # shipped kit version (the checks here are against the INSTALLED 0.2.0 this
+        # sandbox records), but a literal made the rewrite silently optional the
+        # moment the kit released the number this test asks for.
+        python3 - "$REAL" "$_mk_src/repo-main/versions.json" "$_mk_version" <<'MK_VERSIONS_PY'
+import collections, json, sys
+with open(sys.argv[1]) as handle:
+    doc = json.load(handle, object_pairs_hook=collections.OrderedDict)
+doc["kit"]["version"] = sys.argv[3]
+with open(sys.argv[2], "w") as handle:
+    json.dump(doc, handle, indent=2)
+    handle.write("\n")
+MK_VERSIONS_PY
     fi
     # Release notes for the version this archive carries: the update prints them
     # from the copy it just staged, so they have to travel with it.
@@ -1960,14 +2029,8 @@ if command -v pwsh >/dev/null 2>&1; then
     # A cached copy that differs from the kit copy proves which one is read. The
     # sentinel cannot coincide with whatever the document advertises today.
     PS_CACHED_EXAPUMP="0.0.0-from-the-cache"
-    python3 - "$REAL" "$PS_HOME/cache/versions.json" "$PS_CACHED_EXAPUMP" <<'PS_CACHE_PY'
-import json, sys
-doc = json.load(open(sys.argv[1]))
-doc["components"]["exapump"]["version"] = sys.argv[3]
-with open(sys.argv[2], "w") as handle:
-    json.dump(doc, handle, indent=2)
-    handle.write("\n")
-PS_CACHE_PY
+    fixture_doc "powershell: cached exapump sentinel" "$PS_HOME/cache/versions.json" \
+        "components.exapump.version=$PS_CACHED_EXAPUMP"
     touch "$PS_HOME/cache/versions.json"
     ps_state="$(EXAKIT_HOME="$PS_HOME" EXAKIT_BIN_DIR="$PS_HOME/bin" \
         EXAKIT_VERSIONS_CACHE="$PS_HOME/cache/versions.json" \
