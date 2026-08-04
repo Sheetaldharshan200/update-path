@@ -1690,9 +1690,10 @@ _exakit_probe_pyexasol_version() {
 #
 # The adapters own where those configs live, so the paths come from the kit's own
 # status operation rather than from a second copy of that knowledge here. When the
-# clients disagree — one set up before an update and never refreshed — every distinct
-# pin is reported, because "which client is stale" is the useful part and
-# `exakit mcp-doctor` / `exakit mcp-repair` are where it gets fixed.
+# clients disagree — one set up before an update and never refreshed — the oldest pin
+# is the answer here, and the per-client picture belongs to `exakit mcp-doctor`: it
+# names each client whose managed entry is no longer the one the kit would write, and
+# `exakit mcp-repair` re-writes those entries from the current definition.
 exakit_installed_mcp_version() {
     command -v exakit_run_mcp_operation_cli >/dev/null 2>&1 || return 1
     exakit_can_run_python || return 1

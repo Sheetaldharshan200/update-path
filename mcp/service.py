@@ -331,7 +331,11 @@ class MCPAccessSubsystem:
                 summary="Repair is blocked by request or policy validation.",
                 findings=findings,
             )
-        existing_validation = validator.validate_manifest_consistency()
+        # With the desired definition in hand this sees an entry that is intact
+        # but superseded, not just a hand-edited one -- which is the whole
+        # difference between repair fixing a stale version pin and repair
+        # answering "already consistent" forever.
+        existing_validation = validator.validate_manifest_consistency(request.server_definition)
         findings.extend(existing_validation.findings)
         if not existing_validation.findings:
             return OperationResult(
@@ -360,7 +364,7 @@ class MCPAccessSubsystem:
             configure_request = OperationRequest(
                 request_id=request.request_id,
                 operation=OperationName.CONFIGURE,
-                target_clients=request.target_clients,
+                target_clients=self._repair_targets(request, existing_validation.findings),
                 deployment_mode=request.deployment_mode,
                 dry_run=False,
                 force=request.force,
@@ -627,6 +631,39 @@ class MCPAccessSubsystem:
             artifacts=active_artifacts,
             backup_reference=latest_snapshot,
         )
+
+    @staticmethod
+    def _repair_targets(
+        request: OperationRequest, findings: list[Finding]
+    ) -> tuple[str, ...]:
+        """The clients repair should hand configure: the ones actually at fault.
+
+        Repair used to pass the caller's whole client list straight through, and
+        the caller is normally "every supported client" -- harmless while repair
+        only ever ran on a file someone had hand-edited, because that state is
+        rare and the user had asked for a rewrite anyway. Now that a superseded
+        entry also triggers repair, that list would have configure CREATE managed
+        entries in every client installed on the machine, including the ones the
+        user deliberately never connected. So the findings choose the targets.
+
+        An explicit client selection still narrows it. If the intersection is
+        empty -- findings for clients the caller did not name -- the selection is
+        used unchanged, which is exactly what happened before.
+        """
+
+        named = tuple(
+            dict.fromkeys(
+                str(finding.scope["client"])
+                for finding in findings
+                if finding.scope.get("client")
+            )
+        )
+        if request.target_clients:
+            narrowed = tuple(
+                client for client in named if client in request.target_clients
+            )
+            return narrowed or request.target_clients
+        return named or request.target_clients
 
     def _render_for_client(
         self, adapter: ClientAdapter, request: OperationRequest

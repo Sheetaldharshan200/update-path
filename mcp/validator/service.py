@@ -9,12 +9,14 @@ import stat
 from typing import Iterable
 from urllib.parse import urlparse
 
+from mcp.adapters.base import AdapterInspection, ClientAdapter
 from mcp.adapters.registry import AdapterRegistry
 from mcp.core.models import (
     ArtifactReference,
     DiscoveredClient,
     Finding,
     OperationRequest,
+    ServerDefinition,
     Severity,
     VerificationEvidence,
 )
@@ -230,7 +232,19 @@ class ValidatorService:
         status = "pass_with_warnings" if findings else "pass"
         return StageResult("permission_posture", status, findings, evidence)
 
-    def validate_manifest_consistency(self) -> StageResult:
+    def validate_manifest_consistency(
+        self, desired: ServerDefinition | None = None
+    ) -> StageResult:
+        """Compare every managed entry against the manifest AND against ``desired``.
+
+        The manifest hash answers "has anyone touched this since we wrote it?".
+        On its own that misses the other way a managed entry goes wrong: nobody
+        touched it, an update moved the definition on, and the entry is now a
+        faithful copy of what we wrote THEN rather than what we would write NOW.
+        Passing the desired definition in is what makes that case visible;
+        without it this stage can only ever see a hand edit.
+        """
+
         findings: list[Finding] = []
         evidence: list[VerificationEvidence] = []
         for record in self._manifest_repository.list_active_artifacts():
@@ -264,17 +278,78 @@ class ValidatorService:
                         recommended_action="Run repair or restore the last known-good snapshot.",
                     )
                 )
-            else:
-                evidence.append(
-                    VerificationEvidence(
-                        stage="manifest_consistency",
-                        status="pass",
-                        details="Manifest hash matches the current managed configuration entry.",
-                        subject=artifact.path,
-                    )
+                continue
+            evidence.append(
+                VerificationEvidence(
+                    stage="manifest_consistency",
+                    status="pass",
+                    details="Manifest hash matches the current managed configuration entry.",
+                    subject=artifact.path,
                 )
-        status = "fail_recoverable" if findings else "pass"
+            )
+            # The hash check above passed, so the entry is intact. Whether it is
+            # also CURRENT is a separate question with a separate answer.
+            outdated = self._outdated_entry_finding(adapter, artifact, entry_name, inspection, desired)
+            if outdated is not None:
+                findings.append(outdated)
+        # Severity-aware, via the same helper the other stages use. The two
+        # drift findings are ERROR, so they still yield "fail_recoverable"
+        # exactly as the old unconditional expression did; an out-of-date entry
+        # is a WARNING and lands on "pass_with_warnings" instead, because a
+        # client pinned to last month's server is behind, not broken.
+        status = _stage_status(findings)
         return StageResult("manifest_consistency", status, findings, evidence)
+
+    @staticmethod
+    def _outdated_entry_finding(
+        adapter: ClientAdapter,
+        artifact: ArtifactReference,
+        entry_name: str,
+        inspection: AdapterInspection,
+        desired: ServerDefinition | None,
+    ) -> Finding | None:
+        """Report an intact entry that is no longer the one we would write.
+
+        Re-rendering the desired definition against the file as it stands is the
+        comparison: every adapter's ``render`` reports the hash the entry WOULD
+        have, in the same shape ``inspect`` reports the hash it DOES have, which
+        is the invariant the manifest check already relies on. Rendering is a
+        pure computation -- nothing is written -- so the read-only callers stay
+        read-only.
+        """
+
+        if desired is None:
+            return None
+        if desired.name != entry_name:
+            # This artifact records a different server entry than the one the
+            # desired definition describes; there is nothing to compare.
+            return None
+        try:
+            rendered = adapter.render(desired, inspection)
+        except (ValueError, NotImplementedError):
+            # An adapter that cannot render this definition at all (a non-stdio
+            # transport, a definition with no command) has nothing to say about
+            # how current the entry is. Configure reports that on its own path.
+            return None
+        if rendered.managed_hash is None or rendered.managed_hash == inspection.managed_hash:
+            return None
+        return Finding(
+            code="managed_entry_outdated",
+            severity=Severity.WARNING,
+            message=(
+                f"{adapter.display_name()} still has the managed Exasol entry from an "
+                "earlier setup; it no longer matches the one this kit would write "
+                "(a superseded MCP server version is the usual reason)."
+            ),
+            scope={"path": artifact.path, "client": artifact.client},
+            # Hashes only, deliberately: the rendered entry carries the managed
+            # env block, and that block holds the database password.
+            evidence=[
+                f"installed={inspection.managed_hash}",
+                f"expected={rendered.managed_hash}",
+            ],
+            recommended_action="Run 'exakit mcp-repair' to re-write the entry from the current definition.",
+        )
 
     def run(
         self,
@@ -294,7 +369,10 @@ class ValidatorService:
             elif stage_name == "permission_posture":
                 stages.append(self.validate_permission_posture(artifact_list))
             elif stage_name == "manifest_consistency":
-                stages.append(self.validate_manifest_consistency())
+                # The desired definition travels with the request, so validate
+                # and doctor get the out-of-date check for free once the caller
+                # supplies one.
+                stages.append(self.validate_manifest_consistency(request.server_definition))
         return stages
 
     @staticmethod

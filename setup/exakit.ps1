@@ -404,9 +404,11 @@ function Get-ExakitProbedVersion {
 # materialises it per launch. What exists on the machine is the SPEC pinned into each
 # AI client config, and that is what runs the next time a client connects. The
 # adapters own where those configs live, so the paths come from the kit's own status
-# operation rather than a second copy of that knowledge. Clients that disagree are all
-# reported: "which client is stale" is the useful part, and mcp-doctor/mcp-repair fix
-# it. Twin of exakit_installed_mcp_version in setup/lib/common.sh.
+# operation rather than a second copy of that knowledge. When clients disagree the
+# oldest pin is the answer here; the per-client picture belongs to mcp-doctor, which
+# names each client whose managed entry is no longer the one the kit would write, and
+# mcp-repair re-writes those entries from the current definition.
+# Twin of exakit_installed_mcp_version in setup/lib/common.sh.
 function Get-ExakitInstalledMcpVersion {
     if (-not (Get-Command Invoke-McpOperationCli -ErrorAction SilentlyContinue)) { return "" }
     try {
