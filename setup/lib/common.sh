@@ -72,6 +72,9 @@ EXAKIT_NANO_TAG_FALLBACK="${EXAKIT_NANO_TAG_FALLBACK:-2026.2.0-nano.2}"
 EXAKIT_EXAPUMP_VERSION_FALLBACK="${EXAKIT_EXAPUMP_VERSION_FALLBACK:-0.11.3}"
 EXAKIT_MCP_VERSION_FALLBACK="${EXAKIT_MCP_VERSION_FALLBACK:-2.0.0}"
 EXAKIT_PYEXASOL_VERSION_FALLBACK="${EXAKIT_PYEXASOL_VERSION_FALLBACK:-2.3.0}"
+# Marketplace add-ons (dash-server, ...) carry their own version constants in
+# their module files — they are not part of the install flow, so nothing here
+# needs to know them.
 
 EXAKIT_PERSONAL_REPO="exasol/exasol-personal"
 EXAKIT_EXAPUMP_REPO="exasol-labs/exapump"
@@ -451,10 +454,46 @@ exakit_sweep_sensitive_tmp() {
     EXAKIT_SENSITIVE_TMP=""
 }
 
+# --- failure notes ----------------------------------------------------------
+# A step that fails is run inside a subshell (see exakit_soft_step), so it
+# cannot hand its reason back in a shell variable — the subshell's exports die
+# with it. The reason goes to a file instead, which is the one channel that
+# crosses that boundary, and the closing summary reads it back so it can say
+# WHY a component is missing instead of only that it is.
+exakit_failure_note_file() {
+    printf '%s\n' "${EXAKIT_FAILURE_NOTE:-$EXAKIT_HOME/.last-failure}"
+}
+
+# exakit_note_failure <reason> — record why the step now running gave up.
+# Never fails: a note is a nicety, and losing it must not turn a soft failure
+# into a hard one.
+exakit_note_failure() {
+    _nf_file="$(exakit_failure_note_file)"
+    [ -d "$(dirname "$_nf_file")" ] || return 0
+    { printf '%s\n' "$*" > "$_nf_file"; } 2>/dev/null || true
+    return 0
+}
+
+# exakit_take_failure_note — print the pending reason and clear it, so the next
+# step cannot inherit the previous one's explanation.
+exakit_take_failure_note() {
+    _tf_file="$(exakit_failure_note_file)"
+    [ -f "$_tf_file" ] || return 0
+    head -n 1 "$_tf_file" 2>/dev/null
+    rm -f "$_tf_file" 2>/dev/null
+    return 0
+}
+
+exakit_clear_failure_note() {
+    rm -f "$(exakit_failure_note_file)" 2>/dev/null
+    return 0
+}
+
 # Fatal error, rendered as a small "card": a prominent ✗ header, then a dim
 # gutter line pointing at the log — consistent shape for every failure.
 die() {
     exakit_sweep_sensitive_tmp
+    exakit_note_failure "$*"
     printf '\n  %s%s %s%s%s\n' "${UI_ERR:-}" "${UI_CROSS:-[x]}" "${UI_BOLD:-}" "$*" "${UI_RESET:-}" >&2
     if [ -n "${EXAKIT_LOG_FILE:-}" ]; then
         printf '    %s%s Log: %s%s\n' "${UI_DIM:-}" "${UI_VB:-|}" "$EXAKIT_LOG_FILE" "${UI_RESET:-}" >&2
@@ -1492,7 +1531,22 @@ exakit_component_latest() {
                 *) return 1 ;;
             esac
             ;;
-        *) return 1 ;;
+        *)
+            # Marketplace add-ons declare their upstream in versions.json:
+            # repo -> a GitHub release, package -> PyPI. No per-add-on arm.
+            _exakit_addon_registered "$1" || return 1
+            _cl_repo="$(exakit_versions_value "components.$1.repo" 2>/dev/null || true)"
+            if [ -n "$_cl_repo" ]; then
+                exakit_latest_github_release_version "$_cl_repo"
+                return $?
+            fi
+            _cl_pkg="$(exakit_versions_value "components.$1.package" 2>/dev/null || true)"
+            if [ -n "$_cl_pkg" ]; then
+                exakit_latest_pypi_version "$_cl_pkg"
+                return $?
+            fi
+            return 1
+            ;;
     esac
 }
 
@@ -1510,7 +1564,11 @@ _exakit_component_block() {
                 *) return 1 ;;
             esac
             ;;
-        *) return 1 ;;
+        *)
+            # Every marketplace add-on lives at components.<id> by convention.
+            _exakit_addon_registered "$1" || return 1
+            printf 'components.%s\n' "$1"
+            ;;
     esac
 }
 
@@ -1533,6 +1591,13 @@ _exakit_component_env_override() {
                 nano)     printf '%s' "${EXAKIT_NANO_TAG:-}" ;;
                 personal) printf '%s' "${EXAKIT_PERSONAL_VERSION:-}" ;;
             esac
+            ;;
+        *)
+            # Marketplace add-ons follow the derived-name convention:
+            # EXAKIT_<ID>_VERSION with dashes flipped to underscores.
+            if _exakit_addon_registered "$1"; then
+                eval "printf '%s' \"\${$(_exakit_addon_env_var "$1" VERSION):-}\""
+            fi
             ;;
     esac
 }
@@ -1585,7 +1650,14 @@ _exakit_component_fallback() {
         # The kit's own version is not one of the constants: it comes from the
         # copy on disk, which is exactly what is installed.
         exakit) exakit_kit_bundled_version ;;
-        *) return 1 ;;
+        *)
+            # Marketplace add-ons: EXAKIT_<ID>_VERSION_FALLBACK, defined by the
+            # add-on's own module (empty when the module is not loaded).
+            _exakit_addon_registered "$1" || return 1
+            eval "_cf_value=\"\${$(_exakit_addon_env_var "$1" VERSION_FALLBACK):-}\""
+            [ -n "$_cf_value" ] || return 1
+            printf '%s\n' "$_cf_value"
+            ;;
     esac
 }
 
@@ -1810,14 +1882,417 @@ exakit_component_current() {
         runtime)
             exakit_installation_runtime_version
             ;;
-        *) return 1 ;;
+        *)
+            # Marketplace add-ons: the module's own probe is the authority
+            # (<id>_installed_version asks the actual install and fails for a
+            # provably absent one, so a stale manifest record can never claim
+            # "installed"). Without the module, the record is all there is.
+            _exakit_addon_registered "$1" || return 1
+            _cur_fn="$(_exakit_addon_fn "$1" installed_version)"
+            if command -v "$_cur_fn" >/dev/null 2>&1; then
+                _cur_live="$("$_cur_fn" 2>/dev/null || true)"
+                [ -n "$_cur_live" ] || return 1
+                printf '%s\n' "$_cur_live"
+                return 0
+            fi
+            manifest_get "components.$(printf '%s' "$1" | tr '-' '_').version" 2>/dev/null
+            ;;
     esac
+}
+
+# ---------------------------------------------------------------------------
+# Marketplace add-ons
+# ---------------------------------------------------------------------------
+# Optional tools the kit can install but the setup scripts never do: the user
+# picks them from `exakit marketplace` (a multi-select — Space toggles, Enter
+# installs), and only the installed ones join the routine update flow, so
+# `exakit update all` can refresh an add-on but never sneak one in.
+#
+# Adding a new add-on is three additive changes — NO case-statement surgery.
+# Every registry function (version block, env override, fallback, upstream
+# lookup, installed probe, update targets/dispatch) handles registered add-ons
+# through a generic arm driven by these conventions:
+#   1. Ship its module as setup/lib/<id>.sh (+ the .ps1 twin), defining
+#      <id>_install, <id>_validate, <id>_update and <id>_installed_version —
+#      with dashes flipped to underscores, since a shell function name cannot
+#      carry a dash — plus its own EXAKIT_<ID>_VERSION and
+#      EXAKIT_<ID>_VERSION_FALLBACK constants.
+#   2. Add a components.<id> block to versions.json: version, severity, and
+#      repo (GitHub-release-installed) or package (PyPI-installed) — that
+#      field is what the generic upstream lookup reads.
+#   3. Add one line to exakit_marketplace_addons below.
+# (CI guards move with it: the expected-components set in versions.yml and the
+# COUPLED fallback-constant table in versions-bump.yml.)
+# ⇄ twin: Get-ExakitMarketplaceAddons and friends in setup/exakit.ps1.
+
+# exakit_marketplace_addons — one line per add-on: "id|label|description".
+exakit_marketplace_addons() {
+    printf '%s\n' "dash-server|dash-server (AI dashboard host)|Agent-built live dashboards on your Exasol data, operated over MCP"
+}
+
+# _exakit_addon_fn <id> <suffix> — the module function for an add-on.
+_exakit_addon_fn() {
+    printf '%s_%s\n' "$(printf '%s' "$1" | tr '-' '_')" "$2"
+}
+
+# _exakit_addon_env_var <id> <suffix> — the env/constant name for an add-on:
+# dash-server VERSION_FALLBACK -> EXAKIT_DASH_SERVER_VERSION_FALLBACK.
+_exakit_addon_env_var() {
+    printf 'EXAKIT_%s_%s\n' "$(printf '%s' "$1" | tr '[:lower:]-' '[:upper:]_')" "$2"
+}
+
+# _exakit_addon_registered <id> — is this a marketplace add-on at all? The
+# gate every generic registry arm runs first, so an unknown name still reads
+# as "unknown component" everywhere.
+_exakit_addon_registered() {
+    case "$1" in
+        ''|*[!a-z0-9-]*) return 1 ;;
+    esac
+    exakit_marketplace_addons | while IFS='|' read -r _ar_id _ar_label _ar_desc; do
+        [ "$_ar_id" = "$1" ] && printf 'yes\n' && break
+    done | grep -q yes
+}
+
+# exakit_marketplace_addon_available <id> — is the add-on's module loaded in
+# this process? (An old kit copy that predates the add-on simply lacks the
+# module file; the menu shows the row as unavailable instead of failing.)
+exakit_marketplace_addon_available() {
+    command -v "$(_exakit_addon_fn "$1" install)" >/dev/null 2>&1
+}
+
+# _exakit_marketplace_load_modules — source any add-on module that is not
+# loaded yet. The setup scripts deliberately do not source the modules (the
+# marketplace is not part of the install flow), so the closing offer and the
+# menu load them here on demand. A module that fails to load only makes its
+# own row unavailable.
+_exakit_marketplace_load_modules() {
+    # The sourcing must happen in THIS shell so the loaded functions stick —
+    # ids are collected via command substitution, never through a pipeline
+    # (whose stages are subshells).
+    _ml_root="$(exakit_repo_root 2>/dev/null || true)"
+    _ml_ids="$(exakit_marketplace_addons | cut -d'|' -f1)"
+    for _ml_id in $_ml_ids; do
+        exakit_marketplace_addon_available "$_ml_id" && continue
+        for _ml_dir in ${_ml_root:+"$_ml_root/setup/lib"} "$EXAKIT_HOME/kit/setup/lib"; do
+            if [ -f "$_ml_dir/$_ml_id.sh" ]; then
+                . "$_ml_dir/$_ml_id.sh" 2>/dev/null || \
+                    warn "The $_ml_id module could not be loaded from $_ml_dir (corrupted kit copy?)"
+                break
+            fi
+        done
+    done
+    return 0
+}
+
+# exakit_marketplace_addon_installed <id> — KIT-MANAGED install only: the
+# component answers for itself (exakit_component_current probes the actual
+# install and fails for a provably absent one, so a stale manifest record
+# cannot say "installed"). This is what gates the update flow — the kit only
+# ever updates what it manages.
+exakit_marketplace_addon_installed() {
+    exakit_component_current "$1" >/dev/null 2>&1
+}
+
+# _exakit_addon_system_present <id> — is the tool already on this machine
+# OUTSIDE the kit? A same-named binary on PATH that is not the kit's own
+# launcher counts; a module may sharpen the answer with <id>_system_present.
+# The kit never offers, updates or uninstalls such an install — it only stops
+# advertising a tool the user already has.
+_exakit_addon_system_present() {
+    _sp_fn="$(_exakit_addon_fn "$1" system_present)"
+    if command -v "$_sp_fn" >/dev/null 2>&1; then
+        "$_sp_fn"
+        return $?
+    fi
+    _sp_path="$(command -v "$1" 2>/dev/null || true)"
+    [ -n "$_sp_path" ] || return 1
+    # The kit's own launcher on PATH is a kit install, not a system one.
+    [ "$_sp_path" = "$EXAKIT_BIN_DIR/$1" ] && return 1
+    [ "$_sp_path" -ef "$EXAKIT_BIN_DIR/$1" ] 2>/dev/null && return 1
+    return 0
+}
+
+# _exakit_marketplace_addon_present <id> — installed by the kit OR already on
+# the system. "Present" is what the offer, the menu and the discovery lines
+# key on: a tool the user has, from anywhere, is never advertised.
+_exakit_marketplace_addon_present() {
+    exakit_marketplace_addon_installed "$1" && return 0
+    _exakit_addon_system_present "$1"
+}
+
+# exakit_marketplace_installed_addons — ids of the add-ons present on this
+# machine. This is what folds them into `exakit update all` / update-check.
+exakit_marketplace_installed_addons() {
+    exakit_marketplace_addons | while IFS='|' read -r _ma_id _ma_label _ma_desc; do
+        [ -n "$_ma_id" ] || continue
+        exakit_marketplace_addon_installed "$_ma_id" && printf '%s\n' "$_ma_id"
+    done
+    return 0
+}
+
+# exakit_marketplace_has_pending — true while at least one add-on is not on
+# this machine yet (neither kit-managed nor a system install). Drives the
+# discovery one-liners and the closing offer.
+exakit_marketplace_has_pending() {
+    [ -n "$(exakit_marketplace_addons | while IFS='|' read -r _mp_id _mp_label _mp_desc; do
+        [ -n "$_mp_id" ] || continue
+        _exakit_marketplace_addon_present "$_mp_id" || printf '%s\n' "$_mp_id"
+    done)" ]
+}
+
+# _exakit_marketplace_install_one <id> — install + validate one add-on. The
+# validate half must not fail the install (same contract as the setup steps):
+# a component that installed but could not be validated explains itself and is
+# retried by `exakit update <id>`.
+_exakit_marketplace_install_one() {
+    _mi_install="$(_exakit_addon_fn "$1" install)"
+    _mi_validate="$(_exakit_addon_fn "$1" validate)"
+    command -v "$_mi_install" >/dev/null 2>&1 || {
+        warn "The $1 module is not part of this kit copy — update the kit first: exakit update exakit"
+        return 1
+    }
+    "$_mi_install" || return 1
+    if command -v "$_mi_validate" >/dev/null 2>&1; then
+        "$_mi_validate" || true
+    fi
+    return 0
+}
+
+# exakit_print_marketplace_discovery_line — one dim line under the update-check
+# table while something in the marketplace is still uninstalled. Mirrors the
+# Kit 2 discovery line: it advertises, it never acts.
+exakit_print_marketplace_discovery_line() {
+    _md_pending=""
+    _md_pending="$(exakit_marketplace_addons | while IFS='|' read -r _md_id _md_label _md_desc; do
+        [ -n "$_md_id" ] || continue
+        _exakit_marketplace_addon_present "$_md_id" || printf '%s ' "$_md_id"
+    done)"
+    [ -n "$_md_pending" ] || return 0
+    printf '    %sOptional add-ons are available (%s) — browse them with: exakit marketplace%s\n' \
+        "${UI_DIM:-}" "$(printf '%s' "$_md_pending" | sed 's/ $//; s/ /, /g')" "${UI_RESET:-}"
+    return 0
+}
+
+# exakit_marketplace_menu — the `exakit marketplace` command body, wearing the
+# kit's two established looks so nothing here reads foreign:
+#   1. the STATE, as the same aligned table `exakit update-check` prints
+#      (Add-on / Status / Version / Action, one row per add-on, whatever its
+#      state — installed, on the system, missing module, or available);
+#   2. the SELECTION, as the same tree-checkbox the data-load menu uses: a
+#      group row with the add-ons hanging off UI_TEE/UI_CORNER connectors,
+#      Space toggles, Enter installs, Cancel as the exclusive default.
+# Only installable add-ons become menu rows — everything else is answered by
+# the table, exactly like already-loaded datasets are not re-offered.
+#
+# Non-interactive runs answer with EXAKIT_MARKETPLACE_ADDONS: a csv of add-on
+# ids, "all", or "none" — same contract as EXAKIT_MCP_CLIENTS / EXAKIT_DATASETS.
+exakit_marketplace_menu() {
+    _mm_ids=()
+    _mm_labels=()
+    _mm_rows=()
+    _mm_selectable=0
+    while IFS='|' read -r _mm_id _mm_label _mm_desc; do
+        [ -n "$_mm_id" ] || continue
+        if exakit_marketplace_addon_installed "$_mm_id"; then
+            _mm_ver="$(exakit_component_current "$_mm_id" 2>/dev/null || true)"
+            _mm_rows+=("$(printf '%-14s %-20s %-14s %s' "$_mm_id" "installed" "${_mm_ver:-?}" "exakit update $_mm_id")")
+            _mm_ids+=("__installed__"); _mm_labels+=("")
+        elif _exakit_addon_system_present "$_mm_id"; then
+            # The user already has the tool from somewhere else — covered, and
+            # the kit does not manage it.
+            _mm_rows+=("$(printf '%-14s %-20s %-14s %s' "$_mm_id" "on this system" "-" "managed outside the kit")")
+            _mm_ids+=("__installed__"); _mm_labels+=("")
+        elif ! exakit_marketplace_addon_available "$_mm_id"; then
+            _mm_rows+=("$(printf '%-14s %-20s %-14s %s' "$_mm_id" "not in this kit copy" "-" "exakit update exakit")")
+            _mm_ids+=("__unavailable__"); _mm_labels+=("")
+        else
+            _mm_adv="$(exakit_component_available "$_mm_id" 2>/dev/null || true)"
+            _mm_rows+=("$(printf '%-14s %-20s %-14s %s' "$_mm_id" "available" "${_mm_adv:-unknown}" "select below to install")")
+            _mm_ids+=("$_mm_id")
+            _mm_labels+=("$_mm_label — $_mm_desc")
+            _mm_selectable=$((_mm_selectable + 1))
+        fi
+    done <<EXAKIT_MM_EOF
+$(exakit_marketplace_addons)
+EXAKIT_MM_EOF
+
+    # The env answer wins over any menu, so agents and CI never need a TTY.
+    if [ -n "${EXAKIT_MARKETPLACE_ADDONS:-}" ]; then
+        _mm_answer="$(printf '%s' "$EXAKIT_MARKETPLACE_ADDONS" | tr '[:upper:]' '[:lower:]' | tr -d ' ')"
+        _mm_picked=""
+        case "$_mm_answer" in
+            none) info "EXAKIT_MARKETPLACE_ADDONS=none — installing nothing."; return 0 ;;
+            all)
+                _mm_i=0
+                while [ "$_mm_i" -lt "${#_mm_ids[@]}" ]; do
+                    case "${_mm_ids[$_mm_i]}" in __*__) ;; *) _mm_picked="${_mm_picked:+$_mm_picked,}${_mm_ids[$_mm_i]}" ;; esac
+                    _mm_i=$((_mm_i + 1))
+                done
+                ;;
+            *)
+                for _mm_tok in $(printf '%s' "$_mm_answer" | tr ',' ' '); do
+                    _mm_known=0
+                    _mm_i=0
+                    while [ "$_mm_i" -lt "${#_mm_ids[@]}" ]; do
+                        [ "${_mm_ids[$_mm_i]}" = "$_mm_tok" ] && _mm_known=1
+                        _mm_i=$((_mm_i + 1))
+                    done
+                    if [ "$_mm_known" -eq 1 ]; then
+                        _mm_picked="${_mm_picked:+$_mm_picked,}$_mm_tok"
+                    elif exakit_marketplace_addon_installed "$_mm_tok" 2>/dev/null; then
+                        info "$_mm_tok is already installed — update it with: exakit update $_mm_tok"
+                    elif _exakit_addon_registered "$_mm_tok" && _exakit_addon_system_present "$_mm_tok"; then
+                        info "$_mm_tok is already on this system — the kit leaves it alone"
+                    elif _exakit_addon_registered "$_mm_tok"; then
+                        # Registered but no module in this kit copy: a real
+                        # add-on the user asked for by name — say what fixes it
+                        # instead of calling it unknown.
+                        die "The $_mm_tok module is not part of this kit copy — update the kit first: exakit update exakit"
+                    else
+                        die "Unknown marketplace add-on in EXAKIT_MARKETPLACE_ADDONS: '$_mm_tok' (known: $(exakit_marketplace_addons | cut -d'|' -f1 | tr '\n' ' ' | sed 's/ $//'))"
+                    fi
+                done
+                ;;
+        esac
+        [ -n "$_mm_picked" ] || { info "Nothing to install — every requested add-on is already present."; return 0; }
+        _exakit_marketplace_apply "$_mm_picked"
+        return $?
+    fi
+
+    # The state table — same shape as the update-check table, so the two
+    # screens read as one family.
+    printf '\n  Marketplace add-ons\n'
+    printf '  -------------------\n'
+    printf '%-14s %-20s %-14s %s\n' "Add-on" "Status" "Version" "Action"
+    _mm_i=0
+    while [ "$_mm_i" -lt "${#_mm_rows[@]}" ]; do
+        printf '%s\n' "${_mm_rows[$_mm_i]}"
+        _mm_i=$((_mm_i + 1))
+    done
+    printf '\n'
+
+    if [ "$_mm_selectable" -eq 0 ]; then
+        info "Everything available is already covered. Updates: exakit update-check"
+        return 0
+    fi
+
+    # The selection — same tree the data-load menu draws: a group row with the
+    # add-ons hanging off connectors (UI_TEE/UI_CORNER from the ui palette;
+    # ASCII in plain mode), and Cancel as the exclusive, pre-selected default —
+    # a non-interactive run keeps it and installs nothing, the only safe
+    # answer there. Mirrors exakit_data_load_select / Show-ExakitMarketplaceMenu.
+    _mm_tee="${UI_TEE:-|-}"; _mm_corner="${UI_CORNER:-\`-}"
+    _mm_menu_labels=("Available add-ons")
+    _mm_menu_ids=("__group__")
+    _mm_child=0
+    _mm_i=0
+    while [ "$_mm_i" -lt "${#_mm_ids[@]}" ]; do
+        case "${_mm_ids[$_mm_i]}" in
+            __*__) ;;
+            *)
+                _mm_child=$((_mm_child + 1))
+                if [ "$_mm_child" -eq "$_mm_selectable" ]; then _mm_conn="$_mm_corner"; else _mm_conn="$_mm_tee"; fi
+                _mm_menu_labels+=("$_mm_conn ${_mm_labels[$_mm_i]}")
+                _mm_menu_ids+=("${_mm_ids[$_mm_i]}")
+                ;;
+        esac
+        _mm_i=$((_mm_i + 1))
+    done
+    _mm_menu_labels+=("Cancel (install nothing)")
+    _mm_menu_ids+=("__cancel__")
+    _mm_cancel_idx="${#_mm_menu_labels[@]}"
+    EXAKIT_CHECKBOX_GROUP="1:2:$((_mm_selectable + 1))"
+    EXAKIT_CHECKBOX_EXCLUSIVE="$_mm_cancel_idx"
+    ui_checkbox_menu "Select add-ons to install" "$_mm_cancel_idx" "${_mm_menu_labels[@]}"
+    case ",$EXAKIT_CHECKBOX_SELECTION," in
+        *",$_mm_cancel_idx,"*)
+            info "Marketplace closed — nothing was installed."
+            return 0
+            ;;
+    esac
+    _mm_picked=""
+    for _mm_idx in $(printf '%s' "$EXAKIT_CHECKBOX_SELECTION" | tr ',' ' '); do
+        [ "$_mm_idx" -ge 1 ] && [ "$_mm_idx" -lt "$_mm_cancel_idx" ] || continue
+        _mm_id="${_mm_menu_ids[$((_mm_idx - 1))]}"
+        case "$_mm_id" in __*__) continue ;; esac
+        _mm_picked="${_mm_picked:+$_mm_picked,}$_mm_id"
+    done
+    [ -n "$_mm_picked" ] || { info "Nothing selected — nothing was installed."; return 0; }
+    _exakit_marketplace_apply "$_mm_picked"
+}
+
+# exakit_marketplace_offer — the closing moment of an install: everything ran,
+# the panel is on screen, and this asks ONE question — add optional tools now,
+# or maybe later? Dynamic by design:
+#   - an add-on that is already on the machine (kit-managed, or a system
+#     install the kit does not manage) is not on offer;
+#   - when nothing is left to offer, the question disappears entirely;
+#   - a run with soft failures gets the one-line hint instead of a victory lap;
+#   - no TTY (scripted/agent installs) also gets the hint — unless
+#     EXAKIT_MARKETPLACE_ADDONS pre-answers, which installs without asking.
+# Best-effort by contract: callers run it in a subshell so nothing in here can
+# end an install that already succeeded. ⇄ twin: Request-ExakitMarketplaceOffer.
+exakit_marketplace_offer() {
+    _exakit_marketplace_load_modules
+    exakit_marketplace_has_pending || return 0
+
+    # A scripted answer wins over any prompt (same contract as the menu).
+    if [ -n "${EXAKIT_MARKETPLACE_ADDONS:-}" ]; then
+        exakit_marketplace_menu
+        return $?
+    fi
+
+    # "Done and working" must be true before it is said: a run that recorded
+    # soft failures points at the marketplace without the celebration.
+    if [ -n "${EXAKIT_SOFT_FAILED:-}" ] || [ -z "$(_exakit_prompt_tty)" ]; then
+        info "Optional add-ons (dashboards & more): exakit marketplace"
+        return 0
+    fi
+
+    printf '\n'
+    ok "Your Starter Kit installation is done and working."
+    info "The marketplace has more useful tools for it:"
+    exakit_marketplace_addons | while IFS='|' read -r _mo_id _mo_label _mo_desc; do
+        [ -n "$_mo_id" ] || continue
+        _exakit_marketplace_addon_present "$_mo_id" && continue
+        printf '      %s — %s\n' "$_mo_label" "$_mo_desc"
+    done
+    _mo_answer="$(prompt_text "Add tools from the marketplace now? (yes / maybe later)" "maybe later")"
+    case "$(printf '%s' "$_mo_answer" | tr '[:upper:]' '[:lower:]')" in
+        y|yes)
+            exakit_marketplace_menu
+            ;;
+        *)
+            info "Maybe later — browse any time with: exakit marketplace"
+            ;;
+    esac
+    return 0
+}
+
+# _exakit_marketplace_apply <ids_csv> — install each picked add-on in turn. One
+# failure does not strand the rest; the exit status says whether all made it.
+_exakit_marketplace_apply() {
+    _mp_status=0
+    for _mp_id in $(printf '%s' "$1" | tr ',' ' '); do
+        info "Installing add-on: $_mp_id"
+        if _exakit_marketplace_install_one "$_mp_id"; then
+            ok "$_mp_id installed — it now updates with: exakit update (or exakit update $_mp_id)"
+        else
+            warn "$_mp_id did not finish installing — retry with: exakit marketplace (or exakit update $_mp_id)"
+            _mp_status=1
+        fi
+    done
+    return "$_mp_status"
 }
 
 exakit_update_targets() {
     case "${1:-all}" in
         all)
             printf '%s\n' exakit runtime exapump mcp pyexasol
+            # Marketplace add-ons join the routine update set only once they
+            # are installed: `exakit update all` must never install a tool the
+            # user did not pick from `exakit marketplace`.
+            exakit_marketplace_installed_addons
             # Kit 2 is a target only once it is installed: at Kit 1 the update
             # check offers it as a discovery line instead, and a routine update
             # must never add a kit level on its own. It comes last because its
@@ -1828,7 +2303,11 @@ exakit_update_targets() {
             ;;
         runtime|database|db) printf '%s\n' runtime ;;
         nano|personal|exakit|exapump|mcp|pyexasol|kit2) printf '%s\n' "$1" ;;
-        *) return 1 ;;
+        *)
+            # Any registered marketplace add-on is a valid explicit target.
+            _exakit_addon_registered "$1" || return 1
+            printf '%s\n' "$1"
+            ;;
     esac
 }
 
@@ -2322,6 +2801,7 @@ exakit_print_update_check() {
     printf '\n'
     exakit_print_versions_source_line
     exakit_print_kit2_discovery_line
+    exakit_print_marketplace_discovery_line
     if [ "$_updates" -gt 1 ]; then
         info "Apply the quick ones in one go with: exakit update"
     fi
@@ -2458,7 +2938,16 @@ exakit_update_component() {
             nano_update
             ;;
         personal) personal_update "$@" ;;
-        *) die "Unknown update target: $_component" ;;
+        *)
+            # Marketplace add-ons dispatch to their module's <id>_update.
+            if _exakit_addon_registered "$_component"; then
+                _uc_fn="$(_exakit_addon_fn "$_component" update)"
+                command -v "$_uc_fn" >/dev/null 2>&1 || die "The $_component module is not available in this version."
+                "$_uc_fn"
+            else
+                die "Unknown update target: $_component"
+            fi
+            ;;
     esac
 }
 
@@ -2884,8 +3373,11 @@ exakit_install_skills() {
 exakit_maybe_offer_skills_install() {
     _repo_root="$(exakit_repo_root)" || return 0
     ls "$_repo_root"/skills/*/SKILL.md >/dev/null 2>&1 || return 0
-    exakit_install_skills || \
+    if ! exakit_install_skills; then
         warn "Skills install did not finish cleanly. Retry any time with: exakit skills-install"
+        exakit_note_failure "the AI skills could not be copied into place (see the log)"
+        return 1
+    fi
 }
 
 exakit_exapump_bin() {
@@ -3952,6 +4444,8 @@ exakit_maybe_offer_mcp_setup() {
     if ! exakit_mcp_setup; then
         warn "Your local runtime is installed, but MCP client setup did not finish cleanly."
         warn "Retry any time with: exakit mcp-setup"
+        exakit_note_failure "the AI client configuration did not finish (see the log)"
+        return 1
     fi
 }
 
@@ -3973,6 +4467,11 @@ exakit_maybe_offer_data_load() {
     # install can pick an exact selection. Unknown ids warn and are skipped;
     # if none are valid the install stops — the caller asked for something
     # this kit does not ship.
+    # Every path below reports through _data_failed, so the caller can book the
+    # step in the closing summary. Nothing here ends the run any more: an empty
+    # database is a thing to repair with one command, not a reason to abandon an
+    # install whose database is already up.
+    _data_failed=0
     if [ -n "${EXAKIT_DATASETS:-}" ]; then
         _known_ids=" $(exakit_bundled_datasets | cut -d'|' -f1 | tr '\n' ' ') "
         _valid_any=0
@@ -3983,6 +4482,8 @@ exakit_maybe_offer_data_load() {
                     info "Loading dataset '$_env_id' (EXAKIT_DATASETS)."
                     if ! ( exakit_load_dataset "$_kit_root" "$_env_id" ); then
                         warn "Data loading did not finish cleanly. Retry any time with: exakit data-load"
+                        exakit_note_failure "loading dataset '$_env_id' did not finish (see the log)"
+                        _data_failed=1
                     fi
                     ;;
                 *)
@@ -3990,8 +4491,12 @@ exakit_maybe_offer_data_load() {
                     ;;
             esac
         done
-        [ "$_valid_any" -eq 1 ] || die "EXAKIT_DATASETS='$EXAKIT_DATASETS' matched no bundled dataset — nothing was loaded."
-        return 0
+        if [ "$_valid_any" -ne 1 ]; then
+            error "EXAKIT_DATASETS='$EXAKIT_DATASETS' matched no bundled dataset — nothing was loaded."
+            exakit_note_failure "EXAKIT_DATASETS='$EXAKIT_DATASETS' matched no bundled dataset"
+            return 1
+        fi
+        return "$_data_failed"
     fi
 
     # EXAKIT_LOAD_SAMPLE lets an agent-driven or scripted install decide up front:
@@ -4004,6 +4509,8 @@ exakit_maybe_offer_data_load() {
         info "Loading the bundled sample data (EXAKIT_LOAD_SAMPLE=1)."
         if ! ( exakit_load_sample_data "$_kit_root" ); then
             warn "Data loading did not finish cleanly. Retry any time with: exakit data-load"
+            exakit_note_failure "the bundled sample data did not finish loading (see the log)"
+            return 1
         fi
         return 0
     fi
@@ -4027,15 +4534,20 @@ exakit_maybe_offer_data_load() {
                     info "Local file load skipped."
                 elif [ "$_local_status" -ne 0 ]; then
                     warn "Data loading did not finish cleanly. Retry any time with: exakit data-load"
+                    exakit_note_failure "loading the local file did not finish (see the log)"
+                    _data_failed=1
                 fi
                 ;;
             *)
                 if ! ( exakit_load_dataset "$_kit_root" "$_data_id" ); then
                     warn "Data loading did not finish cleanly. Retry any time with: exakit data-load"
+                    exakit_note_failure "loading dataset '$_data_id' did not finish (see the log)"
+                    _data_failed=1
                 fi
                 ;;
         esac
     done
+    return "$_data_failed"
 }
 
 # kit_shared_steps <first-step-no> <total-steps> <script-dir> <kit-root>
@@ -4060,15 +4572,41 @@ exakit_soft_step() {
     _ss_component="$1"
     _ss_repair="$2"
     shift 2
+    # Start from a clean slate so a reason left by an earlier step cannot be
+    # attributed to this one.
+    exakit_clear_failure_note
     if ( "$@" ); then
+        exakit_clear_failure_note
         return 0
     fi
-    EXAKIT_SOFT_FAILED="${EXAKIT_SOFT_FAILED:-}${EXAKIT_SOFT_FAILED:+ }$_ss_component"
-    # The repair command travels with the failure, so the summary never has to
-    # guess it back.
-    eval "EXAKIT_SOFT_REPAIR_${_ss_component}=\"\$_ss_repair\""
+    exakit_record_soft_failure "$_ss_component" "$_ss_repair" "$(exakit_take_failure_note)"
     warn "$_ss_component did not finish — carrying on so the rest of the install completes"
     return 1
+}
+
+# exakit_record_soft_failure <component> <repair> [reason] [label] — book a
+# step as "did not complete" without any of the running/subshell machinery.
+#
+# The soft-step wrapper is for component installers that die(); this is for the
+# steps that report failure by returning non-zero or by being wrapped in `|| true`
+# (the data load, the AI client wiring, the skills copy). Before this they failed
+# silently as far as the closing summary was concerned, so a user whose sample data
+# never loaded saw a clean "Setup complete" and no way to know.
+exakit_record_soft_failure() {
+    _rsf_component="$1"
+    _rsf_repair="$2"
+    _rsf_reason="${3:-}"
+    _rsf_label="${4:-}"
+    # First failure wins: a later, vaguer report must not overwrite the specific
+    # reason the original failure recorded.
+    exakit_soft_failed "$_rsf_component" && return 0
+    EXAKIT_SOFT_FAILED="${EXAKIT_SOFT_FAILED:-}${EXAKIT_SOFT_FAILED:+ }$_rsf_component"
+    # The repair command and the reason travel with the failure, so the summary
+    # never has to guess either back.
+    eval "EXAKIT_SOFT_REPAIR_${_rsf_component}=\"\$_rsf_repair\""
+    eval "EXAKIT_SOFT_REASON_${_rsf_component}=\"\$_rsf_reason\""
+    eval "EXAKIT_SOFT_LABEL_${_rsf_component}=\"\$_rsf_label\""
+    return 0
 }
 
 # exakit_soft_failed <component> — did this component fail earlier in the run?
@@ -4081,8 +4619,10 @@ exakit_soft_failed() {
 
 # exakit_print_soft_failures — the closing account of what did not make it.
 #
-# Said plainly and with the exact repair command: the install is usable, some of it
-# is missing, and here is the one line that fixes each piece.
+# Said plainly, with what went wrong and the exact command that fixes it: the
+# install is usable, some of it is missing, and here is the one line per piece
+# that repairs it. Printed last, after the connection panel, so it is the final
+# thing on screen rather than something scrolled past mid-install.
 exakit_print_soft_failures() {
     [ -n "${EXAKIT_SOFT_FAILED:-}" ] || return 0
     _sf_count=0
@@ -4091,16 +4631,27 @@ exakit_print_soft_failures() {
     done
     printf '\n'
     if [ "$_sf_count" = "1" ]; then
-        warn "The install finished, but one component is missing:"
+        warn "The install finished, but one step did not complete:"
     else
-        warn "The install finished, but $_sf_count components are missing:"
+        warn "The install finished, but $_sf_count steps did not complete:"
     fi
+    printf '\n'
     for _sf in $EXAKIT_SOFT_FAILED; do
         eval "_sf_repair=\"\${EXAKIT_SOFT_REPAIR_${_sf}:-}\""
-        printf '      %-10s %s\n' "$_sf" "${_sf_repair:-see the log}"
+        eval "_sf_reason=\"\${EXAKIT_SOFT_REASON_${_sf}:-}\""
+        eval "_sf_label=\"\${EXAKIT_SOFT_LABEL_${_sf}:-}\""
+        [ -n "$_sf_label" ] || _sf_label="$_sf"
+        printf '      %s%s%s is not installed: %s\n' \
+            "${UI_BOLD:-}" "$_sf_label" "${UI_RESET:-}" \
+            "${_sf_reason:-the step did not finish (see the log)}"
+        printf '        reinstall it with:  %s%s%s\n' \
+            "${UI_ACCENT:-}" "${_sf_repair:-see the log}" "${UI_RESET:-}"
     done
     printf '\n'
     info "Everything else is ready — the database, and the exakit command itself."
+    if [ -n "${EXAKIT_LOG_FILE:-}" ]; then
+        info "Full detail for each failure: $EXAKIT_LOG_FILE"
+    fi
     info "See where you stand any time with: exakit status"
     return 0
 }
@@ -4115,6 +4666,16 @@ _exakit_install_exapump() {
 _exakit_install_mcp() {
     mcp_install || return 1
     mcp_validate
+}
+
+# pyexasol_validate used to run OUTSIDE the soft step, which defeated the whole
+# point of the step being soft: the driver could install fine and a die() from
+# anywhere inside validation (a manifest write on a full disk, say) still ended
+# the run before the exakit helper was installed. Install and validate belong to
+# the same isolated unit.
+_exakit_install_pyexasol() {
+    pyexasol_install || return 1
+    pyexasol_validate || true
 }
 
 # exakit_whats_new_section <kit-root> <version> — the WHATS-NEW.md section for one
@@ -4183,7 +4744,16 @@ kit_shared_steps() {
     if exakit_soft_failed exapump; then
         info "Skipping the sample data — it is loaded with exapump, which is not installed"
     else
-        exakit_maybe_offer_data_load "$_kit_root" || true
+        # `|| true` alone hid a failed load completely: the run carried on (right)
+        # and the closing summary said nothing (wrong). Record it so the user
+        # leaves knowing the database is empty and which command fills it.
+        exakit_clear_failure_note
+        if ! exakit_maybe_offer_data_load "$_kit_root"; then
+            exakit_record_soft_failure sample_data "exakit data-load" \
+                "$(exakit_take_failure_note)" "sample data"
+            warn "Sample data did not finish loading — carrying on so the rest of the install completes"
+        fi
+        exakit_clear_failure_note
     fi
 
     if command -v mcp_install >/dev/null 2>&1; then
@@ -4204,8 +4774,7 @@ kit_shared_steps() {
             # the user is left without the command that fixes everything else. A
             # soft failure explains itself, records validated=false, and leaves
             # the step unmarked so a re-run (or `exakit update pyexasol`) retries.
-            if exakit_soft_step pyexasol "exakit update pyexasol" pyexasol_install; then
-                pyexasol_validate
+            if exakit_soft_step pyexasol "exakit update pyexasol" _exakit_install_pyexasol; then
                 mark_step pyexasol
             fi
         fi
@@ -4271,9 +4840,20 @@ kit_shared_steps() {
         ok "exakit installed ($EXAKIT_BIN_DIR/exakit)"
     fi
 
-    exakit_maybe_offer_mcp_setup || true
-    exakit_maybe_offer_skills_install || true
-    exakit_print_soft_failures
+    # Both offers are best-effort and neither may end the run — but "best-effort"
+    # used to mean "vanishes without trace". Each now books itself in the closing
+    # summary with the command that retries it.
+    exakit_clear_failure_note
+    if ! ( exakit_maybe_offer_mcp_setup ); then
+        exakit_record_soft_failure mcp_clients "exakit mcp-setup" \
+            "$(exakit_take_failure_note)" "AI client (MCP) setup"
+    fi
+    exakit_clear_failure_note
+    if ! ( exakit_maybe_offer_skills_install ); then
+        exakit_record_soft_failure skills "exakit skills-install" \
+            "$(exakit_take_failure_note)" "AI skills"
+    fi
+    exakit_clear_failure_note
     # An installer re-run over an older install is an upgrade, and the user has no
     # other way to learn what changed: the setup script records what the previous
     # copy said, and only a real move gets announced.
@@ -4327,6 +4907,12 @@ connection_panel() {
     ui_panel_line "Logs:         $(ui_tilde "$EXAKIT_LOG_DIR")"
     ui_panel_line "SQL client:   $(ui_link https://dbeaver.io/download/ "DBeaver (recommended)")"
     ui_panel_line "How to connect: exakit guide"
+    # One line, only while something is still on offer: the marketplace is the
+    # optional layer on top of a finished install, so this is where it is
+    # discovered — never during the install itself.
+    if exakit_marketplace_has_pending 2>/dev/null; then
+        ui_panel_line "Add-ons:      optional tools (dashboards & more): exakit marketplace"
+    fi
     ui_panel_end
     printf '\n'
 }
@@ -4414,6 +5000,7 @@ exakit_guide() {
     ui_panel_begin "Everything else"
     ui_panel_line "Connection summary:   exakit info"
     ui_panel_line "Load more data:       exakit data-load"
+    ui_panel_line "Optional add-ons:     exakit marketplace (dashboards & more)"
     ui_panel_line "Health check:         exakit status · exakit mcp-doctor"
     ui_panel_end
     printf '\n'
@@ -4532,16 +5119,23 @@ exakit_uninstall_run() {
     fi
 
     # 5) Kit home: credentials, logs, manifest, cached kit copy, MCP snapshots,
-    #    and the pyexasol virtual environment (it lives under the kit home).
+    #    and the pyexasol / marketplace add-on virtual environments and state
+    #    (dash-server's venv and instance data live under the kit home too).
     if [ -e "$EXAKIT_HOME" ]; then
-        _step "kit home $EXAKIT_HOME (credentials, logs, manifest, snapshots, pyexasol venv)"
+        _step "kit home $EXAKIT_HOME (credentials, logs, manifest, snapshots, pyexasol venv, add-ons)"
         _rm "$EXAKIT_HOME"
     fi
 
     # 6) CLI binaries. Removed last so earlier steps can still call the launcher.
     #    Removing the running exakit binary itself is safe (the inode survives
-    #    until the process exits).
-    for _bin in exasol exakit exapump; do
+    #    until the process exits). Marketplace add-on launchers are swept by
+    #    registry id — a new add-on needs no edit here, and a machine without
+    #    one simply has no file to remove.
+    _bins="exasol exakit exapump"
+    if command -v exakit_marketplace_addons >/dev/null 2>&1; then
+        _bins="$_bins $(exakit_marketplace_addons | cut -d'|' -f1 | tr '\n' ' ')"
+    fi
+    for _bin in $_bins; do
         if [ -e "$EXAKIT_BIN_DIR/$_bin" ]; then
             _step "CLI binary $EXAKIT_BIN_DIR/$_bin"
             _rm "$EXAKIT_BIN_DIR/$_bin"

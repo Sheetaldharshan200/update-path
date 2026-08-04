@@ -2,8 +2,8 @@ tool	command	options	description
 exakit	preflight		Check this machine's requirements (runtime, RAM, ports); install nothing.
 exakit	status		Show what is installed and whether each component is healthy.
 exakit	version		Show kit source, install date, and component versions.
-exakit	update-check	[all|runtime|exakit|exapump|mcp|pyexasol|nano|personal]	Compare installed versions against the versions the maintainers advertise, and print the exact update command for each.
-exakit	update	[all|runtime|exakit|exapump|mcp|pyexasol|nano|personal]	Apply the advertised versions of the quick components (kit, exapump, MCP server, pyexasol); a runtime change is announced but left for you to run explicitly. Database data is preserved.
+exakit	update-check	[all|runtime|exakit|exapump|mcp|pyexasol|dash-server|nano|personal]	Compare installed versions against the versions the maintainers advertise, and print the exact update command for each.
+exakit	update	[all|runtime|exakit|exapump|mcp|pyexasol|dash-server|nano|personal]	Apply the advertised versions of the quick components (kit, exapump, MCP server, pyexasol, installed add-ons); a runtime change is announced but left for you to run explicitly. Database data is preserved.
 exakit	update personal	[--plan|--backup|--apply]	Handle Exasol Personal major-version updates with an explicit non-destructive plan, deployment backup, and launcher apply step.
 exakit	upgrade-kit2		Add the Kit 2 trust assets (Trusted AI Workflow add-on) on top of this install: semantic model, audit/run log, saved workflow. Nothing is reinstalled and no data is touched; safe to re-run.
 exakit	rollback-kit2		Remove exactly what upgrade-kit2 added and return to Kit 1. The database, exapump, MCP server and sample data stay untouched.
@@ -21,6 +21,7 @@ exakit	mcp-doctor	[clients]	Run MCP diagnostics and report problems.
 exakit	mcp-remove	[clients]	Remove the managed MCP config from the supported clients.
 exakit	mcp-restore	[snapshot]	Restore the latest (or a chosen) MCP config snapshot.
 exakit	skills-install		Install the kit's AI skills into ~/.claude/skills and ~/.agents/skills for CLI agents (Claude Code, Codex).
+exakit	marketplace		Browse optional add-ons (dash-server and future tools): Space selects, Enter installs. Installed add-ons update through exakit update.
 exakit	uninstall	[--yes | --dry-run]	Remove EVERYTHING the kit installed (database + data, MCP client configs, skills, exapump, kit home, CLI binaries). --dry-run previews; --yes skips the typed confirmation.
 exakit	logs		Print the path of the latest setup log.
 exakit	catalog	[search]	Browse or search every exakit, exapump, and exasol command (this screen).

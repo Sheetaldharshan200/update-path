@@ -26,6 +26,9 @@
 #   mcp-restore [snapshot] restore the latest (or a chosen) MCP snapshot
 #   skills-install        install the kit's AI skills for CLI agents
 #                         (~\.claude\skills, ~\.agents\skills)
+#   marketplace           browse optional add-ons (dash-server, ...) and install
+#                         the ones you select; installed add-ons then update
+#                         through `exakit update` like every other component
 #   upgrade-kit2          add the Kit 2 trust assets (bash paths only for now)
 #   rollback-kit2         remove what upgrade-kit2 added (bash paths only for now)
 #   uninstall [-Yes] [-DryRun]
@@ -70,6 +73,10 @@ if (Test-Path (Join-Path $scriptDir "lib\exakit-common.ps1")) {
 # pyexasol is an update target of its own (and its own repair command), so the
 # CLI needs the module even though it takes no part in the runtime commands.
 . (Join-Path $libDir "pyexasol.ps1")
+# Marketplace add-on modules: the CLI is where they are installed (exakit
+# marketplace) and updated (exakit update <addon>). A missing file only makes
+# the marketplace row unavailable - it must not break every other command.
+if (Test-Path (Join-Path $libDir "dash-server.ps1")) { . (Join-Path $libDir "dash-server.ps1") }
 
 function Get-RuntimeType { return (Get-ExakitManifestValue "runtime.type") }
 
@@ -188,7 +195,13 @@ function Invoke-ExakitUninstallRun {
     #    it re-reads the file after we exit. So collect the binaries and hand
     #    their removal to a detached process that waits for us to exit first.
     $binPaths = @()
-    foreach ($bin in @("exakit.cmd", "exapump.exe", "exasol.exe", "exakit.ps1")) {
+    # Marketplace add-on launchers are swept by registry id - a new add-on
+    # needs no edit here.
+    $binNames = @("exakit.cmd", "exapump.exe", "exasol.exe", "exakit.ps1")
+    if (Get-Command Get-ExakitMarketplaceAddons -ErrorAction SilentlyContinue) {
+        foreach ($addon in Get-ExakitMarketplaceAddons) { $binNames += "$($addon.Id).cmd" }
+    }
+    foreach ($bin in $binNames) {
         $p = Join-Path $script:BinDir $bin
         if (Test-Path $p) {
             if ($DryRun) { Info "  will remove: CLI binary $p" }
@@ -313,6 +326,12 @@ function Invoke-CmdVersion {
     Write-Host "exapump:        $(Get-ExakitVersionCell 'exapump' (Get-ExakitManifestValue 'components.exapump.version'))"
     Write-Host "MCP server:     $(Get-ExakitManifestValue 'components.mcp_server.package') $(Get-ExakitVersionCell 'mcp' (Get-ExakitManifestValue 'components.mcp_server.version'))"
     Write-Host "pyexasol:       $(Get-ExakitVersionCell 'pyexasol' (Get-ExakitManifestValue 'components.pyexasol.version'))"
+    # Marketplace add-ons appear only once installed: this screen reports what
+    # is on the machine, and the marketplace command is the catalog.
+    foreach ($addonId in (Get-ExakitMarketplaceInstalledAddons)) {
+        $recordKey = "components." + ($addonId -replace "-", "_") + ".version"
+        Write-Host ("{0,-15} {1}" -f "${addonId}:", (Get-ExakitVersionCell $addonId (Get-ExakitManifestValue $recordKey)))
+    }
     if (Test-ExakitUpdatesPending) {
         # The same framed panel the connection details use, rather than three loose
         # lines that read like an error: this is good news, and it is the only thing
@@ -328,11 +347,30 @@ function Invoke-CmdVersion {
 function Get-ExakitUpdateTargets {
     param([string]$Target = "all")
     switch ($Target) {
-        "all" { return @("exakit", "runtime", "exapump", "mcp", "pyexasol") }
+        "all" {
+            # Marketplace add-ons join the routine update set only once they
+            # are installed: `exakit update all` must never install a tool the
+            # user did not pick from `exakit marketplace`.
+            return @(@("exakit", "runtime", "exapump", "mcp", "pyexasol") + (Get-ExakitMarketplaceInstalledAddons))
+        }
         { $_ -in @("runtime", "database", "db") } { return @("runtime") }
         { $_ -in @("nano", "personal", "exakit", "exapump", "mcp", "pyexasol", "kit2") } { return @($Target) }
-        default { Fail "Unknown update target: $Target" }
+        default {
+            # Any registered marketplace add-on is a valid explicit target.
+            if (Get-ExakitMarketplaceAddon $Target) { return @($Target) }
+            Fail "Unknown update target: $Target"
+        }
     }
+}
+
+# The marketplace core (registry, menu, apply, offer) lives in
+# setup/lib/exakit-common.ps1 so the installer's closing offer can use it too
+# - mirroring the bash side, where it all lives in common.sh. This file only
+# carries the command entry point.
+function Invoke-CmdMarketplace {
+    if (-not (Test-Path $script:ManifestPath)) { Fail "No installation found. Run the installer first." }
+    Initialize-ExakitLogging
+    Show-ExakitMarketplaceMenu
 }
 
 # exakit_update_actual_target equivalent: "runtime" names whichever runtime is
@@ -515,6 +553,19 @@ function Get-ExakitComponentCurrent {
             if ((Get-RuntimeType) -eq "personal") { return (Get-ExakitManifestValue "runtime.version") }
             return ""
         }
+        default {
+            # Marketplace add-ons: the module's own probe is the authority (it
+            # asks the actual install and returns nothing for a provably absent
+            # one, so a stale manifest record can never claim "installed").
+            $addon = Get-ExakitMarketplaceAddon $Component
+            if (-not $addon) { return "" }
+            if (Get-Command $addon.VersionFn -ErrorAction SilentlyContinue) {
+                $live = & $addon.VersionFn
+                if ($live) { return $live }
+                return ""
+            }
+            return (Get-ExakitManifestValue ("components." + ($Component -replace "-", "_") + ".version"))
+        }
     }
 }
 
@@ -535,6 +586,16 @@ function Get-ExakitComponentLatest {
             if ((Get-RuntimeType) -eq "personal") { return (Get-ExakitComponentLatest "personal") }
             return ""
         }
+        default {
+            # Marketplace add-ons declare their upstream in versions.json:
+            # repo -> a GitHub release, package -> PyPI. No per-add-on arm.
+            if (-not (Get-ExakitMarketplaceAddon $Component)) { return "" }
+            $repo = Get-ExakitVersionsValue -Path "components.$Component.repo"
+            if ($repo) { return (Get-ExakitLatestGithubRelease $repo) }
+            $package = Get-ExakitVersionsValue -Path "components.$Component.package"
+            if ($package) { return (Get-ExakitLatestPypiVersion $package) }
+            return ""
+        }
     }
 }
 
@@ -549,6 +610,11 @@ function Get-ExakitComponentBlock {
         "runtime" {
             if ((Get-RuntimeType) -eq "nano") { return "components.nano" }
             if ((Get-RuntimeType) -eq "personal") { return "components.personal" }
+            return $null
+        }
+        default {
+            # Every marketplace add-on lives at components.<id> by convention.
+            if (Get-ExakitMarketplaceAddon $Component) { return "components.$Component" }
             return $null
         }
     }
@@ -571,6 +637,11 @@ function Get-ExakitComponentEnvOverride {
         "pyexasol" { return $env:EXAKIT_PYEXASOL_VERSION }
         "nano" { return $env:EXAKIT_NANO_TAG }
         "personal" { return $env:EXAKIT_PERSONAL_VERSION }
+        default {
+            # Marketplace add-ons name their override in the registry.
+            $addon = Get-ExakitMarketplaceAddon $component
+            if ($addon) { return [Environment]::GetEnvironmentVariable($addon.EnvVar) }
+        }
     }
     return ""
 }
@@ -607,6 +678,15 @@ function Get-ExakitComponentFallback {
         # The kit's own version is not one of the constants: it comes from the copy
         # on disk, which is exactly what is installed.
         "exakit" { return (Get-ExakitKitBundledVersion) }
+        default {
+            # Marketplace add-ons: the module defines the constant the registry
+            # names (empty when the module is not loaded).
+            $addon = Get-ExakitMarketplaceAddon $component
+            if ($addon) {
+                $var = Get-Variable -Scope Script -Name $addon.FallbackVar -ErrorAction SilentlyContinue
+                if ($var) { return $var.Value }
+            }
+        }
     }
     return ""
 }
@@ -859,6 +939,7 @@ function Invoke-CmdUpdateCheck {
     }
     Write-Host ""
     Write-ExakitVersionsSourceLine
+    Write-ExakitMarketplaceDiscoveryLine
     if ($updates -gt 1) { Info "Apply the quick ones in one go with: exakit update" }
     if ($heavyPending) { Info "A runtime change stops the database - run it when convenient: exakit update runtime" }
 }
@@ -969,6 +1050,14 @@ function Invoke-CmdUpdate {
                 if ($available) { Update-Pyexasol | Out-Null }
             }
             "kit2" { Write-ExakitKit2NotAvailable -Command "exakit update kit2" }
+            default {
+                # Marketplace add-ons dispatch to their module's update function.
+                $addon = Get-ExakitMarketplaceAddon $component
+                if ($addon -and $available) {
+                    if (Get-Command $addon.UpdateFn -ErrorAction SilentlyContinue) { & $addon.UpdateFn | Out-Null }
+                    else { Fail "The $component module is not available in this version." }
+                }
+            }
         }
         $acted += 1
     }
@@ -1163,6 +1252,7 @@ function Show-ExakitUsage {
         "  start | stop         run or pause the local database"
         "  data-load            load the sample data or your own CSV / Parquet"
         "  mcp-doctor           check the AI (MCP) connection"
+        "  marketplace          optional add-ons (dashboards & more)"
     ) | ForEach-Object { Write-Host $_ }
 }
 
@@ -1188,6 +1278,7 @@ try {
         "mcp-remove"   { Invoke-CmdMcpOperation -Operation "uninstall" -OpArgs $RestArgs }
         "mcp-restore"  { Invoke-CmdMcpRestore -SnapshotId ($RestArgs | Select-Object -First 1) }
         "skills-install" { Invoke-CmdSkillsInstall }
+        "marketplace"  { Invoke-CmdMarketplace }
         "upgrade-kit2"  { Write-ExakitKit2NotAvailable -Command "exakit upgrade-kit2" }
         "rollback-kit2" { Write-ExakitKit2NotAvailable -Command "exakit rollback-kit2" }
         "uninstall"    { Invoke-CmdUninstall -AssumeYes:($RestArgs -contains "-Yes" -or $RestArgs -contains "--yes" -or $RestArgs -contains "-y") -DryRun:($RestArgs -contains "-DryRun" -or $RestArgs -contains "--dry-run" -or $RestArgs -contains "-n") }
@@ -1207,7 +1298,7 @@ try {
     # clean. A command that failed reaches the catch below instead, so the notice
     # never talks over an error.
     if (@("status", "info", "guide", "start", "stop", "data-load", "preflight",
-          "skills-install", "logs", "mcp-setup", "mcp-doctor", "mcp-status",
+          "skills-install", "marketplace", "logs", "mcp-setup", "mcp-doctor", "mcp-status",
           "mcp-repair", "mcp-validate", "mcp-restore", "mcp-remove") -contains $Command) {
         Show-ExakitUpdateNotice
     }

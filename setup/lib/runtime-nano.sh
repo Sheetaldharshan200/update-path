@@ -15,6 +15,14 @@
 EXAKIT_NANO_CONTAINER="${EXAKIT_NANO_CONTAINER:-exasol-nano}"
 EXAKIT_NANO_VOLUME="${EXAKIT_NANO_VOLUME:-exasol-nano-data}"
 EXAKIT_NANO_MIN_RAM_GB="${EXAKIT_NANO_MIN_RAM_GB:-4}"
+# Hard floor and comfortable floor for free disk, applied to every filesystem
+# this install writes to (see nano_check_disk): the Nano image alone unpacks to
+# several GB, and the container's /exa volume grows with the data loaded in.
+EXAKIT_NANO_MIN_DISK_GB="${EXAKIT_NANO_MIN_DISK_GB:-10}"
+EXAKIT_NANO_ROOMY_DISK_GB="${EXAKIT_NANO_ROOMY_DISK_GB:-20}"
+# What $HOME needs when the engine keeps its data on a different filesystem:
+# only the kit's own files (credentials, logs, the pyexasol virtual environment).
+EXAKIT_NANO_MIN_KIT_DISK_GB="${EXAKIT_NANO_MIN_KIT_DISK_GB:-3}"
 EXAKIT_NANO_READY_TIMEOUT="${EXAKIT_NANO_READY_TIMEOUT:-600}"
 # Minimal image used only for the self-repair of root-owned state leftovers
 # (see nano_repair_creds); pulled on demand, never on the happy path.
@@ -119,25 +127,108 @@ nano_check_requirements() {
         fi
     fi
 
-    _disk="$(detect_free_disk_gb "$HOME")"
-    if [ "${EXAKIT_FORCE:-0}" != "1" ]; then
-        if [ "$_disk" -eq 0 ]; then
-            die "Could not determine free disk space at $HOME. Free up space or set EXAKIT_FORCE=1 to install anyway."
-        elif [ "$_disk" -lt 10 ]; then
-            error "This machine is not compatible right now: the database image and data need at least 10 GB free disk and $HOME has ${_disk} GB."
-            info "Nothing was installed. Free up disk space and re-run (or force at your own risk with EXAKIT_FORCE=1)."
-            die "Insufficient free disk space: ${_disk} GB."
-        fi
-    fi
+    nano_check_disk
 
     # Bare minimum: run, but say what to expect.
     if [ "$_ram" -lt $((EXAKIT_NANO_MIN_RAM_GB + 2)) ]; then
         warn "Memory is at the bare minimum (${_ram} GB) — the database will run, but expect slower queries and keep other heavy apps closed."
     fi
-    if [ "$_disk" -lt 20 ]; then
-        warn "Free disk is tight (${_disk} GB) — fine for the bundled datasets, but watch space before loading large files."
+    ok "Compatibility check passed (${_ram} GB RAM, ${EXAKIT_NANO_DISK_SUMMARY:-disk ok})"
+}
+
+# nano_check_disk — the disk guard, run against every filesystem this install
+# writes to, not just $HOME.
+#
+# The kit needs room in three places that are not always the same volume:
+#   - $HOME              the kit home, the pyexasol venv, downloads, logs
+#   - the engine's data root   the image and the container's /exa volume, which
+#                              is where nearly all of the space actually goes
+#   - the Windows drive under WSL   because `df` inside WSL reports the virtual
+#                              disk's nominal size, not the space Windows has
+#                              left for it to grow into
+# Checking only the first passed installs that then failed mid-pull with "no
+# space left on device" and no indication of which disk was full.
+#
+# Sets EXAKIT_NANO_DISK_SUMMARY for the caller's closing line.
+nano_check_disk() {
+    _nd_summary=""
+    _nd_tight=0
+
+    # <free-gb> <required-gb> <what-for> <where>
+    _nd_check() {
+        _ndc_free="$1"
+        _ndc_need="$2"
+        _ndc_what="$3"
+        _ndc_where="$4"
+        if [ "${EXAKIT_FORCE:-0}" != "1" ]; then
+            if [ "$_ndc_free" -eq 0 ]; then
+                die "Could not determine free disk space for ${_ndc_what} (${_ndc_where}). Free up space or set EXAKIT_FORCE=1 to install anyway."
+            elif [ "$_ndc_free" -lt "$_ndc_need" ]; then
+                error "This machine is not compatible right now: ${_ndc_what} needs at least ${_ndc_need} GB free and ${_ndc_where} has ${_ndc_free} GB."
+                info "Nothing was installed. Free up disk space at ${_ndc_where} and re-run (or force at your own risk with EXAKIT_FORCE=1)."
+                nano_print_reclaimable
+                die "Insufficient free disk space: ${_ndc_free} GB at ${_ndc_where}."
+            fi
+        fi
+        [ "$_ndc_free" -lt "$EXAKIT_NANO_ROOMY_DISK_GB" ] && _nd_tight=1
+        _nd_summary="${_nd_summary}${_nd_summary:+, }${_ndc_free} GB free at ${_ndc_where}"
+        return 0
+    }
+
+    # Where the engine really writes: the image and the container's /exa volume,
+    # which is where nearly all of the space goes. Frequently NOT $HOME's
+    # filesystem — /var/lib/docker often lives on its own volume.
+    _nd_home="$(detect_free_disk_gb "$HOME")"
+    _nd_docker="$(detect_docker_data_gb)"
+    if [ "$_nd_docker" -gt 0 ] && [ "$_nd_docker" -ne "$_nd_home" ]; then
+        _nd_check "$_nd_docker" "$EXAKIT_NANO_MIN_DISK_GB" \
+            "the database image and container data" "the container engine's data directory"
+        # A separate data volume leaves $HOME holding only the kit's own files,
+        # so it is judged on that smaller need rather than the database's.
+        _nd_check "$_nd_home" "$EXAKIT_NANO_MIN_KIT_DISK_GB" "the kit's own files" "$HOME"
+    else
+        # One filesystem for both: the full requirement applies to it.
+        _nd_check "$_nd_home" "$EXAKIT_NANO_MIN_DISK_GB" \
+            "the database image, container data and the kit's own files" "$HOME"
     fi
-    ok "Compatibility check passed (${_ram} GB RAM, ${_disk} GB free)"
+
+    # WSL: every number above came from inside the distro, where `df` reports the
+    # virtual disk's NOMINAL size (typically 1 TB) and not the space Windows has
+    # left for that file to grow into. The Windows system drive is the real
+    # constraint, and it is the one a user is most likely to have filled.
+    if [ "$(detect_os)" = "wsl" ]; then
+        _nd_windows="$(detect_wsl_windows_free_gb)"
+        if [ "$_nd_windows" -gt 0 ]; then
+            _nd_check "$_nd_windows" "$EXAKIT_NANO_MIN_DISK_GB" \
+                "the WSL virtual disk this distro grows into" "the Windows system drive"
+        else
+            # Not fatal — Windows interop can be switched off — but the checks
+            # above provably do not cover this, and silence would imply they did.
+            warn "Could not read free space on the Windows system drive from this distro. The numbers above are the WSL virtual disk's, which reports its maximum size, not what Windows has left for it. Check free space on C: in Windows before loading large data."
+        fi
+    fi
+
+    if [ "$_nd_tight" -eq 1 ]; then
+        warn "Free disk is tight (${_nd_summary}) — fine for the bundled datasets, but watch space before loading large files."
+        nano_print_reclaimable
+    fi
+    EXAKIT_NANO_DISK_SUMMARY="$_nd_summary"
+    return 0
+}
+
+# nano_print_reclaimable — how much of the missing space the engine is already
+# sitting on, shown only when space is the problem. Never fails: no answer just
+# means no hint.
+nano_print_reclaimable() {
+    _npr_engine="$(nano_engine)"
+    [ -n "$_npr_engine" ] && [ "$_npr_engine" != "none" ] || return 0
+    _npr_out="$(exakit_run_bounded 15 "$_npr_engine" system df 2>/dev/null)" || return 0
+    [ -n "$_npr_out" ] || return 0
+    info "The container engine's current disk usage (reclaim with: $_npr_engine system prune -a):"
+    printf '%s\n' "$_npr_out" | while IFS= read -r _npr_line; do
+        printf '        %s\n' "$_npr_line"
+    done
+    return 0
 }
 
 nano_image_ref() {

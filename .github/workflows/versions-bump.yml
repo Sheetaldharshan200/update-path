@@ -258,6 +258,31 @@ jobs:
                           exapump["version"] = winner
                           exapump["sha256"] = digests
 
+          # --- dash-server: newest stable GitHub release -------------------------
+          # The marketplace add-on installs the tag's source tarball through uv,
+          # so unlike exapump there are no asset digests to recompute; the
+          # upstream-exists job asserts the tag is real.
+          dash = components.get("dash-server") or {}
+          if dash.get("version"):
+              repo = dash.get("repo", "exasol-labs/dash-server")
+              body, reason = fetch("https://api.github.com/repos/%s/releases?per_page=100" % repo,
+                                   token=True)
+              if body is None:
+                  notes.append("- `dash-server`: GitHub did not answer (%s), left alone" % reason)
+              else:
+                  shape = re.compile(r"^v(\d+\.\d+\.\d+)$")
+                  candidates = []
+                  for release in body:
+                      if release.get("draft") or release.get("prerelease"):
+                          continue
+                      match = shape.match(release.get("tag_name") or "")
+                      if match:
+                          candidates.append(match.group(1))
+                  winner = pick(candidates, dash["version"], "dash-server", semver_key)
+                  if winner:
+                      bumped["dash-server"] = (dash["version"], winner)
+                      dash["version"] = winner
+
           # --- the constants that must move with the manifest -------------------
           # A version lives in more than one place. mcp/runtime/exakit.py's
           # DEFAULT_MCP_VERSION is asserted equal to components.mcp.version by the
@@ -286,6 +311,12 @@ jobs:
               "pyexasol": [
                   ("setup/lib/common.sh", "bash", "EXAKIT_PYEXASOL_VERSION_FALLBACK"),
                   ("setup/lib/exakit-common.ps1", "pwsh", "PyexasolVersionFallback"),
+              ],
+              # Marketplace add-ons keep their constants in their own module
+              # pair, not in the shared libraries.
+              "dash-server": [
+                  ("setup/lib/dash-server.sh", "bash", "EXAKIT_DASH_SERVER_VERSION_FALLBACK"),
+                  ("setup/lib/dash-server.ps1", "pwsh", "DashServerVersionFallback"),
               ],
           }
           touched = set()

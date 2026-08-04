@@ -35,6 +35,9 @@ pyexasol_installed_version() {
 _pyexasol_not_installed() {
     warn "pyexasol was not installed: $1"
     warn "Everything else in the kit is unaffected. Retry with: exakit update pyexasol"
+    # The reason has to outlive this subshell so the closing summary can print it
+    # instead of a generic "did not finish" (see exakit_note_failure in common.sh).
+    command -v exakit_note_failure >/dev/null 2>&1 && exakit_note_failure "$1"
     manifest_set components.pyexasol.validated false
     return 1
 }

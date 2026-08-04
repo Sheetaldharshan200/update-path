@@ -1,0 +1,357 @@
+#!/usr/bin/env bash
+# dash-server.sh — dash-server (AI dashboard host): managed install + validation.
+#
+# A MARKETPLACE ADD-ON: never installed by the setup scripts. The user picks it
+# from `exakit marketplace`; once installed it joins `exakit update` like every
+# other component. Sourced by the exakit CLI after common.sh.
+#
+# dash-server facts:
+#   - Agent-operated Dash hosting server for Exasol-backed dashboards
+#     (github.com/exasol-labs/dash-server): agents build/deploy dashboards
+#     through its MCP control plane (Streamable HTTP at /mcp), users open a
+#     browser URL.
+#   - Pure-Python package with a `dash-server` console script; releases carry
+#     no prebuilt binaries, so the install is `uv pip install` of the tag's
+#     source tarball into a dedicated venv under the kit home — the same
+#     tag-pinned, package-manager-verified posture as the mcp and pyexasol
+#     components. (GitHub source tarballs have no stable published digest, so
+#     there is nothing kit-side to pin a checksum against.)
+#   - Control plane: 127.0.0.1:5100 by default (env DASH_SERVER_HOST/PORT).
+#   - Exasol profile bootstrap at startup via DASH_SERVER_EXASOL_* env vars;
+#     the launcher below feeds it the kit's local database.
+#
+#   - venv:     $EXAKIT_HOME/dash-server-venv
+#   - state:    $EXAKIT_HOME/dash-server/instance (GitOps repo, apps, secrets)
+#   - launcher: $EXAKIT_BIN_DIR/dash-server (bootstraps env, then execs the venv
+#               console script)
+#
+# Safe to re-run: an existing venv with the desired version installed is kept.
+
+# The add-on's version constants live here, next to the code that uses them —
+# the generic registry arms in common.sh find them by the derived name
+# convention (EXAKIT_<ID>_VERSION[_FALLBACK]), and the versions-bump workflow
+# keeps the fallback in lockstep with versions.json (COUPLED table).
+EXAKIT_DASH_SERVER_VERSION="${EXAKIT_DASH_SERVER_VERSION:-}"
+EXAKIT_DASH_SERVER_VERSION_FALLBACK="${EXAKIT_DASH_SERVER_VERSION_FALLBACK:-0.1.0}"
+EXAKIT_DASH_SERVER_REPO="${EXAKIT_DASH_SERVER_REPO:-exasol-labs/dash-server}"
+EXAKIT_DASH_SERVER_PACKAGE="${EXAKIT_DASH_SERVER_PACKAGE:-dash-server}"
+EXAKIT_DASH_SERVER_VENV="${EXAKIT_DASH_SERVER_VENV:-$EXAKIT_HOME/dash-server-venv}"
+EXAKIT_DASH_SERVER_HOME="${EXAKIT_DASH_SERVER_HOME:-$EXAKIT_HOME/dash-server}"
+EXAKIT_DASH_SERVER_BIN="${EXAKIT_DASH_SERVER_BIN:-$EXAKIT_BIN_DIR/dash-server}"
+EXAKIT_DASH_SERVER_PORT="${EXAKIT_DASH_SERVER_PORT:-5100}"
+EXAKIT_DASH_SERVER_PROFILE="${EXAKIT_DASH_SERVER_PROFILE:-starter-kit}"
+
+dash_server_venv_python() {
+    printf '%s\n' "$EXAKIT_DASH_SERVER_VENV/bin/python"
+}
+
+dash_server_installed_version() {
+    _dsv_python="$(dash_server_venv_python)"
+    [ -x "$_dsv_python" ] || return 1
+    # dash-server exposes no __version__; the distribution metadata written by
+    # the install is the authority. ⇄ twin: Get-DashServerInstalledVersion.
+    ( "$_dsv_python" -c 'from importlib.metadata import version; print(version("dash-server"))' && : ) 2>/dev/null
+}
+
+# dash_server_release_url <version> — the source tarball of the tagged release.
+# ⇄ twin: Get-DashServerReleaseUrl in dash-server.ps1.
+dash_server_release_url() {
+    printf 'https://github.com/%s/archive/refs/tags/v%s.tar.gz\n' \
+        "$EXAKIT_DASH_SERVER_REPO" "$1"
+}
+
+# _dash_server_not_installed <reason> — report a soft failure and return 1.
+# Marketplace add-ons follow the pyexasol contract: nothing here may end the
+# caller's run; every failure is explained, recorded as validated=false, and
+# handed back as a non-zero return so a re-run (or `exakit update dash-server`)
+# retries it.
+_dash_server_not_installed() {
+    warn "dash-server was not installed: $1"
+    warn "Everything else in the kit is unaffected. Retry with: exakit update dash-server"
+    # The reason has to outlive this subshell so the closing summary can print it
+    # instead of a generic "did not finish" (see exakit_note_failure in common.sh).
+    command -v exakit_note_failure >/dev/null 2>&1 && exakit_note_failure "$1"
+    manifest_set components.dash_server.validated false
+    return 1
+}
+
+dash_server_install() {
+    # The marketplace path runs from the exakit CLI, where the installer's
+    # exakit_resolve_install_versions has not run — resolve the advertised
+    # version here (env override -> policy -> versions.json -> fallback).
+    if [ -z "${EXAKIT_DASH_SERVER_VERSION:-}" ]; then
+        EXAKIT_DASH_SERVER_VERSION="$(exakit_component_available dash-server 2>/dev/null || true)"
+        [ -n "$EXAKIT_DASH_SERVER_VERSION" ] || EXAKIT_DASH_SERVER_VERSION="$EXAKIT_DASH_SERVER_VERSION_FALLBACK"
+        export EXAKIT_DASH_SERVER_VERSION
+    fi
+
+    _ds_uv=""
+    if command -v uv >/dev/null 2>&1; then
+        _ds_uv="uv"
+    elif exakit_ensure_uv && [ -x "${EXAKIT_UV_BIN:-}" ]; then
+        _ds_uv="$EXAKIT_UV_BIN"
+    else
+        _dash_server_not_installed "uv (the Python tool runner) is not available — install it from https://docs.astral.sh/uv/ and re-run"
+        return 1
+    fi
+
+    _ds_current="$(dash_server_installed_version || true)"
+    if [ -n "$_ds_current" ] && [ "$_ds_current" = "$EXAKIT_DASH_SERVER_VERSION" ] && \
+       [ "${EXAKIT_FORCE_COMPONENT_INSTALL:-0}" != "1" ]; then
+        ok "dash-server $_ds_current already installed: $EXAKIT_DASH_SERVER_VENV"
+        # An up-to-date venv can still be missing pip (created by a kit copy
+        # from before the venv was seeded) — repair it in place rather than
+        # leaving every app build broken until the next version bump.
+        _dash_server_ensure_pip "$_ds_uv" || return 1
+    else
+        info "Installing dash-server $EXAKIT_DASH_SERVER_VERSION (AI dashboard host)"
+        if [ ! -x "$(dash_server_venv_python)" ]; then
+            # --seed matters: dash-server installs each app's dependencies by
+            # shelling out to `python -m pip`, and a bare uv venv has no pip —
+            # every app build (including the built-in demo) would fail with
+            # "Dependency install failed before import smoke check".
+            if ! run_logged "$_ds_uv" venv --seed --python "$EXAKIT_MANAGED_PYTHON_VERSION" "$EXAKIT_DASH_SERVER_VENV"; then
+                _dash_server_not_installed "the virtual environment at $EXAKIT_DASH_SERVER_VENV could not be created (see log)"
+                return 1
+            fi
+            push_rollback "rm -rf '$EXAKIT_DASH_SERVER_VENV'"
+        fi
+        # The release's source tarball, pinned by tag. uv resolves and installs
+        # it plus dependencies from PyPI over TLS.
+        if ! run_logged "$_ds_uv" pip install --python "$(dash_server_venv_python)" \
+                "$(dash_server_release_url "$EXAKIT_DASH_SERVER_VERSION")"; then
+            _dash_server_not_installed "installing ${EXAKIT_DASH_SERVER_PACKAGE} v${EXAKIT_DASH_SERVER_VERSION} from its GitHub release failed (see log)"
+            return 1
+        fi
+        # The install is not done until the venv can actually answer for the
+        # version: a tarball that unpacked but failed to build would otherwise
+        # be reported as installed and only fail at first launch.
+        _ds_now="$(dash_server_installed_version || true)"
+        if [ -z "$_ds_now" ]; then
+            _dash_server_not_installed "the venv cannot report a dash-server version after the install (see log)"
+            return 1
+        fi
+        # Belt and braces even on a fresh venv: --seed above should have put
+        # pip in place, but a pre-existing venv (EXAKIT_DASH_SERVER_VENV
+        # pointed at one, or an interrupted earlier run) may lack it.
+        _dash_server_ensure_pip "$_ds_uv" || return 1
+        ok "dash-server installed: $EXAKIT_DASH_SERVER_VENV"
+    fi
+
+    mkdir -p "$EXAKIT_DASH_SERVER_HOME/instance" 2>/dev/null || {
+        _dash_server_not_installed "could not create the state directory $EXAKIT_DASH_SERVER_HOME/instance"
+        return 1
+    }
+    dash_server_write_launcher || return 1
+
+    manifest_set components.dash_server.version "$EXAKIT_DASH_SERVER_VERSION"
+    manifest_set components.dash_server.venv "$EXAKIT_DASH_SERVER_VENV"
+    manifest_set components.dash_server.python "$(dash_server_venv_python)"
+    manifest_set components.dash_server.command "$EXAKIT_DASH_SERVER_BIN"
+    manifest_set components.dash_server.port "$EXAKIT_DASH_SERVER_PORT"
+    manifest_set components.dash_server.instance "$EXAKIT_DASH_SERVER_HOME/instance"
+}
+
+# _dash_server_ensure_pip <uv> — make sure the venv can run `python -m pip`.
+# dash-server installs each app's dependencies (including the built-in demo's)
+# by shelling out to exactly that, and a bare uv venv has no pip — without
+# this, every app build fails with "Dependency install failed before import
+# smoke check". New venvs are created with --seed; this is the self-repair for
+# venvs that predate the seed or were provided by the user.
+# ⇄ twin: Confirm-DashServerPip in dash-server.ps1.
+_dash_server_ensure_pip() {
+    _dep_python="$(dash_server_venv_python)"
+    [ -x "$_dep_python" ] || return 0
+    ( "$_dep_python" -m pip --version && : ) >/dev/null 2>&1 && return 0
+    info "Adding pip to the dash-server venv (app builds install their dependencies with it)"
+    if ! run_logged "$1" pip install --python "$_dep_python" pip; then
+        _dash_server_not_installed "pip could not be added to $EXAKIT_DASH_SERVER_VENV (dash-server app builds need it; see log)"
+        return 1
+    fi
+    ( "$_dep_python" -m pip --version && : ) >/dev/null 2>&1 || {
+        _dash_server_not_installed "pip was installed into $EXAKIT_DASH_SERVER_VENV but python -m pip still does not run (see log)"
+        return 1
+    }
+    ok "pip added to the dash-server venv"
+}
+
+# _dash_server_credentials — "user<TAB>password_file" for the launcher's
+# profile bootstrap. Prefers the kit's dedicated read-only MCP user (dashboards
+# read, they do not write — same least-privilege posture as the MCP server);
+# falls back to the runtime admin user only when no read-only user exists yet.
+_dash_server_credentials() {
+    if command -v mcp_credentials >/dev/null 2>&1; then
+        mcp_credentials
+        return 0
+    fi
+    printf '%s\t%s\n' "$(manifest_get runtime.user 2>/dev/null)" \
+        "$(manifest_get runtime.password_file 2>/dev/null)"
+}
+
+# dash_server_write_launcher — generate $EXAKIT_BIN_DIR/dash-server. The
+# wrapper execs the venv's console script with the kit's Exasol profile
+# bootstrapped from the environment (DASH_SERVER_EXASOL_*, read fresh at RUN
+# time — the password never lands in the wrapper, only the path of the
+# credential file the kit already guards with mode 600). Every variable is a
+# setdefault: anything the user exports themselves wins. Re-running the
+# installer or `exakit update dash-server` regenerates the wrapper.
+dash_server_write_launcher() {
+    _dsl_dsn="$(manifest_get runtime.dsn 2>/dev/null || true)"
+    _dsl_creds="$(_dash_server_credentials)"
+    _dsl_user="$(printf '%s' "$_dsl_creds" | cut -f1)"
+    _dsl_pwfile="$(printf '%s' "$_dsl_creds" | cut -f2)"
+
+    mkdir -p "$EXAKIT_BIN_DIR" || {
+        _dash_server_not_installed "could not create $EXAKIT_BIN_DIR for the dash-server launcher"
+        return 1
+    }
+    # $@ and the credential read expand at RUN time (quoted heredoc); the
+    # paths and connection facts are baked in with a safe substitution below.
+    cat > "$EXAKIT_DASH_SERVER_BIN" <<'EXAKIT_DS_EOF'
+#!/bin/sh
+# dash-server launcher — generated by the Exasol Personal Local Starter Kit.
+# Starts dash-server from its kit-managed venv with the kit's local Exasol
+# database bootstrapped as a connection profile (DASH_SERVER_EXASOL_*). Any of
+# these variables you export yourself take precedence. Re-running
+# `exakit update dash-server` regenerates this wrapper.
+: "${DASH_SERVER_INSTANCE_PATH:=@INSTANCE@}"
+export DASH_SERVER_INSTANCE_PATH
+if [ -n "@DSN@" ] && [ -z "${DASH_SERVER_EXASOL_DSN:-}" ]; then
+    if [ -z "${EXA_PASSWORD:-}" ] && [ -r "@PWFILE@" ]; then
+        EXA_PASSWORD="$(cat "@PWFILE@")"
+        export EXA_PASSWORD
+    fi
+    if [ -n "${EXA_PASSWORD:-}" ]; then
+        export DASH_SERVER_EXASOL_PROFILE_NAME="@PROFILE@"
+        export DASH_SERVER_EXASOL_DSN="@DSN@"
+        export DASH_SERVER_EXASOL_USER="@USER@"
+        export DASH_SERVER_EXASOL_SECRET_ENV_VAR="EXA_PASSWORD"
+        # The kit's local runtime speaks TLS with a self-signed certificate.
+        export DASH_SERVER_EXASOL_TLS_VERIFY="${DASH_SERVER_EXASOL_TLS_VERIFY:-false}"
+    fi
+fi
+exec "@VENVBIN@" "$@"
+EXAKIT_DS_EOF
+    # sed with | as the delimiter: the substituted values are paths, DSNs and
+    # user names that can contain / but never |.
+    sed -i.exakit-bak \
+        -e "s|@INSTANCE@|$EXAKIT_DASH_SERVER_HOME/instance|" \
+        -e "s|@DSN@|$_dsl_dsn|g" \
+        -e "s|@PWFILE@|$_dsl_pwfile|g" \
+        -e "s|@PROFILE@|$EXAKIT_DASH_SERVER_PROFILE|" \
+        -e "s|@USER@|$_dsl_user|" \
+        -e "s|@VENVBIN@|$EXAKIT_DASH_SERVER_VENV/bin/dash-server|" \
+        "$EXAKIT_DASH_SERVER_BIN" && rm -f "$EXAKIT_DASH_SERVER_BIN.exakit-bak"
+    chmod 755 "$EXAKIT_DASH_SERVER_BIN"
+    push_rollback "rm -f \"$EXAKIT_DASH_SERVER_BIN\""
+    ensure_path_hint "$EXAKIT_BIN_DIR"
+    if [ -z "$_dsl_dsn" ]; then
+        warn "No database DSN is recorded yet — dash-server starts without a bootstrapped Exasol profile until the kit install completes."
+    fi
+    ok "dash-server launcher written: $EXAKIT_DASH_SERVER_BIN"
+}
+
+# dash_server_validate — prove the package imports, then start the server
+# briefly and check the MCP control plane answers over HTTP. Both halves are
+# soft: a failed live check records validated=false and warns rather than
+# failing the marketplace install — the add-on is retried by the update path.
+dash_server_validate() {
+    _dsv_python="$(dash_server_venv_python)"
+    # Nothing to validate when the install did not get far enough: it is
+    # soft-fail by design and has already explained itself.
+    [ -x "$_dsv_python" ] || return 0
+    if ! ( "$_dsv_python" -c 'import dash_server' && : ) >/dev/null 2>&1; then
+        warn "dash-server is installed but cannot be imported from $EXAKIT_DASH_SERVER_VENV (see log). Recorded validated=false; retry with: exakit update dash-server"
+        manifest_set components.dash_server.validated false
+        return 0
+    fi
+
+    info "Validating dash-server (MCP control plane on port $EXAKIT_DASH_SERVER_PORT)"
+    # Something already answering on the port IS a running dash-server as far
+    # as this check can tell (the kit's own launcher is the likely reason);
+    # starting a second instance just to probe would fail on the bind.
+    if _dash_server_http_answers; then
+        ok "dash-server control plane answers on port $EXAKIT_DASH_SERVER_PORT"
+        manifest_set components.dash_server.validated true
+        _dash_server_print_usage
+        return 0
+    fi
+
+    "$EXAKIT_DASH_SERVER_BIN" --host 127.0.0.1 --port "$EXAKIT_DASH_SERVER_PORT" \
+        >> "${EXAKIT_LOG_FILE:-/dev/null}" 2>&1 &
+    _dsv_pid=$!
+    # Out of the job table right away, or bash announces "Terminated" over the
+    # user-facing output when the probe server is killed below.
+    disown 2>/dev/null || true
+    _dsv_ok=0
+    _dsv_waited=0
+    while [ "$_dsv_waited" -lt 60 ]; do
+        if _dash_server_http_answers; then
+            _dsv_ok=1
+            break
+        fi
+        kill -0 "$_dsv_pid" 2>/dev/null || break
+        sleep 2
+        _dsv_waited=$((_dsv_waited + 2))
+    done
+    # The launcher execs the real server, so the recorded pid IS the server;
+    # the child sweep covers any worker it spawned. Bounded, mirrors mcp.sh.
+    pkill -P "$_dsv_pid" 2>/dev/null
+    kill "$_dsv_pid" 2>/dev/null
+    sleep 1
+    pkill -9 -P "$_dsv_pid" 2>/dev/null
+    kill -9 "$_dsv_pid" 2>/dev/null
+    wait "$_dsv_pid" 2>/dev/null || true
+
+    if [ "$_dsv_ok" -eq 1 ]; then
+        ok "dash-server control plane answers on port $EXAKIT_DASH_SERVER_PORT"
+        manifest_set components.dash_server.validated true
+        _dash_server_print_usage
+    else
+        warn "dash-server did not answer on port $EXAKIT_DASH_SERVER_PORT (see log). Recorded validated=false; retry with: exakit update dash-server"
+        manifest_set components.dash_server.validated false
+    fi
+    return 0
+}
+
+# _dash_server_http_answers — one bounded probe of the control plane. Any HTTP
+# status counts: /mcp answering 4xx to a bare GET still proves the server is up.
+_dash_server_http_answers() {
+    curl -s -o /dev/null -w '%{http_code}' --max-time 5 \
+        "http://127.0.0.1:$EXAKIT_DASH_SERVER_PORT/mcp" 2>/dev/null | grep -qE '^(200|3..|4..)'
+}
+
+_dash_server_print_usage() {
+    ui_panel_begin "dash-server"
+    ui_panel_line "Start it        dash-server"
+    ui_panel_line "Dashboards      http://127.0.0.1:$EXAKIT_DASH_SERVER_PORT"
+    ui_panel_line "MCP endpoint    http://127.0.0.1:$EXAKIT_DASH_SERVER_PORT/mcp"
+    ui_panel_line "Update          exakit update dash-server"
+    ui_panel_end
+}
+
+# dash_server_update — install the advertised version into the venv. Doubles as
+# the repair command after a failed marketplace install. Asked for explicitly,
+# so a failure here IS a failure.
+dash_server_update() {
+    _dsu_available="$(exakit_component_available dash-server 2>/dev/null || true)"
+    [ -n "$_dsu_available" ] || die "Could not resolve the advertised dash-server version."
+    _dsu_current="$(dash_server_installed_version 2>/dev/null || true)"
+    if [ -n "$_dsu_current" ] && [ "$_dsu_current" = "$_dsu_available" ]; then
+        # Same version can still need repair: regenerate the launcher so a
+        # DSN/credential change since the install is picked up.
+        dash_server_write_launcher >/dev/null 2>&1 || true
+        ok "dash-server is already current ($_dsu_current)"
+        return 0
+    fi
+    info "Updating dash-server ${_dsu_current:-not installed} -> $_dsu_available"
+    EXAKIT_DASH_SERVER_VERSION="$_dsu_available"
+    EXAKIT_FORCE_COMPONENT_INSTALL=1
+    export EXAKIT_DASH_SERVER_VERSION EXAKIT_FORCE_COMPONENT_INSTALL
+    if ! dash_server_install; then
+        die "dash-server could not be installed — see the warning above and ${EXAKIT_LOG_FILE:-the log}."
+    fi
+    dash_server_validate || true
+    manifest_set desired.dash_server "$EXAKIT_DASH_SERVER_VERSION"
+    ok "dash-server updated; database data was not changed"
+}

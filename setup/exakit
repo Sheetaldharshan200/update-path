@@ -26,6 +26,9 @@
 #   mcp-restore         restore the latest (or a chosen) MCP snapshot
 #   skills-install      install the kit's AI skills for CLI agents
 #                       (~/.claude/skills, ~/.agents/skills)
+#   marketplace         browse optional add-ons (dash-server, ...) and install
+#                       the ones you select; installed add-ons then update
+#                       through `exakit update` like every other component
 #   upgrade-kit2        add the Kit 2 trust assets (Trusted AI Workflow add-on)
 #                       on top of this install; nothing is reinstalled
 #   rollback-kit2       remove exactly what upgrade-kit2 added; the database and
@@ -66,6 +69,10 @@ fi
 # pyexasol is an update target of its own (and its own repair command), so the
 # CLI needs the module even though it takes no part in the runtime commands.
 [ -f "$_lib_dir/pyexasol.sh" ] && . "$_lib_dir/pyexasol.sh"
+# Marketplace add-on modules: the CLI is where they are installed (exakit
+# marketplace) and updated (exakit update <addon>), so it loads every module
+# it ships. A missing file only makes the marketplace row unavailable.
+[ -f "$_lib_dir/dash-server.sh" ] && . "$_lib_dir/dash-server.sh"
 
 _runtime_type() {
     manifest_get runtime.type 2>/dev/null
@@ -219,6 +226,12 @@ cmd_version() {
         "$(_version_cell mcp "$(manifest_get components.mcp_server.version 2>/dev/null || true)")"
     printf 'pyexasol:       %s\n' \
         "$(_version_cell pyexasol "$(manifest_get components.pyexasol.version 2>/dev/null || true)")"
+    # Marketplace add-ons appear only once installed: this screen reports what
+    # is on the machine, and the marketplace command is the catalog.
+    for _ver_addon in $(exakit_marketplace_installed_addons 2>/dev/null); do
+        printf '%-15s %s\n' "$_ver_addon:" \
+            "$(_version_cell "$_ver_addon" "$(manifest_get "components.$(printf '%s' "$_ver_addon" | tr '-' '_').version" 2>/dev/null || true)")"
+    done
     if exakit_updates_pending; then
         # The same framed panel the connection details use, rather than three loose
         # lines that read like an error: this is good news, and it is the only thing
@@ -328,6 +341,12 @@ cmd_skills_install() {
     exakit_install_skills || die "Could not install the kit's AI skills"
 }
 
+cmd_marketplace() {
+    [ -f "$EXAKIT_MANIFEST" ] || die "No installation found. Run the installer first."
+    exakit_init_logging
+    exakit_marketplace_menu "$@"
+}
+
 usage() {
     # `exakit help --all` prints the full command reference: the leading
     # comment block (from line 2) up to the first non-comment line — no
@@ -351,6 +370,7 @@ Everyday commands:
   start | stop         run or pause the local database
   data-load            load the sample data or your own CSV / Parquet
   mcp-doctor           check the AI (MCP) connection
+  marketplace          optional add-ons (dashboards & more)
 EOF
 }
 
@@ -471,6 +491,7 @@ case "${1:-help}" in
     mcp-remove) shift; _with_notice cmd_mcp_remove "$@" ;;
     mcp-restore) shift; _with_notice cmd_mcp_restore "$@" ;;
     skills-install) _with_notice cmd_skills_install ;;
+    marketplace) shift; _with_notice cmd_marketplace "$@" ;;
     upgrade-kit2)  cmd_kit2_script upgrade-kit2.sh ;;
     rollback-kit2) cmd_kit2_script rollback-kit2.sh ;;
     uninstall) shift; cmd_uninstall "$@" ;;

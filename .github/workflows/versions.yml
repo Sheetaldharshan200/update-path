@@ -86,7 +86,7 @@ jobs:
           if not re.match(r"^\d{4}-\d{2}-\d{2}$", str(doc.get("updated", ""))):
               problems.append("updated must be an ISO date (YYYY-MM-DD)")
 
-          expected = {"personal", "nano", "exapump", "mcp", "pyexasol"}
+          expected = {"personal", "nano", "exapump", "mcp", "pyexasol", "dash-server"}
           components = doc.get("components") or {}
           if set(components) != expected:
               problems.append("components must be exactly %s, found %s"
@@ -312,6 +312,21 @@ jobs:
           if components.get("pyexasol"):
               check_pypi("pyexasol", components["pyexasol"], "pyexasol")
 
+          # --- the marketplace add-ons (GitHub-release-installed) --------------
+          # dash-server installs from its release tag's source tarball, so the
+          # tag the installer downloads must exist.
+          dash = components.get("dash-server") or {}
+          if dash:
+              version = dash.get("version")
+              repo = dash.get("repo", "exasol-labs/dash-server")
+              body, reason = fetch("https://api.github.com/repos/%s/releases/tags/v%s"
+                                   % (repo, version), token=True)
+              if body is None:
+                  problems.append("dash-server: %s has no release tagged v%s (%s)"
+                                  % (repo, version, reason))
+              else:
+                  print("  ok  dash-server: %s release v%s exists" % (repo, version))
+
           # exapump is deliberately not re-checked here: digest-verify already
           # downloads all five assets and hashes them, which is strictly stronger.
           print("  --  exapump: covered by the digest-verify job")
@@ -341,3 +356,5 @@ jobs:
       - run: bash tests/versions-manifest.sh
       - run: bash tests/dry-run-matrix.sh
       - run: bash tests/noninteractive-answers.sh
+      - run: bash tests/marketplace.sh
+      - run: bash tests/uninstall.sh

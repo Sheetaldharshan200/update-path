@@ -64,6 +64,10 @@ Full detail: [Staying up to date](../README.md#staying-up-to-date).
 | Issue | Fix |
 |---|---|
 | "Docker is installed but not running" | Start Docker Desktop, wait for the whale icon to settle, re-run |
+| `docker` works in WSL but PowerShell says it is not found | Your shell's PATH predates the Docker Desktop install. The installer finds `docker.exe` anyway and tells you; to fix the shell itself, close the terminal and open a new one |
+| "needs at least 10 GB free on D:\" when C: has plenty | Docker Desktop's disk image was moved (Settings, Resources, Advanced). The check follows Docker's real storage location, so free space *there* |
+| Disk full during the image pull | `docker system df` shows what Docker is holding; `docker system prune -a` reclaims it |
+| A step failed but the install continued | By design. The summary at the end names each missing piece and the one command that installs it |
 | "Port 8563 is already in use" | Stop the other application, or set `$env:EXAKIT_DB_PORT = "8564"` and re-run |
 | Script execution policy complaints | The installer affects only its own script. Nothing system-wide is changed |
 | Corporate proxy | Set `$env:HTTPS_PROXY` before running |
