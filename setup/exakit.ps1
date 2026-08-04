@@ -1189,6 +1189,13 @@ function Invoke-CmdUpdate {
                     Install-Exapump
                     New-ExapumpProfile
                     Set-ExakitManifestValue "desired.exapump" $script:ExapumpVersion
+                    # $current above came from Get-ExakitComponentCurrent, i.e. the
+                    # version the binary on disk reports - never the manifest record.
+                    # Install-Exapump writes that record from the version this run
+                    # asked for, so it can name a version that is not what ended up
+                    # on disk. Confirm from the binary; exapump_update in
+                    # setup/lib/exapump.sh keeps the same order.
+                    Confirm-ExapumpInstalledVersion | Out-Null
                 }
             }
             "mcp" {

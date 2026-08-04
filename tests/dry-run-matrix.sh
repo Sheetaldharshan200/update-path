@@ -670,6 +670,18 @@ if grep -q 'exakit_component_current mcp' "$ROOT/setup/lib/mcp.sh" && \
 else
     check "mcp_update(live_pin_guard)" "yes" "no"
 fi
+# Same defect, same fix, for exapump: the guard must ask the binary on disk (what
+# update-check reports as Installed) rather than components.exapump.version, which is
+# only what a previous run wrote down before proving the download. Both sides also
+# confirm the move from the binary instead of the record they just wrote.
+if grep -q 'exakit_component_current exapump' "$ROOT/setup/lib/exapump.sh" && \
+   grep -q 'exapump_confirm_installed_version' "$ROOT/setup/lib/exapump.sh" && \
+   grep -q 'Confirm-ExapumpInstalledVersion' "$ROOT/setup/lib/exapump.ps1" && \
+   grep -q 'Confirm-ExapumpInstalledVersion' "$ROOT/setup/exakit.ps1"; then
+    check "exapump_update(live_probe_guard)" "yes" "yes"
+else
+    check "exapump_update(live_probe_guard)" "yes" "no"
+fi
 
 echo "step re-verification before skipping:"
 # A manifest saying steps_completed: ["launcher"] with no launcher on disk made
