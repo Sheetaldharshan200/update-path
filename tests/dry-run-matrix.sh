@@ -747,6 +747,74 @@ check "begin_step(launcher present)" "skip" \
     "$(_sv_step "$_sv_home" launcher "$_sv_launcher_setup")"
 rm -rf "$_sv_home"
 
+# The PATH fallback — an `exasol` reachable on PATH with no kit-managed binary —
+# is the ONLY branch that can turn a needed re-run into a skip, and the cases
+# above never reach it: they all run with a PATH scrubbed of every launcher, so
+# deleting the branch outright left the suite green. These cases pin it.
+#
+# Their PATH is built from scratch rather than scrubbed, for two reasons. A stub
+# launcher in a directory of our own makes the verdict depend on the test and not
+# on what this machine happens to have installed. And scrubbing is a trap here:
+# on macOS the kit installs its launcher into ~/.local/bin, which is also where
+# uv lives, so dropping every directory that holds an `exasol` can drop uv too —
+# and begin_step calls step_done -> run_python, which would then try to bootstrap
+# a Python runtime over the network (or die for that unrelated reason) instead of
+# testing anything. So: the stub's directory first, then the directory of the
+# python3 this machine already resolved, then /usr/bin:/bin for grep and friends.
+# EXAKIT_UV_BIN is pinned to a uv resolved from the outer PATH, so even a system
+# python3 below the kit's 3.11 floor falls back to a uv already on disk.
+_SV_PY_DIR="/usr/bin"
+if command -v python3 >/dev/null 2>&1; then
+    _SV_PY_DIR="$(dirname "$(command -v python3)")"
+fi
+_SV_UV_BIN="$(command -v uv 2>/dev/null || true)"
+
+_sv_home="$(mktemp -d)"
+mkdir -p "$_sv_home/bin" "$_sv_home/onpath" "$_sv_home/nolauncher"
+printf '{"steps_completed": ["launcher"], "components": {}}\n' > "$_sv_home/manifest.json"
+printf '#!/bin/sh\nexit 0\n' > "$_sv_home/onpath/exasol"
+chmod +x "$_sv_home/onpath/exasol"
+_sv_onpath_setup="PATH='$_sv_home/onpath:$_SV_PY_DIR:/usr/bin:/bin'; EXAKIT_UV_BIN='$_SV_UV_BIN'; . '$ROOT/setup/lib/detect.sh'; . '$ROOT/setup/lib/runtime-personal.sh'"
+# No kit-managed binary, one on PATH: personal_cli() resolves the PATH one, so
+# the step is genuinely satisfied and must be skipped.
+check "step_state(launcher on PATH only)" "present" \
+    "$(_sv_state "$_sv_home" launcher "$_sv_onpath_setup")"
+check "begin_step(launcher on PATH only)" "skip" \
+    "$(_sv_step "$_sv_home" launcher "$_sv_onpath_setup")"
+# Same home, same manifest, PATH without the stub: the verdict flips. This is
+# what proves the case above is the fallback branch answering and not something
+# else — no python3 is needed for a state-only check, so this PATH can be
+# minimal and fully deterministic.
+check "step_state(launcher off PATH)" "missing" \
+    "$(_sv_state "$_sv_home" launcher "PATH='$_sv_home/nolauncher:/usr/bin:/bin'; . '$ROOT/setup/lib/detect.sh'; . '$ROOT/setup/lib/runtime-personal.sh'")"
+# The fallback holds the launcher it finds to the same bar as the managed one: a
+# 0-byte stub on PATH satisfies `command -v` and nothing else.
+: > "$_sv_home/onpath/exasol"
+chmod 755 "$_sv_home/onpath/exasol"
+check "step_state(PATH launcher truncated)" "missing" \
+    "$(_sv_state "$_sv_home" launcher "$_sv_onpath_setup")"
+printf '#!/bin/sh\nexit 0\n' > "$_sv_home/onpath/exasol"
+chmod +x "$_sv_home/onpath/exasol"
+
+# A 0-byte launcher with mode 755 is not a launcher. `[ -x ]` is true of it, so
+# an existence-only check answered "present", begin_step skipped step 1, and
+# step 2 got an unrunnable launcher — the same dead end as the missing binary,
+# from a neighbouring cause (an interrupted install, or a full disk). It must be
+# executable AND non-empty. Note the PATH here HAS a working launcher: it cannot
+# excuse the truncated managed binary, because personal_cli() prefers that one.
+: > "$_sv_home/bin/exasol"
+chmod 755 "$_sv_home/bin/exasol"
+if [ -x "$_sv_home/bin/exasol" ] && [ ! -s "$_sv_home/bin/exasol" ]; then
+    check "step_state(0-byte is executable)" "yes" "yes"
+else
+    check "step_state(0-byte is executable)" "yes" "no"
+fi
+check "step_state(launcher truncated)" "missing" \
+    "$(_sv_state "$_sv_home" launcher "$_sv_onpath_setup")"
+check "begin_step(launcher truncated)" "rerun" \
+    "$(_sv_step "$_sv_home" launcher "$_sv_onpath_setup")"
+rm -rf "$_sv_home"
+
 # exakit_helper: the same shape, on the artifact the helper step installs.
 _sv_home="$(mktemp -d)"
 mkdir -p "$_sv_home/bin"
@@ -757,6 +825,12 @@ printf '#!/bin/sh\nexit 0\n' > "$_sv_home/bin/exakit"
 chmod +x "$_sv_home/bin/exakit"
 check "step_state(exakit_helper present)" "present" "$(_sv_state "$_sv_home" exakit_helper "")"
 check "begin_step(exakit_helper present)" "skip" "$(_sv_step "$_sv_home" exakit_helper "")"
+# A truncated helper is as unrunnable as an absent one (the sibling bug in this
+# family was literally a 0-byte config file).
+: > "$_sv_home/bin/exakit"
+chmod 755 "$_sv_home/bin/exakit"
+check "step_state(exakit_helper truncated)" "missing" "$(_sv_state "$_sv_home" exakit_helper "")"
+check "begin_step(exakit_helper truncated)" "rerun" "$(_sv_step "$_sv_home" exakit_helper "")"
 rm -rf "$_sv_home"
 
 # runtime is the "unknown" case that matters most: no file test can prove a
@@ -787,13 +861,25 @@ printf '#!/bin/sh\nexit 0\n' > "$_sv_home/bin/exapump"
 chmod +x "$_sv_home/bin/exapump"
 check "step_state(exapump present)" "present" "$(_sv_state "$_sv_home" exapump "")"
 check "begin_step(exapump present)" "skip" "$(_sv_step "$_sv_home" exapump "")"
+# A recorded path that is now a 0-byte executable is a failed download, not an
+# install: the step must run again.
+: > "$_sv_home/bin/exapump"
+chmod 755 "$_sv_home/bin/exapump"
+check "step_state(exapump truncated)" "missing" "$(_sv_state "$_sv_home" exapump "")"
+check "begin_step(exapump truncated)" "rerun" "$(_sv_step "$_sv_home" exapump "")"
 rm -rf "$_sv_home"
 
 # The check must cost nothing on every install: file tests only. Anything that
 # could wake a container engine, or reach the network, belongs nowhere near it.
-_sv_body="$(awk '/^step_artifact_state\(\) \{/ { inside = 1 } inside { print } inside && /^}/ { exit }' \
-    "$ROOT/setup/lib/common.sh")"
+# Its PATH-lookup helper is held to the same bar, so both bodies are examined.
+_sv_fn_body() { # _sv_fn_body <function-name>
+    awk -v fn="$1() {" 'index($0, fn) == 1 { inside = 1 } inside { print } inside && /^}/ { exit }' \
+        "$ROOT/setup/lib/common.sh"
+}
+_sv_body="$(_sv_fn_body step_artifact_state)
+$(_sv_fn_body _sas_launcher_on_path)"
 if printf '%s\n' "$_sv_body" | grep -q 'launcher)' && \
+   printf '%s\n' "$_sv_body" | grep -q '_sas_cli' && \
    ! printf '%s\n' "$_sv_body" | grep -Eq 'docker|podman|curl|fetch |nano_status|personal_status|exasol info'; then
     check "step_state(file_tests_only)" "yes" "yes"
 else
@@ -801,11 +887,16 @@ else
 fi
 
 # Both sides carry the same two halves: the artifact table and a begin_step that
-# only lets a proven "missing" override the manifest tick.
+# only lets a proven "missing" override the manifest tick. Both also refuse a
+# 0-byte artifact — `-s` in the shell, a length test on Windows, where Test-Path
+# alone was the same existence-only check. (pwsh is not installed here, so the
+# Windows half is pinned by inspection: it cannot be executed.)
 if grep -q 'step_artifact_state' "$ROOT/setup/lib/common.sh" && \
    grep -q 'Get-ExakitStepArtifactState' "$ROOT/setup/lib/exakit-common.ps1" && \
    grep -q 'what it installed is missing' "$ROOT/setup/lib/common.sh" && \
-   grep -q 'what it installed is missing' "$ROOT/setup/lib/exakit-common.ps1"; then
+   grep -q 'what it installed is missing' "$ROOT/setup/lib/exakit-common.ps1" && \
+   printf '%s\n' "$_sv_body" | grep -q -- '-s "\$EXAKIT_PERSONAL_BIN"' && \
+   [ "$(grep -c 'Length -gt 0' "$ROOT/setup/lib/exakit-common.ps1")" -ge 2 ]; then
     check "step_state(ps_parity)" "yes" "yes"
 else
     check "step_state(ps_parity)" "yes" "no"
