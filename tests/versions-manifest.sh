@@ -1481,38 +1481,165 @@ printf '# What is new\n\n## 0.4.0\n\n\n## 0.3.0\n\n- real\n' > "$WORK/wn-kit/WHA
 check "an empty section counts as no section" "rc=1" \
     "$(exakit_whats_new_section "$WORK/wn-kit" 0.4.0 >/dev/null 2>&1; printf 'rc=%s' "$?")"
 
-# An installer re-run that moved the kit version says what changed; one that did
-# not must stay quiet, or every idempotent re-run reads like an upgrade.
-wn_kit_root="$WORK/wn-run-kit"
-mkdir -p "$wn_kit_root"
-cp "$REAL" "$wn_kit_root/versions.json"
-printf '# What is new\n\n## 0.2.0\n\n- upgraded-line-only-here\n' > "$wn_kit_root/WHATS-NEW.md"
+echo "the post-install \"What's new\" box:"
+# The box is the one place an upgrading user learns what they just got, and the
+# installer is documented as safe to re-run - so a run that moved the kit version
+# has to say so, and every other run has to stay completely silent.
+#
+# Sentinels, not real note text: the fixture below is the only file that contains
+# them, so a test cannot pass by accidentally reading this checkout's WHATS-NEW.md.
+cat > "$WORK/wn-notes.md" <<'WN_NOTES'
+# What is new
+
+## 0.4.5
+
+Only prose lives under this heading, so it has no points at all.
+
+## 0.4.0
+
+- future-sentinel-040
+
+## 0.25.0
+
+- lexical-trap-sentinel-025
+
+## 0.3.0
+
+Prose before the list is not a point.
+
+**Changes**
+
+- `three-oh` point one
+- three-oh point two, which runs on and on and on and on and on and on and on
+  past any width a drawn box could hold, wrapped in the file like the real notes
+- three-oh point three
+- three-oh point four
+- three-oh point five
+- three-oh point six
+- seventh-point-past-the-cap
+
+## 0.2.0
+
+- two-oh-sentinel
+- two-oh second point
+
+## 0.1.5
+
+- one-five-sentinel
+
+## 0.1.0
+
+- ancient-sentinel-must-not-appear
+WN_NOTES
+
+# wn_kit <version> — a kit tree that states <version> about itself and carries the
+# fixture notes.
+wn_kit() {
+    mkdir -p "$WORK/wn-kit-$1"
+    python3 - "$REAL" "$WORK/wn-kit-$1/versions.json" "$1" <<'WN_KIT_PY'
+import json, sys
+doc = json.load(open(sys.argv[1]))
+doc["kit"]["version"] = sys.argv[3]
+json.dump(doc, open(sys.argv[2], "w"), indent=2)
+WN_KIT_PY
+    cp "$WORK/wn-notes.md" "$WORK/wn-kit-$1/WHATS-NEW.md"
+}
+for wn_v in 0.1.0 0.1.5 0.2.0 0.3.0 0.4.0 0.4.5; do wn_kit "$wn_v"; done
+
+# wn_run <home-tag> <kit-version> [die] — one installer run against one home: the
+# record taken while the manifest still holds the previous number, the kit.version
+# write, and the box at the end. `die` stops before the box, which is what a run
+# that fails partway leaves behind.
 wn_run() {
-    # The kit copy IS the repo root as far as exakit_repo_root is concerned, as long
-    # as kit/mcp exists. Building it that way beats stubbing the resolver - and
-    # without it the lookup would fall through to the real WHATS-NEW.md in this
-    # checkout, which has a 0.2.0 section and would pass for the wrong reason. The
-    # sentinel line below only exists in the fixture.
     ( EXAKIT_HOME="$WORK/wn-home-$1"
       EXAKIT_MANIFEST="$WORK/wn-home-$1/manifest.json"
       EXAKIT_BIN_DIR="$WORK/wn-home-$1/bin"
-      mkdir -p "$EXAKIT_HOME/kit/mcp"
-      cp "$wn_kit_root/versions.json" "$wn_kit_root/WHATS-NEW.md" "$EXAKIT_HOME/kit/"
-      . "$ROOT/setup/lib/pyexasol.sh"
+      mkdir -p "$EXAKIT_HOME"
       manifest_init >/dev/null 2>&1
-      exapump_install() { :; }; exapump_create_profile() { :; }; exapump_validate_connection() { :; }
-      mcp_install() { :; }; mcp_validate() { :; }
-      pyexasol_install() { :; }; pyexasol_validate() { :; }
-      exakit_maybe_offer_data_load() { :; }
-      exakit_maybe_offer_mcp_setup() { :; }
-      exakit_maybe_offer_skills_install() { :; }
-      ensure_path_hint() { :; }
-      EXAKIT_UPGRADED_FROM="$1"
-      kit_shared_steps 3 6 "$ROOT/setup" "$wn_kit_root" 2>&1 )
+      _wr_root="$WORK/wn-kit-$2"
+      exakit_note_kit_upgrade "$_wr_root"
+      _wr_v="$(exakit_kit_version_at "$_wr_root" 2>/dev/null || true)"
+      [ -n "$_wr_v" ] && manifest_set kit.version "$_wr_v"
+      [ "${3:-}" = "die" ] && exit 0
+      exakit_print_whats_new_box "$_wr_root" 2>&1 )
 }
-has "an upgrading re-run prints the notes" "upgraded-line-only-here" "$(wn_run 0.1.0)"
-has "and says where it came from" "upgraded from 0.1.0" "$(wn_run 0.1.0)"
-lacks "an unchanged re-run stays quiet" "upgraded-line-only-here" "$(wn_run 0.2.0)"
+wn_pending() { manifest_get kit.whats_new_from 2>/dev/null || true; }
+wn_shape() {
+    if [ -z "$(printf '%s' "$1" | tr -d '[:space:]')" ]; then printf 'silent'; else printf 'printed'; fi
+}
+# The version headings the box printed, in the order it printed them.
+wn_order() {
+    printf '%s\n' "$1" | sed -n 's/.*In \([0-9][0-9.]*\):.*/\1/p' \
+        | awk '{ printf "%s%s", (NR > 1 ? " " : ""), $0 } END { printf "\n" }'
+}
+
+check "a first-ever install shows no box" "silent" "$(wn_shape "$(wn_run first 0.3.0)")"
+# Same home again, now moving 0.3.0 -> 0.4.0.
+wn_upgrade="$(wn_run first 0.4.0)"
+check "an upgrade shows one" "printed" "$(wn_shape "$wn_upgrade")"
+has "with the version it moved to" "In 0.4.0:" "$wn_upgrade"
+has "and that version's points" "future-sentinel-040" "$wn_upgrade"
+has "and the line that names the move" "moved from 0.3.0 to 0.4.0" "$wn_upgrade"
+lacks "not the points of a version it already had" "lexical-trap-sentinel-025" "$wn_upgrade"
+check "an idempotent re-run at the same version shows none" "silent" \
+    "$(wn_shape "$(wn_run first 0.4.0)")"
+
+# One box for the whole jump, oldest hop first. A per-hop box, or a box for the
+# newest hop only, both fail here.
+wn_run cum 0.1.0 >/dev/null
+wn_cum="$(wn_run cum 0.3.0)"
+check "a 0.1.0 -> 0.3.0 upgrade draws exactly one box" "1" \
+    "$(printf '%s\n' "$wn_cum" | grep -c "What's new")"
+check "covering every version in between, oldest first" "0.1.5 0.2.0 0.3.0" \
+    "$(wn_order "$wn_cum")"
+has "with the points of the middle hop" "two-oh-sentinel" "$wn_cum"
+has "and the points of the newest hop" "three-oh point one" "$wn_cum"
+lacks "and nothing from the version already installed" "ancient-sentinel-must-not-appear" "$wn_cum"
+lacks "and nothing from a version not installed yet" "future-sentinel-040" "$wn_cum"
+# 0.25.0 sorts BEFORE 0.3.0 as a string and AFTER it as a version: a lexical
+# comparison would smuggle notes for a release the user does not have into the box.
+lacks "and nothing from a version that only sorts low as text" "lexical-trap-sentinel-025" "$wn_cum"
+has "a wrapped point is joined and cut to the box width" "on and on and..." "$wn_cum"
+lacks "and only the first few points of a version are shown" "seventh-point-past-the-cap" "$wn_cum"
+check "the widest line still fits a terminal" "fits" \
+    "$(printf '%s\n' "$wn_cum" | awk 'length($0) > 90 { print "TOO-WIDE: " length($0); exit } END { print "fits" }')"
+
+# A version documented with prose but no points has nothing to put in a box, and an
+# empty box is worse than no box.
+wn_run none 0.4.0 >/dev/null
+check "a version with no points shows no empty box" "silent" \
+    "$(wn_shape "$(wn_run none 0.4.5)")"
+
+# The record is in the manifest for exactly this case: the first run overwrote
+# kit.version and then died, so nothing but the record knows a hop is unannounced.
+wn_run die 0.1.5 >/dev/null
+wn_run die 0.3.0 die >/dev/null 2>&1
+wn_after_death="$(wn_run die 0.3.0)"
+has "a run that died partway still gets its box next time" "two-oh-sentinel" "$wn_after_death"
+has "measured from before the run that died" "moved from 0.1.5 to 0.3.0" "$wn_after_death"
+check "and the record is spent once the box is drawn" "" \
+    "$( EXAKIT_MANIFEST="$WORK/wn-home-die/manifest.json"; wn_pending )"
+
+# Backwards is not an upgrade: nothing recorded, nothing printed, and no marker
+# left behind for a later run to resolve.
+wn_run down 0.3.0 >/dev/null
+check "a downgrade shows no box" "silent" "$(wn_shape "$(wn_run down 0.1.5)")"
+check "and records nothing" "" \
+    "$( EXAKIT_MANIFEST="$WORK/wn-home-down/manifest.json"; wn_pending )"
+
+# Cosmetic means cosmetic: a kit copy with no notes file at all must print nothing
+# and still finish clean.
+mkdir -p "$WORK/wn-kit-nofile"
+cp "$WORK/wn-kit-0.3.0/versions.json" "$WORK/wn-kit-nofile/versions.json"
+wn_nofile="$( EXAKIT_HOME="$WORK/wn-home-nofile"
+    EXAKIT_MANIFEST="$WORK/wn-home-nofile/manifest.json"
+    mkdir -p "$EXAKIT_HOME"
+    manifest_init >/dev/null 2>&1
+    manifest_set kit.version 0.1.0
+    manifest_set kit.whats_new_from 0.1.0
+    exakit_print_whats_new_box "$WORK/wn-kit-nofile" 2>&1
+    printf 'rc=%s' "$?" )"
+check "a kit copy without the notes file prints nothing and succeeds" "rc=0" "$wn_nofile"
 
 echo "a hanging container engine cannot stall a version lookup:"
 # The failure this prevents: `docker info` and `docker container inspect` do not

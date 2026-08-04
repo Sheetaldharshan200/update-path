@@ -966,6 +966,216 @@ function Write-ExakitWhatsNew {
     return $true
 }
 
+# --- the post-install "What's new" box --------------------------------------
+# Twins of exakit_whats_new_versions / _points / _lines, exakit_note_kit_upgrade
+# and exakit_print_whats_new_box in setup/lib/common.sh. The section reader above
+# answers "what does version X say"; these answer "what did this run move the user
+# across", which an upgrading installer has to show in ONE box covering every hop.
+#
+# All of it is cosmetic and none of it may fail an install: every reader returns
+# nothing rather than throwing, and the box is skipped when there is nothing to
+# say.
+$script:WhatsNewPointWidth = 68
+$script:WhatsNewPointsPerVersion = 6
+
+# Compare-ExakitDottedVersion - -1, 0 or 1, field by field. Test-ExakitVersionNewer
+# lives in setup/exakit.ps1, which setup does NOT dot-source, so the comparison the
+# box needs has to exist here.
+function Compare-ExakitDottedVersion {
+    param([string]$A, [string]$B)
+    $pa = @("$A" -split '\.')
+    $pb = @("$B" -split '\.')
+    $max = $pa.Count
+    if ($pb.Count -gt $max) { $max = $pb.Count }
+    for ($i = 0; $i -lt $max; $i++) {
+        $x = 0
+        $y = 0
+        if ($i -lt $pa.Count) { [void][int]::TryParse($pa[$i], [ref]$x) }
+        if ($i -lt $pb.Count) { [void][int]::TryParse($pb[$i], [ref]$y) }
+        if ($x -lt $y) { return -1 }
+        if ($x -gt $y) { return 1 }
+    }
+    return 0
+}
+
+# Get-ExakitWhatsNewVersions - the documented versions inside (From, To], oldest
+# first. A heading that is not a plain dotted number is skipped rather than guessed
+# at, and a To older than From - the downgrade case - selects nothing.
+function Get-ExakitWhatsNewVersions {
+    param([Parameter(Mandatory)][string]$KitRoot, [string]$From = "", [string]$To = "")
+    $file = Join-Path $KitRoot "WHATS-NEW.md"
+    if (-not (Test-Path $file)) { return @() }
+    $found = @()
+    foreach ($line in @(Get-Content -Path $file)) {
+        if (-not $line) { continue }
+        if (-not $line.StartsWith("## ")) { continue }
+        $v = $line.Substring(3).Trim()
+        if ($v -notmatch '^[0-9]+(\.[0-9]+)*$') { continue }
+        if ($found -contains $v) { continue }
+        if ($From -and (Compare-ExakitDottedVersion -A $v -B $From) -le 0) { continue }
+        if ($To -and (Compare-ExakitDottedVersion -A $v -B $To) -gt 0) { continue }
+        $found += $v
+    }
+    if ($found.Count -lt 2) { return $found }
+    # Insertion sort, ascending: Sort-Object would order 0.10.0 before 0.9.0.
+    $out = @()
+    foreach ($v in $found) {
+        $at = $out.Count
+        for ($i = 0; $i -lt $out.Count; $i++) {
+            if ((Compare-ExakitDottedVersion -A $out[$i] -B $v) -gt 0) { $at = $i; break }
+        }
+        $head = @()
+        $tail = @()
+        if ($at -gt 0) { $head = $out[0..($at - 1)] }
+        if ($at -lt $out.Count) { $tail = $out[$at..($out.Count - 1)] }
+        $out = @($head) + @($v) + @($tail)
+    }
+    return $out
+}
+
+# Get-ExakitWhatsNewPoints - one "  - text" line per headline point of a version.
+# Only list items survive: a Markdown table or a paragraph inside a drawn box reads
+# worse than not being there, and the full section is one command away. A wrapped
+# item is joined back into one line, `code` and **bold** markers are dropped, and
+# the result is cut to a width the panel can hold.
+function Get-ExakitWhatsNewPoints {
+    param([Parameter(Mandatory)][string]$KitRoot, [Parameter(Mandatory)][string]$Version)
+    $body = Get-ExakitWhatsNewSection -KitRoot $KitRoot -Version $Version
+    if (-not $body) { return @() }
+    $points = @()
+    $item = ""
+    # An empty return from the formatter must be TESTED, not appended: PowerShell
+    # turns "+= (a function that output nothing)" into a $null array element, and
+    # that would print as a blank line inside the box.
+    foreach ($line in @($body -split "`r?`n")) {
+        if ($line -match '^[ \t]*[-*][ \t]') {
+            $done = Format-ExakitWhatsNewPoint -Item $item -Shown $points.Count
+            if ($done) { $points += $done }
+            $item = ($line -replace '^[ \t]*[-*][ \t]+', '')
+            continue
+        }
+        if ($item -and $line -match '^[ \t]+[^ \t]') {
+            $item = "$item $line"
+            continue
+        }
+        $done = Format-ExakitWhatsNewPoint -Item $item -Shown $points.Count
+        if ($done) { $points += $done }
+        $item = ""
+    }
+    $done = Format-ExakitWhatsNewPoint -Item $item -Shown $points.Count
+    if ($done) { $points += $done }
+    return @($points)
+}
+
+# Format-ExakitWhatsNewPoint - the point cleanup, or an empty string (an empty
+# item, or one past the per-version cap the box footer covers).
+function Format-ExakitWhatsNewPoint {
+    param([string]$Item = "", [int]$Shown = 0)
+    if (-not $Item) { return "" }
+    if ($Shown -ge $script:WhatsNewPointsPerVersion) { return "" }
+    $t = $Item -replace '`', ''
+    $t = $t -replace '\*\*', ''
+    $t = ($t -replace '[ \t]+', ' ').Trim()
+    if (-not $t) { return "" }
+    if ($t.Length -gt $script:WhatsNewPointWidth) {
+        $t = $t.Substring(0, $script:WhatsNewPointWidth - 3)
+        $t = ($t -replace ' +$', '') + "..."
+    }
+    return "  - $t"
+}
+
+# Get-ExakitWhatsNewLines - the body of the box: every version in range, oldest
+# first, each headed by "In <version>:" and followed by its points. Empty when
+# there is nothing to show, which is what keeps an empty box off the screen.
+function Get-ExakitWhatsNewLines {
+    param([Parameter(Mandatory)][string]$KitRoot, [string]$From = "", [string]$To = "")
+    $lines = @()
+    # @(...) around the call: foreach over a bare $null runs its body once.
+    foreach ($v in @(Get-ExakitWhatsNewVersions -KitRoot $KitRoot -From $From -To $To)) {
+        $points = @(Get-ExakitWhatsNewPoints -KitRoot $KitRoot -Version $v)
+        if ($points.Count -eq 0) { continue }
+        $lines += "In ${v}:"
+        $lines += $points
+    }
+    return @($lines)
+}
+
+# Set-ExakitKitUpgradeNote - record the kit version installed BEFORE this run, for
+# the box at the end to read. Call it while the manifest still holds the previous
+# run's number.
+#
+# The record is in the manifest, not a script variable, because a run that dies
+# partway has already overwritten kit.version: the next re-run would compare the
+# new number against itself, decide nothing moved, and lose the notes for a hop
+# nobody ever saw. A pending record therefore wins over anything this run computes,
+# and only the box clears it.
+function Set-ExakitKitUpgradeNote {
+    param([Parameter(Mandatory)][string]$KitRoot)
+    try {
+        $pending = Get-ExakitManifestValue "kit.whats_new_from"
+        if ($pending) { return }
+        $was = Get-ExakitManifestValue "kit.version"
+        $now = Get-ExakitKitVersionAt -KitRoot $KitRoot
+        # A first-ever install has no previous version, and nothing to announce.
+        if (-not $was -or -not $now -or $was -eq $now) { return }
+        # Only forward. A downgrade has no notes to read out anyway, and recording
+        # one would leave a pending marker no later run could resolve.
+        if ((Compare-ExakitDottedVersion -A $now -B $was) -le 0) { return }
+        Set-ExakitManifestValue "kit.whats_new_from" $was
+    } catch { }
+}
+
+# Clear-ExakitKitUpgradeNote - the record is spent once the box has had its chance.
+# Written through the low-level trio because Set-ExakitManifestValue takes -Value
+# as a Mandatory parameter, which PowerShell refuses to bind to an empty string.
+function Clear-ExakitKitUpgradeNote {
+    try {
+        $doc = Read-ExakitManifest
+        if ($null -eq $doc) { return }
+        Set-ManifestValue -Manifest $doc -Path "kit.whats_new_from" -Value ""
+        Save-ExakitManifest $doc
+    } catch { }
+}
+
+# Write-ExakitWhatsNewBox - the box itself, after the connection panel. Prints only
+# when the kit version moved during this run.
+#
+# No record means nothing is printed, which is the whole reason a first install and
+# an idempotent re-run stay silent: the installer is documented as safe to re-run,
+# and a box on every no-op run teaches people to ignore it.
+function Write-ExakitWhatsNewBox {
+    param([string]$KitRoot = "")
+    # Declared out here so the finally block can tell "no record, nothing to do"
+    # from "record spent": a run with nothing to announce must not rewrite the
+    # manifest at all.
+    $from = ""
+    try {
+        $root = $KitRoot
+        if (-not $root) { $root = Get-ExakitRepoRoot }
+        $from = Get-ExakitManifestValue "kit.whats_new_from"
+        if (-not $from) { return }
+        $to = ""
+        if ($root) { $to = Get-ExakitKitVersionAt -KitRoot $root }
+        if (-not $to) { $to = Get-ExakitManifestValue "kit.version" }
+        $lines = @()
+        if ($root -and $to) { $lines = @(Get-ExakitWhatsNewLines -KitRoot $root -From $from -To $to) }
+        if ($lines.Count -gt 0) {
+            Write-Host ""
+            Start-ExakitPanel "What's new"
+            Write-ExakitPanelLine "Your kit moved from $from to $to."
+            foreach ($line in $lines) { Write-ExakitPanelLine $line }
+            Write-ExakitPanelLine "Full notes: exakit whats-new $to"
+            Complete-ExakitPanel
+        }
+    } catch {
+        Write-ExakitLog "WARN" "The what's-new box could not be built: $_"
+    } finally {
+        # Announced, or found nothing worth announcing: either way this move is
+        # dealt with, and the record goes so the next re-run does not repeat it.
+        if ($from) { Clear-ExakitKitUpgradeNote }
+    }
+}
+
 # Get-ExakitKitVersionAt - kit.version as stated by a specific kit tree. The
 # installer uses it on the tree it is installing FROM, which is not necessarily
 # the copy under the kit home (that one may be an older install).

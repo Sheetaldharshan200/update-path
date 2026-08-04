@@ -4608,6 +4608,197 @@ exakit_print_whats_new() {
     return 0
 }
 
+# --- the post-install "What's new" box --------------------------------------
+# The section reader above answers "what does version X say"; the helpers below
+# answer "what did this run move the user across", which is the question an
+# upgrading installer has to answer in ONE box covering every hop.
+#
+# Everything here is cosmetic and is written to be unable to fail an install: no
+# reader dies on a missing file or a mangled heading, the whole box is skipped
+# when there is nothing to say, and the callers invoke it after exakit_finish has
+# already recorded the run as complete.
+
+# The point text is truncated so a wrapped bullet cannot stretch the panel across
+# the terminal, and each version shows only its first few points — the footer
+# names the command that prints the rest.
+EXAKIT_WHATS_NEW_POINT_WIDTH=68
+EXAKIT_WHATS_NEW_POINTS_PER_VERSION=6
+
+# exakit_whats_new_versions <kit-root> <from> <to> — the versions documented in
+# WHATS-NEW.md that lie in (from, to], oldest first.
+#
+# One awk pass: it selects and orders in the same place, so the caller never has
+# to sort (no `sort -V`, which is GNU-only). A heading that is not a plain dotted
+# number is skipped rather than guessed at, and a `to` older than `from` — the
+# downgrade case — selects nothing and therefore prints nothing.
+exakit_whats_new_versions() {
+    _wnv_file="$1/WHATS-NEW.md"
+    [ -f "$_wnv_file" ] || return 1
+    awk -v from="${2:-}" -v to="${3:-}" '
+        # Dotted-number compare, field by field: -1, 0 or 1. The trailing
+        # arguments are the only way awk lets you declare locals.
+        function vcmp(a, b,   na, nb, pa, pb, i, m, x, y) {
+            na = split(a, pa, "."); nb = split(b, pb, ".")
+            m = na; if (nb > m) m = nb
+            for (i = 1; i <= m; i++) {
+                x = 0; y = 0
+                if (i <= na) x = pa[i] + 0
+                if (i <= nb) y = pb[i] + 0
+                if (x < y) return -1
+                if (x > y) return 1
+            }
+            return 0
+        }
+        /^## / {
+            v = substr($0, 4)
+            sub(/^[ \t]+/, "", v); sub(/[ \t\r]+$/, "", v)
+            if (v !~ /^[0-9]+(\.[0-9]+)*$/) next
+            if (v in seen) next
+            seen[v] = 1
+            if (from != "" && vcmp(v, from) <= 0) next
+            if (to != "" && vcmp(v, to) > 0) next
+            n++
+            for (i = n - 1; i >= 1 && vcmp(out[i], v) > 0; i--) out[i + 1] = out[i]
+            out[i + 1] = v
+        }
+        END { for (i = 1; i <= n; i++) print out[i] }
+    ' "$_wnv_file" 2>/dev/null
+}
+
+# exakit_whats_new_points <kit-root> <version> — one line per headline point of a
+# version, as "  - text".
+#
+# Reads the same section the `exakit whats-new` command prints and keeps only its
+# list items: a Markdown table or a paragraph inside a drawn box reads worse than
+# not being there, and the full section is one command away. A wrapped item is
+# joined back into one line, `code` and **bold** markers are dropped, and the
+# result is cut to a width the panel can hold.
+exakit_whats_new_points() {
+    _wnp_body="$(exakit_whats_new_section "$1" "$2" 2>/dev/null)" || return 1
+    printf '%s\n' "$_wnp_body" | awk \
+        -v maxlen="$EXAKIT_WHATS_NEW_POINT_WIDTH" \
+        -v maxpoints="$EXAKIT_WHATS_NEW_POINTS_PER_VERSION" '
+        function flush(   t) {
+            if (item == "") return
+            t = item; item = ""
+            if (shown >= maxpoints) return
+            gsub(/`/, "", t)
+            gsub(/\*\*/, "", t)
+            gsub(/[ \t]+/, " ", t)
+            sub(/^ /, "", t); sub(/ $/, "", t)
+            if (t == "") return
+            if (length(t) > maxlen) {
+                t = substr(t, 1, maxlen - 3)
+                # awk may be counting bytes, so the cut can land inside a
+                # multibyte character (this file has em dashes in it). Drop any
+                # trailing non-ASCII run rather than leave half of one behind.
+                sub(/[^ -~]+$/, "", t)
+                sub(/ +$/, "", t)
+                t = t "..."
+            }
+            shown++
+            print "  - " t
+        }
+        /^[ \t]*[-*][ \t]/ {
+            flush()
+            item = $0
+            sub(/^[ \t]*[-*][ \t]+/, "", item)
+            next
+        }
+        # An indented, non-empty line continues the item above it; anything else
+        # (a blank line, a heading, a table row) ends it.
+        item != "" && /^[ \t]+[^ \t]/ { item = item " " $0; next }
+        { flush() }
+        END { flush() }
+    ' 2>/dev/null
+}
+
+# exakit_whats_new_lines <kit-root> <from> <to> — the body of the box: every
+# version in range, oldest first, each headed by "In <version>:" and followed by
+# its points. Non-zero when there is nothing to show, which is what keeps an empty
+# box off the screen.
+#
+# The lines are the finished display text and carry no blank spacers: ui_panel_end
+# splits its buffer on newlines, so an empty line never survives to the screen and
+# a separator that cannot render has no business being in the buffer.
+exakit_whats_new_lines() {
+    _wnl_root="$1"
+    _wnl_out=""
+    for _wnl_v in $(exakit_whats_new_versions "$_wnl_root" "${2:-}" "${3:-}" 2>/dev/null); do
+        _wnl_points="$(exakit_whats_new_points "$_wnl_root" "$_wnl_v" 2>/dev/null || true)"
+        [ -n "$_wnl_points" ] || continue
+        if [ -n "$_wnl_out" ]; then
+            _wnl_out="$_wnl_out
+"
+        fi
+        _wnl_out="${_wnl_out}In $_wnl_v:
+$_wnl_points"
+    done
+    [ -n "$_wnl_out" ] || return 1
+    printf '%s\n' "$_wnl_out"
+}
+
+# exakit_note_kit_upgrade <kit-root> — record the kit version installed BEFORE
+# this run, for the box at the end to read. Call it while the manifest still holds
+# the previous run's number.
+#
+# The record is in the manifest, not an environment variable, because a run that
+# dies partway has already overwritten kit.version: the next re-run would compare
+# the new number against itself, decide nothing moved, and lose the notes for a
+# hop nobody ever saw. A pending record therefore wins over anything this run
+# computes, and only the box clears it.
+exakit_note_kit_upgrade() {
+    _nku_pending="$(manifest_get kit.whats_new_from 2>/dev/null || true)"
+    [ -z "$_nku_pending" ] || return 0
+    _nku_now="$(exakit_kit_version_at "${1:-}" 2>/dev/null || true)"
+    _nku_was="$(manifest_get kit.version 2>/dev/null || true)"
+    # A first-ever install has no previous version, and nothing to announce.
+    [ -n "$_nku_was" ] && [ -n "$_nku_now" ] || return 0
+    [ "$_nku_was" != "$_nku_now" ] || return 0
+    # Only forward. A downgrade has no notes to read out anyway, and recording one
+    # would leave a pending marker no later run could resolve.
+    exakit_version_newer "$_nku_now" "$_nku_was" || return 0
+    ( manifest_set kit.whats_new_from "$_nku_was" ) >/dev/null 2>&1 || true
+    return 0
+}
+
+# exakit_print_whats_new_box [kit-root] — the box itself, after the connection
+# panel. Prints only when the kit version moved during this run.
+#
+# No record means nothing is printed, which is the whole reason a first install
+# and an idempotent re-run stay silent: the installer is documented as safe to
+# re-run, and a box on every no-op run teaches people to ignore it.
+exakit_print_whats_new_box() {
+    _pwb_root="${1:-}"
+    [ -n "$_pwb_root" ] || _pwb_root="$(exakit_repo_root 2>/dev/null || true)"
+    _pwb_from="$(manifest_get kit.whats_new_from 2>/dev/null || true)"
+    [ -n "$_pwb_from" ] || return 0
+    _pwb_to="$(exakit_kit_version_at "$_pwb_root" 2>/dev/null || true)"
+    [ -n "$_pwb_to" ] || _pwb_to="$(manifest_get kit.version 2>/dev/null || true)"
+    _pwb_body=""
+    if [ -n "$_pwb_root" ] && [ -n "$_pwb_to" ]; then
+        _pwb_body="$(exakit_whats_new_lines "$_pwb_root" "$_pwb_from" "$_pwb_to" 2>/dev/null || true)"
+    fi
+    if [ -n "$_pwb_body" ]; then
+        printf '\n'
+        ui_panel_begin "What's new"
+        ui_panel_line "Your kit moved from $_pwb_from to $_pwb_to."
+        # Fed by a here-document, not a pipe: ui_panel_line buffers into a
+        # variable, and a pipeline would build that buffer in a subshell.
+        while IFS= read -r _pwb_line; do
+            ui_panel_line "$_pwb_line"
+        done <<WHATS_NEW_BODY
+$_pwb_body
+WHATS_NEW_BODY
+        ui_panel_line "Full notes: exakit whats-new $_pwb_to"
+        ui_panel_end
+    fi
+    # Announced, or found nothing worth announcing: either way this move is dealt
+    # with, and the record goes so the next re-run does not repeat the box.
+    ( manifest_set kit.whats_new_from "" ) >/dev/null 2>&1 || true
+    return 0
+}
+
 kit_shared_steps() {
     _step_no="$1"
     _total="$2"
@@ -4725,16 +4916,9 @@ kit_shared_steps() {
     exakit_maybe_offer_mcp_setup || true
     exakit_maybe_offer_skills_install || true
     exakit_print_soft_failures
-    # An installer re-run over an older install is an upgrade, and the user has no
-    # other way to learn what changed: the setup script records what the previous
-    # copy said, and only a real move gets announced.
-    if [ -n "${EXAKIT_UPGRADED_FROM:-}" ]; then
-        _kss_now="$(exakit_kit_version_at "$_kit_root" 2>/dev/null || true)"
-        if [ -n "$_kss_now" ] && [ "$_kss_now" != "$EXAKIT_UPGRADED_FROM" ]; then
-            exakit_print_whats_new "$_kss_now" \
-                "What's new in $_kss_now (upgraded from $EXAKIT_UPGRADED_FROM)" || true
-        fi
-    fi
+    # What changed in an upgrade is announced by exakit_print_whats_new_box, after
+    # the connection panel at the very end of the run — not here, in the middle of
+    # the step output where the connection details would push it off the screen.
 }
 
 # connection_panel — the payoff screen: everything needed to connect.
