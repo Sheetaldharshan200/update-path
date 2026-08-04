@@ -115,10 +115,12 @@ class StaleVersionPinTests(unittest.TestCase):
 
             doctor = self.subsystem.execute(self._request("doctor", "2.0.0"))
 
+        # Doctor diagnoses; it must not fix anything on the way past. Asserted
+        # first so a doctor that writes fails on THAT, not on a knock-on change
+        # to the findings.
+        self.assertEqual(self.config_path.read_bytes(), before)
         self.assertIn("managed_entry_outdated", self._codes(doctor))
         self.assertNotEqual(doctor.status, OperationStatus.SUCCESS)
-        # Doctor diagnoses; it must not fix anything on the way past.
-        self.assertEqual(self.config_path.read_bytes(), before)
 
     def test_repair_rewrites_an_intact_but_stale_pin(self) -> None:
         with self._mock_connectivity():

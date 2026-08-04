@@ -1015,11 +1015,13 @@ function Get-McpManagedClients {
 # Without it an update moved nothing a client can see: only the manifest record
 # changed, and a guard that trusted that record would skip the next attempt.
 #
-# It has to be the configure operation (what `exakit mcp-setup` runs). `repair`
-# gates on a hash comparison against the hash recorded at the last write, so a
-# config that is intact but pinned to an older version reads as consistent and
-# repair answers no_change (mcp/service.py). Only configure re-renders
-# unconditionally.
+# This is the configure operation (what `exakit mcp-setup` runs), and it stays
+# configure because configure re-renders unconditionally: mid-update the guarantee
+# wanted is "the entry now says what we just installed", not the outcome of a
+# comparison. `repair` can also move an intact-but-outdated pin now - it compares
+# the live entry against the definition the kit would write, not only against the
+# hash recorded at the last write (mcp/validator/service.py) - so it is the right
+# command for a user fixing a client after the fact, not the one for this step.
 #
 # Scoped to already-managed clients on purpose: configure would happily create a
 # config for a client the user never chose to connect. Twin of
