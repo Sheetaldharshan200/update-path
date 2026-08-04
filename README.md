@@ -58,7 +58,7 @@ At the end: connection details on screen, a managed runtime state under `~/.exas
 
 ## Key features
 
-- 🪶 **Almost no prerequisites.** No Homebrew or Rust needed. Python 3.11+ is the only one, and the installer brings its own if yours is older or missing.
+- 🪶 **Almost no prerequisites.** No Homebrew or Rust needed. Python 3.11+ is needed.
 - ⚡ **Ready in under 2 minutes.** One command installs and connects the whole stack.
 - 🔒 **Read-only AI.** Your assistant can read everything and change nothing. The database enforces it.
 - 🤖 **Support for multiple AI clients.** Claude, Codex, Cursor, GitHub Copilot, Gemini CLI, OpenCode, Continue.
