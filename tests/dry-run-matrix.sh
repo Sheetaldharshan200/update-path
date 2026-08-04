@@ -335,6 +335,43 @@ else
     check "mcp_update(snapshot)" "yes" "no"
 fi
 
+echo "panel width measurement (visible length, not raw bytes):"
+# _ui_visible_len measures what the user SEES, and ui_panel_end uses it twice:
+# once to pick the box width, once to pad each line. It accepted either OSC 8
+# terminator with a BRE alternation `\|` -- a GNU sed extension that BSD sed
+# ignores -- so on macOS a hyperlinked line returned its RAW byte length, became
+# the widest line, blew the box out and closed its own border early. Escapes are
+# built LITERALLY here on purpose: sourcing ui.sh re-derives UI_FANCY from
+# `-t 1`, so calling ui_link in a piped test emits plain text and proves nothing.
+vis_probe="$(
+    . "$ROOT/setup/lib/ui.sh" 2>/dev/null
+    _v_two="$(printf 'SQL client:   \033]8;;https://dbeaver.io/download/\033\\DBeaver\033]8;;\033\\ or \033]8;;https://www.dbvis.com/download/\033\\DbVisualizer\033]8;;\033\\')"
+    _v_bel="$(printf 'x \033]8;;http://a\007L\033]8;;\007 y')"
+    _v_sgr="$(printf '\033[1mbold\033[0m plain')"
+    printf '%s %s %s %s' "$(_ui_visible_len "SQL client:   DBeaver or DbVisualizer")" \
+        "$(_ui_visible_len "$_v_two")" "$(_ui_visible_len "$_v_bel")" "$(_ui_visible_len "$_v_sgr")"
+)"
+check "visible_len(plain two-link BEL SGR)" "37 37 5 10" "$vis_probe"
+
+# The helper being right is not the same as the BOX being right, so assert the
+# rendered rows: every row of a panel containing a hyperlink must be equal width.
+panel_out="$(
+    . "$ROOT/setup/lib/ui.sh" 2>/dev/null
+    UI_FANCY=1
+    _p_link="$(printf 'SQL client:   \033]8;;https://dbeaver.io/download/\033\\DBeaver\033]8;;\033\\ or \033]8;;https://www.dbvis.com/download/\033\\DbVisualizer\033]8;;\033\\')"
+    ui_panel_begin "Connection details"
+    ui_panel_line "Logs:         ~/.exasol-starter-kit/logs"
+    ui_panel_line "$_p_link"
+    ui_panel_line "How to connect: exakit guide"
+    ui_panel_end
+)"
+distinct="$(printf '%s\n' "$panel_out" | LC_ALL=C sed \
+    -e 's/'"$(printf '\033')"'\[[0-9;]*m//g' \
+    -e 's/'"$(printf '\033')"']8;;[^'"$(printf '\007\033')"']*'"$(printf '\007')"'//g' \
+    -e 's/'"$(printf '\033')"']8;;[^'"$(printf '\007\033')"']*'"$(printf '\033')"'\\//g' \
+    | awk 'NF { print length($0) }' | sort -u | wc -l | tr -d ' ')"
+check "panel(hyperlinked rows all one width)" "1" "$distinct"
+
 echo
 echo "passed: $PASS, failed: $FAIL"
 [ "$FAIL" -eq 0 ]
