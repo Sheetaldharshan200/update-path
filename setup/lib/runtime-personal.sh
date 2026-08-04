@@ -81,6 +81,118 @@ personal_release_url() {
     echo "https://github.com/${EXAKIT_PERSONAL_REPO}/releases/download/v${EXAKIT_PERSONAL_VERSION}"
 }
 
+# personal_deployed_version — the launcher version that created the deployment
+# currently on disk; empty (non-zero) when there is no deployment, or its
+# version cannot be read.
+#
+# Read from deployment STATE, never by executing a launcher. The decision this
+# feeds has to be made BEFORE any binary is downloaded or installed, and the
+# only launcher that could answer `exasol info` may be the very one about to be
+# overwritten — so asking it is both too late and unreliable. Two state files
+# carry the version, both written into the deployment directory by the launcher:
+#   .exasolLauncher.version    the bare version ("2.1.0"), no trailing newline
+#   .exasolLauncherState.json  "deploymentVersion": "2.1.0"
+# The bare file is preferred (nothing to parse); the JSON is the fallback for a
+# deployment that only carries it there. Neither needs python3, so this works on
+# a machine where the installer has not reached its Python step yet.
+personal_deployed_version() {
+    [ -d "$EXAKIT_PERSONAL_DEPLOY_DIR" ] || return 1
+
+    _pdv_raw=""
+    _pdv_file="$EXAKIT_PERSONAL_DEPLOY_DIR/.exasolLauncher.version"
+    if [ -f "$_pdv_file" ]; then
+        _pdv_raw="$(tr -d '[:space:]' < "$_pdv_file" 2>/dev/null || true)"
+    fi
+    if [ -z "$_pdv_raw" ]; then
+        _pdv_state="$EXAKIT_PERSONAL_DEPLOY_DIR/.exasolLauncherState.json"
+        if [ -f "$_pdv_state" ]; then
+            # Plain BRE, no alternation and no -E: the state file is written as
+            # one line, and tr keeps it one line even if that ever changes.
+            _pdv_raw="$(tr -d '\012\015' < "$_pdv_state" 2>/dev/null | \
+                sed -n 's/.*"deploymentVersion"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
+        fi
+    fi
+
+    _pdv_raw="${_pdv_raw#v}"
+    # Only answer with something that actually looks like a version. A truncated,
+    # empty or garbage state file must read as "unknown" and let the install
+    # proceed — never as a version that could wrongly block it.
+    case "$_pdv_raw" in
+        ""|*[!0-9A-Za-z.+_-]*) return 1 ;;
+    esac
+    case "$_pdv_raw" in
+        [0-9]*) printf '%s\n' "$_pdv_raw" ;;
+        *) return 1 ;;
+    esac
+}
+
+# personal_deployment_outranks <deployed> <advertised> — true ONLY when the
+# deployed version is demonstrably higher, comparing dotted numeric components
+# left to right and treating a missing component as 0 (so 2.1 > 2). Anything it
+# cannot decide is false: this answer blocks an install, and a refusal must never
+# be a guess.
+#
+# Deliberately not exakit_version_newer: without Python that helper falls back to
+# "same major, different tag -> worth inspecting" and answers true in BOTH
+# directions, which is the right bias for offering an update and exactly the
+# wrong one here — it would refuse a legitimate 2.0.0 -> 2.1.0 upgrade on any
+# machine that has no Python runtime yet. This comparison needs no Python at all.
+personal_deployment_outranks() {
+    # Only the numeric release matters for "can this launcher drive this
+    # deployment"; drop any pre-release/build suffix.
+    _pdo_a="${1#v}"
+    _pdo_b="${2#v}"
+    _pdo_a="${_pdo_a%%[!0-9.]*}"
+    _pdo_b="${_pdo_b%%[!0-9.]*}"
+    [ -n "$_pdo_a" ] && [ -n "$_pdo_b" ] || return 1
+    while [ -n "$_pdo_a" ] || [ -n "$_pdo_b" ]; do
+        _pdo_ha="${_pdo_a%%.*}"
+        _pdo_hb="${_pdo_b%%.*}"
+        [ -n "$_pdo_ha" ] || _pdo_ha=0
+        [ -n "$_pdo_hb" ] || _pdo_hb=0
+        case "$_pdo_ha$_pdo_hb" in *[!0-9]*) return 1 ;; esac
+        [ "$_pdo_ha" -gt "$_pdo_hb" ] && return 0
+        [ "$_pdo_ha" -lt "$_pdo_hb" ] && return 1
+        case "$_pdo_a" in *.*) _pdo_a="${_pdo_a#*.}" ;; *) _pdo_a="" ;; esac
+        case "$_pdo_b" in *.*) _pdo_b="${_pdo_b#*.}" ;; *) _pdo_b="" ;; esac
+    done
+    return 1
+}
+
+# personal_refuse_launcher_downgrade — never install a launcher older than the
+# deployment already on disk.
+#
+# A launcher refuses to drive a deployment newer than itself, and says so in a
+# wall of its own text ending in usage output:
+#   deployment directory is incompatible with this launcher: Deployment version
+#   2.1.0 is newer than launcher version 2.0.0 (command install)
+# Installing the older launcher therefore does not merely fail — it leaves the
+# database undriveable, and every re-run fails identically. The trigger is real:
+# maintainers lower the advertised set to withdraw a faulty release, and the
+# next installer re-run on a machine already carrying the newer deployment
+# breaks it.
+#
+# `exakit update` already refuses a downgrade (and exakit_update_component
+# refuses again at the choke point), but both compare the advertised version
+# against the INSTALL RECORD, and neither is on this path: the installer calls
+# personal_install_launcher directly and held no version opinion at all. This
+# guard is not a copy of that one — it asks a different, more authoritative
+# question (what is actually deployed on disk), and it answers it before the
+# first byte is downloaded.
+personal_refuse_launcher_downgrade() {
+    [ -n "${EXAKIT_PERSONAL_VERSION:-}" ] || return 0
+    _prd_deployed="$(personal_deployed_version 2>/dev/null || true)"
+    [ -n "$_prd_deployed" ] || return 0
+    personal_deployment_outranks "$_prd_deployed" "$EXAKIT_PERSONAL_VERSION" || return 0
+
+    error "The Exasol Personal deployment on this machine is version ${_prd_deployed}, which is newer than the launcher version this kit advertises (${EXAKIT_PERSONAL_VERSION})."
+    info "A ${EXAKIT_PERSONAL_VERSION} launcher refuses to drive a ${_prd_deployed} deployment, so installing it would leave your database unusable. Nothing was installed or changed."
+    info "Deployment: $(ui_tilde "$EXAKIT_PERSONAL_DEPLOY_DIR")"
+    info "To install the launcher that matches your deployment, re-run with: EXAKIT_PERSONAL_VERSION=${_prd_deployed}"
+    info "To start over on ${EXAKIT_PERSONAL_VERSION} instead, remove the newer deployment first with 'exakit uninstall' — that deletes its data."
+    die "Refusing to install launcher ${EXAKIT_PERSONAL_VERSION} over a newer ${_prd_deployed} deployment."
+}
+
 # personal_install_launcher — download, verify, and install the `exasol` CLI.
 # An already-installed launcher is only accepted if it supports the 'local'
 # preset (older releases do not); otherwise the resolved version is installed
@@ -95,6 +207,14 @@ personal_install_launcher() {
         warn "The installed Exasol launcher ($_existing) does not support the 'local' preset (too old)."
         info "Installing launcher v${EXAKIT_PERSONAL_VERSION} to $EXAKIT_PERSONAL_BIN — your existing launcher is left untouched"
     fi
+
+    # Refuse before acting: from here on the advertised version WILL be written
+    # over whatever launcher this kit manages, so the deployment on disk gets its
+    # veto now, while nothing has been downloaded or overwritten yet. Deliberately
+    # after the early return above: a launcher already on PATH that is new enough
+    # for the deployment is kept as it always was, and that case installs nothing
+    # to object to.
+    personal_refuse_launcher_downgrade
 
     _asset="$(personal_asset_name)"
     _base="$(personal_release_url)"
