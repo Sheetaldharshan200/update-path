@@ -2249,23 +2249,14 @@ exakit_marketplace_offer() {
         return 0
     fi
 
+    # Straight into the marketplace selection — the same cursor menu every
+    # other choice in the kit uses, no typing. Cancel is the pre-selected
+    # default, so Enter alone IS "maybe later" and installs nothing.
     printf '\n'
     ok "Your Starter Kit installation is done and working."
-    info "The marketplace has more useful tools for it:"
-    exakit_marketplace_addons | while IFS='|' read -r _mo_id _mo_label _mo_desc; do
-        [ -n "$_mo_id" ] || continue
-        _exakit_marketplace_addon_present "$_mo_id" && continue
-        printf '      %s — %s\n' "$_mo_label" "$_mo_desc"
-    done
-    _mo_answer="$(prompt_text "Add tools from the marketplace now? (yes / maybe later)" "maybe later")"
-    case "$(printf '%s' "$_mo_answer" | tr '[:upper:]' '[:lower:]')" in
-        y|yes)
-            exakit_marketplace_menu
-            ;;
-        *)
-            info "Maybe later — browse any time with: exakit marketplace"
-            ;;
-    esac
+    info "The marketplace has more useful tools for it — pick any to install, or Enter to skip:"
+    exakit_marketplace_menu || true
+    info "Browse again any time with: exakit marketplace"
     return 0
 }
 
@@ -4239,7 +4230,59 @@ PY
     return "$_parse_status"
 }
 
+# exakit_ensure_runtime_running [deploy] — the kit's self-heal for "the
+# database is not answering", shared by every command that is about to speak
+# SQL. A runtime that is merely STOPPED (exakit stop, a reboot) is started and
+# health-checked; a MISSING one is deployed when the caller passes "deploy"
+# (the action commands do), and otherwise refused with the exact command that
+# fixes it. A machine with no runtime recorded, or whose runtime module is not
+# loaded, is left alone — that is the installer's territory, not a repair.
+# ⇄ twin: Confirm-ExakitRuntimeRunning in setup/lib/exakit-common.ps1.
+exakit_ensure_runtime_running() {
+    _err_deploy="${1:-}"
+    case "$(manifest_get runtime.type 2>/dev/null || true)" in
+        personal)
+            command -v personal_deployment_running >/dev/null 2>&1 || return 0
+            personal_deployment_running && return 0
+            if personal_deployment_exists; then
+                info "Self-heal: the database is deployed but not running — starting it"
+                personal_start
+                personal_wait_ready
+                return 0
+            fi
+            if [ "$_err_deploy" = "deploy" ]; then
+                info "Self-heal: no database deployment found — deploying one"
+                personal_deploy_local
+                return 0
+            fi
+            die "No database deployment found. Deploy one with: exakit start (or re-run the installer)"
+            ;;
+        nano)
+            command -v nano_status >/dev/null 2>&1 || return 0
+            [ "$(nano_status 2>/dev/null)" = "running" ] && return 0
+            # nano_install self-heals both halves: it starts an existing
+            # container and creates a missing one, then waits for ready.
+            if nano_container_exists 2>/dev/null; then
+                info "Self-heal: the database container exists but is not running — starting it"
+                nano_install
+                return 0
+            fi
+            if [ "$_err_deploy" = "deploy" ]; then
+                info "Self-heal: no database container found — creating one"
+                nano_install
+                return 0
+            fi
+            die "No database container found. Create one with: exakit start (or re-run the installer)"
+            ;;
+        *) return 0 ;;
+    esac
+}
+
 exakit_mcp_setup() {
+    # About to create/verify the read-only database user: a stopped database
+    # here used to surface as a bare "Connection refused" — heal it first.
+    exakit_ensure_runtime_running
+
     info "MCP setup will edit the selected AI client config files."
 
     # EXAKIT_MCP_CLIENTS lets an agent-driven or scripted install pick clients

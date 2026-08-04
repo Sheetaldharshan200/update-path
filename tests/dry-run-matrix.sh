@@ -165,7 +165,13 @@ printf '#!/bin/sh\necho 2.2.2\n' > "$_stub_bin/python"
 chmod +x "$_stub_bin/exapump" "$_stub_bin/python"
 update_action="$(bash -c "
 EXAKIT_VERSION_POLICY=pinned
+EXAKIT_HOME=\$(mktemp -d); EXAKIT_BIN_DIR=\"\$EXAKIT_HOME/bin\"
 . '$ROOT/setup/lib/common.sh'
+# The mcp row probes the REAL AI client configs for their pinned server
+# version; on a machine with a live install that pin (e.g. 2.0.0) outruns the
+# stub's advertised 1.11.0 and the row flips to 'yours is newer'. The record
+# below is the fixture — keep the probe out of the sandbox.
+exakit_installed_mcp_version() { return 1; }
 manifest_get() {
   case \"\$1\" in
     runtime.type) printf '%s\n' nano ;;
@@ -477,6 +483,40 @@ if grep -q 'exakit_soft_step exapump' "$ROOT/setup/lib/common.sh" && \
 else
     check "install(components_soft_fail)" "yes" "no"
 fi
+echo "runtime self-heal (exakit_ensure_runtime_running):"
+# The four states, against stubbed runtime helpers: running is left alone,
+# stopped is started and health-checked, missing is deployed only when the
+# caller allows it and refused with the remedy otherwise.
+heal_case() { # heal_case <running> <exists> <deploy-arg> — echoes the calls made
+    bash -c '
+        EXAKIT_HOME="$(mktemp -d)"; EXAKIT_BIN_DIR="$EXAKIT_HOME/bin"
+        . "'"$ROOT"'/setup/lib/common.sh" >/dev/null 2>&1
+        manifest_get() { [ "$1" = runtime.type ] && echo personal; }
+        personal_deployment_running() { return '"$1"'; }
+        personal_deployment_exists()  { return '"$2"'; }
+        personal_start()       { printf "start "; }
+        personal_wait_ready()  { printf "wait "; }
+        personal_deploy_local(){ printf "deploy "; }
+        info() { :; }; die() { printf "die"; exit 1; }
+        exakit_ensure_runtime_running '"$3"'
+        rm -rf "$EXAKIT_HOME"
+    ' 2>/dev/null
+}
+check "self_heal(running -> untouched)"        ""            "$(heal_case 0 0 "")"
+check "self_heal(stopped -> start + wait)"     "start wait " "$(heal_case 1 0 "")"
+check "self_heal(missing + deploy -> deploys)" "deploy "     "$(heal_case 1 1 deploy)"
+check "self_heal(missing, no deploy -> dies)"  "die"         "$(heal_case 1 1 "")"
+# ...and the commands that speak SQL actually use it, on both sides.
+if grep -q 'exakit_ensure_runtime_running$' "$ROOT/setup/lib/common.sh" >/dev/null 2>&1 || \
+   grep -q 'exakit_ensure_runtime_running' <(awk '/^exakit_mcp_setup\(\)/,/^}/' "$ROOT/setup/lib/common.sh") && \
+   grep -q 'exakit_ensure_runtime_running deploy' "$ROOT/setup/exakit" && \
+   grep -q 'Confirm-ExakitRuntimeRunning' "$ROOT/setup/lib/mcp.ps1" && \
+   grep -q 'Confirm-ExakitRuntimeRunning -Deploy' "$ROOT/setup/exakit.ps1"; then
+    check "self_heal(wired_into_sql_commands)" "yes" "yes"
+else
+    check "self_heal(wired_into_sql_commands)" "yes" "no"
+fi
+
 # A re-run over an existing install must START a stopped database, not skip
 # the step: everything after it talks SQL, and skipping used to surface as
 # "Connection refused" in the MCP user creation (macOS was the odd one out —

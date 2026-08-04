@@ -16,10 +16,11 @@ scenario as a flowchart — see [MARKETPLACE-FLOWS.md](MARKETPLACE-FLOWS.md).
 ## How it behaves (the contract)
 
 - **Never in the install flow.** The setup scripts install nothing from the
-  marketplace. After a successful interactive install, the closing screen asks
-  once — *"Your Starter Kit installation is done and working. Add tools from
-  the marketplace now? (yes / maybe later)"* — yes opens the menu, anything
-  else prints the one command to come back with.
+  marketplace. After a successful interactive install, the closing screen
+  says *"Your Starter Kit installation is done and working"* and opens the
+  marketplace selection directly — the same cursor menu every other kit
+  choice uses, no typing. Cancel is pre-selected, so Enter alone skips
+  everything and prints the one command to come back with.
 - **`exakit marketplace`** is the command: every add-on with a one-line
   description, Space selects, Enter installs. Non-interactive runs (agents,
   CI) answer with `EXAKIT_MARKETPLACE_ADDONS=<ids csv | all | none>` instead —

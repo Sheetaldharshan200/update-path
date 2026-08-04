@@ -67,21 +67,29 @@ flowchart TD
     E -->|Yes| F[Installs the named add-ons<br>without asking]
     E -->|No| G{Interactive terminal and<br>every step succeeded?}
     G -->|No| H[One line:<br>Optional add-ons: exakit marketplace]
-    G -->|Yes| I[Your Starter Kit installation is<br>done and working. Add tools from<br>the marketplace now?]
-    I -->|yes| J[Marketplace menu opens]
-    I -->|maybe later| K[Maybe later - browse any time<br>with: exakit marketplace]
+    G -->|Yes| I[Your Starter Kit installation is<br>done and working - the marketplace<br>selection opens directly]
+    I -->|Space + Enter| J[Picked add-ons install]
+    I -->|Enter on the Cancel default| K[Nothing installed - browse any<br>time with: exakit marketplace]
 
     click J "#scenario-3-browsing-and-installing"
 ```
 
-What the user sees on an interactive run:
+What the user sees on an interactive run — a selection, never typing:
 
 ```
 [ok] Your Starter Kit installation is done and working.
- -   The marketplace has more useful tools for it:
-     dash-server (AI dashboard host) - Agent-built live dashboards on your
-     Exasol data, operated over MCP
-  ?  Add tools from the marketplace now? (yes / maybe later) [maybe later]
+ -   The marketplace has more useful tools for it - pick any to install,
+     or Enter to skip:
+
+  Marketplace add-ons
+  -------------------
+Add-on         Status               Version        Action
+dash-server    available            0.1.0          select below to install
+
+    - Select add-ons to install
+    > [ ] Available add-ons
+      [ ]  - dash-server (AI dashboard host) - Agent-built live dashboards ...
+      [x] Cancel (install nothing)
 ```
 
 Details that matter:
@@ -241,7 +249,7 @@ flowchart TD
 
 | Situation | Command or event | Outcome |
 |---|---|---|
-| Fresh install, interactive, all green | closing offer | yes opens the menu; maybe later prints the command |
+| Fresh install, interactive, all green | closing offer | the selection menu opens directly; Enter on the Cancel default skips |
 | Fresh install, scripted | `EXAKIT_MARKETPLACE_ADDONS=...` | Installs the named add-ons, no questions |
 | Kit from before the marketplace | `exakit update` | Kit self-update delivers the command; discovery lines take over |
 | Browse | `exakit marketplace` | One row per add-on with live state; Space and Enter |

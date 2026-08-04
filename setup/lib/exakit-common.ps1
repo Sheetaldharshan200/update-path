@@ -2005,6 +2005,36 @@ function Install-ExakitSkills {
 # agents can find them. Mirrors exakit_maybe_offer_skills_install. Always
 # installs - no prompt - so the skills are present without requiring
 # interactive confirmation, on both interactive and non-interactive runs.
+# Confirm-ExakitRuntimeRunning [-Deploy] - the kit's self-heal for "the
+# database is not answering", shared by every command about to speak SQL. A
+# container that is merely stopped is started (Install-Nano self-heals both
+# halves: it starts an existing container, creates a missing one, and waits
+# for ready); a missing one is created only when the caller allows it, and
+# otherwise refused with the exact command that fixes it.
+# Twin of exakit_ensure_runtime_running in common.sh (the personal runtime is
+# macOS-only, so this side only knows Nano).
+function Confirm-ExakitRuntimeRunning {
+    param([switch]$Deploy)
+    if ((Get-ExakitManifestValue "runtime.type") -ne "nano") { return }
+    if (-not (Get-Command Get-NanoStatus -ErrorAction SilentlyContinue)) { return }
+    if ((Get-NanoStatus) -eq "running") { return }
+    $exists = $false
+    if (Get-Command Test-NanoContainerExists -ErrorAction SilentlyContinue) {
+        $exists = Test-NanoContainerExists
+    }
+    if ($exists) {
+        Info "Self-heal: the database container exists but is not running - starting it"
+        Install-Nano
+        return
+    }
+    if ($Deploy) {
+        Info "Self-heal: no database container found - creating one"
+        Install-Nano
+        return
+    }
+    Fail "No database container found. Create one with: exakit start (or re-run the installer)"
+}
+
 # ---------------------------------------------------------------------------
 # Marketplace add-ons (twin of the exakit_marketplace_* block in common.sh)
 # ---------------------------------------------------------------------------
@@ -2283,19 +2313,14 @@ function Request-ExakitMarketplaceOffer {
         return
     }
 
+    # Straight into the marketplace selection - the same cursor menu every
+    # other choice in the kit uses, no typing. Cancel is the pre-selected
+    # default, so Enter alone IS "maybe later" and installs nothing.
     Write-Host ""
     Ok "Your Starter Kit installation is done and working."
-    Info "The marketplace has more useful tools for it:"
-    foreach ($addon in Get-ExakitMarketplaceAddons) {
-        if (Test-ExakitMarketplaceAddonPresent $addon.Id) { continue }
-        Write-Host "      $($addon.Label) - $($addon.Description)"
-    }
-    $answer = Read-Host "    ? Add tools from the marketplace now? (yes / maybe later) [maybe later]"
-    if (("" + $answer).Trim() -match '^(?i)(y|yes)$') {
-        Show-ExakitMarketplaceMenu
-    } else {
-        Info "Maybe later - browse any time with: exakit marketplace"
-    }
+    Info "The marketplace has more useful tools for it - pick any to install, or Enter to skip:"
+    try { Show-ExakitMarketplaceMenu } catch { Warn2 "The marketplace did not finish cleanly: $_" }
+    Info "Browse again any time with: exakit marketplace"
 }
 
 function Request-ExakitSkillsInstallOffer {

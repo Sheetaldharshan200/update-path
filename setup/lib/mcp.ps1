@@ -818,6 +818,12 @@ function Get-McpClientsFromArgs {
 }
 
 function Invoke-McpSetup {
+    # About to create/verify the read-only database user: a stopped database
+    # here used to surface as a bare connection failure - heal it first.
+    if (Get-Command Confirm-ExakitRuntimeRunning -ErrorAction SilentlyContinue) {
+        Confirm-ExakitRuntimeRunning
+    }
+
     Info "MCP setup will edit the selected AI client config files."
 
     # EXAKIT_MCP_CLIENTS lets an agent-driven or scripted install pick clients

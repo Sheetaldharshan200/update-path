@@ -110,7 +110,14 @@ function Invoke-CmdStatus {
 
 function Invoke-CmdStart {
     Assert-ExakitInstalled
-    switch (Get-RuntimeType) { "nano" { Start-Nano } }
+    # Self-heal semantics: a stopped runtime is started and health-checked,
+    # and a missing one is created - `exakit start` promises a running
+    # database, so it is the one command allowed to (re)create one.
+    if ((Get-RuntimeType) -eq "nano" -and (Get-NanoStatus) -eq "running") {
+        Ok "Database is already running"
+        return
+    }
+    Confirm-ExakitRuntimeRunning -Deploy
 }
 
 function Invoke-CmdStop {
@@ -1117,6 +1124,9 @@ function Invoke-CmdDataLoad {
         Fail "Unknown option '$ForceFlag' for data-load (only -Force/--force is supported)."
     }
     Initialize-ExakitLogging
+    # Loading data needs a database that answers - a stopped one used to make
+    # the dataset checks silently trust the manifest and the load itself fail.
+    Confirm-ExakitRuntimeRunning -Deploy
     if ($ForceFlag) {
         $kitRoot = Get-ExakitRepoRoot
         if (-not $kitRoot) { Fail "Could not find the kit's sql/ and data/ files to load." }

@@ -110,10 +110,14 @@ cmd_status() {
 
 cmd_start() {
     _require_install
+    # Self-heal semantics: a stopped runtime is started and health-checked,
+    # and a missing one is deployed — `exakit start` promises a running
+    # database, so it is the one command allowed to (re)create one.
     case "$(_runtime_type)" in
-        nano)     nano_start ;;
-        personal) personal_start ;;
+        nano)     [ "$(nano_status 2>/dev/null)" = "running" ] && { ok "Database is already running"; return 0; } ;;
+        personal) personal_deployment_running 2>/dev/null && { ok "Database is already running"; return 0; } ;;
     esac
+    exakit_ensure_runtime_running deploy
 }
 
 cmd_stop() {
@@ -282,6 +286,9 @@ cmd_data_load() {
     command -v exakit_load_sample_data >/dev/null 2>&1 || \
         die "The exapump data-loading module is not available in this kit build."
     exakit_init_logging
+    # Loading data needs a database that answers — a stopped one used to make
+    # the dataset checks silently trust the manifest and the load itself fail.
+    exakit_ensure_runtime_running deploy
     if [ "${1:-}" = "--force" ]; then
         _kit_root="$(exakit_repo_root)" || \
             die "Could not find the kit's sql/ and data/ files to load."
