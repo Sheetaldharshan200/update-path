@@ -1285,10 +1285,17 @@ function Set-ExakitStepDone {
 #   2. FILE TESTS ONLY. This runs once per step on every install, so no network,
 #      no PyPI, no GitHub and above all nothing that could wake or probe Docker.
 #   3. "present" means what the NEXT step will actually resolve.
+#   4. EXISTING IS NOT ENOUGH - it must also be non-empty. A 0-byte file is
+#      exactly what an interrupted or out-of-space install leaves behind, and it
+#      is not a runnable shim or binary, so the next step would fail on it just
+#      as surely as on an absent one. Every branch that judges a file pairs the
+#      existence test with a length test. (The shell twin's rule 4 says the same
+#      of `[ -x ]`, which is true of a 0-byte file with mode 755.)
 function Get-ExakitStepArtifactState {
     param([Parameter(Mandatory)][string]$Step)
     if ($Step -eq "exakit_helper") {
-        if (Test-Path (Join-Path $script:BinDir "exakit.cmd")) { return "present" }
+        $shim = Join-Path $script:BinDir "exakit.cmd"
+        if ((Test-Path -LiteralPath $shim -PathType Leaf) -and ((Get-Item -LiteralPath $shim).Length -gt 0)) { return "present" }
         return "missing"
     }
     if ($Step -eq "exapump") {
@@ -1296,7 +1303,7 @@ function Get-ExakitStepArtifactState {
         # older install (or a soft failure) we cannot judge: "unknown".
         $recorded = Get-ExakitManifestValue "components.exapump.path"
         if (-not $recorded) { return "unknown" }
-        if (Test-Path $recorded) { return "present" }
+        if ((Test-Path -LiteralPath $recorded -PathType Leaf) -and ((Get-Item -LiteralPath $recorded).Length -gt 0)) { return "present" }
         return "missing"
     }
     # runtime (the Nano container), mcp, pyexasol - and "launcher", which is a

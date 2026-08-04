@@ -2870,6 +2870,18 @@ sys.exit(0 if sys.argv[2] in doc.get("steps_completed", []) else 1)
 PY
 }
 
+# _sas_launcher_on_path — true when a usable `exasol` is reachable on PATH.
+# Helper for step_artifact_state's launcher case, held to the same bar: command
+# -v is a PATH lookup and not an execution (rule 2 below), and the resolved
+# launcher must be a non-empty executable file (rule 4). A `command -v` answer
+# that is not a path at all (a shell function) fails those tests and counts as
+# no launcher, which only ever means the step runs again.
+_sas_launcher_on_path() {
+    _sas_cli="$(command -v exasol 2>/dev/null || true)"
+    [ -n "$_sas_cli" ] || return 1
+    [ -x "$_sas_cli" ] && [ -s "$_sas_cli" ]
+}
+
 # step_artifact_state <step> — prints "present", "missing", or "unknown".
 #
 # The tick in steps_completed records that a step RAN once, not that what it
@@ -2892,28 +2904,53 @@ PY
 #      bounded).
 #   3. "present" means what the NEXT step will actually resolve. The launcher
 #      case mirrors personal_cli(), which is what the deployment step calls.
+#   4. EXECUTABLE IS NOT ENOUGH — it must also be non-empty. `[ -x ]` is true of
+#      a 0-byte file with mode 755, which is exactly what an interrupted or
+#      out-of-space install leaves behind, and running one is either an exec
+#      failure or (worse) an empty script that "succeeds" without doing
+#      anything. Every branch that judges a binary pairs `-x` with `-s`.
 step_artifact_state() {
     case "$1" in
         launcher)
-            # personal_install_launcher deliberately keeps an existing launcher
-            # on PATH that supports the `local` preset instead of installing its
-            # own, and personal_cli() then resolves that one — so a launcher on
-            # PATH is "present" even with no kit-managed binary. command -v is a
-            # PATH lookup, not an execution.
-            if [ -n "${EXAKIT_PERSONAL_BIN:-}" ] && [ -x "$EXAKIT_PERSONAL_BIN" ]; then
-                printf 'present\n'
-            elif command -v exasol >/dev/null 2>&1; then
-                printf 'present\n'
-            elif [ -n "${EXAKIT_PERSONAL_BIN:-}" ]; then
-                printf 'missing\n'
-            else
+            if [ -z "${EXAKIT_PERSONAL_BIN:-}" ]; then
                 # runtime-personal.sh is not loaded: this platform has no
                 # launcher step, so there is nothing to judge.
                 printf 'unknown\n'
+            elif [ -x "$EXAKIT_PERSONAL_BIN" ]; then
+                # personal_cli() prefers the kit-managed binary the moment it is
+                # executable, so THIS file is what the deployment step will run —
+                # even when it is a truncated 0-byte stub, and even when a good
+                # launcher sits on PATH. Only a non-empty one is "present".
+                if [ -s "$EXAKIT_PERSONAL_BIN" ]; then
+                    printf 'present\n'
+                else
+                    printf 'missing\n'
+                fi
+            elif _sas_launcher_on_path; then
+                # personal_install_launcher deliberately keeps an existing
+                # launcher on PATH that supports the `local` preset instead of
+                # installing its own, and personal_cli() then resolves that one —
+                # so a launcher on PATH is "present" even with no kit-managed
+                # binary. command -v is a PATH lookup, not an execution.
+                #
+                # RESIDUAL HOLE, stated plainly: this branch is not merely a
+                # guard against a false "missing". An `exasol` on PATH that is
+                # too OLD for the `local` preset, with the managed binary gone,
+                # is reported "present" here, the launcher step is skipped, and
+                # the deployment step fails again — the same forever-loop this
+                # function exists to break, through a different door. Telling
+                # the two apart means running `exasol install --help` (what
+                # personal_install_launcher does), which rule 2 forbids at this
+                # cost. The narrower, self-inflicted case is covered: the kit's
+                # own managed binary is judged by the branch above, which no
+                # PATH lookup can override.
+                printf 'present\n'
+            else
+                printf 'missing\n'
             fi
             ;;
         exakit_helper)
-            if [ -x "$EXAKIT_BIN_DIR/exakit" ]; then
+            if [ -x "$EXAKIT_BIN_DIR/exakit" ] && [ -s "$EXAKIT_BIN_DIR/exakit" ]; then
                 printf 'present\n'
             else
                 printf 'missing\n'
@@ -2925,7 +2962,7 @@ step_artifact_state() {
             _sas_path="$(manifest_get components.exapump.path 2>/dev/null || true)"
             if [ -z "$_sas_path" ]; then
                 printf 'unknown\n'
-            elif [ -x "$_sas_path" ]; then
+            elif [ -x "$_sas_path" ] && [ -s "$_sas_path" ]; then
                 printf 'present\n'
             else
                 printf 'missing\n'
