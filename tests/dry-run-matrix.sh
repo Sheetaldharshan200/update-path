@@ -811,6 +811,137 @@ else
     check "step_state(ps_parity)" "yes" "no"
 fi
 
+echo "installer never downgrades the Personal launcher:"
+# The installer calls personal_install_launcher directly: `exakit update`'s
+# downgrade refusal is not on this path, and this function used to hold no
+# version opinion at all. It installed whatever versions.json advertised, so a
+# lowered advertised set (how a faulty release gets withdrawn) overwrote a newer
+# launcher with an older one and left the deployment undriveable.
+#
+# Each case runs the real function with a fake deployment directory and a fetch
+# stub that ANNOUNCES the download and stops the shell. "FETCHED" in the output
+# therefore means the ordinary install path was reached; its absence means the
+# guard fired before a single byte was downloaded.
+_pld_run() { # _pld_run <advertised> [deployed-version]
+    _pld_dir="$(mktemp -d)"
+    if [ -n "${2:-}" ]; then
+        mkdir -p "$_pld_dir/deploy"
+        printf '%s' "$2" > "$_pld_dir/deploy/.exasolLauncher.version"
+    fi
+    PATH="$_SV_CLEAN_PATH" bash -c "
+. '$ROOT/setup/lib/common.sh'
+. '$ROOT/setup/lib/detect.sh'
+. '$ROOT/setup/lib/runtime-personal.sh'
+EXAKIT_PERSONAL_VERSION='$1'
+EXAKIT_PERSONAL_DEPLOY_DIR='$_pld_dir/deploy'
+EXAKIT_BIN_DIR='$_pld_dir/bin'
+EXAKIT_PERSONAL_BIN='$_pld_dir/bin/exasol'
+EXAKIT_LOG_FILE='$_pld_dir/install.log'
+fetch() { printf 'FETCHED %s\n' \"\$1\"; exit 0; }
+personal_asset_name() { printf 'exasol-personal_macOS_arm64.tar.gz\n'; }
+personal_install_launcher 2>&1
+" 2>&1
+    rm -rf "$_pld_dir"
+}
+
+# 1. Deployment NEWER than the advertised launcher -> refuse, install nothing.
+pld_newer="$(_pld_run 2.0.0 2.1.0)"
+case "$pld_newer" in
+    *FETCHED*) check "installer_downgrade(nothing installed)" "yes" "no" ;;
+    *) check "installer_downgrade(nothing installed)" "yes" "yes" ;;
+esac
+# The message has to be usable on its own: both versions, the direction, and the
+# override that resolves it. Each needle names a version INSIDE the guard's own
+# wording -- a bare "2.0.0" would also match the download URL the fetch stub
+# echoes, and would stay green with the guard removed.
+for _pld_want in "deployment on this machine is version 2.1.0" \
+                 "newer than the launcher version this kit advertises (2.0.0)" \
+                 "EXAKIT_PERSONAL_VERSION=2.1.0" \
+                 "Refusing to install launcher 2.0.0 over a newer 2.1.0 deployment"; do
+    case "$pld_newer" in
+        *"$_pld_want"*) check "installer_downgrade(says '$_pld_want')" "yes" "yes" ;;
+        *) check "installer_downgrade(says '$_pld_want')" "yes" "no" ;;
+    esac
+done
+# ...and it is the kit talking, not the launcher's help. The observed failure
+# printed a wall of launcher usage text before "Setup failed during step".
+case "$pld_newer" in
+    *Usage:*|*USAGE:*) check "installer_downgrade(no launcher usage dump)" "yes" "no" ;;
+    *) check "installer_downgrade(no launcher usage dump)" "yes" "yes" ;;
+esac
+
+# 2. Deployment OLDER than the advertised launcher -> a genuine upgrade, which
+#    must be entirely unaffected.
+case "$(_pld_run 2.1.0 2.0.0)" in
+    *FETCHED*) check "installer_downgrade(upgrade unaffected)" "yes" "yes" ;;
+    *) check "installer_downgrade(upgrade unaffected)" "yes" "no" ;;
+esac
+
+# 3. No deployment at all -> a fresh install, unaffected.
+case "$(_pld_run 2.0.0)" in
+    *FETCHED*) check "installer_downgrade(fresh unaffected)" "yes" "yes" ;;
+    *) check "installer_downgrade(fresh unaffected)" "yes" "no" ;;
+esac
+
+# 4. Deployment EQUAL to the advertised launcher -> a re-install, unaffected.
+case "$(_pld_run 2.0.0 2.0.0)" in
+    *FETCHED*) check "installer_downgrade(reinstall unaffected)" "yes" "yes" ;;
+    *) check "installer_downgrade(reinstall unaffected)" "yes" "no" ;;
+esac
+
+# The version is read from deployment state, never by running a launcher: the
+# decision comes before any binary is installed, and the launcher that could
+# answer is the one about to be overwritten. Both state files must be honoured,
+# and unreadable state must read as "unknown" so it cannot wrongly block.
+_pld_reads="$(_pld_dir="$(mktemp -d)"
+    mkdir -p "$_pld_dir/deploy"
+    bash -c "
+. '$ROOT/setup/lib/common.sh'
+. '$ROOT/setup/lib/detect.sh'
+. '$ROOT/setup/lib/runtime-personal.sh'
+EXAKIT_PERSONAL_DEPLOY_DIR='$_pld_dir/deploy'
+printf 'v2.4.0\n' > \"\$EXAKIT_PERSONAL_DEPLOY_DIR/.exasolLauncher.version\"
+printf 'bare=[%s]\n' \"\$(personal_deployed_version || true)\"
+: > \"\$EXAKIT_PERSONAL_DEPLOY_DIR/.exasolLauncher.version\"
+printf '{\"deploymentId\":\"x\",\"deploymentVersion\":\"2.5.0\"}' > \"\$EXAKIT_PERSONAL_DEPLOY_DIR/.exasolLauncherState.json\"
+printf 'json=[%s]\n' \"\$(personal_deployed_version || true)\"
+printf 'not a version' > \"\$EXAKIT_PERSONAL_DEPLOY_DIR/.exasolLauncher.version\"
+rm -f \"\$EXAKIT_PERSONAL_DEPLOY_DIR/.exasolLauncherState.json\"
+printf 'junk=[%s]\n' \"\$(personal_deployed_version || true)\"
+"
+    rm -rf "$_pld_dir")"
+_pld_said() { # _pld_said <needle> -> yes|no  (case inside $() upsets bash 3.2)
+    case "$_pld_reads" in
+        *"$1"*) printf 'yes' ;;
+        *) printf 'no' ;;
+    esac
+}
+check "installer_downgrade(reads bare version file)" "yes" "$(_pld_said 'bare=[2.4.0]')"
+check "installer_downgrade(reads state json)" "yes" "$(_pld_said 'json=[2.5.0]')"
+check "installer_downgrade(junk reads as unknown)" "yes" "$(_pld_said 'junk=[]')"
+
+# The comparison behind the refusal. It blocks an install, so it must answer
+# "deployed is higher" only when that is provable, and never in both directions:
+# a same-major upgrade misread as a regression would block a legitimate install.
+_pld_rank="$(bash -c "
+. '$ROOT/setup/lib/common.sh'
+. '$ROOT/setup/lib/detect.sh'
+. '$ROOT/setup/lib/runtime-personal.sh'
+# No Python: this decision must not depend on one being available, and the shared
+# exakit_version_newer helper deliberately answers 'yes' both ways without it.
+EXAKIT_DISABLE_SYSTEM_PYTHON=1
+exakit_ensure_uv() { return 1; }
+for _pair in 2.1.0:2.0.0 2.0.0:2.1.0 2.0.0:2.0.0 3.0.0:2.9.9 2.9.9:3.0.0 \\
+             2.10.0:2.9.0 2.9.0:2.10.0 2.0.1:2.0.0 2.1:2 2:2.1 \\
+             2.1.0-rc1:2.1.0 abc:2.0.0; do
+    _a=\"\${_pair%%:*}\"; _b=\"\${_pair#*:}\"
+    if personal_deployment_outranks \"\$_a\" \"\$_b\"; then printf '%s>yes ' \"\$_pair\"
+    else printf '%s>no ' \"\$_pair\"; fi
+done")"
+check "installer_downgrade(version ranking, no python)" \
+    "2.1.0:2.0.0>yes 2.0.0:2.1.0>no 2.0.0:2.0.0>no 3.0.0:2.9.9>yes 2.9.9:3.0.0>no 2.10.0:2.9.0>yes 2.9.0:2.10.0>no 2.0.1:2.0.0>yes 2.1:2>yes 2:2.1>no 2.1.0-rc1:2.1.0>no abc:2.0.0>no " \
+    "$_pld_rank"
+
 echo
 echo "passed: $PASS, failed: $FAIL"
 [ "$FAIL" -eq 0 ]
