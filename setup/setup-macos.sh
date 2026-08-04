@@ -70,10 +70,21 @@ if begin_step runtime "Step 2/6  Local database deployment"; then
     personal_deploy_local
     mark_step runtime
 else
-    personal_deployment_exists || {
+    if ! personal_deployment_exists; then
         info "Deployment marked done but not reachable — redeploying"
         personal_deploy_local
-    }
+    elif ! personal_deployment_running; then
+        # Exists but merely STOPPED (exakit stop, a reboot — the Personal
+        # runtime does not auto-start): start it, don't skip it. Every step
+        # after this one talks SQL to the database, so skipping here used to
+        # surface minutes later as "Connection refused" in the MCP read-only
+        # user creation — with the data-load offer silently trusting the
+        # manifest in between. Mirrors the Nano paths, which restart a
+        # non-running container on re-run (setup-wsl.sh, setup-windows-docker.ps1).
+        info "Database is deployed but not running — starting it"
+        personal_start
+        personal_wait_ready
+    fi
 fi
 
 # --- steps 3-6: exapump, MCP server, pyexasol, exakit helper (shared) -------

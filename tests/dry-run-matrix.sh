@@ -477,6 +477,20 @@ if grep -q 'exakit_soft_step exapump' "$ROOT/setup/lib/common.sh" && \
 else
     check "install(components_soft_fail)" "yes" "no"
 fi
+# A re-run over an existing install must START a stopped database, not skip
+# the step: everything after it talks SQL, and skipping used to surface as
+# "Connection refused" in the MCP user creation (macOS was the odd one out —
+# the Nano paths already restarted). All three installers, same behaviour.
+if grep -q 'personal_deployment_running' "$ROOT/setup/setup-macos.sh" && \
+   grep -q 'personal_start' "$ROOT/setup/setup-macos.sh" && \
+   grep -q 'personal_wait_ready' "$ROOT/setup/setup-macos.sh" && \
+   grep -qE 'nano_status.*!=.*running' "$ROOT/setup/setup-wsl.sh" && \
+   grep -q 'Get-NanoStatus) -ne "running"' "$ROOT/setup/setup-windows-docker.ps1"; then
+    check "install(rerun_starts_stopped_runtime)" "yes" "yes"
+else
+    check "install(rerun_starts_stopped_runtime)" "yes" "no"
+fi
+
 # The marketplace, both sides. The registry, the installed-only gate on
 # `update all`, the command dispatch, and the dash-server module twins must
 # exist on each side, or the Windows path silently loses the add-on layer.
