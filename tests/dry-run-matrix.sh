@@ -498,6 +498,47 @@ if grep -q 'cmd_whats_new' "$ROOT/setup/exakit" && \
 else
     check "whats_new(both_sides)" "yes" "no"
 fi
+# The upgrade box, both sides: the record taken before kit.version is overwritten,
+# and the box that reads it. Both halves have to exist on both platforms or one of
+# them announces an upgrade the other stays silent about.
+if grep -q 'exakit_note_kit_upgrade() {' "$ROOT/setup/lib/common.sh" && \
+   grep -q 'exakit_whats_new_versions() {' "$ROOT/setup/lib/common.sh" && \
+   grep -q 'exakit_whats_new_points() {' "$ROOT/setup/lib/common.sh" && \
+   grep -q 'exakit_print_whats_new_box() {' "$ROOT/setup/lib/common.sh" && \
+   grep -q 'exakit_note_kit_upgrade "$KIT_ROOT"' "$ROOT/setup/setup-macos.sh" && \
+   grep -q 'exakit_note_kit_upgrade "$KIT_ROOT"' "$ROOT/setup/setup-wsl.sh" && \
+   grep -q 'function Set-ExakitKitUpgradeNote {' "$ROOT/setup/lib/exakit-common.ps1" && \
+   grep -q 'function Get-ExakitWhatsNewVersions {' "$ROOT/setup/lib/exakit-common.ps1" && \
+   grep -q 'function Get-ExakitWhatsNewPoints {' "$ROOT/setup/lib/exakit-common.ps1" && \
+   grep -q 'function Write-ExakitWhatsNewBox {' "$ROOT/setup/lib/exakit-common.ps1" && \
+   grep -q 'Set-ExakitKitUpgradeNote -KitRoot $KitRoot' "$ROOT/setup/setup-windows-docker.ps1"; then
+    check "whats_new_box(both_sides)" "yes" "yes"
+else
+    check "whats_new_box(both_sides)" "yes" "no"
+fi
+# Placement, on all three platforms: after the connection details, before the
+# closing "Next:" line. Anywhere earlier and the connection panel pushes the box
+# off the screen, which is the whole reason it moved out of the step output.
+wn_box_placement() { # wn_box_placement <file> <panel-call> <box-call>
+    awk -v panel="$2" -v box="$3" '
+        index($0, panel) && panel_at == 0 { panel_at = NR }
+        index($0, box)   && box_at == 0   { box_at = NR }
+        index($0, "Next: exakit status") && next_at == 0 { next_at = NR }
+        END {
+            if (panel_at > 0 && box_at > panel_at && next_at > box_at) print "panel,box,next"
+            else printf "panel=%d box=%d next=%d\n", panel_at, box_at, next_at
+        }
+    ' "$1"
+}
+check "whats_new_box(order_macos)" "panel,box,next" \
+    "$(wn_box_placement "$ROOT/setup/setup-macos.sh" \
+        'connection_panel' 'exakit_print_whats_new_box "$KIT_ROOT"')"
+check "whats_new_box(order_wsl)" "panel,box,next" \
+    "$(wn_box_placement "$ROOT/setup/setup-wsl.sh" \
+        'connection_panel' 'exakit_print_whats_new_box "$KIT_ROOT"')"
+check "whats_new_box(order_windows)" "panel,box,next" \
+    "$(wn_box_placement "$ROOT/setup/setup-windows-docker.ps1" \
+        'Show-ExakitConnectionPanel' 'Write-ExakitWhatsNewBox -KitRoot')"
 # The short help is the only command list most people ever read: a bare `exakit`,
 # `exakit help` and any unknown command all print it, while the full reference is
 # behind `--all`. Staying current has to be visible there, or the update path

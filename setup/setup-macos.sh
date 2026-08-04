@@ -47,10 +47,9 @@ manifest_set arch "$(detect_arch)"
 manifest_set kit.source "${EXAKIT_KIT_SOURCE:-checkout:$KIT_ROOT}"
 # The kit's own version comes from the versions manifest shipping with THIS
 # tree, not from whatever copy an earlier install left under the kit home.
-# What the previous install recorded, captured BEFORE it is overwritten: the end of
-# the run uses it to tell an upgrading user what changed.
-EXAKIT_UPGRADED_FROM="$(manifest_get kit.version 2>/dev/null || true)"
-export EXAKIT_UPGRADED_FROM
+# Record the move BEFORE kit.version is overwritten: the "What's new" box at the
+# end of the run reads that record, and it survives a run that dies partway.
+exakit_note_kit_upgrade "$KIT_ROOT" || true
 _kit_version="$(exakit_kit_version_at "$KIT_ROOT" 2>/dev/null || true)"
 [ -n "$_kit_version" ] && manifest_set kit.version "$_kit_version"
 exakit_resolve_install_versions
@@ -82,4 +81,7 @@ kit_shared_steps 3 6 "$SCRIPT_DIR" "$KIT_ROOT"
 exakit_finish
 ok "Setup complete"
 connection_panel
+# Only when the kit version moved during this run, and never able to fail it: the
+# trap is already released and every reader inside degrades to silence.
+exakit_print_whats_new_box "$KIT_ROOT" || true
 info "Next: exakit status | exakit info | exakit version | exakit update | exakit help"

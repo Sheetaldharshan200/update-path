@@ -32,9 +32,9 @@ $kitSource = if ($env:EXAKIT_KIT_SOURCE) { $env:EXAKIT_KIT_SOURCE } else { "chec
 Set-ExakitManifestValue "kit.source" $kitSource
 # The kit's own version comes from the versions manifest shipping with THIS
 # tree, not from whatever copy an earlier install left under the kit home.
-# What the previous install recorded, captured BEFORE it is overwritten: the end of
-# the run uses it to tell an upgrading user what changed.
-$script:UpgradedFrom = Get-ExakitManifestValue "kit.version"
+# Record the move BEFORE kit.version is overwritten: the "What's new" box at the
+# end of the run reads that record, and it survives a run that dies partway.
+Set-ExakitKitUpgradeNote -KitRoot $KitRoot
 $kitVersion = Get-ExakitKitVersionAt -KitRoot $KitRoot
 if ($kitVersion) { Set-ExakitManifestValue "kit.version" $kitVersion }
 
@@ -167,10 +167,9 @@ try {
 
     Write-ExakitSoftFailures
 
-    if ($script:UpgradedFrom -and $kitVersion -and $script:UpgradedFrom -ne $kitVersion) {
-        [void](Write-ExakitWhatsNew -Version $kitVersion `
-            -Heading "What's new in $kitVersion (upgraded from $($script:UpgradedFrom))")
-    }
+    # What changed in an upgrade is announced by Write-ExakitWhatsNewBox, after the
+    # connection panel at the very end of the run - not here, in the middle of the
+    # step output where the connection details would push it off the screen.
 
     try {
         Request-ExakitMcpSetupOffer
@@ -187,6 +186,9 @@ try {
 
     Ok "Setup complete"
     Show-ExakitConnectionPanel
+    # Only when the kit version moved during this run, and never able to fail it:
+    # every reader inside degrades to silence.
+    Write-ExakitWhatsNewBox -KitRoot $KitRoot
     Info "Next: exakit status | exakit info | exakit version | exakit update | exakit help"
 } catch [ExakitFailException] {
     exit 1
