@@ -136,7 +136,10 @@ check "mcp_credentials(legacy fallback)" "mcp_readonly" "$_mcp_user"
 rm -rf "$_mcp_test_dir"
 
 echo "update command routing:"
-update_targets="$(bash -c ". '$ROOT/setup/lib/common.sh'; exakit_update_targets all" | tr '\n' ' ')"
+# Sandboxed kit home: on a machine whose REAL install carries a marketplace
+# add-on, the installed-addons probe would otherwise read the real manifest
+# and legitimately append it to the targets — the fixture wants a clean box.
+update_targets="$(bash -c "EXAKIT_HOME=\$(mktemp -d); EXAKIT_BIN_DIR=\"\$EXAKIT_HOME/bin\"; . '$ROOT/setup/lib/common.sh'; exakit_update_targets all" | tr '\n' ' ')"
 check "update_targets(all)" "exakit runtime exapump mcp pyexasol " "$update_targets"
 personal_target="$(bash -c ". '$ROOT/setup/lib/common.sh'; exakit_update_targets personal" | tr '\n' ' ')"
 check "update_targets(personal)" "personal " "$personal_target"

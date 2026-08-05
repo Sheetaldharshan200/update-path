@@ -67,9 +67,11 @@ flowchart TD
     E -->|Yes| F[Installs the named add-ons<br>without asking]
     E -->|No| G{Interactive terminal and<br>every step succeeded?}
     G -->|No| H[One line:<br>Optional add-ons: exakit marketplace]
-    G -->|Yes| I[Your Starter Kit installation is<br>done and working - the marketplace<br>selection opens directly,<br>add-ons pre-selected]
-    I -->|Enter| J[Pre-selected add-ons install]
-    I -->|Pick Cancel| K[Nothing installed - browse any<br>time with: exakit marketplace]
+    G -->|Yes| I[Done and working - gate question:<br>Do you want to add optional tools?<br>Yes pre-ticked / No]
+    I -->|Yes| J2[Marketplace selection opens,<br>add-ons pre-selected]
+    J2 -->|Enter| J[Pre-selected add-ons install]
+    J2 -->|Pick Cancel| K[Nothing installed - browse any<br>time with: exakit marketplace]
+    I -->|No| K
 
     click J "#scenario-3-browsing-and-installing"
 ```
@@ -78,8 +80,10 @@ What the user sees on an interactive run — a selection, never typing:
 
 ```
 [ok] Your Starter Kit installation is done and working.
- -   The marketplace has more useful tools for it - Enter installs the
-     selection; pick Cancel to skip:
+ -   The marketplace has more useful tools for it.
+ -   Do you want to add optional tools?
+    > [x] Yes - show the marketplace
+      [ ] No - maybe later
 
   Marketplace add-ons
   -------------------
@@ -249,7 +253,7 @@ flowchart TD
 
 | Situation | Command or event | Outcome |
 |---|---|---|
-| Fresh install, interactive, all green | closing offer | the selection menu opens with the add-ons pre-selected; Enter installs, Cancel skips |
+| Fresh install, interactive, all green | closing offer | gate question (Yes pre-ticked / No), then the selection menu with add-ons pre-selected; Enter installs, Cancel or No skips |
 | Fresh install, scripted | `EXAKIT_MARKETPLACE_ADDONS=...` | Installs the named add-ons, no questions |
 | Kit from before the marketplace | `exakit update` | Kit self-update delivers the command; discovery lines take over |
 | Browse | `exakit marketplace` | One row per add-on with live state; Space and Enter |

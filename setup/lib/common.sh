@@ -2274,15 +2274,26 @@ exakit_marketplace_offer() {
         return 0
     fi
 
-    # Straight into the marketplace selection — the same cursor menu every
-    # other choice in the kit uses, no typing. The available add-ons come
-    # pre-selected (like the data-load menu), so Enter installs them and
-    # Cancel is the explicit "maybe later".
+    # One gate question first — the same cursor menu every other kit choice
+    # uses, no typing: Yes is pre-ticked, No is the exclusive opt-out. Only a
+    # Yes opens the marketplace selection itself (where the available add-ons
+    # come pre-selected, so Enter installs them and Cancel still backs out).
     printf '\n'
     ok "Your Starter Kit installation is done and working."
-    info "The marketplace has more useful tools for it — Enter installs the selection; pick Cancel to skip:"
-    exakit_marketplace_menu || true
-    info "Browse again any time with: exakit marketplace"
+    info "The marketplace has more useful tools for it."
+    EXAKIT_CHECKBOX_EXCLUSIVE=2
+    ui_checkbox_menu "Do you want to add optional tools?" "1" \
+        "Yes — show the marketplace" \
+        "No — maybe later"
+    case ",$EXAKIT_CHECKBOX_SELECTION," in
+        *",1,"*)
+            exakit_marketplace_menu || true
+            info "Browse again any time with: exakit marketplace"
+            ;;
+        *)
+            info "Maybe later — browse any time with: exakit marketplace"
+            ;;
+    esac
     return 0
 }
 

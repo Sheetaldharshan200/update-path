@@ -37,6 +37,18 @@ trap 'rm -rf "$WORK"' EXIT
 EXAKIT_HOME="$WORK/home"
 EXAKIT_BIN_DIR="$WORK/bin"
 mkdir -p "$EXAKIT_HOME" "$EXAKIT_BIN_DIR"
+# The suite must behave the same on a machine that really has dash-server
+# installed — the feature working must not fail its own tests. The generic
+# system-present probe walks PATH, so rebuild PATH without any directory that
+# carries a real dash-server (the system-install section below adds its own
+# stub dir when it wants one).
+_clean_path=""
+_old_ifs="$IFS"; IFS=:
+for _dir in $PATH; do
+    [ -x "$_dir/dash-server" ] || _clean_path="${_clean_path:+$_clean_path:}$_dir"
+done
+IFS="$_old_ifs"
+PATH="$_clean_path"
 . "$ROOT/setup/lib/common.sh"
 . "$ROOT/setup/lib/dash-server.sh"
 

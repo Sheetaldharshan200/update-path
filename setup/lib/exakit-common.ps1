@@ -2659,15 +2659,22 @@ function Request-ExakitMarketplaceOffer {
         return
     }
 
-    # Straight into the marketplace selection - the same cursor menu every
-    # other choice in the kit uses, no typing. The available add-ons come
-    # pre-selected (like the data-load menu), so Enter installs them and
-    # Cancel is the explicit "maybe later".
+    # One gate question first - the same cursor menu every other kit choice
+    # uses, no typing: Yes is pre-ticked, No is the exclusive opt-out. Only a
+    # Yes opens the marketplace selection itself (where the available add-ons
+    # come pre-selected, so Enter installs them and Cancel still backs out).
     Write-Host ""
     Ok "Your Starter Kit installation is done and working."
-    Info "The marketplace has more useful tools for it - Enter installs the selection; pick Cancel to skip:"
-    try { Show-ExakitMarketplaceMenu } catch { Warn2 "The marketplace did not finish cleanly: $_" }
-    Info "Browse again any time with: exakit marketplace"
+    Info "The marketplace has more useful tools for it."
+    $gate = Read-ExakitCheckboxMenu -Title "Do you want to add optional tools?" `
+        -Options @("Yes - show the marketplace", "No - maybe later") `
+        -Defaults @(1) -ExclusiveIndex 2
+    if ($gate -contains 1) {
+        try { Show-ExakitMarketplaceMenu } catch { Warn2 "The marketplace did not finish cleanly: $_" }
+        Info "Browse again any time with: exakit marketplace"
+    } else {
+        Info "Maybe later - browse any time with: exakit marketplace"
+    }
 }
 
 function Request-ExakitSkillsInstallOffer {

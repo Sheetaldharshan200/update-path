@@ -17,12 +17,13 @@ scenario as a flowchart — see [MARKETPLACE-FLOWS.md](MARKETPLACE-FLOWS.md).
 
 - **Never in the install flow.** The setup scripts install nothing from the
   marketplace. After a successful interactive install, the closing screen
-  says *"Your Starter Kit installation is done and working"* and opens the
-  marketplace selection directly — the same cursor menu every other kit
-  choice uses, no typing. The available add-ons come pre-selected (exactly
-  like the data-load menu pre-selects pending datasets), so Enter installs
-  them; Cancel is the explicit opt-out and prints the one command to come
-  back with.
+  says *"Your Starter Kit installation is done and working"* and asks one
+  gate question as a cursor selection — *Do you want to add optional tools?*
+  with Yes pre-ticked and No as the opt-out. Yes opens the marketplace
+  selection, where the available add-ons come pre-selected (exactly like the
+  data-load menu pre-selects pending datasets), so Enter installs them and
+  Cancel still backs out; No prints the one command to come back with. No
+  typing anywhere.
 - **`exakit marketplace`** is the command: every add-on with a one-line
   description, Space selects, Enter installs. Non-interactive runs (agents,
   CI) answer with `EXAKIT_MARKETPLACE_ADDONS=<ids csv | all | none>` instead —
