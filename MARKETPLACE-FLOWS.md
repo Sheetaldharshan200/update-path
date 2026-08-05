@@ -67,9 +67,9 @@ flowchart TD
     E -->|Yes| F[Installs the named add-ons<br>without asking]
     E -->|No| G{Interactive terminal and<br>every step succeeded?}
     G -->|No| H[One line:<br>Optional add-ons: exakit marketplace]
-    G -->|Yes| I[Your Starter Kit installation is<br>done and working - the marketplace<br>selection opens directly]
-    I -->|Space + Enter| J[Picked add-ons install]
-    I -->|Enter on the Cancel default| K[Nothing installed - browse any<br>time with: exakit marketplace]
+    G -->|Yes| I[Your Starter Kit installation is<br>done and working - the marketplace<br>selection opens directly,<br>add-ons pre-selected]
+    I -->|Enter| J[Pre-selected add-ons install]
+    I -->|Pick Cancel| K[Nothing installed - browse any<br>time with: exakit marketplace]
 
     click J "#scenario-3-browsing-and-installing"
 ```
@@ -78,8 +78,8 @@ What the user sees on an interactive run — a selection, never typing:
 
 ```
 [ok] Your Starter Kit installation is done and working.
- -   The marketplace has more useful tools for it - pick any to install,
-     or Enter to skip:
+ -   The marketplace has more useful tools for it - Enter installs the
+     selection; pick Cancel to skip:
 
   Marketplace add-ons
   -------------------
@@ -87,9 +87,9 @@ Add-on         Status               Version        Action
 dash-server    available            0.1.0          select below to install
 
     - Select add-ons to install
-    > [ ] Available add-ons
-      [ ]  - dash-server (AI dashboard host) - Agent-built live dashboards ...
-      [x] Cancel (install nothing)
+    > [x] Available add-ons
+      [x]  - dash-server (AI dashboard host) - Agent-built live dashboards ...
+      [ ] Cancel (install nothing)
 ```
 
 Details that matter:
@@ -133,9 +133,9 @@ never mentions the marketplace at all.
 `exakit marketplace` is one screen in the kit's established look: first the
 state of every add-on as an aligned table (the same shape `exakit
 update-check` prints), then — when anything is installable — the same
-tree-checkbox the data-load menu uses. Space selects, Enter installs. Cancel
-is the pre-selected default, so pressing Enter without choosing anything
-installs nothing.
+tree-checkbox the data-load menu uses. The available add-ons come
+pre-selected (exactly like the data-load menu pre-selects pending datasets),
+so Enter installs them; Space toggles, and Cancel is the explicit opt-out.
 
 ```
   Marketplace add-ons
@@ -144,9 +144,9 @@ Add-on         Status               Version        Action
 dash-server    available            0.1.0          select below to install
 
     - Select add-ons to install
-    > [ ] Available add-ons
-      [ ]  - dash-server (AI dashboard host) - Agent-built live dashboards ...
-      [x] Cancel (install nothing)
+    > [x] Available add-ons
+      [x]  - dash-server (AI dashboard host) - Agent-built live dashboards ...
+      [ ] Cancel (install nothing)
 ```
 
 ```mermaid
@@ -249,7 +249,7 @@ flowchart TD
 
 | Situation | Command or event | Outcome |
 |---|---|---|
-| Fresh install, interactive, all green | closing offer | the selection menu opens directly; Enter on the Cancel default skips |
+| Fresh install, interactive, all green | closing offer | the selection menu opens with the add-ons pre-selected; Enter installs, Cancel skips |
 | Fresh install, scripted | `EXAKIT_MARKETPLACE_ADDONS=...` | Installs the named add-ons, no questions |
 | Kit from before the marketplace | `exakit update` | Kit self-update delivers the command; discovery lines take over |
 | Browse | `exakit marketplace` | One row per add-on with live state; Space and Enter |

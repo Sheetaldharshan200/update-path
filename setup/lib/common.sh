@@ -2192,9 +2192,11 @@ EXAKIT_MM_EOF
 
     # The selection — same tree the data-load menu draws: a group row with the
     # add-ons hanging off connectors (UI_TEE/UI_CORNER from the ui palette;
-    # ASCII in plain mode), and Cancel as the exclusive, pre-selected default —
-    # a non-interactive run keeps it and installs nothing, the only safe
-    # answer there. Mirrors exakit_data_load_select / Show-ExakitMarketplaceMenu.
+    # ASCII in plain mode), the available add-ons pre-selected so Enter alone
+    # installs what is on offer, and Cancel as the exclusive opt-out. A
+    # non-interactive run keeps the pre-selected defaults, exactly like the
+    # data-load menu (EXAKIT_MARKETPLACE_ADDONS=none is the scripted opt-out).
+    # Mirrors exakit_data_load_select / Show-ExakitMarketplaceMenu.
     _mm_tee="${UI_TEE:-|-}"; _mm_corner="${UI_CORNER:-\`-}"
     _mm_menu_labels=("Available add-ons")
     _mm_menu_ids=("__group__")
@@ -2215,9 +2217,18 @@ EXAKIT_MM_EOF
     _mm_menu_labels+=("Cancel (install nothing)")
     _mm_menu_ids+=("__cancel__")
     _mm_cancel_idx="${#_mm_menu_labels[@]}"
+    # Default: the group AND every available add-on pre-selected — the same
+    # posture as the data-load menu, where Enter alone acts on what is on
+    # offer and Cancel is the explicit opt-out. Mirrors exakit_data_load_select.
+    _mm_defaults=""
+    _mm_i=1
+    while [ "$_mm_i" -le $((_mm_selectable + 1)) ]; do
+        _mm_defaults="${_mm_defaults:+$_mm_defaults,}$_mm_i"
+        _mm_i=$((_mm_i + 1))
+    done
     EXAKIT_CHECKBOX_GROUP="1:2:$((_mm_selectable + 1))"
     EXAKIT_CHECKBOX_EXCLUSIVE="$_mm_cancel_idx"
-    ui_checkbox_menu "Select add-ons to install" "$_mm_cancel_idx" "${_mm_menu_labels[@]}"
+    ui_checkbox_menu "Select add-ons to install" "$_mm_defaults" "${_mm_menu_labels[@]}"
     case ",$EXAKIT_CHECKBOX_SELECTION," in
         *",$_mm_cancel_idx,"*)
             info "Marketplace closed — nothing was installed."
@@ -2264,11 +2275,12 @@ exakit_marketplace_offer() {
     fi
 
     # Straight into the marketplace selection — the same cursor menu every
-    # other choice in the kit uses, no typing. Cancel is the pre-selected
-    # default, so Enter alone IS "maybe later" and installs nothing.
+    # other choice in the kit uses, no typing. The available add-ons come
+    # pre-selected (like the data-load menu), so Enter installs them and
+    # Cancel is the explicit "maybe later".
     printf '\n'
     ok "Your Starter Kit installation is done and working."
-    info "The marketplace has more useful tools for it — pick any to install, or Enter to skip:"
+    info "The marketplace has more useful tools for it — Enter installs the selection; pick Cancel to skip:"
     exakit_marketplace_menu || true
     info "Browse again any time with: exakit marketplace"
     return 0

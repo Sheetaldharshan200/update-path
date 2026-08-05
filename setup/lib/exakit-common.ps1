@@ -2564,9 +2564,11 @@ function Show-ExakitMarketplaceMenu {
 
     # The selection - same tree the data-load menu draws: a group row with the
     # add-ons hanging off connectors (UiTee/UiCorner from the ui palette;
-    # ASCII in plain mode), and Cancel as the exclusive, pre-selected default -
-    # a non-interactive run keeps it and installs nothing, the only safe
-    # answer there. Mirrors exakit_marketplace_menu in common.sh.
+    # ASCII in plain mode), the available add-ons pre-selected so Enter alone
+    # installs what is on offer, and Cancel as the exclusive opt-out. A
+    # non-interactive run keeps the pre-selected defaults, exactly like the
+    # data-load menu (EXAKIT_MARKETPLACE_ADDONS=none is the scripted opt-out).
+    # Mirrors exakit_marketplace_menu in common.sh.
     $tee = $script:UiTee; $corner = $script:UiCorner
     $menuLabels = New-Object System.Collections.Generic.List[string]
     $menuIds = New-Object System.Collections.Generic.List[string]
@@ -2582,8 +2584,12 @@ function Show-ExakitMarketplaceMenu {
     [void]$menuLabels.Add("Cancel (install nothing)")
     [void]$menuIds.Add("__cancel__")
     $cancelIdx = $menuLabels.Count
+    # Default: the group AND every available add-on pre-selected - the same
+    # posture as the data-load menu, where Enter alone acts on what is on
+    # offer and Cancel is the explicit opt-out.
+    $defaults = @(1..($selectable.Count + 1))
     $selection = Read-ExakitCheckboxMenu -Title "Select add-ons to install" `
-        -Options $menuLabels.ToArray() -Defaults @($cancelIdx) -ExclusiveIndex $cancelIdx `
+        -Options $menuLabels.ToArray() -Defaults $defaults -ExclusiveIndex $cancelIdx `
         -GroupParent 1 -GroupFirst 2 -GroupLast ($selectable.Count + 1)
     if ($selection -contains $cancelIdx) {
         Info "Marketplace closed - nothing was installed."
@@ -2654,11 +2660,12 @@ function Request-ExakitMarketplaceOffer {
     }
 
     # Straight into the marketplace selection - the same cursor menu every
-    # other choice in the kit uses, no typing. Cancel is the pre-selected
-    # default, so Enter alone IS "maybe later" and installs nothing.
+    # other choice in the kit uses, no typing. The available add-ons come
+    # pre-selected (like the data-load menu), so Enter installs them and
+    # Cancel is the explicit "maybe later".
     Write-Host ""
     Ok "Your Starter Kit installation is done and working."
-    Info "The marketplace has more useful tools for it - pick any to install, or Enter to skip:"
+    Info "The marketplace has more useful tools for it - Enter installs the selection; pick Cancel to skip:"
     try { Show-ExakitMarketplaceMenu } catch { Warn2 "The marketplace did not finish cleanly: $_" }
     Info "Browse again any time with: exakit marketplace"
 }

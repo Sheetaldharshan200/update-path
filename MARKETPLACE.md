@@ -19,8 +19,10 @@ scenario as a flowchart — see [MARKETPLACE-FLOWS.md](MARKETPLACE-FLOWS.md).
   marketplace. After a successful interactive install, the closing screen
   says *"Your Starter Kit installation is done and working"* and opens the
   marketplace selection directly — the same cursor menu every other kit
-  choice uses, no typing. Cancel is pre-selected, so Enter alone skips
-  everything and prints the one command to come back with.
+  choice uses, no typing. The available add-ons come pre-selected (exactly
+  like the data-load menu pre-selects pending datasets), so Enter installs
+  them; Cancel is the explicit opt-out and prints the one command to come
+  back with.
 - **`exakit marketplace`** is the command: every add-on with a one-line
   description, Space selects, Enter installs. Non-interactive runs (agents,
   CI) answer with `EXAKIT_MARKETPLACE_ADDONS=<ids csv | all | none>` instead —
