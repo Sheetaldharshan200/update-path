@@ -288,8 +288,14 @@ check "update dispatch with module missing refuses" "no" "$(
 has "update dispatch refusal names the module" "dash-server module is not available" "$_upd_missing"
 
 echo "install refuses a venv that cannot answer for its version:"
+# The check is about the version probe, not uv — CI runners have no uv on
+# PATH, so the bootstrap is stubbed to a fake binary either way (a machine
+# with a real uv never reaches the stub).
+printf '#!/bin/sh\nexit 0\n' > "$WORK/stub-uv"
+chmod +x "$WORK/stub-uv"
 _noversion_out="$( (
     EXAKIT_DASH_SERVER_VENV="$WORK/hollow-venv"
+    exakit_ensure_uv() { EXAKIT_UV_BIN="$WORK/stub-uv"; return 0; }
     run_logged() { return 0; }               # venv creation and pip install "succeed"
     dash_server_installed_version() { return 1; }   # ...but the package never materializes
     dash_server_install 2>&1
