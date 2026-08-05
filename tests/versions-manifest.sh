@@ -73,7 +73,69 @@ SHIPPED_PY
 # --- fixtures ----------------------------------------------------------------
 # Variants are derived from the shipped document so they keep its canonical
 # shape; only the property under test differs.
-sed 's/"schema_version": 1/"schema_version": 2/' "$REAL" > "$FIX/schema2.json"
+#
+# A derived fixture is worth something only while it actually DIFFERS from what it
+# came from, and a rewrite that stops matching does not say so: it copies the
+# document straight through and every check downstream keeps passing with its
+# premise deleted. So two rules hold for everything below.
+#
+# 1. Synthetic versions are out of reach of any release -- major 99, year 2099, or
+#    a 0.0.x floor -- never the next plausible number. The synthetic exapump in the
+#    cache and notice fixtures used to be 0.12.0, one routine release above what the
+#    document advertised, and versions-bump.yml runs weekly and does not edit tests.
+# 2. Every rewrite proves it changed something. That is the half that survives the
+#    next person picking a plausible-looking literal: the fixture fails loudly
+#    instead of quietly becoming a copy of the document it was derived from.
+
+# derive <sed-expression> <source> <destination> — a sed-derived fixture that must
+# not come out byte-identical to its source.
+derive() {
+    sed "$1" "$2" > "$3"
+    if cmp -s "$2" "$3"; then
+        _dv_state="NO-OP: $1 matched nothing in $2"
+    else
+        _dv_state="differs"
+    fi
+    check "fixture $(basename "$3")" "differs" "$_dv_state"
+}
+
+# fixture_doc <label> <destination> <dotted.path=value>... — a fixture document
+# built from the SHIPPED versions.json with the named paths replaced.
+#
+# Paths are addressed by key, never by matching the text that happens to be there,
+# so a rewrite cannot silently half-apply. A *.version replacement must also CHANGE
+# the value: every version fixture in this file exists in order to differ from the
+# shipped set, so one the document has caught up with is a broken fixture, not a
+# passing test. Other properties (severity, note) may legitimately already agree.
+fixture_doc() {
+    _fx_label="$1"
+    _fx_dest="$2"
+    shift 2
+    check "fixture $_fx_label" "rewritten" \
+        "$(python3 - "$REAL" "$_fx_dest" "$@" 2>&1 <<'FIXTURE_PY'
+import collections, json, sys
+with open(sys.argv[1]) as handle:
+    doc = json.load(handle, object_pairs_hook=collections.OrderedDict)
+for spec in sys.argv[3:]:
+    path, _, value = spec.partition("=")
+    keys = path.split(".")
+    node = doc
+    for key in keys[:-1]:
+        node = node.setdefault(key, collections.OrderedDict())
+    if keys[-1] == "version" and node.get(keys[-1]) == value:
+        sys.exit("NO-OP: the shipped document already says %s = %s -- this fixture "
+                 "needs a version no release can reach" % (path, value))
+    node[keys[-1]] = value
+with open(sys.argv[2], "w") as handle:
+    json.dump(doc, handle, indent=2)
+    handle.write("\n")
+print("rewritten")
+FIXTURE_PY
+)"
+}
+
+echo "fixtures (a derived variant must really differ from what it came from):"
+derive 's/"schema_version": 1/"schema_version": 2/' "$REAL" "$FIX/schema2.json"
 python3 - "$REAL" "$FIX/bad-charset.json" <<'CHARSET_PY'
 import json, sys
 doc = json.load(open(sys.argv[1]))
@@ -82,7 +144,8 @@ with open(sys.argv[2], "w") as handle:
     json.dump(doc, handle, indent=2)
     handle.write("\n")
 CHARSET_PY
-sed 's/"macos-aarch64": "[0-9a-f]*"/"macos-aarch64": "nothexnothexnothex"/' "$REAL" > "$FIX/bad-digest.json"
+derive 's/"macos-aarch64": "[0-9a-f]*"/"macos-aarch64": "nothexnothexnothex"/' \
+    "$REAL" "$FIX/bad-digest.json"
 printf 'this is not json\n' > "$FIX/corrupt.json"
 printf '[{"schema_version": 1}]\n' > "$FIX/array.json"
 cat > "$FIX/no-kit.json" <<'EOF'
@@ -119,7 +182,7 @@ cat > "$FIX/kit2.json" <<'EOF'
   }
 }
 EOF
-sed 's/"version": "0.1.0"/"version": "0.1.0 evil"/' "$FIX/kit2.json" > "$FIX/kit2-bad.json"
+derive 's/"version": "0.1.0"/"version": "0.1.0 evil"/' "$FIX/kit2.json" "$FIX/kit2-bad.json"
 
 # no_python <command...> — run one reader with every Python route closed, so
 # the awk fallback is the only thing that can answer.
@@ -201,14 +264,8 @@ mkdir -p "$EXAKIT_HOME/cache"
 # A sentinel, not a plausible version: it has to be impossible for the cached
 # answer to coincide with the baked one, or this proves nothing.
 V_CACHED_EXAPUMP="0.0.0-from-the-cache"
-python3 - "$REAL" "$EXAKIT_VERSIONS_CACHE" "$V_CACHED_EXAPUMP" <<'CACHE_PY'
-import json, sys
-doc = json.load(open(sys.argv[1]))
-doc["components"]["exapump"]["version"] = sys.argv[3]
-with open(sys.argv[2], "w") as handle:
-    json.dump(doc, handle, indent=2)
-    handle.write("\n")
-CACHE_PY
+fixture_doc "cached exapump sentinel" "$EXAKIT_VERSIONS_CACHE" \
+    "components.exapump.version=$V_CACHED_EXAPUMP"
 check "cache wins over the kit copy" "cache" "$( exakit_versions_source )"
 check "cached value is used" "$V_CACHED_EXAPUMP" "$( exakit_versions_value components.exapump.version )"
 printf 'corrupted by hand\n' > "$EXAKIT_VERSIONS_CACHE"
@@ -310,9 +367,15 @@ check "no document at all -> the fallback constants" \
     "fallback $EXAKIT_PERSONAL_VERSION_FALLBACK $EXAKIT_NANO_TAG_FALLBACK $EXAKIT_EXAPUMP_VERSION_FALLBACK $EXAKIT_MCP_VERSION_FALLBACK $EXAKIT_PYEXASOL_VERSION_FALLBACK" \
     "$(resolve_set 'exakit_repo_root() { return 1; }')"
 mkdir -p "$EXAKIT_HOME/cache"
-sed 's/"version": "'"$V_EXAPUMP"'"/"version": "0.12.0"/' "$REAL" > "$EXAKIT_VERSIONS_CACHE"
+# The cached answer has to be one the baked copy cannot also be giving, so this is
+# an unreachable major rather than the next plausible exapump release: the previous
+# 0.12.0 was a rewrite that would have become a no-op the week the document reached
+# it, leaving this check comparing the baked set to itself and still passing.
+V_CACHE_ONLY_EXAPUMP="99.0.0"
+fixture_doc "cache-only exapump" "$EXAKIT_VERSIONS_CACHE" \
+    "components.exapump.version=$V_CACHE_ONLY_EXAPUMP"
 check "a cached document beats the kit copy" \
-    "cache $V_PERSONAL $V_NANO 0.12.0 $V_MCP $V_PYEXASOL" "$(resolve_set)"
+    "cache $V_PERSONAL $V_NANO $V_CACHE_ONLY_EXAPUMP $V_MCP $V_PYEXASOL" "$(resolve_set)"
 check "pinned policy ignores the document entirely" \
     "fallback $EXAKIT_PERSONAL_VERSION_FALLBACK $EXAKIT_NANO_TAG_FALLBACK $EXAKIT_EXAPUMP_VERSION_FALLBACK $EXAKIT_MCP_VERSION_FALLBACK $EXAKIT_PYEXASOL_VERSION_FALLBACK" \
     "$(resolve_set 'EXAKIT_VERSION_POLICY=pinned')"
@@ -536,6 +599,14 @@ cat > "$UC/kit/versions.json" <<'EOF'
 }
 EOF
 
+# row <table> <first column> — one row of a rendered table, colour escapes
+# removed and runs of spaces squeezed to one, so a whole row can be compared
+# exactly. The Severity cell is coloured when the suite is run on a terminal
+# (UI_FANCY), and an exact comparison must hold either way.
+row() {
+    printf '%s\n' "$1" | grep -m1 "^$2 " | sed "s/$(printf '\033')\[[0-9;]*m//g" | tr -s ' '
+}
+
 # has <label> <needle> <haystack>
 has() {
     case "$3" in
@@ -557,7 +628,11 @@ uc_table="$( EXAKIT_HOME="$UC"
     _EXAKIT_VERSIONS_DOC=""; _EXAKIT_VERSIONS_SOURCE=""
     exakit_print_update_check all 2>&1 )"
 
-has "the column is Available, not Latest" "Available" "$uc_table"
+# The header line itself, squeezed: the middle column is Tagged. Matching the
+# bare word would also match the "Available versions from ..." source line below
+# it, so the whole header is pinned instead — including its order.
+check "the column is Tagged, not Available or Latest" \
+    "Component Installed Tagged Severity Action" "$(row "$uc_table" Component)"
 lacks "the old Latest header is gone" "Latest" "$uc_table"
 has "there is a Severity column" "Severity" "$uc_table"
 has "the kit row compares its own version" "exakit     0.2.0" "$uc_table"
@@ -570,8 +645,14 @@ has "installed stays installed (nano)" "nano       2026.2.0-nano.2" "$uc_table"
 has "installed stays installed (mcp)" "mcp        1.10.1" "$uc_table"
 lacks "no row is stuck on inspect" "inspect" "$uc_table"
 has "a runtime change is marked heavy" "exakit update runtime (heavy)" "$uc_table"
-has "an older advertised version is flagged" "0.12.0 (older)" "$uc_table"
-has "and the row offers nothing" "none — yours is newer than tested" "$uc_table"
+# The whole ahead row, squeezed: the tagged version is shown bare (the column
+# name says what the number is, so the old "(older)" suffix is gone) and the
+# action is exactly "none". It used to read "none — yours is newer than tested",
+# which apologised for the install and made the tested set sound abandoned.
+check "an install ahead of the tagged set says only none" \
+    "exapump 0.13.0 0.12.0 recommended none" "$(row "$uc_table" exapump)"
+lacks "no version cell is annotated (older)" "(older)" "$uc_table"
+lacks "and nothing apologises for the install" "newer than tested" "$uc_table"
 lacks "no downgrade is offered" "exakit update exapump" "$uc_table"
 lacks "and no confirmation is promised" "advisory rollback" "$uc_table"
 has "a critical severity is shown" "critical" "$uc_table"
@@ -610,12 +691,174 @@ update_out="$( EXAKIT_HOME="$UC"
     _EXAKIT_VERSIONS_DOC=""; _EXAKIT_VERSIONS_SOURCE=""
     exakit_init_logging() { :; }
     exakit_update_component() { printf 'APPLIED %s\n' "$1"; }
-    exakit_update all 2>&1 )"
+    # </dev/null on purpose: this is the unattended case, and stdin decides
+    # whether the runtime update is offered inline (see the offer tests below).
+    exakit_update all </dev/null 2>&1 )"
 lacks "update prints no comparison table either" "Component update check" "$update_out"
 has "update states its work plan" "mcp 1.10.1 -> 1.11.0" "$update_out"
 has "update applies the light components" "APPLIED mcp" "$update_out"
-lacks "update never applies the runtime by itself" "APPLIED runtime" "$update_out"
+lacks "an unattended update never applies the runtime by itself" "APPLIED runtime" "$update_out"
 has "update explains the deferred runtime" "needs the database stopped" "$update_out"
+
+echo "the runtime update is offered inline, not handed back as homework:"
+# The old flow refused the heavy part outright — "not part of a routine update",
+# followed by `exakit update runtime` for the user to run themselves after
+# stopping nothing. These cases cover the whole decision: a terminal is asked and
+# a "y" does the work here; a "no" keeps exactly the old deferral; no terminal
+# never asks and never stops a database; and the two explicit opt-ins apply it
+# unattended.
+#
+# exakit_stdin_is_tty and _exakit_prompt_tty are stubbed rather than allocating a
+# pty: they are the two functions that decide "is there anyone to ask", and with
+# both pointing at stdin the answer piped in below is read exactly as a typed one
+# would be.
+offer_run() ( # offer_run <answer> [statements]
+    EXAKIT_HOME="$UC"
+    EXAKIT_MANIFEST="$UC/manifest.json"
+    EXAKIT_VERSIONS_CACHE="$UC/cache/versions.json"
+    EXAKIT_VERSIONS_URL="http://offline.invalid/versions.json"
+    _EXAKIT_VERSIONS_DOC=""; _EXAKIT_VERSIONS_SOURCE=""
+    unset EXAKIT_CONFIRM_RUNTIME_UPDATE
+    exakit_init_logging() { :; }
+    exakit_update_component() { printf 'APPLIED %s\n' "$1"; }
+    exakit_stdin_is_tty() { return 0; }
+    _exakit_prompt_tty() { printf 'stdin\n'; }
+    eval "${2:-}"
+    printf '%s\n' "$1" | ( exakit_update all 2>&1 )
+)
+
+offer_yes="$(offer_run y)"
+has "a terminal is asked before anything is stopped" "Stop the database and update the runtime now?" "$offer_yes"
+has "the question names the outage" "goes down while the container is recreated" "$offer_yes"
+has "the question promises the restart" "started again and checked" "$offer_yes"
+has "the question says the data survives" "the same data volume is reused" "$offer_yes"
+has "yes applies the runtime in this run" "APPLIED runtime" "$offer_yes"
+has "and reports the result" "Runtime updated" "$offer_yes"
+
+# A runtime AHEAD of the tested set must never reach the question. The heavy
+# branch gated on "different" and then continued, so the never-backwards guard
+# further down was unreachable for it: an installed 2.1.0 against a tested 2.0.0
+# was offered as a runtime update -- a DOWNGRADE, behind a prompt promising the
+# data would survive it -- while `exakit update-check` rendered that same row as
+# "none" and every light component said "keeping yours". Answer "y" here on
+# purpose: if the question is ever asked again, this run applies the downgrade
+# and the APPLIED assertion catches it rather than passing on a silent skip.
+offer_ahead="$(offer_run y '
+    exakit_component_current() { printf "9.9.9\n"; }
+    exakit_component_available() { printf "1.0.0\n"; }
+')"
+lacks "a runtime ahead of the tested set is never offered" \
+    "Stop the database and update the runtime now?" "$offer_ahead"
+lacks "and nothing is applied, downgrade or otherwise" "APPLIED" "$offer_ahead"
+lacks "and no database is described as going down" "goes down while the container is recreated" "$offer_ahead"
+has "it says it is keeping what is installed" "is newer than the tested 1.0.0" "$offer_ahead"
+
+# The choke point refuses on its own, called DIRECTLY with no exakit_update above
+# it to have vetted the request. The updaters it dispatches to hold no version
+# opinion at all -- they install whatever they are handed -- so without this a
+# caller that forgets to ask is one edit away from reintroducing the downgrade.
+chokepoint="$( EXAKIT_HOME="$UC"
+    EXAKIT_MANIFEST="$UC/manifest.json"
+    EXAKIT_VERSIONS_CACHE="$UC/cache/versions.json"
+    EXAKIT_VERSIONS_URL="http://offline.invalid/versions.json"
+    _EXAKIT_VERSIONS_DOC=""; _EXAKIT_VERSIONS_SOURCE=""
+    exakit_init_logging() { :; }
+    exakit_component_current() { printf '9.9.9\n'; }
+    exakit_component_available() { printf '1.0.0\n'; }
+    exapump_update() { printf 'APPLIED exapump\n'; }
+    mcp_update() { printf 'APPLIED mcp\n'; }
+    exakit_update_component exapump 2>&1
+    exakit_update_component mcp 2>&1 )"
+lacks "the choke point applies nothing when the install is ahead" "APPLIED" "$chokepoint"
+has "and says so once per component asked for" "keeping yours" "$chokepoint"
+# An env override must not resurrect it either: the flow it used to pre-answer is
+# gone, so the variable is inert and has to stay inert.
+choke_override="$( EXAKIT_HOME="$UC"
+    EXAKIT_MANIFEST="$UC/manifest.json"
+    EXAKIT_VERSIONS_CACHE="$UC/cache/versions.json"
+    EXAKIT_VERSIONS_URL="http://offline.invalid/versions.json"
+    _EXAKIT_VERSIONS_DOC=""; _EXAKIT_VERSIONS_SOURCE=""
+    EXAKIT_ALLOW_DOWNGRADE=1
+    exakit_init_logging() { :; }
+    exakit_component_current() { printf '9.9.9\n'; }
+    exakit_component_available() { printf '1.0.0\n'; }
+    exapump_update() { printf 'APPLIED exapump\n'; }
+    exakit_update_component exapump 2>&1 )"
+lacks "and no override can buy a downgrade" "APPLIED" "$choke_override"
+lacks "and demands no second command" "exakit update runtime" "$offer_yes"
+has "while the light components still run" "APPLIED mcp" "$offer_yes"
+
+offer_no="$(offer_run n)"
+lacks "no stops nothing" "APPLIED runtime" "$offer_no"
+has "no says so plainly" "Nothing was stopped." "$offer_no"
+has "no keeps the exact command for later" "Apply it when convenient:  exakit update runtime" "$offer_no"
+has "and points at the full picture" "including the deferred runtime change" "$offer_no"
+has "the light components are applied either way" "APPLIED mcp" "$offer_no"
+
+# Enter (empty answer) is not consent: the default is no.
+offer_default="$(offer_run '')"
+lacks "an empty answer stops nothing" "APPLIED runtime" "$offer_default"
+has "the prompt shows no as the default" "[y/N]" "$offer_default"
+
+# The safety case. A prompt nobody can answer must never become a stopped
+# database, so the unattended run above (update_out, with real stdin redirected
+# from /dev/null) must not even print the question.
+lacks "an unattended run is never asked" "Stop the database and update the runtime now?" "$update_out"
+has "an unattended run defers as it always did" "not part of a routine update" "$update_out"
+has "and names the opt-in for scripts" "exakit update --yes" "$update_out"
+
+offer_flag="$( EXAKIT_HOME="$UC"
+    EXAKIT_MANIFEST="$UC/manifest.json"
+    EXAKIT_VERSIONS_CACHE="$UC/cache/versions.json"
+    EXAKIT_VERSIONS_URL="http://offline.invalid/versions.json"
+    _EXAKIT_VERSIONS_DOC=""; _EXAKIT_VERSIONS_SOURCE=""
+    unset EXAKIT_CONFIRM_RUNTIME_UPDATE
+    exakit_init_logging() { :; }
+    exakit_update_component() { printf 'APPLIED %s\n' "$1"; }
+    exakit_update all --yes </dev/null 2>&1 )"
+has "--yes applies the runtime without a terminal" "APPLIED runtime" "$offer_flag"
+lacks "and asks nothing" "Stop the database and update the runtime now?" "$offer_flag"
+has "but still says what it did to the database" "needs the database stopped" "$offer_flag"
+has "and the rest of the run is unaffected" "APPLIED mcp" "$offer_flag"
+
+offer_env="$( EXAKIT_HOME="$UC"
+    EXAKIT_MANIFEST="$UC/manifest.json"
+    EXAKIT_VERSIONS_CACHE="$UC/cache/versions.json"
+    EXAKIT_VERSIONS_URL="http://offline.invalid/versions.json"
+    _EXAKIT_VERSIONS_DOC=""; _EXAKIT_VERSIONS_SOURCE=""
+    EXAKIT_CONFIRM_RUNTIME_UPDATE=1
+    exakit_init_logging() { :; }
+    exakit_update_component() { printf 'APPLIED %s\n' "$1"; }
+    exakit_update all </dev/null 2>&1 )"
+has "EXAKIT_CONFIRM_RUNTIME_UPDATE=1 is the same opt-in" "APPLIED runtime" "$offer_env"
+
+# =0 is a deliberate no, and it outranks the terminal: a fleet that has said "not
+# the database" must not be asked again on every machine that has a console.
+offer_env_no="$(offer_run y 'EXAKIT_CONFIRM_RUNTIME_UPDATE=0')"
+lacks "EXAKIT_CONFIRM_RUNTIME_UPDATE=0 stops nothing" "APPLIED runtime" "$offer_env_no"
+lacks "and is not asked anyway" "Stop the database and update the runtime now?" "$offer_env_no"
+has "and says why it was left alone" "was left alone" "$offer_env_no"
+
+# A Personal MAJOR upgrade is a data migration with its own backup-gated flow. One
+# y/N is not informed consent for it, so it keeps the deferral.
+offer_major="$(offer_run y '
+    exakit_installation_runtime_type() { printf personal; }
+    exakit_component_current() { [ "$1" = personal ] && printf "1.5.0\n"; return 0; }
+    exakit_component_available() { [ "$1" = personal ] && printf "2.0.0\n"; return 0; }')"
+has "a Personal major upgrade is named as such" "is a major upgrade" "$offer_major"
+has "and routes to the staged flow" "exakit update runtime --plan" "$offer_major"
+lacks "and is never started from a y/N" "APPLIED runtime" "$offer_major"
+lacks "and does not ask the inline question at all" "Stop the database and update the runtime now?" "$offer_major"
+
+# The promise the question makes: a database that was up before is up afterwards.
+# The updaters do that themselves; this covers the case where one comes back down.
+rm -f "$WORK/rt-down"
+offer_restart="$(offer_run y '
+    exakit_runtime_status() { if [ -f "$WORK/rt-down" ]; then printf "stopped\n"; else printf "running\n"; fi; }
+    exakit_runtime_start() { printf "STARTED\n"; rm -f "$WORK/rt-down"; }
+    exakit_update_component() { printf "APPLIED %s\n" "$1"; [ "$1" = runtime ] && : > "$WORK/rt-down"; return 0; }')"
+has "a database left down is brought back up" "STARTED" "$offer_restart"
+has "and the run says it is running again" "the database is running again" "$offer_restart"
 
 echo "the user's own choice still wins:"
 # The install path honours EXAKIT_*_VERSION; the update path must too, or the
@@ -818,6 +1061,185 @@ check "mcp: no configured client keeps the record" "1.10.1" \
 check "mcp: no mcp module at all keeps the record" "1.10.1" \
     "$(mcp_read 'unset -f exakit_run_mcp_operation_cli')"
 
+echo "the MCP update compares against the client pin, not the record:"
+# The record only says what a previous run WROTE DOWN, and it is written before the
+# client configs are refreshed — so it can name a version no client is launching.
+# update-check already reports the live pin; the updater has to agree with it, or it
+# announces "mcp 1.10.1 -> 2.0.0" from the pin and then declines the work it just
+# announced because the record already says 2.0.0.
+DIV="$WORK/divergent-home"
+mkdir -p "$DIV/mcp" "$DIV/kit/mcp" "$DIV/cache"
+cp "$REAL" "$DIV/kit/versions.json"
+printf '{"mcpServers":{"exasol":{"command":"uvx","args":["exasol-mcp-server@1.10.1"]}}}\n' \
+    > "$DIV/mcp/client.json"
+cat > "$DIV/manifest.json" <<EOF
+{
+  "manifest_version": 1,
+  "kit_level": 1,
+  "runtime": {
+    "type": "nano",
+    "image": "docker.io/exasol/nano:2026.2.0-nano.2"
+  },
+  "components": {
+    "mcp_server": {
+      "package": "exasol-mcp-server",
+      "version": "2.0.0"
+    }
+  },
+  "steps_completed": []
+}
+EOF
+# mcp_update itself runs for real. Only the seams are stubbed: the advertised
+# version, the client-config listing, the config rewrite, and the three steps that
+# would touch the machine (uvx prime, snapshot, stdio handshake). The stubbed
+# rewrite moves the pin in the fixture config exactly as the real configure
+# operation does, so the assertions below read the file, not a promise.
+mcp_update_run() (
+    EXAKIT_HOME="$DIV"
+    EXAKIT_MANIFEST="$DIV/manifest.json"
+    # shellcheck source=/dev/null
+    . "$ROOT/setup/lib/mcp.sh"
+    exakit_component_available() { printf '%s\n' "$ADVERTISED"; }
+    exakit_run_mcp_operation_cli() {
+        printf '{"artifacts":[{"path":"%s","client":"claude_code"}]}\n' \
+            "$DIV/mcp/client.json" > "$3"
+    }
+    exakit_run_mcp_setup_cli() {
+        printf 'REFRESHED %s\n' "$1"
+        printf '{"mcpServers":{"exasol":{"command":"uvx","args":["exasol-mcp-server@%s"]}}}\n' \
+            "$EXAKIT_MCP_VERSION" > "$DIV/mcp/client.json"
+        printf '{"status":"success","selected_clients":["claude_code"],"artifacts":[]}\n' > "$2"
+    }
+    exakit_print_mcp_setup_summary() { :; }
+    mcp_update_snapshot() { :; }
+    mcp_install() {
+        printf 'PRIMED %s\n' "$EXAKIT_MCP_VERSION"
+        manifest_set components.mcp_server.version "$EXAKIT_MCP_VERSION"
+    }
+    mcp_validate() { :; }
+    eval "${1:-}"
+    mcp_update 2>&1
+)
+div_pin() { grep -o 'exasol-mcp-server@[0-9.]*' "$DIV/mcp/client.json" | cut -d@ -f2; }
+div_record() ( EXAKIT_MANIFEST="$DIV/manifest.json"; manifest_get components.mcp_server.version )
+
+divergent="$(ADVERTISED=2.0.0 mcp_update_run)"
+lacks "a record that already names the target is not proof" "already current" "$divergent"
+has "the update runs anyway" "PRIMED 2.0.0" "$divergent"
+has "and the client configs are the thing it rewrites" "REFRESHED claude_code" "$divergent"
+check "the pin the next client launch would use has moved" "2.0.0" "$(div_pin)"
+
+# Idempotent for the real case: the configs now agree with the advertised version,
+# so a second run must do nothing at all rather than re-prime and re-render.
+current="$(ADVERTISED=2.0.0 mcp_update_run)"
+has "a genuinely current install skips cleanly" "already current (2.0.0)" "$current"
+lacks "and nothing is reinstalled" "PRIMED" "$current"
+lacks "and no client config is touched" "REFRESHED" "$current"
+
+# The other direction of the same divergence: the configs are current and the record
+# lags. Nothing to install, but the record is what the renderer reads to pin the NEXT
+# client the user connects, so it is reconciled instead of left lying.
+reconciled="$(ADVERTISED=2.0.0 mcp_update_run 'manifest_set components.mcp_server.version 1.9.0')"
+has "a lagging record is reconciled, not left lying" "Reconciling the recorded MCP version" "$reconciled"
+has "and the skip is still clean" "already current (2.0.0)" "$reconciled"
+check "the record now matches the configs" "2.0.0" "$(div_record)"
+
+echo "the exapump update compares against the binary on disk, not the record:"
+# components.exapump.version is only what a previous run WROTE DOWN, and
+# exapump_record_manifest writes it from the version that run asked for — so it can
+# name a release that never landed, and it says nothing about a binary someone
+# replaced by hand. update-check and the dispatcher both report what the binary says;
+# the updater has to agree with them, or it announces "exapump 8.1.0 -> 8.2.0" from
+# the probe and then declines that exact work because the record already says 8.2.0.
+XP="$WORK/exapump-divergent"
+mkdir -p "$XP/bin" "$XP/kit" "$XP/cache"
+cp "$REAL" "$XP/kit/versions.json"
+# Versions no part of the shipped document uses, so a bump cannot make these pass or
+# fail for the wrong reason.
+xp_binary() { printf '#!/bin/sh\necho "exapump %s"\n' "$1" > "$XP/bin/exapump"; chmod +x "$XP/bin/exapump"; }
+xp_binary 8.1.0
+cat > "$XP/manifest.json" <<EOF
+{
+  "manifest_version": 1,
+  "kit_level": 1,
+  "runtime": {
+    "type": "nano",
+    "image": "docker.io/exasol/nano:2026.2.0-nano.2"
+  },
+  "components": {
+    "exapump": {
+      "version": "8.2.0",
+      "path": "$XP/bin/exapump"
+    }
+  },
+  "steps_completed": []
+}
+EOF
+# exapump_update itself runs for real. Only the seams are stubbed: the advertised
+# version, the download, and the profile write. The stubbed install replaces the
+# fixture binary exactly as a real one would, so the assertions below read what the
+# binary reports, not a promise.
+xp_update_run() (
+    EXAKIT_HOME="$XP"
+    EXAKIT_MANIFEST="$XP/manifest.json"
+    EXAKIT_BIN_DIR="$XP/bin"
+    # shellcheck source=/dev/null
+    . "$ROOT/setup/lib/exapump.sh"
+    exakit_component_available() { printf '%s\n' "$ADVERTISED"; }
+    exapump_install() {
+        printf 'INSTALLED %s\n' "$EXAKIT_EXAPUMP_VERSION"
+        printf '#!/bin/sh\necho "exapump %s"\n' "$EXAKIT_EXAPUMP_VERSION" > "$EXAKIT_EXAPUMP_BIN"
+        chmod +x "$EXAKIT_EXAPUMP_BIN"
+        exapump_record_manifest
+    }
+    exapump_create_profile() { printf 'PROFILE\n'; }
+    eval "${1:-}"
+    "${XP_ENTRY:-exapump_update}" exapump 2>&1
+)
+xp_live() { "$XP/bin/exapump" --version 2>/dev/null | sed 's/^exapump //'; }
+xp_record() ( EXAKIT_MANIFEST="$XP/manifest.json"; manifest_get components.exapump.version )
+
+xp_divergent="$(ADVERTISED=8.2.0 xp_update_run)"
+lacks "a record that already names the target is not proof" "already current" "$xp_divergent"
+has "the work is announced against the binary" "Updating exapump 8.1.0 -> 8.2.0" "$xp_divergent"
+has "and the install actually runs" "INSTALLED 8.2.0" "$xp_divergent"
+check "the binary a user would run has moved" "8.2.0" "$(xp_live)"
+
+# Idempotent for the real case: the binary now reports the advertised version, so a
+# second run must do nothing at all rather than re-download and rewrite the profile.
+xp_current="$(ADVERTISED=8.2.0 xp_update_run)"
+has "a genuinely current install skips cleanly" "already current (8.2.0)" "$xp_current"
+lacks "and nothing is reinstalled" "INSTALLED" "$xp_current"
+lacks "and no profile is rewritten" "PROFILE" "$xp_current"
+
+# The other direction of the same divergence: the binary is current and the record
+# lags. Nothing to install, but `exakit version` credits the kit with that record, so
+# it is reconciled instead of left lying.
+xp_reconciled="$(ADVERTISED=8.2.0 xp_update_run 'manifest_set components.exapump.version 7.0.0')"
+has "a lagging record is reconciled, not left lying" "Reconciling the recorded exapump version" "$xp_reconciled"
+has "and the skip is still clean" "already current (8.2.0)" "$xp_reconciled"
+check "the record now matches the binary" "8.2.0" "$(xp_record)"
+
+# A record naming the target with no binary behind it is the other half of the same
+# bug: the record must not vouch for something that is gone. PATH is stripped to the
+# python3 the manifest reads need, or the probe's PATH fallback finds the tester's own
+# exapump and this reads as installed.
+xp_absent="$(ADVERTISED=8.2.0 xp_update_run \
+    'rm -f "$XP/bin/exapump"; PATH="$(dirname "$(command -v python3)"):/usr/bin:/bin"')"
+lacks "a record with no binary behind it is not current" "already current" "$xp_absent"
+has "the missing binary is reinstalled" "INSTALLED 8.2.0" "$xp_absent"
+
+# An install AHEAD of the tested set must still not be dragged back — and this now
+# matters more, because the guard inside exapump_update no longer accidentally
+# refuses it via a matching record. The refusal belongs to the one hard guard in
+# exakit_update_component, which reads the same probe, so this drives the real
+# updater through that choke point rather than calling it directly.
+xp_binary 9.9.9
+xp_ahead="$( XP_ENTRY=exakit_update_component ADVERTISED=8.2.0 xp_update_run )"
+has "an install ahead of the tested set is kept" "is newer than the tested" "$xp_ahead"
+lacks "and nothing is installed over it" "INSTALLED" "$xp_ahead"
+check "and the binary is untouched" "9.9.9" "$(xp_live)"
+
 echo "exakit version names both what is on the machine and what the kit installed:"
 # Its own fixture on purpose: the cases above delete stubs to test absence, and this
 # one needs them present. One runtime key only (a real manifest has version OR image).
@@ -923,7 +1345,7 @@ personal_row="$( EXAKIT_HOME="$UC"
 has "a runtime this machine does not run is listed" "personal   not installed" "$personal_row"
 lacks "but never offered for installation" "exakit update personal" "$personal_row"
 
-echo "the Available column matches the policy in force:"
+echo "the Tagged column matches the policy in force:"
 pinned_row="$( EXAKIT_HOME="$UC"
     EXAKIT_MANIFEST="$UC/manifest.json"
     EXAKIT_VERSIONS_CACHE="$UC/cache/versions.json"
@@ -941,7 +1363,7 @@ override_row="$( EXAKIT_HOME="$UC"
     _EXAKIT_VERSIONS_DOC=""; _EXAKIT_VERSIONS_SOURCE=""
     EXAKIT_EXAPUMP_VERSION=9.9.9
     exakit_print_update_check exapump 2>&1 )"
-has "an override reaches the Available column" "9.9.9" "$override_row"
+has "an override reaches the Tagged column" "9.9.9" "$override_row"
 has "and is credited as an override" "EXAKIT_* environment overrides" "$override_row"
 lacks "the maintainers' note is withheld from it" "mis-detects CSV headers" "$override_row"
 
@@ -1063,38 +1485,165 @@ printf '# What is new\n\n## 0.4.0\n\n\n## 0.3.0\n\n- real\n' > "$WORK/wn-kit/WHA
 check "an empty section counts as no section" "rc=1" \
     "$(exakit_whats_new_section "$WORK/wn-kit" 0.4.0 >/dev/null 2>&1; printf 'rc=%s' "$?")"
 
-# An installer re-run that moved the kit version says what changed; one that did
-# not must stay quiet, or every idempotent re-run reads like an upgrade.
-wn_kit_root="$WORK/wn-run-kit"
-mkdir -p "$wn_kit_root"
-cp "$REAL" "$wn_kit_root/versions.json"
-printf '# What is new\n\n## 0.2.0\n\n- upgraded-line-only-here\n' > "$wn_kit_root/WHATS-NEW.md"
+echo "the post-install \"What's new\" box:"
+# The box is the one place an upgrading user learns what they just got, and the
+# installer is documented as safe to re-run - so a run that moved the kit version
+# has to say so, and every other run has to stay completely silent.
+#
+# Sentinels, not real note text: the fixture below is the only file that contains
+# them, so a test cannot pass by accidentally reading this checkout's WHATS-NEW.md.
+cat > "$WORK/wn-notes.md" <<'WN_NOTES'
+# What is new
+
+## 0.4.5
+
+Only prose lives under this heading, so it has no points at all.
+
+## 0.4.0
+
+- future-sentinel-040
+
+## 0.25.0
+
+- lexical-trap-sentinel-025
+
+## 0.3.0
+
+Prose before the list is not a point.
+
+**Changes**
+
+- `three-oh` point one
+- three-oh point two, which runs on and on and on and on and on and on and on
+  past any width a drawn box could hold, wrapped in the file like the real notes
+- three-oh point three
+- three-oh point four
+- three-oh point five
+- three-oh point six
+- seventh-point-past-the-cap
+
+## 0.2.0
+
+- two-oh-sentinel
+- two-oh second point
+
+## 0.1.5
+
+- one-five-sentinel
+
+## 0.1.0
+
+- ancient-sentinel-must-not-appear
+WN_NOTES
+
+# wn_kit <version> — a kit tree that states <version> about itself and carries the
+# fixture notes.
+wn_kit() {
+    mkdir -p "$WORK/wn-kit-$1"
+    python3 - "$REAL" "$WORK/wn-kit-$1/versions.json" "$1" <<'WN_KIT_PY'
+import json, sys
+doc = json.load(open(sys.argv[1]))
+doc["kit"]["version"] = sys.argv[3]
+json.dump(doc, open(sys.argv[2], "w"), indent=2)
+WN_KIT_PY
+    cp "$WORK/wn-notes.md" "$WORK/wn-kit-$1/WHATS-NEW.md"
+}
+for wn_v in 0.1.0 0.1.5 0.2.0 0.3.0 0.4.0 0.4.5; do wn_kit "$wn_v"; done
+
+# wn_run <home-tag> <kit-version> [die] — one installer run against one home: the
+# record taken while the manifest still holds the previous number, the kit.version
+# write, and the box at the end. `die` stops before the box, which is what a run
+# that fails partway leaves behind.
 wn_run() {
-    # The kit copy IS the repo root as far as exakit_repo_root is concerned, as long
-    # as kit/mcp exists. Building it that way beats stubbing the resolver - and
-    # without it the lookup would fall through to the real WHATS-NEW.md in this
-    # checkout, which has a 0.2.0 section and would pass for the wrong reason. The
-    # sentinel line below only exists in the fixture.
     ( EXAKIT_HOME="$WORK/wn-home-$1"
       EXAKIT_MANIFEST="$WORK/wn-home-$1/manifest.json"
       EXAKIT_BIN_DIR="$WORK/wn-home-$1/bin"
-      mkdir -p "$EXAKIT_HOME/kit/mcp"
-      cp "$wn_kit_root/versions.json" "$wn_kit_root/WHATS-NEW.md" "$EXAKIT_HOME/kit/"
-      . "$ROOT/setup/lib/pyexasol.sh"
+      mkdir -p "$EXAKIT_HOME"
       manifest_init >/dev/null 2>&1
-      exapump_install() { :; }; exapump_create_profile() { :; }; exapump_validate_connection() { :; }
-      mcp_install() { :; }; mcp_validate() { :; }
-      pyexasol_install() { :; }; pyexasol_validate() { :; }
-      exakit_maybe_offer_data_load() { :; }
-      exakit_maybe_offer_mcp_setup() { :; }
-      exakit_maybe_offer_skills_install() { :; }
-      ensure_path_hint() { :; }
-      EXAKIT_UPGRADED_FROM="$1"
-      kit_shared_steps 3 6 "$ROOT/setup" "$wn_kit_root" 2>&1 )
+      _wr_root="$WORK/wn-kit-$2"
+      exakit_note_kit_upgrade "$_wr_root"
+      _wr_v="$(exakit_kit_version_at "$_wr_root" 2>/dev/null || true)"
+      [ -n "$_wr_v" ] && manifest_set kit.version "$_wr_v"
+      [ "${3:-}" = "die" ] && exit 0
+      exakit_print_whats_new_box "$_wr_root" 2>&1 )
 }
-has "an upgrading re-run prints the notes" "upgraded-line-only-here" "$(wn_run 0.1.0)"
-has "and says where it came from" "upgraded from 0.1.0" "$(wn_run 0.1.0)"
-lacks "an unchanged re-run stays quiet" "upgraded-line-only-here" "$(wn_run 0.2.0)"
+wn_pending() { manifest_get kit.whats_new_from 2>/dev/null || true; }
+wn_shape() {
+    if [ -z "$(printf '%s' "$1" | tr -d '[:space:]')" ]; then printf 'silent'; else printf 'printed'; fi
+}
+# The version headings the box printed, in the order it printed them.
+wn_order() {
+    printf '%s\n' "$1" | sed -n 's/.*In \([0-9][0-9.]*\):.*/\1/p' \
+        | awk '{ printf "%s%s", (NR > 1 ? " " : ""), $0 } END { printf "\n" }'
+}
+
+check "a first-ever install shows no box" "silent" "$(wn_shape "$(wn_run first 0.3.0)")"
+# Same home again, now moving 0.3.0 -> 0.4.0.
+wn_upgrade="$(wn_run first 0.4.0)"
+check "an upgrade shows one" "printed" "$(wn_shape "$wn_upgrade")"
+has "with the version it moved to" "In 0.4.0:" "$wn_upgrade"
+has "and that version's points" "future-sentinel-040" "$wn_upgrade"
+has "and the line that names the move" "moved from 0.3.0 to 0.4.0" "$wn_upgrade"
+lacks "not the points of a version it already had" "lexical-trap-sentinel-025" "$wn_upgrade"
+check "an idempotent re-run at the same version shows none" "silent" \
+    "$(wn_shape "$(wn_run first 0.4.0)")"
+
+# One box for the whole jump, oldest hop first. A per-hop box, or a box for the
+# newest hop only, both fail here.
+wn_run cum 0.1.0 >/dev/null
+wn_cum="$(wn_run cum 0.3.0)"
+check "a 0.1.0 -> 0.3.0 upgrade draws exactly one box" "1" \
+    "$(printf '%s\n' "$wn_cum" | grep -c "What's new")"
+check "covering every version in between, oldest first" "0.1.5 0.2.0 0.3.0" \
+    "$(wn_order "$wn_cum")"
+has "with the points of the middle hop" "two-oh-sentinel" "$wn_cum"
+has "and the points of the newest hop" "three-oh point one" "$wn_cum"
+lacks "and nothing from the version already installed" "ancient-sentinel-must-not-appear" "$wn_cum"
+lacks "and nothing from a version not installed yet" "future-sentinel-040" "$wn_cum"
+# 0.25.0 sorts BEFORE 0.3.0 as a string and AFTER it as a version: a lexical
+# comparison would smuggle notes for a release the user does not have into the box.
+lacks "and nothing from a version that only sorts low as text" "lexical-trap-sentinel-025" "$wn_cum"
+has "a wrapped point is joined and cut to the box width" "on and on and..." "$wn_cum"
+lacks "and only the first few points of a version are shown" "seventh-point-past-the-cap" "$wn_cum"
+check "the widest line still fits a terminal" "fits" \
+    "$(printf '%s\n' "$wn_cum" | awk 'length($0) > 90 { print "TOO-WIDE: " length($0); exit } END { print "fits" }')"
+
+# A version documented with prose but no points has nothing to put in a box, and an
+# empty box is worse than no box.
+wn_run none 0.4.0 >/dev/null
+check "a version with no points shows no empty box" "silent" \
+    "$(wn_shape "$(wn_run none 0.4.5)")"
+
+# The record is in the manifest for exactly this case: the first run overwrote
+# kit.version and then died, so nothing but the record knows a hop is unannounced.
+wn_run die 0.1.5 >/dev/null
+wn_run die 0.3.0 die >/dev/null 2>&1
+wn_after_death="$(wn_run die 0.3.0)"
+has "a run that died partway still gets its box next time" "two-oh-sentinel" "$wn_after_death"
+has "measured from before the run that died" "moved from 0.1.5 to 0.3.0" "$wn_after_death"
+check "and the record is spent once the box is drawn" "" \
+    "$( EXAKIT_MANIFEST="$WORK/wn-home-die/manifest.json"; wn_pending )"
+
+# Backwards is not an upgrade: nothing recorded, nothing printed, and no marker
+# left behind for a later run to resolve.
+wn_run down 0.3.0 >/dev/null
+check "a downgrade shows no box" "silent" "$(wn_shape "$(wn_run down 0.1.5)")"
+check "and records nothing" "" \
+    "$( EXAKIT_MANIFEST="$WORK/wn-home-down/manifest.json"; wn_pending )"
+
+# Cosmetic means cosmetic: a kit copy with no notes file at all must print nothing
+# and still finish clean.
+mkdir -p "$WORK/wn-kit-nofile"
+cp "$WORK/wn-kit-0.3.0/versions.json" "$WORK/wn-kit-nofile/versions.json"
+wn_nofile="$( EXAKIT_HOME="$WORK/wn-home-nofile"
+    EXAKIT_MANIFEST="$WORK/wn-home-nofile/manifest.json"
+    mkdir -p "$EXAKIT_HOME"
+    manifest_init >/dev/null 2>&1
+    manifest_set kit.version 0.1.0
+    manifest_set kit.whats_new_from 0.1.0
+    exakit_print_whats_new_box "$WORK/wn-kit-nofile" 2>&1
+    printf 'rc=%s' "$?" )"
+check "a kit copy without the notes file prints nothing and succeeds" "rc=0" "$wn_nofile"
 
 echo "a hanging container engine cannot stall a version lookup:"
 # The failure this prevents: `docker info` and `docker container inspect` do not
@@ -1164,7 +1713,23 @@ echo "after-command notice (severity-gated, once a day, stderr only):"
 NT="$WORK/notice-home"
 mkdir -p "$NT/kit/mcp" "$NT/cache" "$NT/bin"
 cp "$REAL" "$NT/kit/versions.json"
-printf '#!/bin/sh\necho "exapump 0.11.2"\n' > "$NT/bin/exapump"
+# What this install is ON, and what the fixture document advertises. Both ends are
+# deliberately out of reach of any release rather than a step either side of
+# whatever versions.json says today.
+#
+# The install is ancient because these checks need it behind the SHIPPED document,
+# and a version set lowered by the maintainers (a withdrawn release, a test set)
+# would otherwise catch up with the fixture and quietly delete the premise.
+# The advertised values are unreachable for the mirror-image reason: 0.12.0 was the
+# next plausible exapump release, and 2026.3.0-nano.1 the next plausible nano tag, so
+# a weekly bump could walk into either and turn "the advertised set differs from the
+# shipped set" into a fiction that no assertion here would notice.
+NOTICE_INSTALLED_EXAPUMP="0.0.1"
+NOTICE_INSTALLED_MCP="0.0.1"
+NOTICE_ADVERTISED_EXAPUMP="99.1.0"
+NOTICE_ADVERTISED_MCP="99.2.0"
+NOTICE_ADVERTISED_NANO="2099.1.0-nano.1"
+printf '#!/bin/sh\necho "exapump %s"\n' "$NOTICE_INSTALLED_EXAPUMP" > "$NT/bin/exapump"
 chmod +x "$NT/bin/exapump"
 cat > "$NT/manifest.json" <<EOF
 {
@@ -1179,34 +1744,28 @@ cat > "$NT/manifest.json" <<EOF
   },
   "components": {
     "exapump": {
-      "version": "0.11.2",
+      "version": "$NOTICE_INSTALLED_EXAPUMP",
       "path": "$NT/bin/exapump"
     },
     "mcp_server": {
-      "version": "1.10.1"
+      "version": "$NOTICE_INSTALLED_MCP"
     }
   },
   "steps_completed": []
 }
 EOF
-# Advertise one recommended light bump and one critical heavy bump.
-python3 - "$REAL" "$WORK/notice-versions.json" <<'PY'
-import collections, json, sys
-with open(sys.argv[1]) as handle:
-    doc = json.load(handle, object_pairs_hook=collections.OrderedDict)
-doc["components"]["exapump"]["version"] = "0.12.0"
-doc["components"]["exapump"]["severity"] = "recommended"
-doc["components"]["nano"]["version"] = "2026.3.0-nano.1"
-doc["components"]["nano"]["severity"] = "critical"
-# A genuine normal-severity bump: the recorded install is on 1.10.1, so this is
-# pending. Without the version change there was nothing to announce, and an
-# assertion about it would pass or fail for the wrong reason.
-doc["components"]["mcp"]["version"] = "1.11.0"
-doc["components"]["mcp"]["severity"] = "normal"
-with open(sys.argv[2], "w") as handle:
-    json.dump(doc, handle, indent=2)
-    handle.write("\n")
-PY
+# Advertise one recommended light bump and one critical heavy bump. The mcp bump is
+# a genuine normal-severity one: the recorded install is far behind it, so it is
+# pending. Without the version change there is nothing to announce, and an assertion
+# about it would pass or fail for the wrong reason -- which is why fixture_doc
+# refuses a version the shipped document has already reached.
+fixture_doc "notice: an advertised set the install is behind" "$WORK/notice-versions.json" \
+    "components.exapump.version=$NOTICE_ADVERTISED_EXAPUMP" \
+    "components.exapump.severity=recommended" \
+    "components.nano.version=$NOTICE_ADVERTISED_NANO" \
+    "components.nano.severity=critical" \
+    "components.mcp.version=$NOTICE_ADVERTISED_MCP" \
+    "components.mcp.severity=normal"
 
 # The notice refuses to speak unless stderr is a terminal, so the harness has to
 # provide one. script(1) does that, with two different command lines in the wild:
@@ -1259,6 +1818,12 @@ if [ "$NOTICE_PTY" = "none" ]; then
                     "and then holds off for the interval" \
                     "a routine bump is announced" "without claiming it is recommended" \
                     "or critical" "the kill switch silences it" \
+                    "an install ahead of the tagged set is not announced" \
+                    "nor the other component that overshot" \
+                    "and no light line is printed at all" \
+                    "while a component genuinely behind is still announced" \
+                    "and a cached plan does not resurrect it" \
+                    "while the cached plan keeps the real one" \
                     "latest policy has no severities to gate on"; do
         check "$_skipped" "skipped" "skipped"
     done
@@ -1299,22 +1864,90 @@ has "a routine bump is announced" "update is available for exapump" "$only_norma
 lacks "without claiming it is recommended" "A recommended" "$only_normal"
 lacks "or critical" "A critical" "$only_normal"
 
+# An install that has overshot the advertised set has nothing pending, and the
+# notice must not claim otherwise: `exakit update-check` renders those rows as
+# "none" and `exakit update` says "keeping yours", so announcing them made the
+# three commands disagree and pointed the user at a command that could do
+# nothing. exapump and mcp are advertised BELOW the recorded 0.0.1 install;
+# nano stays genuinely behind, to prove the skip is targeted and not a mute
+# button. exapump is also flagged 'recommended', so if it were still counted the
+# light line would appear and borrow that word.
+fixture_doc "notice: an advertised set the install has overshot" "$WORK/notice-ahead.json" \
+    "components.exapump.version=0.0.0" \
+    "components.exapump.severity=recommended" \
+    "components.mcp.version=0.0.0" \
+    "components.mcp.severity=normal" \
+    "components.nano.version=$NOTICE_ADVERTISED_NANO" \
+    "components.nano.severity=critical"
+rm -f "$NT/cache/notice-state.json" "$NT/cache/notice-plan"
+ahead_notice="$(notice "$WORK/notice-ahead.json")"
+lacks "an install ahead of the tagged set is not announced" "exapump" "$ahead_notice"
+lacks "nor the other component that overshot" "mcp" "$ahead_notice"
+lacks "and no light line is printed at all" "apply in seconds" "$ahead_notice"
+has "while a component genuinely behind is still announced" \
+    "A critical update is available for nano" "$ahead_notice"
+# The cached plan re-verification carried the same equality-only flaw, which is
+# why the phantom line reappeared on every command instead of clearing itself.
+ahead_cached="$(notice "$WORK/notice-ahead.json")"
+lacks "and a cached plan does not resurrect it" "exapump" "$ahead_cached"
+has "while the cached plan keeps the real one" \
+    "A critical update is available for nano" "$ahead_cached"
+
 # The plan cache: printed every run, computed rarely. Counted by a probe stub that
 # appends a line each time it is asked, which is the only way to tell "said the same
 # thing again" from "worked it out again".
 # Counted at the exapump stub itself rather than by overriding a reader: the test
 # then cannot pass because it guessed the wrong internal function name.
 rm -f "$NT/cache/notice-plan" "$NT/cache/notice-state.json" "$WORK/probe-count"
-printf '#!/bin/sh\nprintf x >> "%s"\necho "exapump 0.11.2"\n' "$WORK/probe-count" > "$NT/bin/exapump"
+printf '#!/bin/sh\nprintf x >> "%s"\necho "exapump %s"\n' "$WORK/probe-count" \
+    "$NOTICE_INSTALLED_EXAPUMP" > "$NT/bin/exapump"
 chmod +x "$NT/bin/exapump"
 probe_count() { [ -f "$WORK/probe-count" ] && wc -c < "$WORK/probe-count" | tr -d ' ' || printf 0; }
 cached_first="$(notice "$WORK/notice-versions.json")"
 has "the first run still says its piece" "update is available" "$cached_first"
 probes_after_first="$(probe_count)"
 check "and it did probe" "yes" "$([ "$probes_after_first" -gt 0 ] && printf yes || printf no)"
+plan_stamp() { sed -n 's/^computed_at=//p' "$NT/cache/notice-plan" 2>/dev/null | head -1; }
+stamp_after_first="$(plan_stamp)"
 cached_second="$(notice "$WORK/notice-versions.json")"
 has "the second run says the same thing" "update is available" "$cached_second"
-check "and does not work it out again" "$probes_after_first" "$(probe_count)"
+# Served from the plan, not worked out again. The probe count is no longer the signal:
+# the cached path deliberately re-probes its pending candidates so it can never repeat
+# an update that has already been taken.
+check "and did not recompute the verdict" "$stamp_after_first" "$(plan_stamp)"
+
+# A cached plan must not repeat an update the user has already taken. This is the
+# real-world failure it fixes: a plan computed while MCP was mid-install kept saying
+# "an update is available for mcp" while `exakit update-check`, run seconds later in
+# the same session, reported everything current.
+plan_detail="$(sed -n 's/^light=//p' "$NT/cache/notice-plan" | head -1)"
+has "the plan records the advertised version with each candidate" "exapump:" "$plan_detail"
+# The stub catches up. Nothing else changes -- not the manifest, not the document --
+# which is precisely the blind spot a signature alone cannot see.
+printf '#!/bin/sh\nprintf x >> "%s"\necho "exapump %s"\n' "$WORK/probe-count" \
+    "$NOTICE_ADVERTISED_EXAPUMP" > "$NT/bin/exapump"
+chmod +x "$NT/bin/exapump"
+caught_up="$(notice "$WORK/notice-versions.json")"
+lacks "a candidate that caught up is dropped" "for exapump" "$caught_up"
+has "and the ones still behind are kept" "mcp" "$caught_up"
+# Back to behind, so what follows sees the same fixture as before.
+printf '#!/bin/sh\nprintf x >> "%s"\necho "exapump %s"\n' "$WORK/probe-count" \
+    "$NOTICE_INSTALLED_EXAPUMP" > "$NT/bin/exapump"
+chmod +x "$NT/bin/exapump"
+
+# update-check computes the truth the long way, so it retires the plan: nothing it
+# just contradicted may be repeated by the next command.
+notice "$WORK/notice-versions.json" >/dev/null
+retired="$( EXAKIT_HOME="$NT"
+    EXAKIT_MANIFEST="$NT/manifest.json"
+    EXAKIT_NOTICE_PLAN="$NT/cache/notice-plan"
+    EXAKIT_VERSIONS_CACHE="$NT/cache/versions.json"
+    EXAKIT_VERSIONS_URL="http://offline.invalid/versions.json"
+    _EXAKIT_VERSIONS_DOC=""; _EXAKIT_VERSIONS_SOURCE=""
+    [ -f "$EXAKIT_NOTICE_PLAN" ] && printf 'had-plan '
+    exakit_print_update_check all >/dev/null 2>&1
+    [ -f "$EXAKIT_NOTICE_PLAN" ] && printf 'STILL-THERE' || printf 'retired' )"
+check "update-check retires the cached plan" "had-plan retired" "$retired"
 
 # A TTL of zero is how you ask for the old behaviour of always recomputing.
 notice "$WORK/notice-versions.json" 'EXAKIT_NOTICE_PLAN_TTL=0' >/dev/null
@@ -1523,7 +2156,20 @@ make_kit_tarball() {
         printf '# fake %s from kit %s\n' "$_mk_file" "$_mk_version" > "$_mk_src/repo-main/$_mk_file"
     done
     if [ "$_mk_omit" != "versions.json" ]; then
-        sed 's/"version": "0.2.0"/"version": "'"$_mk_version"'"/' "$REAL" > "$_mk_src/repo-main/versions.json"
+        # kit.version is set by key, not by matching the version the shipped
+        # document happens to carry today: an archive is allowed to advertise the
+        # shipped kit version (the checks here are against the INSTALLED 0.2.0 this
+        # sandbox records), but a literal made the rewrite silently optional the
+        # moment the kit released the number this test asks for.
+        python3 - "$REAL" "$_mk_src/repo-main/versions.json" "$_mk_version" <<'MK_VERSIONS_PY'
+import collections, json, sys
+with open(sys.argv[1]) as handle:
+    doc = json.load(handle, object_pairs_hook=collections.OrderedDict)
+doc["kit"]["version"] = sys.argv[3]
+with open(sys.argv[2], "w") as handle:
+    json.dump(doc, handle, indent=2)
+    handle.write("\n")
+MK_VERSIONS_PY
     fi
     # Release notes for the version this archive carries: the update prints them
     # from the copy it just staged, so they have to travel with it.
@@ -1573,15 +2219,18 @@ self_update() (
 
 make_kit_tarball "$WORK/kit-0.3.0.tgz" 0.3.0
 PS_KIT_SRC="$MK_LAST_SRC"       # reused by the PowerShell self-update check below
+# The recorded source is the kit repository the library defaults to, not a literal:
+# which repository that is can be retargeted (a fork, for testing), and none of
+# these checks are about its name.
 check "a newer kit replaces the copy and records itself" \
-    "rc=0 version=0.3.0 source=exasol-labs/exasol-personal-local-starterkit@main kit-present replaced cli-installed backup-kept" \
+    "rc=0 version=0.3.0 source=$EXAKIT_KIT_REPO@main kit-present replaced cli-installed backup-kept" \
     "$(self_update "$WORK/kit-0.3.0.tgz" 0.3.0)"
 
 # The raw endpoint can be minutes ahead of the branch archive: record what landed.
 make_kit_tarball "$WORK/kit-0.2.5.tgz" 0.2.5
 lag_state="$(self_update "$WORK/kit-0.2.5.tgz" 0.3.0)"
 check "a lagging archive records the version that landed" \
-    "rc=0 version=0.2.5 source=exasol-labs/exasol-personal-local-starterkit@main kit-present replaced cli-installed backup-kept" \
+    "rc=0 version=0.2.5 source=$EXAKIT_KIT_REPO@main kit-present replaced cli-installed backup-kept" \
     "$lag_state"
 has "and says the manifest was ahead" "not the advertised 0.3.0" "$(cat "$WORK/su-out.txt")"
 
@@ -1607,14 +2256,8 @@ if command -v pwsh >/dev/null 2>&1; then
     # A cached copy that differs from the kit copy proves which one is read. The
     # sentinel cannot coincide with whatever the document advertises today.
     PS_CACHED_EXAPUMP="0.0.0-from-the-cache"
-    python3 - "$REAL" "$PS_HOME/cache/versions.json" "$PS_CACHED_EXAPUMP" <<'PS_CACHE_PY'
-import json, sys
-doc = json.load(open(sys.argv[1]))
-doc["components"]["exapump"]["version"] = sys.argv[3]
-with open(sys.argv[2], "w") as handle:
-    json.dump(doc, handle, indent=2)
-    handle.write("\n")
-PS_CACHE_PY
+    fixture_doc "powershell: cached exapump sentinel" "$PS_HOME/cache/versions.json" \
+        "components.exapump.version=$PS_CACHED_EXAPUMP"
     touch "$PS_HOME/cache/versions.json"
     ps_state="$(EXAKIT_HOME="$PS_HOME" EXAKIT_BIN_DIR="$PS_HOME/bin" \
         EXAKIT_VERSIONS_CACHE="$PS_HOME/cache/versions.json" \
@@ -1658,11 +2301,13 @@ PS_CACHE_PY
         EXAKIT_VERSIONS_CACHE="$UC/cache/versions.json" \
         EXAKIT_VERSIONS_URL="http://offline.invalid/versions.json" \
         pwsh -NoProfile -File "$ROOT/setup/exakit.ps1" update-check all 2>&1 | tr -d '\r')"
-    has "powershell: Available column" "Available" "$ps_table"
+    check "powershell: Tagged column" \
+        "Component Installed Tagged Severity Action" "$(row "$ps_table" Component)"
     has "powershell: kit row is comparable" "exakit     0.2.0             0.2.0" "$ps_table"
     has "powershell: installed stays installed" "exapump    0.13.0" "$ps_table"
     has "powershell: heavy runtime row" "exakit update runtime (heavy)" "$ps_table"
-    has "powershell: older advertised version" "0.12.0 (older)" "$ps_table"
+    check "powershell: older advertised version" \
+        "exapump 0.13.0 0.12.0 recommended none" "$(row "$ps_table" exapump)"
     has "powershell: critical severity" "critical" "$ps_table"
     has "powershell: maintainer note" "0.13.0 mis-detects CSV headers" "$ps_table"
     has "powershell: repair action for a missing component" "exakit update pyexasol" "$ps_table"
@@ -1673,6 +2318,41 @@ PS_CACHE_PY
         pwsh -NoProfile -File "$ROOT/setup/exakit.ps1" update-check personal 2>&1 | tr -d '\r')"
     has "powershell: an absent runtime is listed" "personal   not installed" "$ps_personal"
     lacks "powershell: but never offered for installation" "exakit update personal" "$ps_personal"
+    # The inline runtime offer is mirrored code, and the half that decides whether a
+    # database may be stopped is the half that must not drift. The decision
+    # functions are called directly (running `update all` here would download a real
+    # kit), and the wording of the offer is compared against the bash lines above.
+    ps_offer="$(EXAKIT_HOME="$UC" EXAKIT_BIN_DIR="$UC/bin" \
+        EXAKIT_VERSIONS_CACHE="$UC/cache/versions.json" \
+        EXAKIT_VERSIONS_URL="http://offline.invalid/versions.json" \
+        VM_ROOT="$ROOT" pwsh -NoProfile -Command '
+        . (Join-Path $env:VM_ROOT "setup/lib/exakit-common.ps1")
+        # The offer helpers live in the CLI; load it with a harmless command.
+        . (Join-Path $env:VM_ROOT "setup/exakit.ps1") -Command "help" *> $null
+        $out = @()
+        $out += (Get-ExakitRuntimeUpdatePreanswer -AssumeYes $true)
+        $env:EXAKIT_CONFIRM_RUNTIME_UPDATE = "1"
+        $out += (Get-ExakitRuntimeUpdatePreanswer)
+        $env:EXAKIT_CONFIRM_RUNTIME_UPDATE = "no"
+        $out += (Get-ExakitRuntimeUpdatePreanswer)
+        $env:EXAKIT_CONFIRM_RUNTIME_UPDATE = ""
+        $answer = (Get-ExakitRuntimeUpdatePreanswer)
+        if ($answer) { $out += $answer } else { $out += "unanswered" }
+        $out += (Get-ExakitMajorVersion "2026.2.0-nano.2")
+        # This fixture records the Nano runtime, so the staged (Personal major)
+        # route must not claim it - same verdict the bash side reaches.
+        $out += (Test-ExakitRuntimeUpdateStaged -Installed "1.5.0" -Advertised "2.0.0")
+        Write-Output ($out -join " ")
+    ' | tail -1 | tr -d '\r')"
+    check "powershell(runtime_offer_decisions)" "yes yes no unanswered 2026 False" "$ps_offer"
+    ps_explain="$(VM_ROOT="$ROOT" pwsh -NoProfile -Command '
+        . (Join-Path $env:VM_ROOT "setup/lib/exakit-common.ps1")
+        . (Join-Path $env:VM_ROOT "setup/exakit.ps1") -Command "help" *> $null
+        Write-ExakitRuntimeUpdateExplanation -Actual "nano" -Installed "2026.2.0-nano.2" -Advertised "2026.3.0-nano.1"
+    ' 2>&1 | tr -d '\r')"
+    has "powershell: the offer names the outage" "goes down while the container is recreated" "$ps_explain"
+    has "powershell: the offer promises the restart" "started again and checked" "$ps_explain"
+    has "powershell: the offer says the data survives" "the same data volume is reused" "$ps_explain"
     ps_pinned="$(EXAKIT_HOME="$UC" EXAKIT_BIN_DIR="$UC/bin" EXAKIT_VERSION_POLICY=pinned \
         pwsh -NoProfile -File "$ROOT/setup/exakit.ps1" update-check exapump 2>&1 | tr -d '\r')"
     has "powershell: pinned policy uses the fallback" "built-in fallbacks" "$ps_pinned"
@@ -1724,8 +2404,10 @@ PY
         if (Get-ChildItem -Path $env:EXAKIT_HOME -Filter "kit.backup-*" -ErrorAction SilentlyContinue) { $out += "backup-kept" } else { $out += "NO-BACKUP" }
         Write-Output ($out -join " ")
     ' 2>&1 | tail -1 | tr -d '\r')"
+    # Nothing above sets EXAKIT_KIT_REPO for pwsh, so the slug in this line is the
+    # PowerShell default measured against the bash one: the two must not drift.
     check "powershell(self_update)" \
-        "0.3.0 exasol-labs/exasol-personal-local-starterkit@main kit-present replaced shim-written backup-kept" \
+        "0.3.0 $EXAKIT_KIT_REPO@main kit-present replaced shim-written backup-kept" \
         "$ps_self"
     # The notice is mirrored code and its wording carries the cost of the update, so
     # compare the real thing against the same fixture the bash lines came from.
@@ -1768,12 +2450,15 @@ PSEOF
 else
     check "powershell(versions_manifest)" "skipped" "skipped"
     check "powershell(non_https_refused)" "skipped" "skipped"
-    for _skipped in "Available column" "kit row is comparable" "installed stays installed" \
+    check "powershell(runtime_offer_decisions)" "skipped" "skipped"
+    for _skipped in "Tagged column" "kit row is comparable" "installed stays installed" \
                     "heavy runtime row" "older advertised version" "critical severity" \
                     "maintainer note" "repair action for a missing component" \
                     "an absent runtime is listed" "but never offered for installation" \
                     "pinned policy uses the fallback" "an override is credited" \
                     "and withholds the maintainer note" \
+                    "the offer names the outage" "the offer promises the restart" \
+                    "the offer says the data survives" \
                     "version reports the kit version" "version prints no table" \
                     "version frames the waiting updates" "version points at update-check" "(self_update)" \
                     "recommended light bump" "critical heavy bump" \

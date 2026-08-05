@@ -96,7 +96,7 @@ $script:DbPort          = if ($env:EXAKIT_DB_PORT) { $env:EXAKIT_DB_PORT } else 
 # no query string, and no third party is involved.
 if ($env:EXAKIT_KIT_REPO) { $script:KitRepo = $env:EXAKIT_KIT_REPO }
 elseif ($env:EXAKIT_REPO) { $script:KitRepo = $env:EXAKIT_REPO }
-else { $script:KitRepo = "exasol-labs/exasol-personal-local-starterkit" }
+else { $script:KitRepo = "krishna-exasol/update-path" }
 $script:VersionsUrl = if ($env:EXAKIT_VERSIONS_URL) { $env:EXAKIT_VERSIONS_URL } else { "https://raw.githubusercontent.com/$($script:KitRepo)/main/versions.json" }
 $script:VersionsTtl = 86400
 if ($env:EXAKIT_VERSIONS_TTL -match '^[0-9]+$') { $script:VersionsTtl = [int]$env:EXAKIT_VERSIONS_TTL }
@@ -304,7 +304,8 @@ function Show-ExakitNoAiPanel {
     Write-Host ""
     Start-ExakitPanel "Using your database without an AI client"
     Write-ExakitPanelLine "Your database works great on its own - three easy ways in:"
-    Write-ExakitPanelLine "GUI client:  DBeaver (recommended) - https://dbeaver.io/download/"
+    Write-ExakitPanelLine "GUI client:  DBeaver - https://dbeaver.io/download/"
+    Write-ExakitPanelLine "             or DbVisualizer - https://www.dbvis.com/download/"
     Write-ExakitPanelLine "             New Connection > Exasol > Host $hostName Port $port"
     Write-ExakitPanelLine "Python:      pyexasol is preinstalled in its own environment:"
     Write-ExakitPanelLine "             $(Get-ExakitTilde (Join-Path $script:ExakitHome 'pyexasol-venv'))"
@@ -316,7 +317,7 @@ function Show-ExakitNoAiPanel {
 }
 
 # Show-ExakitGuide - friendly how-to-connect walkthrough (mirrors exakit_guide
-# in common.sh): AI clients over MCP, GUI SQL clients (DBeaver), and Python.
+# in common.sh): AI clients over MCP, GUI SQL clients (DBeaver, DbVisualizer), and Python.
 function Show-ExakitGuide {
     if (-not (Test-Path $script:ManifestPath)) { Warn2 "No installation found. Run the installer first."; return }
     $dsn = Get-ExakitManifestValue "runtime.dsn"
@@ -340,7 +341,8 @@ function Show-ExakitGuide {
     Complete-ExakitPanel
 
     Start-ExakitPanel "2 - Browse and query with a SQL client (GUI)"
-    Write-ExakitPanelLine "DBeaver (recommended, free): https://dbeaver.io/download/"
+    Write-ExakitPanelLine "Both free: DBeaver - https://dbeaver.io/download/"
+    Write-ExakitPanelLine "           or DbVisualizer - https://www.dbvis.com/download/"
     Write-ExakitPanelLine "In DBeaver: Database > New Database Connection > search 'Exasol'"
     Write-ExakitPanelLine "  Host:      $hostName"
     Write-ExakitPanelLine "  Port:      $port"
@@ -447,11 +449,22 @@ function Invoke-ExakitLogged {
         Stop-ExakitSpinner
     }
 }
+# Test-ExakitInteractive - is there a console this run can actually ask a
+# question on? One expression, one place: the prompts below take their default
+# when it is false, and the runtime update offer in setup/exakit.ps1 refuses to
+# stop a database when it is false. Twin of bash's `[ -t 0 ]` test in
+# exakit_offer_runtime_update.
+function Test-ExakitInteractive {
+    if (-not [Environment]::UserInteractive) { return $false }
+    if ([Console]::IsInputRedirected) { return $false }
+    return $true
+}
+
 # Confirm-ExakitPrompt "Question?" [DefaultYes] - non-interactive runs
 # (no console input available, e.g. piped install) take the default.
 function Confirm-ExakitPrompt {
     param([string]$Question, [bool]$DefaultYes = $true)
-    if (-not [Environment]::UserInteractive -or [Console]::IsInputRedirected) {
+    if (-not (Test-ExakitInteractive)) {
         return $DefaultYes
     }
     $hint = if ($DefaultYes) { "[Y/n]" } else { "[y/N]" }
@@ -491,7 +504,7 @@ function Confirm-ExakitEnvPrompt {
 # default immediately (mirrors bash's prompt_text over /dev/tty).
 function Read-ExakitPrompt {
     param([string]$Question, [string]$Default = "")
-    if (-not [Environment]::UserInteractive -or [Console]::IsInputRedirected) {
+    if (-not (Test-ExakitInteractive)) {
         return $Default
     }
     if ($script:UiFancy) {
@@ -1059,6 +1072,216 @@ function Write-ExakitWhatsNew {
     return $true
 }
 
+# --- the post-install "What's new" box --------------------------------------
+# Twins of exakit_whats_new_versions / _points / _lines, exakit_note_kit_upgrade
+# and exakit_print_whats_new_box in setup/lib/common.sh. The section reader above
+# answers "what does version X say"; these answer "what did this run move the user
+# across", which an upgrading installer has to show in ONE box covering every hop.
+#
+# All of it is cosmetic and none of it may fail an install: every reader returns
+# nothing rather than throwing, and the box is skipped when there is nothing to
+# say.
+$script:WhatsNewPointWidth = 68
+$script:WhatsNewPointsPerVersion = 6
+
+# Compare-ExakitDottedVersion - -1, 0 or 1, field by field. Test-ExakitVersionNewer
+# lives in setup/exakit.ps1, which setup does NOT dot-source, so the comparison the
+# box needs has to exist here.
+function Compare-ExakitDottedVersion {
+    param([string]$A, [string]$B)
+    $pa = @("$A" -split '\.')
+    $pb = @("$B" -split '\.')
+    $max = $pa.Count
+    if ($pb.Count -gt $max) { $max = $pb.Count }
+    for ($i = 0; $i -lt $max; $i++) {
+        $x = 0
+        $y = 0
+        if ($i -lt $pa.Count) { [void][int]::TryParse($pa[$i], [ref]$x) }
+        if ($i -lt $pb.Count) { [void][int]::TryParse($pb[$i], [ref]$y) }
+        if ($x -lt $y) { return -1 }
+        if ($x -gt $y) { return 1 }
+    }
+    return 0
+}
+
+# Get-ExakitWhatsNewVersions - the documented versions inside (From, To], oldest
+# first. A heading that is not a plain dotted number is skipped rather than guessed
+# at, and a To older than From - the downgrade case - selects nothing.
+function Get-ExakitWhatsNewVersions {
+    param([Parameter(Mandatory)][string]$KitRoot, [string]$From = "", [string]$To = "")
+    $file = Join-Path $KitRoot "WHATS-NEW.md"
+    if (-not (Test-Path $file)) { return @() }
+    $found = @()
+    foreach ($line in @(Get-Content -Path $file)) {
+        if (-not $line) { continue }
+        if (-not $line.StartsWith("## ")) { continue }
+        $v = $line.Substring(3).Trim()
+        if ($v -notmatch '^[0-9]+(\.[0-9]+)*$') { continue }
+        if ($found -contains $v) { continue }
+        if ($From -and (Compare-ExakitDottedVersion -A $v -B $From) -le 0) { continue }
+        if ($To -and (Compare-ExakitDottedVersion -A $v -B $To) -gt 0) { continue }
+        $found += $v
+    }
+    if ($found.Count -lt 2) { return $found }
+    # Insertion sort, ascending: Sort-Object would order 0.10.0 before 0.9.0.
+    $out = @()
+    foreach ($v in $found) {
+        $at = $out.Count
+        for ($i = 0; $i -lt $out.Count; $i++) {
+            if ((Compare-ExakitDottedVersion -A $out[$i] -B $v) -gt 0) { $at = $i; break }
+        }
+        $head = @()
+        $tail = @()
+        if ($at -gt 0) { $head = $out[0..($at - 1)] }
+        if ($at -lt $out.Count) { $tail = $out[$at..($out.Count - 1)] }
+        $out = @($head) + @($v) + @($tail)
+    }
+    return $out
+}
+
+# Get-ExakitWhatsNewPoints - one "  - text" line per headline point of a version.
+# Only list items survive: a Markdown table or a paragraph inside a drawn box reads
+# worse than not being there, and the full section is one command away. A wrapped
+# item is joined back into one line, `code` and **bold** markers are dropped, and
+# the result is cut to a width the panel can hold.
+function Get-ExakitWhatsNewPoints {
+    param([Parameter(Mandatory)][string]$KitRoot, [Parameter(Mandatory)][string]$Version)
+    $body = Get-ExakitWhatsNewSection -KitRoot $KitRoot -Version $Version
+    if (-not $body) { return @() }
+    $points = @()
+    $item = ""
+    # An empty return from the formatter must be TESTED, not appended: PowerShell
+    # turns "+= (a function that output nothing)" into a $null array element, and
+    # that would print as a blank line inside the box.
+    foreach ($line in @($body -split "`r?`n")) {
+        if ($line -match '^[ \t]*[-*][ \t]') {
+            $done = Format-ExakitWhatsNewPoint -Item $item -Shown $points.Count
+            if ($done) { $points += $done }
+            $item = ($line -replace '^[ \t]*[-*][ \t]+', '')
+            continue
+        }
+        if ($item -and $line -match '^[ \t]+[^ \t]') {
+            $item = "$item $line"
+            continue
+        }
+        $done = Format-ExakitWhatsNewPoint -Item $item -Shown $points.Count
+        if ($done) { $points += $done }
+        $item = ""
+    }
+    $done = Format-ExakitWhatsNewPoint -Item $item -Shown $points.Count
+    if ($done) { $points += $done }
+    return @($points)
+}
+
+# Format-ExakitWhatsNewPoint - the point cleanup, or an empty string (an empty
+# item, or one past the per-version cap the box footer covers).
+function Format-ExakitWhatsNewPoint {
+    param([string]$Item = "", [int]$Shown = 0)
+    if (-not $Item) { return "" }
+    if ($Shown -ge $script:WhatsNewPointsPerVersion) { return "" }
+    $t = $Item -replace '`', ''
+    $t = $t -replace '\*\*', ''
+    $t = ($t -replace '[ \t]+', ' ').Trim()
+    if (-not $t) { return "" }
+    if ($t.Length -gt $script:WhatsNewPointWidth) {
+        $t = $t.Substring(0, $script:WhatsNewPointWidth - 3)
+        $t = ($t -replace ' +$', '') + "..."
+    }
+    return "  - $t"
+}
+
+# Get-ExakitWhatsNewLines - the body of the box: every version in range, oldest
+# first, each headed by "In <version>:" and followed by its points. Empty when
+# there is nothing to show, which is what keeps an empty box off the screen.
+function Get-ExakitWhatsNewLines {
+    param([Parameter(Mandatory)][string]$KitRoot, [string]$From = "", [string]$To = "")
+    $lines = @()
+    # @(...) around the call: foreach over a bare $null runs its body once.
+    foreach ($v in @(Get-ExakitWhatsNewVersions -KitRoot $KitRoot -From $From -To $To)) {
+        $points = @(Get-ExakitWhatsNewPoints -KitRoot $KitRoot -Version $v)
+        if ($points.Count -eq 0) { continue }
+        $lines += "In ${v}:"
+        $lines += $points
+    }
+    return @($lines)
+}
+
+# Set-ExakitKitUpgradeNote - record the kit version installed BEFORE this run, for
+# the box at the end to read. Call it while the manifest still holds the previous
+# run's number.
+#
+# The record is in the manifest, not a script variable, because a run that dies
+# partway has already overwritten kit.version: the next re-run would compare the
+# new number against itself, decide nothing moved, and lose the notes for a hop
+# nobody ever saw. A pending record therefore wins over anything this run computes,
+# and only the box clears it.
+function Set-ExakitKitUpgradeNote {
+    param([Parameter(Mandatory)][string]$KitRoot)
+    try {
+        $pending = Get-ExakitManifestValue "kit.whats_new_from"
+        if ($pending) { return }
+        $was = Get-ExakitManifestValue "kit.version"
+        $now = Get-ExakitKitVersionAt -KitRoot $KitRoot
+        # A first-ever install has no previous version, and nothing to announce.
+        if (-not $was -or -not $now -or $was -eq $now) { return }
+        # Only forward. A downgrade has no notes to read out anyway, and recording
+        # one would leave a pending marker no later run could resolve.
+        if ((Compare-ExakitDottedVersion -A $now -B $was) -le 0) { return }
+        Set-ExakitManifestValue "kit.whats_new_from" $was
+    } catch { }
+}
+
+# Clear-ExakitKitUpgradeNote - the record is spent once the box has had its chance.
+# Written through the low-level trio because Set-ExakitManifestValue takes -Value
+# as a Mandatory parameter, which PowerShell refuses to bind to an empty string.
+function Clear-ExakitKitUpgradeNote {
+    try {
+        $doc = Read-ExakitManifest
+        if ($null -eq $doc) { return }
+        Set-ManifestValue -Manifest $doc -Path "kit.whats_new_from" -Value ""
+        Save-ExakitManifest $doc
+    } catch { }
+}
+
+# Write-ExakitWhatsNewBox - the box itself, after the connection panel. Prints only
+# when the kit version moved during this run.
+#
+# No record means nothing is printed, which is the whole reason a first install and
+# an idempotent re-run stay silent: the installer is documented as safe to re-run,
+# and a box on every no-op run teaches people to ignore it.
+function Write-ExakitWhatsNewBox {
+    param([string]$KitRoot = "")
+    # Declared out here so the finally block can tell "no record, nothing to do"
+    # from "record spent": a run with nothing to announce must not rewrite the
+    # manifest at all.
+    $from = ""
+    try {
+        $root = $KitRoot
+        if (-not $root) { $root = Get-ExakitRepoRoot }
+        $from = Get-ExakitManifestValue "kit.whats_new_from"
+        if (-not $from) { return }
+        $to = ""
+        if ($root) { $to = Get-ExakitKitVersionAt -KitRoot $root }
+        if (-not $to) { $to = Get-ExakitManifestValue "kit.version" }
+        $lines = @()
+        if ($root -and $to) { $lines = @(Get-ExakitWhatsNewLines -KitRoot $root -From $from -To $to) }
+        if ($lines.Count -gt 0) {
+            Write-Host ""
+            Start-ExakitPanel "What's new"
+            Write-ExakitPanelLine "Your kit moved from $from to $to."
+            foreach ($line in $lines) { Write-ExakitPanelLine $line }
+            Write-ExakitPanelLine "Full notes: exakit whats-new $to"
+            Complete-ExakitPanel
+        }
+    } catch {
+        Write-ExakitLog "WARN" "The what's-new box could not be built: $_"
+    } finally {
+        # Announced, or found nothing worth announcing: either way this move is
+        # dealt with, and the record goes so the next re-run does not repeat it.
+        if ($from) { Clear-ExakitKitUpgradeNote }
+    }
+}
+
 # Get-ExakitKitVersionAt - kit.version as stated by a specific kit tree. The
 # installer uses it on the tree it is installing FROM, which is not necessarily
 # the copy under the kit home (that one may be an older install).
@@ -1358,14 +1581,74 @@ function Set-ExakitStepDone {
     Write-ExakitLog "STEP" "completed: $Step"
 }
 
+# Get-ExakitStepArtifactState <step> - returns "present", "missing" or "unknown".
+# Peer of step_artifact_state in common.sh.
+#
+# The tick in steps_completed records that a step RAN once, not that what it
+# produced is still on disk. A machine turned up with a completed launcher step
+# and no launcher binary, and every re-run then skipped that step and failed the
+# deployment step that needs it - the one step that could have repaired the
+# install was the one being skipped. Begin-ExakitStep consults this so a
+# completed step can be re-run when its artifact is gone.
+#
+# Three rules hold this function together:
+#
+#   1. "unknown" NEVER overrides the manifest. There is no cheap way to prove a
+#      database container is deployed, and re-running the runtime step on a guess
+#      would stop a working database - far worse than the bug this fixes. A wrong
+#      "missing" is destructive; a wrong "unknown" just leaves today's behaviour
+#      in place. Anything not cheaply provable is "unknown".
+#   2. FILE TESTS ONLY. This runs once per step on every install, so no network,
+#      no PyPI, no GitHub and above all nothing that could wake or probe Docker.
+#   3. "present" means what the NEXT step will actually resolve.
+#   4. EXISTING IS NOT ENOUGH - it must also be non-empty. A 0-byte file is
+#      exactly what an interrupted or out-of-space install leaves behind, and it
+#      is not a runnable shim or binary, so the next step would fail on it just
+#      as surely as on an absent one. Every branch that judges a file pairs the
+#      existence test with a length test. (The shell twin's rule 4 says the same
+#      of `[ -x ]`, which is true of a 0-byte file with mode 755.)
+function Get-ExakitStepArtifactState {
+    param([Parameter(Mandatory)][string]$Step)
+    if ($Step -eq "exakit_helper") {
+        $shim = Join-Path $script:BinDir "exakit.cmd"
+        if ((Test-Path -LiteralPath $shim -PathType Leaf) -and ((Get-Item -LiteralPath $shim).Length -gt 0)) { return "present" }
+        return "missing"
+    }
+    if ($Step -eq "exapump") {
+        # The install records the exact path it resolved. No record means an
+        # older install (or a soft failure) we cannot judge: "unknown".
+        $recorded = Get-ExakitManifestValue "components.exapump.path"
+        if (-not $recorded) { return "unknown" }
+        if ((Test-Path -LiteralPath $recorded -PathType Leaf) -and ((Get-Item -LiteralPath $recorded).Length -gt 0)) { return "present" }
+        return "missing"
+    }
+    # runtime (the Nano container), mcp, pyexasol - and "launcher", which is a
+    # macOS-only step with no Windows peer: nothing a file test can settle
+    # without risking a destructive false "missing". See rule 1 above.
+    return "unknown"
+}
+
 # Begin-ExakitStep <name> <description> - announces a step, returns $false
-# (caller should skip) if already done.
+# (caller should skip) if already done AND what it installed is still there.
+#
+# A step is skipped only when the manifest tick and the disk agree. When the tick
+# says done but Get-ExakitStepArtifactState proves the artifact is gone, the step
+# is announced and run again - that is what makes "re-running the installer is
+# safe and resumes" (AGENTS.md) true even after something removed an artifact
+# from under a completed install.
 function Begin-ExakitStep {
     param([Parameter(Mandatory)][string]$Name, [Parameter(Mandatory)][string]$Description)
     $script:ExakitActiveLabel = $Description   # spinner label for Invoke-ExakitLogged in this step
+    $rerun = $false
     if (Test-ExakitStepDone $Name) {
-        Ok "$Description - already done, skipping"
-        return $false
+        # "unknown" (and "present") keep the manifest's answer: only a proven
+        # "missing" is allowed to override the tick.
+        if ((Get-ExakitStepArtifactState $Name) -eq "missing") {
+            $rerun = $true
+        } else {
+            Ok "$Description - already done, skipping"
+            return $false
+        }
     }
     Write-Host ""
     if ($script:UiFancy) {
@@ -1374,6 +1657,9 @@ function Begin-ExakitStep {
         Write-Host ("  {0} {1}" -f $script:UiArrow, $Description) -ForegroundColor Blue
     }
     Write-ExakitLog "STEP" $Description
+    if ($rerun) {
+        Info "Recorded as done, but what it installed is missing - running it again"
+    }
     return $true
 }
 
@@ -1495,7 +1781,45 @@ function Write-ExakitNoticePlan {
     } catch { }
 }
 
-# Printing is shared by the freshly-computed and the cached path.
+# Get-ExakitNoticeStillBehind - the names from a cached candidate list that are
+# genuinely still behind.
+#
+# The advertised version travels with each candidate, so this needs no document and
+# no severity lookup: probe what is installed, compare, drop whatever caught up. A
+# plan written while a component was mid-install used to keep announcing an update
+# the user had already taken, and contradicted `exakit update-check` seconds later.
+function Get-ExakitNoticeStillBehind {
+    param([string]$Entries)
+    if (-not $Entries) { return @() }
+    $survivors = @()
+    foreach ($entry in ($Entries -split ",")) {
+        $trimmed = $entry.Trim()
+        if (-not $trimmed) { continue }
+        $name = $trimmed
+        $want = ""
+        if ($trimmed.Contains(":")) {
+            $name = $trimmed.Substring(0, $trimmed.IndexOf(":"))
+            $want = $trimmed.Substring($trimmed.IndexOf(":") + 1)
+        }
+        if (-not $want) {
+            # A plan from before versions travelled with the names: keep it rather
+            # than silently dropping a real pending update.
+            $survivors += $name
+            continue
+        }
+        $now = Get-ExakitComponentCurrent $name
+        if (-not $now -or $now -eq "unknown" -or $now -eq $want) { continue }
+        # "Caught up" is not only "landed on exactly the advertised version" - an
+        # install that overshot it has nothing pending either. Testing equality
+        # alone kept such a component alive as a candidate, so a cached plan went
+        # on announcing an update on every command with nothing able to clear it.
+        if (Test-ExakitVersionNewer -Latest $now -Current $want) { continue }
+        $survivors += $name
+    }
+    return $survivors
+}
+
+# Printing is shared by the freshly-computed and the cached path.# Printing is shared by the freshly-computed and the cached path.
 function Write-ExakitNoticeLines {
     param([string[]]$Light, [string]$LightWorst, [string[]]$Heavy, [string]$HeavyWorst)
     if ($Light.Count -eq 0 -and $Heavy.Count -eq 0) { return }
@@ -1572,6 +1896,10 @@ function Show-ExakitUpdateNotice {
     # hooked from that dispatcher, but never assume it when the library is used
     # on its own (the installer dot-sources it too).
     if (-not (Get-Command Get-ExakitComponentAvailable -ErrorAction SilentlyContinue)) { return }
+    # Both notice paths now compare versions, and that comparison also lives in
+    # the dispatcher. Named in the same gate so a library-only load returns
+    # quietly rather than throwing into the catch below.
+    if (-not (Get-Command Test-ExakitVersionNewer -ErrorAction SilentlyContinue)) { return }
 
     try {
         if (Test-ExakitNoticePlanFresh) {
@@ -1579,8 +1907,8 @@ function Show-ExakitUpdateNotice {
             $cachedHeavy = @()
             $lightField = Get-ExakitNoticePlanField -Name "light"
             $heavyField = Get-ExakitNoticePlanField -Name "heavy"
-            if ($lightField) { $cachedLight = $lightField -split ",\s*" }
-            if ($heavyField) { $cachedHeavy = $heavyField -split ",\s*" }
+            $cachedLight = Get-ExakitNoticeStillBehind -Entries $lightField
+            $cachedHeavy = Get-ExakitNoticeStillBehind -Entries $heavyField
             $cachedLightWorst = Get-ExakitNoticePlanField -Name "light_worst"
             $cachedHeavyWorst = Get-ExakitNoticePlanField -Name "heavy_worst"
             if (-not $cachedLightWorst) { $cachedLightWorst = "normal" }
@@ -1596,6 +1924,8 @@ function Show-ExakitUpdateNotice {
         # happens to have a critical one pending in the same breath.
         $light = @()
         $heavy = @()
+        $lightDetail = @()
+        $heavyDetail = @()
         $lightWorst = "normal"
         $heavyWorst = "normal"
         foreach ($component in (Get-ExakitUpdateTargets -Target "all")) {
@@ -1605,6 +1935,14 @@ function Show-ExakitUpdateNotice {
             $current = Get-ExakitComponentCurrent $actual
             if (-not $current -or $current -eq "unknown" -or $current -eq "not installed") { continue }
             if ($current -eq $available) { continue }
+            # Different is not the same as behind. An install that is PAST the
+            # advertised version has nothing pending: the kit never moves a
+            # component backwards, so `exakit update-check` renders that row as
+            # "none" and `exakit update` says "keeping yours". Announcing an
+            # update here made the three commands contradict each other, and
+            # pointed the user at a command that could not do anything. Skipped
+            # before severity is read, so the row cannot colour the group wording.
+            if (Test-ExakitVersionNewer -Latest $current -Current $available) { continue }
             # Only what the maintainers flagged. A normal bump waits to be asked
             # about - and an advised rollback counts, which is the point of the flag.
             # Every pending update is announced, whatever its severity. Severity
@@ -1613,18 +1951,20 @@ function Show-ExakitUpdateNotice {
             $severity = Get-ExakitComponentSeverity $actual
             if (Test-ExakitComponentHeavy $actual) {
                 $heavy += $actual
+                $heavyDetail += "${actual}:${available}"
                 # normal < recommended < critical; normal must not self-promote.
                 if ($severity -eq "critical") { $heavyWorst = "critical" }
                 elseif ($severity -eq "recommended" -and $heavyWorst -ne "critical") { $heavyWorst = "recommended" }
             } else {
                 $light += $actual
+                $lightDetail += "${actual}:${available}"
                 if ($severity -eq "critical") { $lightWorst = "critical" }
                 elseif ($severity -eq "recommended" -and $lightWorst -ne "critical") { $lightWorst = "recommended" }
             }
         }
         # Written even when nothing is pending: "nothing to say" is exactly the
         # answer worth not recomputing on every command.
-        Write-ExakitNoticePlan -Light $light -LightWorst $lightWorst -Heavy $heavy -HeavyWorst $heavyWorst
+        Write-ExakitNoticePlan -Light $lightDetail -LightWorst $lightWorst -Heavy $heavyDetail -HeavyWorst $heavyWorst
         Write-ExakitNoticeLines -Light $light -LightWorst $lightWorst -Heavy $heavy -HeavyWorst $heavyWorst
     } catch { }
 }
@@ -2367,6 +2707,7 @@ function Show-ExakitConnectionPanel {
     }
     Write-ExakitPanelLine "Manifest:     $(Get-ExakitTilde $script:ManifestPath)"
     Write-ExakitPanelLine "Logs:         $(Get-ExakitTilde $script:LogDir)"
+    Write-ExakitPanelLine "SQL client:   DBeaver or DbVisualizer"
     # One line, only while something is still on offer: the marketplace is the
     # optional layer on top of a finished install, so this is where it is
     # discovered - never during the install itself. Mirrors connection_panel.

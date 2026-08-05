@@ -234,6 +234,28 @@ function Set-ExapumpManifest {
     Set-ExakitManifestValue "components.exapump.path" (Get-ExapumpCli)
 }
 
+# Confirm-ExapumpInstalledVersion - ask the binary what it is, now that this run has
+# installed one, and make the record agree with the answer. Set-ExapumpManifest
+# writes the version the run INTENDED to install; only the binary can say what is
+# actually there. Returns $false when they disagree, so the caller does not announce
+# a move that did not happen.
+#
+# Silence is left alone deliberately: Get-ExakitComponentCurrent answers nothing only
+# when there is no binary at all, and a correction invented from silence would be
+# worse than the record. That reader lives in setup/exakit.ps1, which the installer
+# entry point does not dot-source, so the confirmation is skipped there rather than
+# failing - the same treatment Update-McpClientPins gives its own pin re-read.
+# Twin of exapump_confirm_installed_version in setup/lib/exapump.sh.
+function Confirm-ExapumpInstalledVersion {
+    if (-not (Get-Command Get-ExakitComponentCurrent -ErrorAction SilentlyContinue)) { return $true }
+    $live = Get-ExakitComponentCurrent "exapump"
+    if (-not $live) { return $true }
+    if ($live -eq $script:ExapumpVersion) { return $true }
+    Warn2 "The exapump on disk reports $live, not the $($script:ExapumpVersion) this update installed - recording what is there"
+    Set-ExakitManifestValue "components.exapump.version" $live
+    return $false
+}
+
 # New-ExapumpProfile - write the kit's connection profile from the manifest.
 # Managed section, safe to re-run; other profiles in the same file untouched.
 function New-ExapumpProfile {

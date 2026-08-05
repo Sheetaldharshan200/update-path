@@ -7,13 +7,13 @@ This repo installs a complete local analytics stack with one command: an Exasol 
 macOS / Linux / WSL:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/exasol-labs/exasol-personal-local-starterkit/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/krishna-exasol/update-path/main/install.sh | sh
 ```
 
 Windows (PowerShell):
 
 ```powershell
-irm https://raw.githubusercontent.com/exasol-labs/exasol-personal-local-starterkit/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/krishna-exasol/update-path/main/install.ps1 | iex
 ```
 
 The installer is **fully unattended-safe**. With no TTY attached (the normal case for an agent shell) every question takes a safe default: all bundled datasets are loaded, and every AI client that is installed on the machine but not yet connected gets an MCP config. Nothing ever hangs waiting for input.
@@ -44,8 +44,7 @@ Version and update behaviour (all optional, sensible defaults):
 | `EXAKIT_VERSIONS_URL=...` | Where that document is fetched from (must be `https://`). Defaults to the kit repository's `versions.json` on `main` |
 | `EXAKIT_VERSIONS_TTL=86400` | Seconds before the cached copy is refreshed. `0` fetches every time |
 | `EXAKIT_<COMPONENT>_VERSION=...` | Pin one component by hand: `EXAKIT_EXAPUMP_VERSION`, `EXAKIT_MCP_VERSION`, `EXAKIT_PYEXASOL_VERSION`, `EXAKIT_PERSONAL_VERSION`, `EXAKIT_NANO_TAG`. Outranks the manifest, on install **and** on update |
-| `EXAKIT_ALLOW_DOWNGRADE=1` | Pre-answer the confirmation when the advertised version is OLDER than the installed one (a maintainer-advised rollback). Without it, an unattended run declines and moves on |
-| `EXAKIT_CONFIRM_RUNTIME_UPDATE=1` | Pre-answer the confirmation before `exakit update runtime` recreates the database container |
+| `EXAKIT_CONFIRM_RUNTIME_UPDATE=1` | Pre-answer "yes, you may stop the database and recreate the container". Covers both entry points: it skips the confirmation in `exakit update runtime`, and it opts an unattended `exakit update` into the runtime change it would otherwise defer (`exakit update --yes` does the same for one run). `=0` is a deliberate "no" and outranks the prompt |
 | `EXAKIT_NO_UPDATE_NOTICE=1` | Never print the once-a-day update notice after other commands |
 
 Example:
@@ -82,15 +81,17 @@ The kit installs a **tested set** of versions published by the maintainers, not 
 
 ```bash
 exakit update-check      # installed vs advertised, per component, with the exact command for each
-exakit update            # apply the quick ones: kit scripts, exapump, MCP server, pyexasol
+exakit update            # apply what is waiting: kit scripts, exapump, MCP server, pyexasol — and, after asking, the database
 ```
 
 What an agent needs to know:
 
-- `exakit update` takes **seconds and never stops the database**. A pending database update is announced with its own command (`exakit update runtime`) and left for the user to run.
+- `exakit update` takes **seconds** for the quick components. A pending **database** update stops the database, so it is applied only for an answer the run was actually given: on a terminal the user is asked (`Stop the database and update the runtime now? [y/N]`), and on yes the command does the whole sequence itself — stop, update, restart, report.
+- **An agent-driven run has no terminal, so the database update is never started on its own.** It is deferred with the exact command (`exakit update runtime`). Opt in deliberately with `exakit update --yes` or `EXAKIT_CONFIRM_RUNTIME_UPDATE=1`, and expect the database to be down for a minute or two. Ask the user first — the database is theirs, and other things may be connected to it.
+- The runtime update keeps your data: the container is recreated over the same data volume and the previous image is put back if the new one does not come up. There is no data backup step because nothing deletes data. The one exception is an Exasol Personal **major** upgrade, which is a real data migration: `exakit update` never starts it, and `exakit update runtime --plan` prints its backup-gated steps.
 - Nothing here can hang. Version resolution degrades to a cached copy, then to the copy that shipped with the kit; no command fails because an update check could not reach the network.
 - `exakit update-check` is the only command that prints the full table. `exakit version` prints what is installed plus a short hint.
-- If the advertised version is **older** than the installed one, the maintainers are advising a rollback. Applying it asks for confirmation; unattended runs need `EXAKIT_ALLOW_DOWNGRADE=1`.
+- If the advertised version is **older** than the installed one, nothing is offered and nothing is applied: `exakit update-check` shows an action of `none`, and asking for that component by name succeeds and does nothing. The kit has no downgrade path, by any route or override. To withdraw a faulty release, publish a higher version.
 - A component that reports `not installed` (most often `pyexasol`, whose install step is deliberately non-fatal) is repaired by the same command: `exakit update pyexasol`.
 
 ## Marketplace add-ons (optional)

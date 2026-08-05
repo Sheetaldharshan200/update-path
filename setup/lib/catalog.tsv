@@ -8,8 +8,8 @@ exakit	update personal	[--plan|--backup|--apply]	Handle Exasol Personal major-ve
 exakit	upgrade-kit2		Add the Kit 2 trust assets (Trusted AI Workflow add-on) on top of this install: semantic model, audit/run log, saved workflow. Nothing is reinstalled and no data is touched; safe to re-run.
 exakit	rollback-kit2		Remove exactly what upgrade-kit2 added and return to Kit 1. The database, exapump, MCP server and sample data stay untouched.
 exakit	update kit2		Re-stage the Kit 2 assets from the current kit copy (valid once Kit 2 is installed). A newer asset bundle arrives with the kit itself.
-exakit	info		Print the connection details panel (DSN, users, schema).
-exakit	guide		Friendly walkthrough: connect AI clients (MCP), SQL clients (DBeaver recommended), and Python (pyexasol).
+exakit	info	[--json | -j]	Print the connection details panel (DSN, users, schema). --json prints the install record (~/.exasol-starter-kit/manifest.json) verbatim on stdout, with nothing else on it, so scripts and support threads can read it.
+exakit	guide		Friendly walkthrough: connect AI clients (MCP), SQL clients (DBeaver or DbVisualizer), and Python (pyexasol).
 exakit	start		Start the local Exasol database container.
 exakit	stop		Stop the local Exasol database container.
 exakit	data-load	[--force | -Force]	Open the focused data-loading menu: bundled sample data or a local CSV/Parquet file. --force reloads the bundled sample.

@@ -8,12 +8,17 @@
 #   version             kit source, install date, component versions
 #   update-check [what] compare installed vs advertised versions
 #                       (all, runtime, exakit, exapump, mcp, pyexasol)
-#   update [what]       apply the advertised versions without deleting database data;
-#                       a runtime change is announced, not applied, by `update all`
+#   update [what] [--yes]
+#                       apply the advertised versions without deleting database data.
+#                       A runtime change stops the database, so on a terminal it is
+#                       offered ("stop the database and update it now?") and applied
+#                       on yes; without a terminal it is deferred unless --yes (or
+#                       EXAKIT_CONFIRM_RUNTIME_UPDATE=1) says otherwise
 #                       Personal major upgrades support --plan, --backup, --apply
-#   info                print the connection details panel
+#   info [--json]       print the connection details panel; --json prints the
+#                       install record (manifest.json) verbatim, nothing else
 #   guide               friendly walkthrough: connect AI clients (MCP), SQL
-#                       clients (DBeaver), and Python (pyexasol)
+#                       clients (DBeaver, DbVisualizer), and Python (pyexasol)
 #   start               start the local database
 #   stop                stop the local database
 #   data-load [--force] open focused data loading options; --force reloads bundled sample data
@@ -378,7 +383,35 @@ Everyday commands:
   data-load            load the sample data or your own CSV / Parquet
   mcp-doctor           check the AI (MCP) connection
   marketplace          optional add-ons (dashboards & more)
+
+Keeping up to date:
+  version              which versions you have, and which are tested
+  update-check         what would change, and what it involves
+  update               apply what is waiting, asking first before it
+                       stops the database
 EOF
+}
+
+# cmd_info_json — the install record, verbatim, on stdout.
+#
+# manifest.json is what every other command reads: which runtime, which versions,
+# which paths, what the last data load did. `exakit info --json` hands that to a
+# script or a support thread without anyone having to know where the file lives.
+#
+# Printed byte for byte rather than re-serialised: this is a copy of the file, and
+# a reformatting step could only make it disagree with the file. The writer already
+# emits two-space-indented JSON with a trailing newline (manifest_set).
+#
+# Nothing else may reach stdout on this path — no banner, no update notice, no
+# hint — or the output stops being JSON. The dispatcher keeps it out of
+# `_with_notice` for exactly that reason, and the failure below goes to stderr.
+#
+# Secrets are not a concern here: the manifest stores password *file paths*
+# (runtime.password_file, components.mcp_server.connection.password_file), never a
+# password. Keep it that way.
+cmd_info_json() {
+    [ -s "$EXAKIT_MANIFEST" ] || die "No install record to print ($EXAKIT_MANIFEST). Install the kit first."
+    cat "$EXAKIT_MANIFEST"
 }
 
 # cmd_whats_new [version] — what changed, for this kit or a named one.
@@ -485,7 +518,11 @@ case "${1:-help}" in
     version|--version|-v)  cmd_version ;;
     update-check) shift; cmd_update_check "${1:-all}" ;;
     update) shift; cmd_update "$@" ;;
-    info)     _with_notice connection_panel ;;
+    info)     shift
+              case "${1:-}" in
+                  --json|-j) cmd_info_json ;;
+                  *) _with_notice connection_panel ;;
+              esac ;;
     guide)    _with_notice exakit_guide ;;
     start)    _with_notice cmd_start ;;
     stop)     _with_notice cmd_stop ;;

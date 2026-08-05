@@ -92,8 +92,8 @@ reading it.
 ## Withdrawing a faulty release
 
 **The kit never moves a component backwards.** Lowering the advertised version is
-not a rollback lever: machines already on the higher version show `(older)` next
-to the advertised one and `none — yours is newer than tested`, and both `exakit update`
+not a rollback lever: machines already on the higher version show the lower number
+in the `Tagged` column and an action of `none`, and both `exakit update`
 and an explicit `exakit update exapump` leave them alone. There is no
 confirmation to give and no env override to set. A user who upgraded a component
 themselves keeps what they chose.
@@ -147,6 +147,48 @@ Two things to respect:
 A GitHub **release tag** is still cut for milestones — v0.1.0 field kits only know
 how to self-update from tags, so the release that carries the manifest-based
 update model must be tagged.
+
+## Which repository this kit points at
+
+One slug decides where the install command downloads from, where `versions.json`
+is fetched, and where `exakit update exakit` self-updates from. It has a baked
+default in four places, because the installers bootstrap before any library is
+available to ask:
+
+| File | Constant |
+| --- | --- |
+| `install.sh` | `EXAKIT_REPO` |
+| `install.ps1` | `$Repo` |
+| `setup/lib/common.sh` | `EXAKIT_KIT_REPO` |
+| `setup/lib/exakit-common.ps1` | `$script:KitRepo` |
+
+The same slug is written into the install commands in `README.md`,
+`QUICKSTART.md`, `AGENTS.md`, `quickstarts/*.md` and
+`skills/local-agent-ready-starter/SKILL.md`.
+
+Retarget all of it in one sweep — a fork, for end-to-end testing of the install
+and update paths against real releases. It runs in either direction; set `FROM`
+to whichever slug the tree currently carries:
+
+```bash
+FROM=exasol-labs/exasol-personal-local-starterkit
+TO=owner/fork
+git grep -l "$FROM" -- ':!tests' ':!MAINTAINERS.md' \
+  | xargs perl -pi -e "s{\Q$FROM\E}{$TO}g"
+```
+
+Two rules:
+
+- **The tests must never hardcode the slug.** They read `$EXAKIT_KIT_REPO`, so a
+  retarget is a code-and-docs change and no test needs touching. Keep it that way.
+- **A pull request to the canonical repository must carry the canonical slug.**
+  Run the sweep in reverse before opening it, and check `git grep` comes back
+  empty for the fork's name outside `tests/`. A fork slug merged upstream would
+  point every new install at the fork.
+
+`EXAKIT_REPO=owner/repo` overrides the default per command, which is enough for a
+one-off install, but not for the update paths — `exakit update` on an installed
+kit reads the baked constant, so testing those needs the sweep.
 
 ## Enabling the Kit 2 add-on
 

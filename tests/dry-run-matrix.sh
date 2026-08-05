@@ -186,6 +186,11 @@ manifest_get() {
     *) return 1 ;;
   esac
 }
+# The MCP version is read LIVE, so without this the fixture reads whatever MCP this
+# machine happens to have installed. The day a real install went past the advertised
+# 1.11.0, that turned the mcp row into an installed-is-newer row with an action of
+# \"none\" and quietly cost this check one of its five update commands.
+exakit_installed_mcp_version() { printf '%s\n' 1.10.1 ; }
 exakit_component_available() {
   case \"\$1\" in
     nano) printf '%s\n' 2026.3.0-nano.1 ;;
@@ -588,6 +593,131 @@ if grep -q 'cmd_whats_new' "$ROOT/setup/exakit" && \
 else
     check "whats_new(both_sides)" "yes" "no"
 fi
+# The upgrade box, both sides: the record taken before kit.version is overwritten,
+# and the box that reads it. Both halves have to exist on both platforms or one of
+# them announces an upgrade the other stays silent about.
+if grep -q 'exakit_note_kit_upgrade() {' "$ROOT/setup/lib/common.sh" && \
+   grep -q 'exakit_whats_new_versions() {' "$ROOT/setup/lib/common.sh" && \
+   grep -q 'exakit_whats_new_points() {' "$ROOT/setup/lib/common.sh" && \
+   grep -q 'exakit_print_whats_new_box() {' "$ROOT/setup/lib/common.sh" && \
+   grep -q 'exakit_note_kit_upgrade "$KIT_ROOT"' "$ROOT/setup/setup-macos.sh" && \
+   grep -q 'exakit_note_kit_upgrade "$KIT_ROOT"' "$ROOT/setup/setup-wsl.sh" && \
+   grep -q 'function Set-ExakitKitUpgradeNote {' "$ROOT/setup/lib/exakit-common.ps1" && \
+   grep -q 'function Get-ExakitWhatsNewVersions {' "$ROOT/setup/lib/exakit-common.ps1" && \
+   grep -q 'function Get-ExakitWhatsNewPoints {' "$ROOT/setup/lib/exakit-common.ps1" && \
+   grep -q 'function Write-ExakitWhatsNewBox {' "$ROOT/setup/lib/exakit-common.ps1" && \
+   grep -q 'Set-ExakitKitUpgradeNote -KitRoot $KitRoot' "$ROOT/setup/setup-windows-docker.ps1"; then
+    check "whats_new_box(both_sides)" "yes" "yes"
+else
+    check "whats_new_box(both_sides)" "yes" "no"
+fi
+# Placement, on all three platforms: after the connection details, before the
+# closing "Next:" line. Anywhere earlier and the connection panel pushes the box
+# off the screen, which is the whole reason it moved out of the step output.
+wn_box_placement() { # wn_box_placement <file> <panel-call> <box-call>
+    awk -v panel="$2" -v box="$3" '
+        index($0, panel) && panel_at == 0 { panel_at = NR }
+        index($0, box)   && box_at == 0   { box_at = NR }
+        index($0, "Next: exakit status") && next_at == 0 { next_at = NR }
+        END {
+            if (panel_at > 0 && box_at > panel_at && next_at > box_at) print "panel,box,next"
+            else printf "panel=%d box=%d next=%d\n", panel_at, box_at, next_at
+        }
+    ' "$1"
+}
+check "whats_new_box(order_macos)" "panel,box,next" \
+    "$(wn_box_placement "$ROOT/setup/setup-macos.sh" \
+        'connection_panel' 'exakit_print_whats_new_box "$KIT_ROOT"')"
+check "whats_new_box(order_wsl)" "panel,box,next" \
+    "$(wn_box_placement "$ROOT/setup/setup-wsl.sh" \
+        'connection_panel' 'exakit_print_whats_new_box "$KIT_ROOT"')"
+check "whats_new_box(order_windows)" "panel,box,next" \
+    "$(wn_box_placement "$ROOT/setup/setup-windows-docker.ps1" \
+        'Show-ExakitConnectionPanel' 'Write-ExakitWhatsNewBox -KitRoot')"
+# The short help is the only command list most people ever read: a bare `exakit`,
+# `exakit help` and any unknown command all print it, while the full reference is
+# behind `--all`. Staying current has to be visible there, or the update path
+# exists and nobody finds it. The bash half is run for real; the PowerShell half
+# is a mirrored string array, so it is read.
+short_help="$(EXAKIT_NO_UPDATE_NOTICE=1 bash "$ROOT/setup/exakit" help 2>&1 || true)"
+ps_help_lines=0
+# _ui_visible_len measures what the user SEES, and ui_panel_end uses it twice:
+# once to pick the box width, once to pad each line. It used a BRE alternation
+# `\|` to accept either OSC 8 terminator -- a GNU sed extension that BSD sed
+# ignores -- so on macOS a hyperlinked line returned its RAW byte length, became
+# the widest line, blew the box out to 124 columns and closed its own border
+# early. Escapes are built LITERALLY here on purpose: sourcing ui.sh re-derives
+# UI_FANCY from `-t 1`, so calling ui_link in a piped test emits plain text and
+# would prove nothing at all.
+vis_probe="$(
+    . "$ROOT/setup/lib/ui.sh" 2>/dev/null
+    _v_two="$(printf 'SQL client:   \033]8;;https://dbeaver.io/download/\033\\DBeaver\033]8;;\033\\ or \033]8;;https://www.dbvis.com/download/\033\\DbVisualizer\033]8;;\033\\')"
+    _v_bel="$(printf 'x \033]8;;http://a\007L\033]8;;\007 y')"
+    _v_sgr="$(printf '\033[1mbold\033[0m plain')"
+    printf '%s %s %s %s' "$(_ui_visible_len "SQL client:   DBeaver or DbVisualizer")" \
+        "$(_ui_visible_len "$_v_two")" "$(_ui_visible_len "$_v_bel")" "$(_ui_visible_len "$_v_sgr")"
+)"
+check "visible_len(plain two-link BEL SGR)" "37 37 5 10" "$vis_probe"
+
+# The helper being right is not the same as the BOX being right, so assert the
+# rendered rows: every row of a panel containing a hyperlink must be equal width.
+panel_widths="$(
+    . "$ROOT/setup/lib/ui.sh" 2>/dev/null
+    UI_FANCY=1
+    _p_link="$(printf 'SQL client:   \033]8;;https://dbeaver.io/download/\033\\DBeaver\033]8;;\033\\ or \033]8;;https://www.dbvis.com/download/\033\\DbVisualizer\033]8;;\033\\')"
+    ui_panel_begin "Connection details"
+    ui_panel_line "Logs:         ~/.exasol-starter-kit/logs"
+    ui_panel_line "$_p_link"
+    ui_panel_line "How to connect: exakit guide"
+    ui_panel_end
+)"
+# strip every escape, then count distinct rendered row lengths: 1 means aligned
+distinct="$(printf '%s\n' "$panel_widths" | LC_ALL=C sed \
+    -e 's/'"$(printf '\033')"'\[[0-9;]*m//g' \
+    -e 's/'"$(printf '\033')"']8;;[^'"$(printf '\007\033')"']*'"$(printf '\007')"'//g' \
+    -e 's/'"$(printf '\033')"']8;;[^'"$(printf '\007\033')"']*'"$(printf '\033')"'\\//g' \
+    | awk 'NF { print length($0) }' | sort -u | wc -l | tr -d ' ')"
+check "panel(hyperlinked rows all one width)" "1" "$distinct"
+
+for _hl in "Keeping up to date:" "  version " "  update-check " "  update "; do
+    grep -qF "\"$_hl" "$ROOT/setup/exakit.ps1" && ps_help_lines=$((ps_help_lines + 1))
+done
+if printf '%s' "$short_help" | grep -q 'Keeping up to date:' && \
+   printf '%s' "$short_help" | grep -qE '^  version {2,}' && \
+   printf '%s' "$short_help" | grep -qE '^  update-check {2,}' && \
+   printf '%s' "$short_help" | grep -qE '^  update {2,}' && \
+   [ "$ps_help_lines" = 4 ]; then
+    check "help(update_path_listed_both_sides)" "yes" "yes"
+else
+    check "help(update_path_listed_both_sides)" "yes" "no"
+fi
+# `exakit info --json` is the machine-readable surface: the install record, byte for
+# byte, and nothing else on stdout. Two things break that - re-serialising it (the
+# output would be free to disagree with the file), and anything printing alongside
+# it. The update notice is the standing risk there, which is why the json branch
+# stays outside `_with_notice` and sets $script:JsonOutput on the PowerShell side.
+# Missing record: a non-zero exit and an empty stdout, never a half-document.
+_ij="$(mktemp -d)"
+mkdir -p "$_ij/have" "$_ij/none"
+printf '{\n  "kit": {\n    "version": "0.2.0"\n  }\n}\n' > "$_ij/have/manifest.json"
+_ij_out="$(EXAKIT_HOME="$_ij/have" bash "$ROOT/setup/exakit" info --json 2>"$_ij/err")"
+_ij_alias="$(EXAKIT_HOME="$_ij/have" bash "$ROOT/setup/exakit" info -j 2>/dev/null)"
+_ij_none="$(EXAKIT_HOME="$_ij/none" bash "$ROOT/setup/exakit" info --json 2>/dev/null)"; _ij_rc=$?
+if [ "$_ij_out" = "$(cat "$_ij/have/manifest.json")" ] && \
+   [ "$_ij_alias" = "$_ij_out" ] && \
+   [ ! -s "$_ij/err" ] && \
+   [ -z "$_ij_none" ] && [ "$_ij_rc" != 0 ] && \
+   grep -q 'cmd_info_json' "$ROOT/setup/exakit" && \
+   ! grep -q '_with_notice cmd_info_json' "$ROOT/setup/exakit" && \
+   grep -q 'Invoke-CmdInfoJson' "$ROOT/setup/exakit.ps1" && \
+   grep -q 'JsonOutput = \$true' "$ROOT/setup/exakit.ps1" && \
+   grep -q 'if (-not \$script:JsonOutput -and' "$ROOT/setup/exakit.ps1" && \
+   grep -qF 'Get-Content -Raw -Encoding UTF8 -Path $script:ManifestPath' "$ROOT/setup/exakit.ps1"; then
+    check "info(json_is_the_record_verbatim)" "yes" "yes"
+else
+    check "info(json_is_the_record_verbatim)" "yes" "no"
+fi
+rm -rf "$_ij"
 # Bounded engine probes, both sides. `docker info` does not return while Docker
 # Desktop is starting, so every read-path probe has to be able to give up. The
 # PowerShell half must use .Arguments and not .ArgumentList, which exists only on
@@ -611,7 +741,11 @@ if grep -q '_exakit_notice_plan_fresh' "$ROOT/setup/lib/common.sh" && \
    grep -q 'cksum "$EXAKIT_MANIFEST"' "$ROOT/setup/lib/common.sh" && \
    grep -q 'Test-ExakitNoticePlanFresh' "$ROOT/setup/lib/exakit-common.ps1" && \
    grep -q 'Get-ExakitNoticeSignature' "$ROOT/setup/lib/exakit-common.ps1" && \
-   grep -q 'Get-FileHash' "$ROOT/setup/lib/exakit-common.ps1"; then
+   grep -q 'Get-FileHash' "$ROOT/setup/lib/exakit-common.ps1" && \
+   grep -q '_exakit_notice_still_behind' "$ROOT/setup/lib/common.sh" && \
+   grep -q 'Get-ExakitNoticeStillBehind' "$ROOT/setup/lib/exakit-common.ps1" && \
+   grep -q 'rm -f "$EXAKIT_NOTICE_PLAN"' "$ROOT/setup/lib/common.sh" && \
+   grep -q 'Remove-Item -Force $script:NoticePlanPath' "$ROOT/setup/exakit.ps1"; then
     check "notice(plan_cached_both_sides)" "yes" "yes"
 else
     check "notice(plan_cached_both_sides)" "yes" "no"
@@ -658,6 +792,394 @@ if grep -q 'mcp_update_snapshot' "$ROOT/setup/lib/mcp.sh" && \
 else
     check "mcp_update(snapshot)" "yes" "no"
 fi
+# The MCP update must judge itself by the pin in the AI client configs — what uvx
+# will actually launch, and what update-check reports as Installed — and it must be
+# the thing that rewrites those configs. A guard that read
+# components.mcp_server.version instead answered "already current" for a version no
+# client was running. Both sides carry the same two halves.
+if grep -q 'exakit_component_current mcp' "$ROOT/setup/lib/mcp.sh" && \
+   grep -q 'mcp_refresh_client_pins' "$ROOT/setup/lib/mcp.sh" && \
+   grep -q 'Update-McpClientPins' "$ROOT/setup/lib/mcp.ps1" && \
+   grep -q 'Update-McpClientPins' "$ROOT/setup/exakit.ps1" && \
+   ! grep -q 'Run exakit mcp-setup to refresh AI client configs' "$ROOT/setup/exakit.ps1"; then
+    check "mcp_update(live_pin_guard)" "yes" "yes"
+else
+    check "mcp_update(live_pin_guard)" "yes" "no"
+fi
+# Same defect, same fix, for exapump: the guard must ask the binary on disk (what
+# update-check reports as Installed) rather than components.exapump.version, which is
+# only what a previous run wrote down before proving the download. Both sides also
+# confirm the move from the binary instead of the record they just wrote.
+if grep -q 'exakit_component_current exapump' "$ROOT/setup/lib/exapump.sh" && \
+   grep -q 'exapump_confirm_installed_version' "$ROOT/setup/lib/exapump.sh" && \
+   grep -q 'Confirm-ExapumpInstalledVersion' "$ROOT/setup/lib/exapump.ps1" && \
+   grep -q 'Confirm-ExapumpInstalledVersion' "$ROOT/setup/exakit.ps1"; then
+    check "exapump_update(live_probe_guard)" "yes" "yes"
+else
+    check "exapump_update(live_probe_guard)" "yes" "no"
+fi
+
+echo "step re-verification before skipping:"
+# A manifest saying steps_completed: ["launcher"] with no launcher on disk made
+# every re-run skip step 1 and then fail step 2 (which needs the launcher), for
+# ever: the one step that could repair the install was the one being skipped.
+# begin_step now skips only when the tick AND the disk agree, and an artifact it
+# cannot prove is gone ("unknown") must never override the tick — re-running the
+# runtime step on a guess would stop a working database.
+#
+# _sv_state <home> <step> <extra-shell> — step_artifact_state's verdict.
+# _sv_step  <home> <step> <extra-shell> — what begin_step decides:
+#   "skip"  begin_step returned 1 (caller skips the step)
+#   "rerun" begin_step returned 0 and said why (recorded done, artifact gone)
+#   "run"   begin_step returned 0 with no re-run notice (never recorded done)
+_sv_state() {
+    bash -c "
+set -u
+EXAKIT_HOME='$1'
+EXAKIT_BIN_DIR='$1/bin'
+. '$ROOT/setup/lib/common.sh'
+$3
+step_artifact_state '$2'
+" 2>/dev/null
+}
+_sv_step() {
+    bash -c "
+set -u
+EXAKIT_HOME='$1'
+EXAKIT_BIN_DIR='$1/bin'
+. '$ROOT/setup/lib/common.sh'
+$3
+if begin_step '$2' 'Step 1/1  probe' > '$1/begin.out' 2>&1; then
+    if grep -q 'what it installed is missing' '$1/begin.out'; then
+        printf rerun
+    else
+        printf run
+    fi
+else
+    printf skip
+fi
+"
+}
+# The launcher cases must not see a launcher this machine happens to have on
+# PATH: personal_cli() would resolve it, so step_artifact_state counts it as
+# present (and is right to). Drop any PATH entry holding one — python3, which
+# step_done needs, stays reachable.
+_sv_path_without_exasol() {
+    _svp=""
+    _svp_ifs="$IFS"
+    IFS=:
+    for _svp_dir in $PATH; do
+        [ -x "$_svp_dir/exasol" ] && continue
+        _svp="${_svp:+$_svp:}$_svp_dir"
+    done
+    IFS="$_svp_ifs"
+    printf '%s\n' "$_svp"
+}
+_SV_CLEAN_PATH="$(_sv_path_without_exasol)"
+
+# launcher, recorded done, binary gone -> the bug: must re-run, not skip.
+_sv_home="$(mktemp -d)"
+mkdir -p "$_sv_home/bin"
+printf '{"steps_completed": ["launcher"], "components": {}}\n' > "$_sv_home/manifest.json"
+_sv_launcher_setup="PATH='$_SV_CLEAN_PATH'; . '$ROOT/setup/lib/detect.sh'; . '$ROOT/setup/lib/runtime-personal.sh'"
+check "step_state(launcher missing)" "missing" \
+    "$(_sv_state "$_sv_home" launcher "$_sv_launcher_setup")"
+check "begin_step(launcher missing)" "rerun" \
+    "$(_sv_step "$_sv_home" launcher "$_sv_launcher_setup")"
+# ...and with the binary back, the completed step must still be skipped.
+printf '#!/bin/sh\nexit 0\n' > "$_sv_home/bin/exasol"
+chmod +x "$_sv_home/bin/exasol"
+check "step_state(launcher present)" "present" \
+    "$(_sv_state "$_sv_home" launcher "$_sv_launcher_setup")"
+check "begin_step(launcher present)" "skip" \
+    "$(_sv_step "$_sv_home" launcher "$_sv_launcher_setup")"
+rm -rf "$_sv_home"
+
+# The PATH fallback — an `exasol` reachable on PATH with no kit-managed binary —
+# is the ONLY branch that can turn a needed re-run into a skip, and the cases
+# above never reach it: they all run with a PATH scrubbed of every launcher, so
+# deleting the branch outright left the suite green. These cases pin it.
+#
+# Their PATH is built from scratch rather than scrubbed, for two reasons. A stub
+# launcher in a directory of our own makes the verdict depend on the test and not
+# on what this machine happens to have installed. And scrubbing is a trap here:
+# on macOS the kit installs its launcher into ~/.local/bin, which is also where
+# uv lives, so dropping every directory that holds an `exasol` can drop uv too —
+# and begin_step calls step_done -> run_python, which would then try to bootstrap
+# a Python runtime over the network (or die for that unrelated reason) instead of
+# testing anything. So: the stub's directory first, then the directory of the
+# python3 this machine already resolved, then /usr/bin:/bin for grep and friends.
+# EXAKIT_UV_BIN is pinned to a uv resolved from the outer PATH, so even a system
+# python3 below the kit's 3.11 floor falls back to a uv already on disk.
+_SV_PY_DIR="/usr/bin"
+if command -v python3 >/dev/null 2>&1; then
+    _SV_PY_DIR="$(dirname "$(command -v python3)")"
+fi
+_SV_UV_BIN="$(command -v uv 2>/dev/null || true)"
+
+_sv_home="$(mktemp -d)"
+mkdir -p "$_sv_home/bin" "$_sv_home/onpath" "$_sv_home/nolauncher"
+printf '{"steps_completed": ["launcher"], "components": {}}\n' > "$_sv_home/manifest.json"
+printf '#!/bin/sh\nexit 0\n' > "$_sv_home/onpath/exasol"
+chmod +x "$_sv_home/onpath/exasol"
+_sv_onpath_setup="PATH='$_sv_home/onpath:$_SV_PY_DIR:/usr/bin:/bin'; EXAKIT_UV_BIN='$_SV_UV_BIN'; . '$ROOT/setup/lib/detect.sh'; . '$ROOT/setup/lib/runtime-personal.sh'"
+# No kit-managed binary, one on PATH: personal_cli() resolves the PATH one, so
+# the step is genuinely satisfied and must be skipped.
+check "step_state(launcher on PATH only)" "present" \
+    "$(_sv_state "$_sv_home" launcher "$_sv_onpath_setup")"
+check "begin_step(launcher on PATH only)" "skip" \
+    "$(_sv_step "$_sv_home" launcher "$_sv_onpath_setup")"
+# Same home, same manifest, PATH without the stub: the verdict flips. This is
+# what proves the case above is the fallback branch answering and not something
+# else — no python3 is needed for a state-only check, so this PATH can be
+# minimal and fully deterministic.
+check "step_state(launcher off PATH)" "missing" \
+    "$(_sv_state "$_sv_home" launcher "PATH='$_sv_home/nolauncher:/usr/bin:/bin'; . '$ROOT/setup/lib/detect.sh'; . '$ROOT/setup/lib/runtime-personal.sh'")"
+# The fallback holds the launcher it finds to the same bar as the managed one: a
+# 0-byte stub on PATH satisfies `command -v` and nothing else.
+: > "$_sv_home/onpath/exasol"
+chmod 755 "$_sv_home/onpath/exasol"
+check "step_state(PATH launcher truncated)" "missing" \
+    "$(_sv_state "$_sv_home" launcher "$_sv_onpath_setup")"
+printf '#!/bin/sh\nexit 0\n' > "$_sv_home/onpath/exasol"
+chmod +x "$_sv_home/onpath/exasol"
+
+# A 0-byte launcher with mode 755 is not a launcher. `[ -x ]` is true of it, so
+# an existence-only check answered "present", begin_step skipped step 1, and
+# step 2 got an unrunnable launcher — the same dead end as the missing binary,
+# from a neighbouring cause (an interrupted install, or a full disk). It must be
+# executable AND non-empty. Note the PATH here HAS a working launcher: it cannot
+# excuse the truncated managed binary, because personal_cli() prefers that one.
+: > "$_sv_home/bin/exasol"
+chmod 755 "$_sv_home/bin/exasol"
+if [ -x "$_sv_home/bin/exasol" ] && [ ! -s "$_sv_home/bin/exasol" ]; then
+    check "step_state(0-byte is executable)" "yes" "yes"
+else
+    check "step_state(0-byte is executable)" "yes" "no"
+fi
+check "step_state(launcher truncated)" "missing" \
+    "$(_sv_state "$_sv_home" launcher "$_sv_onpath_setup")"
+check "begin_step(launcher truncated)" "rerun" \
+    "$(_sv_step "$_sv_home" launcher "$_sv_onpath_setup")"
+rm -rf "$_sv_home"
+
+# exakit_helper: the same shape, on the artifact the helper step installs.
+_sv_home="$(mktemp -d)"
+mkdir -p "$_sv_home/bin"
+printf '{"steps_completed": ["exakit_helper"], "components": {}}\n' > "$_sv_home/manifest.json"
+check "step_state(exakit_helper missing)" "missing" "$(_sv_state "$_sv_home" exakit_helper "")"
+check "begin_step(exakit_helper missing)" "rerun" "$(_sv_step "$_sv_home" exakit_helper "")"
+printf '#!/bin/sh\nexit 0\n' > "$_sv_home/bin/exakit"
+chmod +x "$_sv_home/bin/exakit"
+check "step_state(exakit_helper present)" "present" "$(_sv_state "$_sv_home" exakit_helper "")"
+check "begin_step(exakit_helper present)" "skip" "$(_sv_step "$_sv_home" exakit_helper "")"
+# A truncated helper is as unrunnable as an absent one (the sibling bug in this
+# family was literally a 0-byte config file).
+: > "$_sv_home/bin/exakit"
+chmod 755 "$_sv_home/bin/exakit"
+check "step_state(exakit_helper truncated)" "missing" "$(_sv_state "$_sv_home" exakit_helper "")"
+check "begin_step(exakit_helper truncated)" "rerun" "$(_sv_step "$_sv_home" exakit_helper "")"
+rm -rf "$_sv_home"
+
+# runtime is the "unknown" case that matters most: no file test can prove a
+# database deployment is gone, so a completed runtime step is ALWAYS skipped.
+_sv_home="$(mktemp -d)"
+mkdir -p "$_sv_home/bin"
+printf '{"steps_completed": ["runtime", "mcp", "pyexasol"], "components": {}}\n' > "$_sv_home/manifest.json"
+for _sv_unknown in runtime mcp pyexasol; do
+    check "step_state($_sv_unknown)" "unknown" "$(_sv_state "$_sv_home" "$_sv_unknown" "")"
+    check "begin_step($_sv_unknown recorded)" "skip" "$(_sv_step "$_sv_home" "$_sv_unknown" "")"
+done
+# A step that was never recorded runs, with no re-run notice.
+check "begin_step(launcher not recorded)" "run" "$(_sv_step "$_sv_home" launcher "$_sv_launcher_setup")"
+rm -rf "$_sv_home"
+
+# exapump is judged by the path the install recorded. No recorded path is
+# "unknown" (an older install, or a soft failure) — never "missing".
+_sv_home="$(mktemp -d)"
+mkdir -p "$_sv_home/bin"
+printf '{"steps_completed": ["exapump"], "components": {}}\n' > "$_sv_home/manifest.json"
+check "step_state(exapump unrecorded)" "unknown" "$(_sv_state "$_sv_home" exapump "")"
+check "begin_step(exapump unrecorded)" "skip" "$(_sv_step "$_sv_home" exapump "")"
+printf '{"steps_completed": ["exapump"], "components": {"exapump": {"path": "%s"}}}\n' \
+    "$_sv_home/bin/exapump" > "$_sv_home/manifest.json"
+check "step_state(exapump missing)" "missing" "$(_sv_state "$_sv_home" exapump "")"
+check "begin_step(exapump missing)" "rerun" "$(_sv_step "$_sv_home" exapump "")"
+printf '#!/bin/sh\nexit 0\n' > "$_sv_home/bin/exapump"
+chmod +x "$_sv_home/bin/exapump"
+check "step_state(exapump present)" "present" "$(_sv_state "$_sv_home" exapump "")"
+check "begin_step(exapump present)" "skip" "$(_sv_step "$_sv_home" exapump "")"
+# A recorded path that is now a 0-byte executable is a failed download, not an
+# install: the step must run again.
+: > "$_sv_home/bin/exapump"
+chmod 755 "$_sv_home/bin/exapump"
+check "step_state(exapump truncated)" "missing" "$(_sv_state "$_sv_home" exapump "")"
+check "begin_step(exapump truncated)" "rerun" "$(_sv_step "$_sv_home" exapump "")"
+rm -rf "$_sv_home"
+
+# The check must cost nothing on every install: file tests only. Anything that
+# could wake a container engine, or reach the network, belongs nowhere near it.
+# Its PATH-lookup helper is held to the same bar, so both bodies are examined.
+_sv_fn_body() { # _sv_fn_body <function-name>
+    awk -v fn="$1() {" 'index($0, fn) == 1 { inside = 1 } inside { print } inside && /^}/ { exit }' \
+        "$ROOT/setup/lib/common.sh"
+}
+_sv_body="$(_sv_fn_body step_artifact_state)
+$(_sv_fn_body _sas_launcher_on_path)"
+if printf '%s\n' "$_sv_body" | grep -q 'launcher)' && \
+   printf '%s\n' "$_sv_body" | grep -q '_sas_cli' && \
+   ! printf '%s\n' "$_sv_body" | grep -Eq 'docker|podman|curl|fetch |nano_status|personal_status|exasol info'; then
+    check "step_state(file_tests_only)" "yes" "yes"
+else
+    check "step_state(file_tests_only)" "yes" "no"
+fi
+
+# Both sides carry the same two halves: the artifact table and a begin_step that
+# only lets a proven "missing" override the manifest tick. Both also refuse a
+# 0-byte artifact — `-s` in the shell, a length test on Windows, where Test-Path
+# alone was the same existence-only check. (pwsh is not installed here, so the
+# Windows half is pinned by inspection: it cannot be executed.)
+if grep -q 'step_artifact_state' "$ROOT/setup/lib/common.sh" && \
+   grep -q 'Get-ExakitStepArtifactState' "$ROOT/setup/lib/exakit-common.ps1" && \
+   grep -q 'what it installed is missing' "$ROOT/setup/lib/common.sh" && \
+   grep -q 'what it installed is missing' "$ROOT/setup/lib/exakit-common.ps1" && \
+   printf '%s\n' "$_sv_body" | grep -q -- '-s "\$EXAKIT_PERSONAL_BIN"' && \
+   [ "$(grep -c 'Length -gt 0' "$ROOT/setup/lib/exakit-common.ps1")" -ge 2 ]; then
+    check "step_state(ps_parity)" "yes" "yes"
+else
+    check "step_state(ps_parity)" "yes" "no"
+fi
+
+echo "installer never downgrades the Personal launcher:"
+# The installer calls personal_install_launcher directly: `exakit update`'s
+# downgrade refusal is not on this path, and this function used to hold no
+# version opinion at all. It installed whatever versions.json advertised, so a
+# lowered advertised set (how a faulty release gets withdrawn) overwrote a newer
+# launcher with an older one and left the deployment undriveable.
+#
+# Each case runs the real function with a fake deployment directory and a fetch
+# stub that ANNOUNCES the download and stops the shell. "FETCHED" in the output
+# therefore means the ordinary install path was reached; its absence means the
+# guard fired before a single byte was downloaded.
+_pld_run() { # _pld_run <advertised> [deployed-version]
+    _pld_dir="$(mktemp -d)"
+    if [ -n "${2:-}" ]; then
+        mkdir -p "$_pld_dir/deploy"
+        printf '%s' "$2" > "$_pld_dir/deploy/.exasolLauncher.version"
+    fi
+    PATH="$_SV_CLEAN_PATH" bash -c "
+. '$ROOT/setup/lib/common.sh'
+. '$ROOT/setup/lib/detect.sh'
+. '$ROOT/setup/lib/runtime-personal.sh'
+EXAKIT_PERSONAL_VERSION='$1'
+EXAKIT_PERSONAL_DEPLOY_DIR='$_pld_dir/deploy'
+EXAKIT_BIN_DIR='$_pld_dir/bin'
+EXAKIT_PERSONAL_BIN='$_pld_dir/bin/exasol'
+EXAKIT_LOG_FILE='$_pld_dir/install.log'
+fetch() { printf 'FETCHED %s\n' \"\$1\"; exit 0; }
+personal_asset_name() { printf 'exasol-personal_macOS_arm64.tar.gz\n'; }
+personal_install_launcher 2>&1
+" 2>&1
+    rm -rf "$_pld_dir"
+}
+
+# 1. Deployment NEWER than the advertised launcher -> refuse, install nothing.
+pld_newer="$(_pld_run 2.0.0 2.1.0)"
+case "$pld_newer" in
+    *FETCHED*) check "installer_downgrade(nothing installed)" "yes" "no" ;;
+    *) check "installer_downgrade(nothing installed)" "yes" "yes" ;;
+esac
+# The message has to be usable on its own: both versions, the direction, and the
+# override that resolves it. Each needle names a version INSIDE the guard's own
+# wording -- a bare "2.0.0" would also match the download URL the fetch stub
+# echoes, and would stay green with the guard removed.
+for _pld_want in "deployment on this machine is version 2.1.0" \
+                 "newer than the launcher version this kit advertises (2.0.0)" \
+                 "EXAKIT_PERSONAL_VERSION=2.1.0" \
+                 "Refusing to install launcher 2.0.0 over a newer 2.1.0 deployment"; do
+    case "$pld_newer" in
+        *"$_pld_want"*) check "installer_downgrade(says '$_pld_want')" "yes" "yes" ;;
+        *) check "installer_downgrade(says '$_pld_want')" "yes" "no" ;;
+    esac
+done
+# ...and it is the kit talking, not the launcher's help. The observed failure
+# printed a wall of launcher usage text before "Setup failed during step".
+case "$pld_newer" in
+    *Usage:*|*USAGE:*) check "installer_downgrade(no launcher usage dump)" "yes" "no" ;;
+    *) check "installer_downgrade(no launcher usage dump)" "yes" "yes" ;;
+esac
+
+# 2. Deployment OLDER than the advertised launcher -> a genuine upgrade, which
+#    must be entirely unaffected.
+case "$(_pld_run 2.1.0 2.0.0)" in
+    *FETCHED*) check "installer_downgrade(upgrade unaffected)" "yes" "yes" ;;
+    *) check "installer_downgrade(upgrade unaffected)" "yes" "no" ;;
+esac
+
+# 3. No deployment at all -> a fresh install, unaffected.
+case "$(_pld_run 2.0.0)" in
+    *FETCHED*) check "installer_downgrade(fresh unaffected)" "yes" "yes" ;;
+    *) check "installer_downgrade(fresh unaffected)" "yes" "no" ;;
+esac
+
+# 4. Deployment EQUAL to the advertised launcher -> a re-install, unaffected.
+case "$(_pld_run 2.0.0 2.0.0)" in
+    *FETCHED*) check "installer_downgrade(reinstall unaffected)" "yes" "yes" ;;
+    *) check "installer_downgrade(reinstall unaffected)" "yes" "no" ;;
+esac
+
+# The version is read from deployment state, never by running a launcher: the
+# decision comes before any binary is installed, and the launcher that could
+# answer is the one about to be overwritten. Both state files must be honoured,
+# and unreadable state must read as "unknown" so it cannot wrongly block.
+_pld_reads="$(_pld_dir="$(mktemp -d)"
+    mkdir -p "$_pld_dir/deploy"
+    bash -c "
+. '$ROOT/setup/lib/common.sh'
+. '$ROOT/setup/lib/detect.sh'
+. '$ROOT/setup/lib/runtime-personal.sh'
+EXAKIT_PERSONAL_DEPLOY_DIR='$_pld_dir/deploy'
+printf 'v2.4.0\n' > \"\$EXAKIT_PERSONAL_DEPLOY_DIR/.exasolLauncher.version\"
+printf 'bare=[%s]\n' \"\$(personal_deployed_version || true)\"
+: > \"\$EXAKIT_PERSONAL_DEPLOY_DIR/.exasolLauncher.version\"
+printf '{\"deploymentId\":\"x\",\"deploymentVersion\":\"2.5.0\"}' > \"\$EXAKIT_PERSONAL_DEPLOY_DIR/.exasolLauncherState.json\"
+printf 'json=[%s]\n' \"\$(personal_deployed_version || true)\"
+printf 'not a version' > \"\$EXAKIT_PERSONAL_DEPLOY_DIR/.exasolLauncher.version\"
+rm -f \"\$EXAKIT_PERSONAL_DEPLOY_DIR/.exasolLauncherState.json\"
+printf 'junk=[%s]\n' \"\$(personal_deployed_version || true)\"
+"
+    rm -rf "$_pld_dir")"
+_pld_said() { # _pld_said <needle> -> yes|no  (case inside $() upsets bash 3.2)
+    case "$_pld_reads" in
+        *"$1"*) printf 'yes' ;;
+        *) printf 'no' ;;
+    esac
+}
+check "installer_downgrade(reads bare version file)" "yes" "$(_pld_said 'bare=[2.4.0]')"
+check "installer_downgrade(reads state json)" "yes" "$(_pld_said 'json=[2.5.0]')"
+check "installer_downgrade(junk reads as unknown)" "yes" "$(_pld_said 'junk=[]')"
+
+# The comparison behind the refusal. It blocks an install, so it must answer
+# "deployed is higher" only when that is provable, and never in both directions:
+# a same-major upgrade misread as a regression would block a legitimate install.
+_pld_rank="$(bash -c "
+. '$ROOT/setup/lib/common.sh'
+. '$ROOT/setup/lib/detect.sh'
+. '$ROOT/setup/lib/runtime-personal.sh'
+# No Python: this decision must not depend on one being available, and the shared
+# exakit_version_newer helper deliberately answers 'yes' both ways without it.
+EXAKIT_DISABLE_SYSTEM_PYTHON=1
+exakit_ensure_uv() { return 1; }
+for _pair in 2.1.0:2.0.0 2.0.0:2.1.0 2.0.0:2.0.0 3.0.0:2.9.9 2.9.9:3.0.0 \\
+             2.10.0:2.9.0 2.9.0:2.10.0 2.0.1:2.0.0 2.1:2 2:2.1 \\
+             2.1.0-rc1:2.1.0 abc:2.0.0; do
+    _a=\"\${_pair%%:*}\"; _b=\"\${_pair#*:}\"
+    if personal_deployment_outranks \"\$_a\" \"\$_b\"; then printf '%s>yes ' \"\$_pair\"
+    else printf '%s>no ' \"\$_pair\"; fi
+done")"
+check "installer_downgrade(version ranking, no python)" \
+    "2.1.0:2.0.0>yes 2.0.0:2.1.0>no 2.0.0:2.0.0>no 3.0.0:2.9.9>yes 2.9.9:3.0.0>no 2.10.0:2.9.0>yes 2.9.0:2.10.0>no 2.0.1:2.0.0>yes 2.1:2>yes 2:2.1>no 2.1.0-rc1:2.1.0>no abc:2.0.0>no " \
+    "$_pld_rank"
 
 echo
 echo "passed: $PASS, failed: $FAIL"

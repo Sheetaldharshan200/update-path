@@ -11,7 +11,7 @@ Gets you from Windows to a local Exasol database, staying entirely in **PowerShe
 ## Install (regular PowerShell, no admin needed)
 
 ```powershell
-irm https://raw.githubusercontent.com/exasol-labs/exasol-personal-local-starterkit/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/krishna-exasol/update-path/main/install.ps1 | iex
 ```
 
 What happens, in order:
@@ -51,9 +51,14 @@ Restart your AI client, then continue with the [first workflow](../demo/first-re
 
 ```powershell
 exakit update-check    # installed vs the versions the maintainers advertise
-exakit update          # the quick ones, in seconds, database untouched
-exakit update runtime  # recreates the Nano container; the data volume is kept
+exakit update          # the quick ones in seconds, then it asks before touching the database
+exakit update runtime  # recreates the Nano container, on its own; the data volume is kept
 ```
+
+A waiting database update is offered inline — `Stop the database and update the
+runtime now? [y/N]` — and `y` recreates the container and brings the database back
+up for you. Unattended runs are never asked and never stopped: opt in with
+`exakit update -Yes` or `EXAKIT_CONFIRM_RUNTIME_UPDATE=1`.
 
 Kit 2 (the Trusted AI Workflow add-on) is not available on the Windows path yet.
 

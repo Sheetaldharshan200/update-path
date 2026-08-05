@@ -79,7 +79,7 @@ EXAKIT_PYEXASOL_VERSION_FALLBACK="${EXAKIT_PYEXASOL_VERSION_FALLBACK:-2.3.0}"
 EXAKIT_PERSONAL_REPO="exasol/exasol-personal"
 EXAKIT_EXAPUMP_REPO="exasol-labs/exapump"
 EXAKIT_NANO_IMAGE="exasol/nano"
-EXAKIT_KIT_REPO="${EXAKIT_KIT_REPO:-${EXAKIT_REPO:-exasol-labs/exasol-personal-local-starterkit}}"
+EXAKIT_KIT_REPO="${EXAKIT_KIT_REPO:-${EXAKIT_REPO:-krishna-exasol/update-path}}"
 EXAKIT_VERSION_LOOKUP_CONNECT_TIMEOUT="${EXAKIT_VERSION_LOOKUP_CONNECT_TIMEOUT:-5}"
 EXAKIT_VERSION_LOOKUP_MAX_TIME="${EXAKIT_VERSION_LOOKUP_MAX_TIME:-12}"
 
@@ -1603,7 +1603,7 @@ _exakit_component_env_override() {
 }
 
 # exakit_component_available <component> — the version this kit would install
-# NOW, under the policy in force. That is the promise the Available column makes,
+# NOW, under the policy in force. That is the promise the Tagged column makes,
 # so each policy answers from the same place its install path would:
 #   env override  the version the user asked for
 #   manifest      versions.json
@@ -1629,7 +1629,20 @@ exakit_component_available() {
             ;;
     esac
     _cav_block="$(_exakit_component_block "$1" 2>/dev/null)" || return 1
-    exakit_versions_value "${_cav_block}.version"
+    _cav_value="$(exakit_versions_value "${_cav_block}.version" 2>/dev/null || true)"
+    if [ -n "$_cav_value" ]; then
+        printf '%s\n' "$_cav_value"
+        return 0
+    fi
+    # A marketplace add-on can be newer than the published manifest (the kit
+    # copy carrying it ships before the advertised set catches up): its
+    # module's own fallback constant answers instead of "unknown" — the same
+    # version the marketplace install would actually install.
+    if _exakit_addon_registered "$1"; then
+        _exakit_component_fallback "$1"
+        return $?
+    fi
+    return 1
 }
 
 # The last-known-good constant for a Component: what a no-network install picks.
@@ -1762,9 +1775,10 @@ _exakit_probe_pyexasol_version() {
 #
 # The adapters own where those configs live, so the paths come from the kit's own
 # status operation rather than from a second copy of that knowledge here. When the
-# clients disagree — one set up before an update and never refreshed — every distinct
-# pin is reported, because "which client is stale" is the useful part and
-# `exakit mcp-doctor` / `exakit mcp-repair` are where it gets fixed.
+# clients disagree — one set up before an update and never refreshed — the oldest pin
+# is the answer here, and the per-client picture belongs to `exakit mcp-doctor`: it
+# names each client whose managed entry is no longer the one the kit would write, and
+# `exakit mcp-repair` re-writes those entries from the current definition.
 exakit_installed_mcp_version() {
     command -v exakit_run_mcp_operation_cli >/dev/null 2>&1 || return 1
     exakit_can_run_python || return 1
@@ -2355,7 +2369,7 @@ exakit_component_is_ahead() {
     exakit_version_newer "$_cia_current" "$_cia_available"
 }
 
-# exakit_print_versions_source_line — where the Available column came from, so
+# exakit_print_versions_source_line — where the Tagged column came from, so
 # nobody has to guess whether a stale answer is being shown.
 exakit_print_versions_source_line() {
     case "${EXAKIT_VERSION_POLICY:-manifest}" in
@@ -2552,9 +2566,9 @@ _exakit_notice_plan_write() {
     {
         printf 'computed_at=%s\n' "$(date +%s)"
         printf 'sig=%s\n' "$(_exakit_notice_signature)"
-        printf 'light=%s\n' "$_notice_light"
+        printf 'light=%s\n' "$_notice_light_detail"
         printf 'light_worst=%s\n' "$_notice_light_worst"
-        printf 'heavy=%s\n' "$_notice_heavy"
+        printf 'heavy=%s\n' "$_notice_heavy_detail"
         printf 'heavy_worst=%s\n' "$_notice_heavy_worst"
     } > "$_npw_tmp" 2>/dev/null || { rm -f "$_npw_tmp"; return 0; }
     mv "$_npw_tmp" "$EXAKIT_NOTICE_PLAN" 2>/dev/null || rm -f "$_npw_tmp"
@@ -2592,12 +2606,17 @@ exakit_notice_after_command() {
     exakit_notice_due || return 0
 
     if _exakit_notice_plan_fresh; then
-        _notice_light="$(_exakit_notice_plan_field light)"
-        _notice_heavy="$(_exakit_notice_plan_field heavy)"
         _notice_light_worst="$(_exakit_notice_plan_field light_worst)"
         _notice_heavy_worst="$(_exakit_notice_plan_field heavy_worst)"
         [ -n "$_notice_light_worst" ] || _notice_light_worst="normal"
         [ -n "$_notice_heavy_worst" ] || _notice_heavy_worst="normal"
+        # Confirm each cached candidate is STILL behind before repeating it. A plan
+        # written while a component was mid-install kept announcing an update the
+        # user had already taken, and disagreed with `exakit update-check` run
+        # seconds later. Costs one probe per pending component -- and when nothing
+        # is pending, which is the normal case, it costs nothing at all.
+        _notice_light="$(_exakit_notice_still_behind "$(_exakit_notice_plan_field light)")"
+        _notice_heavy="$(_exakit_notice_still_behind "$(_exakit_notice_plan_field heavy)")"
         _exakit_notice_say
         return 0
     fi
@@ -2610,6 +2629,8 @@ exakit_notice_after_command() {
     # happens to have a critical one pending in the same breath.
     _notice_light=""
     _notice_heavy=""
+    _notice_light_detail=""
+    _notice_heavy_detail=""
     _notice_light_worst="normal"
     _notice_heavy_worst="normal"
     for _notice_component in $(exakit_update_targets all); do
@@ -2619,6 +2640,16 @@ exakit_notice_after_command() {
         _notice_cur="$(exakit_component_current "$_notice_actual" 2>/dev/null || true)"
         [ -n "$_notice_cur" ] && [ "$_notice_cur" != "unknown" ] || continue
         [ "$_notice_cur" != "$_notice_avail" ] || continue
+        # Different is not the same as behind. An install that is PAST the
+        # advertised version has nothing pending: the kit never moves a component
+        # backwards, so `exakit update-check` renders that row as "none" and
+        # `exakit update` says "keeping yours". Announcing an update here made the
+        # three commands contradict each other, and pointed the user at a command
+        # that could not do anything. Compared in place rather than through
+        # exakit_component_is_ahead, which would re-probe what is already in hand.
+        if exakit_version_newer "$_notice_cur" "$_notice_avail"; then
+            continue
+        fi
         # Every pending update is announced, whatever its severity. Severity still
         # decides the WORDING (a critical bump says so), but no longer whether the
         # user hears about it at all: a routine exapump bump that is never
@@ -2630,12 +2661,14 @@ exakit_notice_after_command() {
         # word every routine bump as a recommendation.
         if exakit_component_is_heavy "$_notice_actual"; then
             _notice_heavy="${_notice_heavy}${_notice_heavy:+, }$_notice_actual"
+            _notice_heavy_detail="${_notice_heavy_detail:-}${_notice_heavy_detail:+, }$_notice_actual:$_notice_avail"
             case "$_notice_severity" in
                 critical)    _notice_heavy_worst="critical" ;;
                 recommended) [ "$_notice_heavy_worst" = "critical" ] || _notice_heavy_worst="recommended" ;;
             esac
         else
             _notice_light="${_notice_light}${_notice_light:+, }$_notice_actual"
+            _notice_light_detail="${_notice_light_detail:-}${_notice_light_detail:+, }$_notice_actual:$_notice_avail"
             case "$_notice_severity" in
                 critical)    _notice_light_worst="critical" ;;
                 recommended) [ "$_notice_light_worst" = "critical" ] || _notice_light_worst="recommended" ;;
@@ -2645,6 +2678,48 @@ exakit_notice_after_command() {
     _exakit_notice_plan_write
     _exakit_notice_say
     return 0
+}
+
+# _exakit_notice_still_behind <name:advertised, name:advertised> — the names that are
+# genuinely still behind, as a display list.
+#
+# The advertised version is stored with each candidate so this needs no document and
+# no severity lookup: probe what is installed, compare, drop whatever has caught up.
+_exakit_notice_still_behind() {
+    _nsb_in="$1"
+    [ -n "$_nsb_in" ] || return 0
+    _nsb_out=""
+    _nsb_rest="$_nsb_in"
+    while [ -n "$_nsb_rest" ]; do
+        case "$_nsb_rest" in
+            *,*) _nsb_entry="${_nsb_rest%%,*}"; _nsb_rest="${_nsb_rest#*,}" ;;
+            *)   _nsb_entry="$_nsb_rest"; _nsb_rest="" ;;
+        esac
+        # trim the space after a comma
+        _nsb_entry="${_nsb_entry# }"
+        _nsb_name="${_nsb_entry%%:*}"
+        _nsb_want="${_nsb_entry#*:}"
+        [ -n "$_nsb_name" ] || continue
+        if [ -z "$_nsb_want" ] || [ "$_nsb_want" = "$_nsb_name" ]; then
+            # A plan written before versions were recorded with the names: keep the
+            # entry rather than silently dropping a real pending update.
+            _nsb_out="${_nsb_out}${_nsb_out:+, }$_nsb_name"
+            continue
+        fi
+        _nsb_now="$(exakit_component_current "$_nsb_name" 2>/dev/null || true)"
+        if [ -z "$_nsb_now" ] || [ "$_nsb_now" = "unknown" ] || [ "$_nsb_now" = "$_nsb_want" ]; then
+            continue
+        fi
+        # "Caught up" is not only "landed on exactly the advertised version" — an
+        # install that overshot it has nothing pending either. Testing equality
+        # alone kept such a component alive as a candidate, so a cached plan went
+        # on announcing an update on every command with nothing able to clear it.
+        if exakit_version_newer "$_nsb_now" "$_nsb_want"; then
+            continue
+        fi
+        _nsb_out="${_nsb_out}${_nsb_out:+, }$_nsb_name"
+    done
+    printf '%s' "$_nsb_out"
 }
 
 # _exakit_notice_say — print whatever the plan says, freshly computed or cached.
@@ -2726,7 +2801,7 @@ exakit_print_update_check() {
     fi
     printf '\n  Component update check\n'
     printf '  ----------------------\n'
-    printf '%-10s %-17s %-17s %-11s %s\n' "Component" "Installed" "Available" "Severity" "Action"
+    printf '%-10s %-17s %-17s %-11s %s\n' "Component" "Installed" "Tagged" "Severity" "Action"
     _updates=0
     _heavy_pending=0
     for _component in $_targets; do
@@ -2760,8 +2835,11 @@ exakit_print_update_check() {
             # upgraded a component themselves keeps what they chose. Counts
             # toward neither the "apply them in one go" hint nor the heavy
             # deferral, because no command belongs in this row at all.
-            _row_display="$_row_available (older)"
-            _action="none — yours is newer than tested"
+            #
+            # The row says only "none". The Tagged column already shows the lower
+            # number next to the installed one, so the reader can see why; adding
+            # an apology for it made the kit sound untested rather than current.
+            _action="none"
         elif [ "$_row_installed" != "$_row_available" ]; then
             _row_min_kit="$(exakit_component_min_kit "$_row_component" 2>/dev/null || true)"
             if [ -n "$_row_min_kit" ] && ! exakit_min_kit_satisfied "$_row_min_kit"; then
@@ -2790,6 +2868,9 @@ exakit_print_update_check() {
         [ -n "$_row_maint_note" ] && printf '    %s%s%s\n' "${UI_DIM:-}" "$_row_maint_note" "${UI_RESET:-}"
     done
     printf '\n'
+    # This command just worked out the truth the long way. Retire the cached plan so
+    # the next notice cannot repeat something the table above has just contradicted.
+    rm -f "$EXAKIT_NOTICE_PLAN" 2>/dev/null || true
     exakit_print_versions_source_line
     exakit_print_kit2_discovery_line
     exakit_print_marketplace_discovery_line
@@ -2797,7 +2878,7 @@ exakit_print_update_check() {
         info "Apply the quick ones in one go with: exakit update"
     fi
     if [ "$_heavy_pending" -eq 1 ]; then
-        info "A runtime change stops the database — run it when convenient: exakit update runtime"
+        info "A runtime change stops the database — exakit update offers it on a terminal, or run it directly: exakit update runtime"
     fi
     return 0
 }
@@ -2899,6 +2980,23 @@ exakit_update_self() {
 exakit_update_component() {
     _component="$1"
     shift || true
+    # Defence in depth, and the last word on the subject. exakit_update settles
+    # this before it gets here, but the updaters below hold no version opinion of
+    # their own -- they install whatever they are handed, older included -- so a
+    # caller that forgets to ask is one edit away from a downgrade. That is how
+    # the runtime offer came to ask permission to stop a database and replace
+    # 2.1.0 with 2.0.0.
+    #
+    # There is no downgrade in this kit: not on request, not by naming a
+    # component explicitly, not with an env override, and not as a
+    # maintainer-advised rollback. Lowering a version in versions.json is a way
+    # to describe a tested set, never a lever to drag installs backwards -- to
+    # withdraw a bad release, publish a higher version.
+    _uc_actual="$(exakit_update_actual_target "$_component" 2>/dev/null || printf '%s\n' "$_component")"
+    if exakit_component_is_ahead "$_uc_actual"; then
+        ok "$_uc_actual is newer than the tested version -- keeping yours"
+        return 0
+    fi
     case "$_component" in
         exakit) exakit_update_self ;;
         exapump)
@@ -2942,7 +3040,223 @@ exakit_update_component() {
     esac
 }
 
+# --- the heavy (runtime) update, offered inline instead of handed back --------
+#
+# `exakit update` used to refuse the heavy part outright: it printed "needs the
+# database stopped, so it is not part of a routine update" and left the user to
+# run `exakit update runtime` themselves, after stopping nothing and updating
+# nothing. The work was never the problem — the second command was. On a
+# terminal the offer is now made where the user already is, and one "y" runs the
+# whole sequence: stop the database, update the runtime, bring it back up, say so.
+#
+# Both entry points run the SAME implementation: everything below ends at
+# exakit_update_component, which is exactly what `exakit update runtime` calls.
+# `exakit update runtime` itself is untouched — still standalone, still
+# unprompted beyond the runtime updater's own confirmation.
+
+# exakit_runtime_status / exakit_runtime_start — the runtime-agnostic pair the
+# inline offer needs to keep its promise ("the database is running again
+# afterwards"). Guarded on purpose: common.sh is sourced without the runtime
+# modules (the test suites do it, and so does any caller that only needs version
+# state), and an absent module means "cannot tell", not "not running".
+# ⇄ twins: Get-ExakitRuntimeStatus / Start-ExakitRuntime in setup/exakit.ps1.
+exakit_runtime_status() {
+    case "$(exakit_installation_runtime_type 2>/dev/null || true)" in
+        nano)     command -v nano_status >/dev/null 2>&1 && nano_status 2>/dev/null ;;
+        personal) command -v personal_status >/dev/null 2>&1 && personal_status 2>/dev/null ;;
+    esac
+    return 0
+}
+
+exakit_runtime_start() {
+    case "$(exakit_installation_runtime_type 2>/dev/null || true)" in
+        nano)     command -v nano_start >/dev/null 2>&1 && nano_start ;;
+        personal) command -v personal_start >/dev/null 2>&1 && personal_start ;;
+    esac
+    return 0
+}
+
+# exakit_stdin_is_tty — is there a terminal this run can actually ask a question
+# on? Deliberately stricter than confirm()'s _exakit_prompt_tty, which falls back
+# to /dev/tty: a piped or redirected run must not have a database-stopping
+# question put on a terminal it is not reading from.
+# ⇄ twin: Test-ExakitInteractive in setup/lib/exakit-common.ps1.
+exakit_stdin_is_tty() {
+    [ -t 0 ]
+}
+
+# exakit_runtime_update_is_staged <installed> <advertised> — true for an Exasol
+# Personal MAJOR upgrade. That one is a data migration with its own backup-gated
+# three-step flow (personal_upgrade_plan: --plan, --backup, --apply). A single
+# y/N is not informed consent for it, so it keeps the deferral it has today.
+# ⇄ twin: Test-ExakitRuntimeUpdateStaged in setup/exakit.ps1.
+exakit_runtime_update_is_staged() {
+    [ "$(exakit_installation_runtime_type 2>/dev/null || true)" = "personal" ] || return 1
+    _rus_cur="$(exakit_major_version "${1:-}" 2>/dev/null || true)"
+    _rus_new="$(exakit_major_version "${2:-}" 2>/dev/null || true)"
+    case "$_rus_cur$_rus_new" in ''|*[!0-9]*) return 1 ;; esac
+    [ "$_rus_cur" != "$_rus_new" ]
+}
+
+# exakit_runtime_update_preanswer — "yes", "no", or empty when nobody has
+# answered yet. Two ways to answer without a prompt, and they are the ways this
+# kit already uses: `exakit update --yes` (the uninstall flag spelling) and
+# EXAKIT_CONFIRM_RUNTIME_UPDATE, the variable that already pre-answers
+# `exakit update runtime`. One opt-in, both entry points — a fleet that has said
+# "yes, you may recreate the database container" has said it once.
+# ⇄ twin: Get-ExakitRuntimeUpdatePreanswer in setup/exakit.ps1.
+exakit_runtime_update_preanswer() {
+    if [ "${_upd_assume_yes:-0}" = "1" ]; then
+        printf 'yes\n'
+        return 0
+    fi
+    case "${EXAKIT_CONFIRM_RUNTIME_UPDATE:-}" in
+        1|y|Y|yes|YES|Yes) printf 'yes\n' ;;
+        0|n|N|no|NO|No)    printf 'no\n' ;;
+    esac
+    return 0
+}
+
+# exakit_runtime_update_explain <actual> <installed> <advertised> — what the user
+# is about to agree to, before they agree to it: that the database goes down,
+# roughly for how long, that it comes back up, and what happens to the data.
+# Stopping a database is disruptive and outward-facing; a bare "[y/N]" is not
+# enough to consent to it.
+# ⇄ twin: Write-ExakitRuntimeUpdateExplanation in setup/exakit.ps1.
+exakit_runtime_update_explain() {
+    warn "$1 $2 -> $3 needs the database stopped."
+    case "$1" in
+        nano)
+            info "The database goes down while the container is recreated, then it is started again and checked — usually a minute or two, longer if the new image still has to be pulled."
+            info "Your data is kept: the same data volume is reused, and the previous image is put back if the new container does not come up."
+            ;;
+        personal)
+            info "The launcher is replaced; the database is checked afterwards and started again if it ends up down — usually under a minute."
+            info "Your data is kept: this update neither deletes nor migrates the deployment's database content."
+            ;;
+        *)
+            info "The database goes down for the update and is started again afterwards."
+            info "Your data is kept."
+            ;;
+    esac
+}
+
+# exakit_apply_runtime_update <component> — stop, update, start, report.
+#
+# The runtime updaters own the sequence itself and are called here exactly as
+# `exakit update runtime` calls them: nano_update pulls the new image, stops the
+# container, recreates it on the SAME data volume, waits for readiness and puts
+# the previous image back if it never becomes ready; personal_update replaces the
+# launcher and leaves the deployment's data alone. There is no separate copy of
+# that logic here, and no separate copy of the backup story either — see the
+# comment on exakit_offer_runtime_update.
+#
+# What this adds is the one thing the prompt promises and the updaters do not
+# guarantee across runtimes: a database that was up before this command is up
+# after it.
+# ⇄ twin: Invoke-ExakitRuntimeUpdateApply in setup/exakit.ps1.
+exakit_apply_runtime_update() {
+    _aru_was_running=no
+    [ "$(exakit_runtime_status)" = "running" ] && _aru_was_running=yes
+    # The offer above IS the confirmation the runtime updater asks for. Asking one
+    # question twice is not a safety feature, so the answer is passed down.
+    EXAKIT_CONFIRM_RUNTIME_UPDATE=1
+    export EXAKIT_CONFIRM_RUNTIME_UPDATE
+    exakit_update_component "$1"
+    _aru_status="$(exakit_runtime_status)"
+    if [ "$_aru_was_running" = "yes" ] && [ -n "$_aru_status" ] && [ "$_aru_status" != "running" ] && [ "$_aru_status" != "starting" ]; then
+        info "Bringing the database back up"
+        exakit_runtime_start
+        _aru_status="$(exakit_runtime_status)"
+    fi
+    case "$_aru_status" in
+        running)  ok "Runtime updated and the database is running again." ;;
+        starting) ok "Runtime updated; the database is still coming up — check it with: exakit status" ;;
+        '')       ok "Runtime updated." ;;
+        *)        warn "Runtime updated, but the database reports '$_aru_status' — start it with: exakit start" ;;
+    esac
+    return 0
+}
+
+# exakit_offer_runtime_update <component> <actual> <installed> <advertised> —
+# the heavy part of a routine `exakit update`, decided here instead of being
+# handed to the user as homework. Returns 0 when it was applied, 1 when it was
+# deferred (and then prints the exact command that applies it later).
+#
+# On backups: the kit has no data-export facility, and this path needs none.
+# Neither runtime update touches the database content — Nano recreates the
+# container over the persisted data volume and records a pre-update snapshot of
+# the runtime metadata under ~/.exasol-starter-kit/backups/nano-update/, with an
+# automatic restore of the previous image if the new one will not start; Personal
+# replaces the launcher binary and says so. The one runtime change that IS a data
+# migration is the Personal major upgrade, and that already has a real backup
+# (personal_upgrade_backup tars the whole deployment) inside its own three-step
+# flow — which is exactly why this function refuses to start it from a y/N.
+# ⇄ twin: Invoke-ExakitRuntimeUpdateOffer in setup/exakit.ps1.
+exakit_offer_runtime_update() {
+    _oru_component="$1"
+    _oru_actual="$2"
+    _oru_cur="$3"
+    _oru_avail="$4"
+
+    if exakit_runtime_update_is_staged "$_oru_cur" "$_oru_avail"; then
+        warn "$_oru_actual $_oru_cur -> $_oru_avail is a major upgrade: it needs a backup and a data migration, so a routine update does not start it."
+        info "See the steps first:  exakit update runtime --plan"
+        return 1
+    fi
+
+    case "$(exakit_runtime_update_preanswer)" in
+        yes)
+            exakit_runtime_update_explain "$_oru_actual" "$_oru_cur" "$_oru_avail"
+            ;;
+        no)
+            warn "$_oru_actual $_oru_cur -> $_oru_avail was left alone: the runtime update is answered 'no' (EXAKIT_CONFIRM_RUNTIME_UPDATE)."
+            info "Apply it when convenient:  exakit update runtime"
+            return 1
+            ;;
+        *)
+            # No terminal, no answer: a prompt nobody can answer must never turn
+            # into a stopped database, so a pipe, a CI job, a cron entry and a
+            # scripted install all get exactly today's safe deferral.
+            if ! exakit_stdin_is_tty; then
+                warn "$_oru_actual $_oru_cur -> $_oru_avail needs the database stopped, so it is not part of a routine update."
+                info "Apply it when convenient:  exakit update runtime"
+                info "Unattended runs can opt in:  exakit update --yes  (or EXAKIT_CONFIRM_RUNTIME_UPDATE=1)"
+                return 1
+            fi
+            exakit_runtime_update_explain "$_oru_actual" "$_oru_cur" "$_oru_avail"
+            if ! confirm "Stop the database and update the runtime now?" n; then
+                info "Nothing was stopped. Apply it when convenient:  exakit update runtime"
+                return 1
+            fi
+            ;;
+    esac
+
+    exakit_apply_runtime_update "$_oru_component"
+}
+
 exakit_update() {
+    # -y/--yes answers the runtime offer below and may appear anywhere in the
+    # arguments; everything else keeps its position, so the target and the
+    # Personal upgrade options arrive exactly as they did. Rebuilt by rotating
+    # the positional parameters — no arrays, so bash 3.2 and dash both cope.
+    _upd_assume_yes=0
+    _upd_left="$#"
+    while [ "$_upd_left" -gt 0 ]; do
+        case "$1" in
+            -y|--yes) _upd_assume_yes=1 ;;
+            *) set -- "$@" "$1" ;;
+        esac
+        shift
+        _upd_left=$((_upd_left - 1))
+    done
+    if [ "$_upd_assume_yes" = "1" ]; then
+        # --yes answers the only question this command asks: may it stop the
+        # database. The runtime updaters read the same variable, so an explicit
+        # `exakit update runtime --yes` is unprompted for the same reason.
+        EXAKIT_CONFIRM_RUNTIME_UPDATE=1
+        export EXAKIT_CONFIRM_RUNTIME_UPDATE
+    fi
     _target="${1:-all}"
     if [ "$#" -gt 0 ]; then shift; fi
     if [ "$#" -gt 0 ]; then
@@ -2983,13 +3297,29 @@ exakit_update() {
             warn "No advertised version for $_upd_actual — skipping it. Details: exakit update-check"
             continue
         fi
-        # A blanket update never stops the database: the runtime is announced with
-        # its exact command and left for the user to run when it suits them.
+        # Never backwards, and this has to be settled BEFORE the heavy branch.
+        # That branch gates on "$_cur" != "$_avail" and then continues, so it used
+        # to reach the runtime offer with the installed version AHEAD of the
+        # tested one and ask to stop the database for a downgrade -- while
+        # `exakit update-check` rendered the same row as "none" and every light
+        # component said "keeping yours". Different is not behind. Asked once
+        # here, for every component, so no later branch can reach an update path
+        # by skipping the question.
+        if exakit_component_is_ahead "$_upd_actual"; then
+            ok "$_upd_actual ${_cur:-unknown} is newer than the tested $_avail — keeping yours"
+            continue
+        fi
+        # A blanket update stops the database only for an answer it was given: on a
+        # terminal it asks, with a flag or the env var it was already told, and with
+        # neither it defers exactly as it always did. See
+        # exakit_offer_runtime_update.
         if [ "$_target" = "all" ] && exakit_component_is_heavy "$_upd_actual"; then
             if [ -n "$_cur" ] && [ -n "$_avail" ] && [ "$_cur" != "unknown" ] && [ "$_cur" != "$_avail" ]; then
-                warn "$_upd_actual $_cur -> $_avail needs the database stopped, so it is not part of a routine update."
-                info "Apply it when convenient:  exakit update runtime"
-                _deferred=$((_deferred + 1))
+                if exakit_offer_runtime_update "$_component" "$_upd_actual" "$_cur" "$_avail"; then
+                    _acted=$((_acted + 1))
+                else
+                    _deferred=$((_deferred + 1))
+                fi
             fi
             continue
         fi
@@ -3006,13 +3336,6 @@ exakit_update() {
             warn "$_upd_actual $_avail needs kit >= $_upd_min_kit — update the kit first: exakit update exakit"
             [ "$_target" = "all" ] && continue
             die "Refusing to install $_upd_actual $_avail on kit $(exakit_component_current exakit 2>/dev/null || printf unknown)."
-        fi
-        # Never backwards. Skipping is the whole behaviour: no prompt, no override,
-        # and an explicit `exakit update exapump` says so and exits clean rather
-        # than failing, because there is nothing wrong with being ahead.
-        if exakit_component_is_ahead "$_upd_actual"; then
-            ok "$_upd_actual ${_cur:-unknown} is newer than the tested $_avail — keeping yours"
-            continue
         fi
         if [ -n "$_avail" ]; then
             info "$_upd_actual ${_cur:-not installed} -> $_avail"
@@ -3039,6 +3362,113 @@ with open(sys.argv[1]) as f:
     doc = json.load(f)
 sys.exit(0 if sys.argv[2] in doc.get("steps_completed", []) else 1)
 PY
+}
+
+# _sas_launcher_on_path — true when a usable `exasol` is reachable on PATH.
+# Helper for step_artifact_state's launcher case, held to the same bar: command
+# -v is a PATH lookup and not an execution (rule 2 below), and the resolved
+# launcher must be a non-empty executable file (rule 4). A `command -v` answer
+# that is not a path at all (a shell function) fails those tests and counts as
+# no launcher, which only ever means the step runs again.
+_sas_launcher_on_path() {
+    _sas_cli="$(command -v exasol 2>/dev/null || true)"
+    [ -n "$_sas_cli" ] || return 1
+    [ -x "$_sas_cli" ] && [ -s "$_sas_cli" ]
+}
+
+# step_artifact_state <step> — prints "present", "missing", or "unknown".
+#
+# The tick in steps_completed records that a step RAN once, not that what it
+# produced is still on disk. A machine turned up with steps_completed:
+# ["launcher"] and no ~/.local/bin/exasol, and every re-run then skipped the
+# launcher step and failed the deployment step that needs it — the one step that
+# could have repaired the install was the one being skipped. begin_step consults
+# this so a completed step can be re-run when its artifact is gone.
+#
+# Three rules hold this function together:
+#
+#   1. "unknown" NEVER overrides the manifest. There is no cheap way to prove a
+#      database deployment exists, and re-running the runtime step on a guess
+#      would stop a working database — far worse than the bug this fixes. A
+#      wrong "missing" is destructive; a wrong "unknown" just leaves today's
+#      behaviour in place. Anything not cheaply provable is "unknown".
+#   2. FILE TESTS ONLY. This runs once per step on every install, so no network,
+#      no PyPI, no GitHub and above all nothing that could wake or probe a
+#      container engine (a starting Docker is why the kit's own probes are
+#      bounded).
+#   3. "present" means what the NEXT step will actually resolve. The launcher
+#      case mirrors personal_cli(), which is what the deployment step calls.
+#   4. EXECUTABLE IS NOT ENOUGH — it must also be non-empty. `[ -x ]` is true of
+#      a 0-byte file with mode 755, which is exactly what an interrupted or
+#      out-of-space install leaves behind, and running one is either an exec
+#      failure or (worse) an empty script that "succeeds" without doing
+#      anything. Every branch that judges a binary pairs `-x` with `-s`.
+step_artifact_state() {
+    case "$1" in
+        launcher)
+            if [ -z "${EXAKIT_PERSONAL_BIN:-}" ]; then
+                # runtime-personal.sh is not loaded: this platform has no
+                # launcher step, so there is nothing to judge.
+                printf 'unknown\n'
+            elif [ -x "$EXAKIT_PERSONAL_BIN" ]; then
+                # personal_cli() prefers the kit-managed binary the moment it is
+                # executable, so THIS file is what the deployment step will run —
+                # even when it is a truncated 0-byte stub, and even when a good
+                # launcher sits on PATH. Only a non-empty one is "present".
+                if [ -s "$EXAKIT_PERSONAL_BIN" ]; then
+                    printf 'present\n'
+                else
+                    printf 'missing\n'
+                fi
+            elif _sas_launcher_on_path; then
+                # personal_install_launcher deliberately keeps an existing
+                # launcher on PATH that supports the `local` preset instead of
+                # installing its own, and personal_cli() then resolves that one —
+                # so a launcher on PATH is "present" even with no kit-managed
+                # binary. command -v is a PATH lookup, not an execution.
+                #
+                # RESIDUAL HOLE, stated plainly: this branch is not merely a
+                # guard against a false "missing". An `exasol` on PATH that is
+                # too OLD for the `local` preset, with the managed binary gone,
+                # is reported "present" here, the launcher step is skipped, and
+                # the deployment step fails again — the same forever-loop this
+                # function exists to break, through a different door. Telling
+                # the two apart means running `exasol install --help` (what
+                # personal_install_launcher does), which rule 2 forbids at this
+                # cost. The narrower, self-inflicted case is covered: the kit's
+                # own managed binary is judged by the branch above, which no
+                # PATH lookup can override.
+                printf 'present\n'
+            else
+                printf 'missing\n'
+            fi
+            ;;
+        exakit_helper)
+            if [ -x "$EXAKIT_BIN_DIR/exakit" ] && [ -s "$EXAKIT_BIN_DIR/exakit" ]; then
+                printf 'present\n'
+            else
+                printf 'missing\n'
+            fi
+            ;;
+        exapump)
+            # The install records the exact path it resolved. No record means an
+            # older install (or a soft failure) we cannot judge: "unknown".
+            _sas_path="$(manifest_get components.exapump.path 2>/dev/null || true)"
+            if [ -z "$_sas_path" ]; then
+                printf 'unknown\n'
+            elif [ -x "$_sas_path" ] && [ -s "$_sas_path" ]; then
+                printf 'present\n'
+            else
+                printf 'missing\n'
+            fi
+            ;;
+        *)
+            # runtime (a deployed database or container), mcp, pyexasol and the
+            # kit2 asset steps: nothing a file test can settle without risking a
+            # destructive false "missing". See rule 1 above.
+            printf 'unknown\n'
+            ;;
+    esac
 }
 
 # mark_step <name> — records a completed step (idempotent). Completing a
@@ -3104,24 +3534,41 @@ rollback_discard() {
     EXAKIT_ROLLBACK_FILE=""
 }
 
-# begin_step <name> <description> — announce a step; skips if already done.
-# Returns 1 when the step can be skipped (caller should honor it).
+# begin_step <name> <description> — announce a step; skips if already done AND
+# what it installed is still there. Returns 1 when the step can be skipped
+# (caller should honor it).
+#
+# A step is skipped only when the manifest tick and the disk agree. When the tick
+# says done but step_artifact_state() proves the artifact is gone, the step is
+# announced and run again — that is what makes "re-running the installer is safe
+# and resumes" (AGENTS.md) true even after something removed an artifact from
+# under a completed install.
 begin_step() {
     EXAKIT_CURRENT_STEP="$1"
     EXAKIT_ACTIVE_LABEL="$2"     # spinner label for run_logged inside this step
+    _bs_rerun=0
     if step_done "$1"; then
-        # Step-level line (a whole step's status, not a nested outcome).
-        printf '\n  %s%s%s %s%s%s %s— already done, skipping%s\n' \
-            "${UI_OK:-}" "${UI_TICK:-[ok]}" "${UI_RESET:-}" \
-            "${UI_BOLD:-}" "$2" "${UI_RESET:-}" "${UI_DIM:-}" "${UI_RESET:-}"
-        _exakit_log_file "OK    $2 — already done, skipping"
-        return 1
+        # "unknown" (and "present") keep the manifest's answer: only a proven
+        # "missing" is allowed to override the tick.
+        if [ "$(step_artifact_state "$1")" = "missing" ]; then
+            _bs_rerun=1
+        else
+            # Step-level line (a whole step's status, not a nested outcome).
+            printf '\n  %s%s%s %s%s%s %s— already done, skipping%s\n' \
+                "${UI_OK:-}" "${UI_TICK:-[ok]}" "${UI_RESET:-}" \
+                "${UI_BOLD:-}" "$2" "${UI_RESET:-}" "${UI_DIM:-}" "${UI_RESET:-}"
+            _exakit_log_file "OK    $2 — already done, skipping"
+            return 1
+        fi
     fi
     # Styled step header: accent arrow + bold title, set off by a blank line.
     printf '\n  %s%s%s %s%s%s\n' \
         "${UI_ACCENT:-}" "${UI_ARROW:->}" "${UI_RESET:-}" \
         "${UI_BOLD:-}" "$2" "${UI_RESET:-}"
     _exakit_log_file "STEP  $2"
+    if [ "$_bs_rerun" -eq 1 ]; then
+        info "Recorded as done, but what it installed is missing — running it again"
+    fi
     return 0
 }
 
@@ -3988,6 +4435,13 @@ for artifact in doc.get("artifacts", []):
     client = LABELS.get(artifact.get("client"), artifact.get("client", "unknown"))
     lines.append(f"File:     {client} -> {artifact.get('path', 'unknown')}")
 
+# A client whose own config file could not be used is skipped on its own; the
+# other clients are still configured, so name it here instead of leaving a
+# silent gap in the File: list.
+for skipped in doc.get("details", {}).get("skipped_clients", []):
+    client = LABELS.get(skipped.get("client"), skipped.get("client", "unknown"))
+    lines.append(f"Skipped:  {client} -> {skipped.get('reason', 'unknown reason')}")
+
 findings = doc.get("findings", [])
 if findings:
     lines.append(" ")
@@ -4083,6 +4537,16 @@ print(f"  Status:    {doc.get('status', 'unknown')}")
 print(f"  Summary:   {doc.get('summary', 'No summary returned')}")
 if doc.get("backup_reference"):
     print(f"  Snapshot:  {doc.get('backup_reference')}")
+
+# Clients left alone because their own config file could not be used. The rest
+# of the selection is still configured, so report this per client.
+skipped_clients = doc.get("details", {}).get("skipped_clients", [])
+if skipped_clients:
+    print("")
+    print("  Skipped clients:")
+    for skipped in skipped_clients:
+        name = LABELS.get(skipped.get("client"), skipped.get("client", "unknown"))
+        print(f"  - {name}: {skipped.get('reason', 'unknown reason')}")
 
 # Doctor carries per-client discovery plus the managed-artifact list: render
 # a state map in the same vocabulary as the setup menu, so "not installed"
@@ -4761,6 +5225,197 @@ exakit_print_whats_new() {
     return 0
 }
 
+# --- the post-install "What's new" box --------------------------------------
+# The section reader above answers "what does version X say"; the helpers below
+# answer "what did this run move the user across", which is the question an
+# upgrading installer has to answer in ONE box covering every hop.
+#
+# Everything here is cosmetic and is written to be unable to fail an install: no
+# reader dies on a missing file or a mangled heading, the whole box is skipped
+# when there is nothing to say, and the callers invoke it after exakit_finish has
+# already recorded the run as complete.
+
+# The point text is truncated so a wrapped bullet cannot stretch the panel across
+# the terminal, and each version shows only its first few points — the footer
+# names the command that prints the rest.
+EXAKIT_WHATS_NEW_POINT_WIDTH=68
+EXAKIT_WHATS_NEW_POINTS_PER_VERSION=6
+
+# exakit_whats_new_versions <kit-root> <from> <to> — the versions documented in
+# WHATS-NEW.md that lie in (from, to], oldest first.
+#
+# One awk pass: it selects and orders in the same place, so the caller never has
+# to sort (no `sort -V`, which is GNU-only). A heading that is not a plain dotted
+# number is skipped rather than guessed at, and a `to` older than `from` — the
+# downgrade case — selects nothing and therefore prints nothing.
+exakit_whats_new_versions() {
+    _wnv_file="$1/WHATS-NEW.md"
+    [ -f "$_wnv_file" ] || return 1
+    awk -v from="${2:-}" -v to="${3:-}" '
+        # Dotted-number compare, field by field: -1, 0 or 1. The trailing
+        # arguments are the only way awk lets you declare locals.
+        function vcmp(a, b,   na, nb, pa, pb, i, m, x, y) {
+            na = split(a, pa, "."); nb = split(b, pb, ".")
+            m = na; if (nb > m) m = nb
+            for (i = 1; i <= m; i++) {
+                x = 0; y = 0
+                if (i <= na) x = pa[i] + 0
+                if (i <= nb) y = pb[i] + 0
+                if (x < y) return -1
+                if (x > y) return 1
+            }
+            return 0
+        }
+        /^## / {
+            v = substr($0, 4)
+            sub(/^[ \t]+/, "", v); sub(/[ \t\r]+$/, "", v)
+            if (v !~ /^[0-9]+(\.[0-9]+)*$/) next
+            if (v in seen) next
+            seen[v] = 1
+            if (from != "" && vcmp(v, from) <= 0) next
+            if (to != "" && vcmp(v, to) > 0) next
+            n++
+            for (i = n - 1; i >= 1 && vcmp(out[i], v) > 0; i--) out[i + 1] = out[i]
+            out[i + 1] = v
+        }
+        END { for (i = 1; i <= n; i++) print out[i] }
+    ' "$_wnv_file" 2>/dev/null
+}
+
+# exakit_whats_new_points <kit-root> <version> — one line per headline point of a
+# version, as "  - text".
+#
+# Reads the same section the `exakit whats-new` command prints and keeps only its
+# list items: a Markdown table or a paragraph inside a drawn box reads worse than
+# not being there, and the full section is one command away. A wrapped item is
+# joined back into one line, `code` and **bold** markers are dropped, and the
+# result is cut to a width the panel can hold.
+exakit_whats_new_points() {
+    _wnp_body="$(exakit_whats_new_section "$1" "$2" 2>/dev/null)" || return 1
+    printf '%s\n' "$_wnp_body" | awk \
+        -v maxlen="$EXAKIT_WHATS_NEW_POINT_WIDTH" \
+        -v maxpoints="$EXAKIT_WHATS_NEW_POINTS_PER_VERSION" '
+        function flush(   t) {
+            if (item == "") return
+            t = item; item = ""
+            if (shown >= maxpoints) return
+            gsub(/`/, "", t)
+            gsub(/\*\*/, "", t)
+            gsub(/[ \t]+/, " ", t)
+            sub(/^ /, "", t); sub(/ $/, "", t)
+            if (t == "") return
+            if (length(t) > maxlen) {
+                t = substr(t, 1, maxlen - 3)
+                # awk may be counting bytes, so the cut can land inside a
+                # multibyte character (this file has em dashes in it). Drop any
+                # trailing non-ASCII run rather than leave half of one behind.
+                sub(/[^ -~]+$/, "", t)
+                sub(/ +$/, "", t)
+                t = t "..."
+            }
+            shown++
+            print "  - " t
+        }
+        /^[ \t]*[-*][ \t]/ {
+            flush()
+            item = $0
+            sub(/^[ \t]*[-*][ \t]+/, "", item)
+            next
+        }
+        # An indented, non-empty line continues the item above it; anything else
+        # (a blank line, a heading, a table row) ends it.
+        item != "" && /^[ \t]+[^ \t]/ { item = item " " $0; next }
+        { flush() }
+        END { flush() }
+    ' 2>/dev/null
+}
+
+# exakit_whats_new_lines <kit-root> <from> <to> — the body of the box: every
+# version in range, oldest first, each headed by "In <version>:" and followed by
+# its points. Non-zero when there is nothing to show, which is what keeps an empty
+# box off the screen.
+#
+# The lines are the finished display text and carry no blank spacers: ui_panel_end
+# splits its buffer on newlines, so an empty line never survives to the screen and
+# a separator that cannot render has no business being in the buffer.
+exakit_whats_new_lines() {
+    _wnl_root="$1"
+    _wnl_out=""
+    for _wnl_v in $(exakit_whats_new_versions "$_wnl_root" "${2:-}" "${3:-}" 2>/dev/null); do
+        _wnl_points="$(exakit_whats_new_points "$_wnl_root" "$_wnl_v" 2>/dev/null || true)"
+        [ -n "$_wnl_points" ] || continue
+        if [ -n "$_wnl_out" ]; then
+            _wnl_out="$_wnl_out
+"
+        fi
+        _wnl_out="${_wnl_out}In $_wnl_v:
+$_wnl_points"
+    done
+    [ -n "$_wnl_out" ] || return 1
+    printf '%s\n' "$_wnl_out"
+}
+
+# exakit_note_kit_upgrade <kit-root> — record the kit version installed BEFORE
+# this run, for the box at the end to read. Call it while the manifest still holds
+# the previous run's number.
+#
+# The record is in the manifest, not an environment variable, because a run that
+# dies partway has already overwritten kit.version: the next re-run would compare
+# the new number against itself, decide nothing moved, and lose the notes for a
+# hop nobody ever saw. A pending record therefore wins over anything this run
+# computes, and only the box clears it.
+exakit_note_kit_upgrade() {
+    _nku_pending="$(manifest_get kit.whats_new_from 2>/dev/null || true)"
+    [ -z "$_nku_pending" ] || return 0
+    _nku_now="$(exakit_kit_version_at "${1:-}" 2>/dev/null || true)"
+    _nku_was="$(manifest_get kit.version 2>/dev/null || true)"
+    # A first-ever install has no previous version, and nothing to announce.
+    [ -n "$_nku_was" ] && [ -n "$_nku_now" ] || return 0
+    [ "$_nku_was" != "$_nku_now" ] || return 0
+    # Only forward. A downgrade has no notes to read out anyway, and recording one
+    # would leave a pending marker no later run could resolve.
+    exakit_version_newer "$_nku_now" "$_nku_was" || return 0
+    ( manifest_set kit.whats_new_from "$_nku_was" ) >/dev/null 2>&1 || true
+    return 0
+}
+
+# exakit_print_whats_new_box [kit-root] — the box itself, after the connection
+# panel. Prints only when the kit version moved during this run.
+#
+# No record means nothing is printed, which is the whole reason a first install
+# and an idempotent re-run stay silent: the installer is documented as safe to
+# re-run, and a box on every no-op run teaches people to ignore it.
+exakit_print_whats_new_box() {
+    _pwb_root="${1:-}"
+    [ -n "$_pwb_root" ] || _pwb_root="$(exakit_repo_root 2>/dev/null || true)"
+    _pwb_from="$(manifest_get kit.whats_new_from 2>/dev/null || true)"
+    [ -n "$_pwb_from" ] || return 0
+    _pwb_to="$(exakit_kit_version_at "$_pwb_root" 2>/dev/null || true)"
+    [ -n "$_pwb_to" ] || _pwb_to="$(manifest_get kit.version 2>/dev/null || true)"
+    _pwb_body=""
+    if [ -n "$_pwb_root" ] && [ -n "$_pwb_to" ]; then
+        _pwb_body="$(exakit_whats_new_lines "$_pwb_root" "$_pwb_from" "$_pwb_to" 2>/dev/null || true)"
+    fi
+    if [ -n "$_pwb_body" ]; then
+        printf '\n'
+        ui_panel_begin "What's new"
+        ui_panel_line "Your kit moved from $_pwb_from to $_pwb_to."
+        # Fed by a here-document, not a pipe: ui_panel_line buffers into a
+        # variable, and a pipeline would build that buffer in a subshell.
+        while IFS= read -r _pwb_line; do
+            ui_panel_line "$_pwb_line"
+        done <<WHATS_NEW_BODY
+$_pwb_body
+WHATS_NEW_BODY
+        ui_panel_line "Full notes: exakit whats-new $_pwb_to"
+        ui_panel_end
+    fi
+    # Announced, or found nothing worth announcing: either way this move is dealt
+    # with, and the record goes so the next re-run does not repeat the box.
+    ( manifest_set kit.whats_new_from "" ) >/dev/null 2>&1 || true
+    return 0
+}
+
 kit_shared_steps() {
     _step_no="$1"
     _total="$2"
@@ -4897,16 +5552,10 @@ kit_shared_steps() {
             "$(exakit_take_failure_note)" "AI skills"
     fi
     exakit_clear_failure_note
-    # An installer re-run over an older install is an upgrade, and the user has no
-    # other way to learn what changed: the setup script records what the previous
-    # copy said, and only a real move gets announced.
-    if [ -n "${EXAKIT_UPGRADED_FROM:-}" ]; then
-        _kss_now="$(exakit_kit_version_at "$_kit_root" 2>/dev/null || true)"
-        if [ -n "$_kss_now" ] && [ "$_kss_now" != "$EXAKIT_UPGRADED_FROM" ]; then
-            exakit_print_whats_new "$_kss_now" \
-                "What's new in $_kss_now (upgraded from $EXAKIT_UPGRADED_FROM)" || true
-        fi
-    fi
+    # The upgrade news (exakit_print_whats_new_box) and the closing summary
+    # (exakit_print_soft_failures) are printed by the setup scripts after the
+    # connection panel at the very end of the run — not here, in the middle of
+    # the step output where the connection details would push them off screen.
 }
 
 # connection_panel — the payoff screen: everything needed to connect.
@@ -4948,7 +5597,7 @@ connection_panel() {
 
     ui_panel_line "Manifest:     $(ui_tilde "$EXAKIT_MANIFEST")"
     ui_panel_line "Logs:         $(ui_tilde "$EXAKIT_LOG_DIR")"
-    ui_panel_line "SQL client:   $(ui_link https://dbeaver.io/download/ "DBeaver (recommended)")"
+    ui_panel_line "SQL client:   $(ui_link https://dbeaver.io/download/ "DBeaver") or $(ui_link https://www.dbvis.com/download/ "DbVisualizer")"
     ui_panel_line "How to connect: exakit guide"
     # One line, only while something is still on offer: the marketplace is the
     # optional layer on top of a finished install, so this is where it is
@@ -4969,7 +5618,7 @@ exakit_print_no_ai_panel() {
     ui_panel_begin "Using your database without an AI client"
     ui_panel_line "Your database works great on its own — three easy ways in:"
     ui_panel_line ""
-    ui_panel_line "GUI client:  $(ui_link https://dbeaver.io/download/ "DBeaver (recommended)")"
+    ui_panel_line "GUI client:  $(ui_link https://dbeaver.io/download/ "DBeaver") or $(ui_link https://www.dbvis.com/download/ "DbVisualizer")"
     ui_panel_line "             New Connection > Exasol > Host ${_nap_host:-127.0.0.1} Port ${_nap_port:-8563}"
     ui_panel_line "Python:      pyexasol is preinstalled in its own environment:"
     ui_panel_line "             $(ui_tilde "$EXAKIT_HOME/pyexasol-venv/bin/python")"
@@ -4984,7 +5633,7 @@ exakit_print_no_ai_panel() {
 }
 
 # exakit_guide — friendly how-to-connect walkthrough: AI clients over MCP,
-# GUI SQL clients (DBeaver), and terminal/Python access. Everything below is
+# GUI SQL clients (DBeaver, DbVisualizer), and terminal/Python access. Everything below is
 # rendered from the live manifest so the values are the user's own.
 exakit_guide() {
     [ -f "$EXAKIT_MANIFEST" ] || { warn "No installation found. Run the installer first."; return 1; }
@@ -5010,7 +5659,7 @@ exakit_guide() {
     ui_panel_end
 
     ui_panel_begin "2 · Browse and query with a SQL client (GUI)"
-    ui_panel_line "DBeaver (recommended, free): $(ui_link https://dbeaver.io/download/)"
+    ui_panel_line "Both free: $(ui_link https://dbeaver.io/download/ "DBeaver") or $(ui_link https://www.dbvis.com/download/ "DbVisualizer")"
     ui_panel_line ""
     ui_panel_line "In DBeaver: Database > New Database Connection > search 'Exasol'"
     ui_panel_line "  Host:      $_g_host"

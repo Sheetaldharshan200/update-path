@@ -12,7 +12,7 @@ The install runs unattended and usually finishes in **under 2 minutes**.
 Check before you start (installs nothing):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/exasol-labs/exasol-personal-local-starterkit/main/install.sh | EXAKIT_PREFLIGHT=1 sh
+curl -fsSL https://raw.githubusercontent.com/krishna-exasol/update-path/main/install.sh | EXAKIT_PREFLIGHT=1 sh
 ```
 
 No Python on your Mac? That is fine. The installer brings its own.
@@ -20,7 +20,7 @@ No Python on your Mac? That is fine. The installer brings its own.
 ## Install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/exasol-labs/exasol-personal-local-starterkit/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/krishna-exasol/update-path/main/install.sh | sh
 ```
 
 What happens, in order:
@@ -60,10 +60,15 @@ Then continue with the [first workflow](../demo/first-revenue-analysis.md).
 
 ```bash
 exakit update-check    # installed vs the versions the maintainers advertise
-exakit update          # the quick ones, in seconds, database untouched
-exakit update runtime  # Exasol Personal itself; a major version routes through
+exakit update          # the quick ones in seconds, then it asks before touching the database
+exakit update runtime  # Exasol Personal itself, on its own; a major version routes through
                        # --plan / --backup / --apply, and your data is backed up first
 ```
+
+A waiting database update is offered inline — `Stop the database and update the
+runtime now? [y/N]` — and `y` runs the whole sequence for you. A **major** Exasol
+Personal version is never started that way: it is a data migration, so it keeps
+the backup-gated `--plan` / `--backup` / `--apply` route.
 
 Full detail: [Staying up to date](../README.md#staying-up-to-date).
 

@@ -235,6 +235,7 @@ def _record_client_setup(
     clients: list[str],
     payload: dict,
 ) -> None:
+    details = payload.get("details") or {}
     repository.record_client_setup(
         {
             "completed": True,
@@ -243,6 +244,13 @@ def _record_client_setup(
             "status": payload.get("status"),
             "updated_at": utc_now(),
             "artifacts": [artifact["path"] for artifact in payload.get("artifacts", [])],
+            # A client can be skipped on its own (unparseable config file, or
+            # unsupported platform) while the rest are configured, so the
+            # record has to say which clients were actually written.
+            "configured_clients": details.get("configured_clients", []),
+            "skipped_clients": [
+                item.get("client") for item in details.get("skipped_clients", [])
+            ],
         }
     )
 
@@ -267,11 +275,15 @@ def _build_operation_request(
         loader = ExakitRuntimeLoader(environment=environment, filesystem=filesystem)
         context = loader.load(runtime_root)
         request["dsn_reference"] = {"kind": "literal", "value": context.dsn}
-    if operation == "repair":
-        loader = ExakitRuntimeLoader(environment=environment, filesystem=filesystem)
-        context = loader.load(runtime_root)
+        # Validate and doctor need the desired definition too, not just repair.
+        # Without it, the manifest-consistency stage can only compare a client
+        # entry against the hash recorded when we last wrote it, so an entry that
+        # nobody has touched since an update moved the pinned server version on
+        # reads as perfectly consistent and doctor reports success. It is an input
+        # to a comparison on both paths; the read-only paths never apply it.
         request["deployment_mode"] = "stdio"
         request["server_definition"] = to_primitive(context.server_definition)
+    if operation == "repair":
         request["credential_reference"] = {"kind": "inline_env", "name": "EXA_PASSWORD"}
         request["validate_after_apply"] = True
         request["create_snapshot"] = True

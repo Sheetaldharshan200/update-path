@@ -110,6 +110,65 @@ class RuntimeClientSetupCLITests(unittest.TestCase):
         self.assertEqual(client_setup["mode"], "permanent")
         self.assertEqual(client_setup["clients"], ["cursor", "codex"])
 
+    def test_setup_configures_healthy_clients_around_a_broken_config_file(self) -> None:
+        """A 0-byte mcp.json left by a VS Code update must not cost the others
+        their exasol entry, and the install record has to say what was skipped."""
+
+        cursor_path = self._temp_dir / "cursor" / "mcp.json"
+        codex_path = self._temp_dir / "codex" / "config.toml"
+        vscode_path = self._temp_dir / "Code" / "User" / "mcp.json"
+        for path in (cursor_path, codex_path, vscode_path):
+            path.parent.mkdir(parents=True, exist_ok=True)
+        vscode_path.write_text("", encoding="utf-8")
+        env = os.environ.copy()
+        env.update(
+            {
+                "CURSOR_MCP_CONFIG_PATH": str(cursor_path),
+                "CODEX_MCP_CONFIG_PATH": str(codex_path),
+                "VSCODE_MCP_CONFIG_PATH": str(vscode_path),
+            }
+        )
+        self._write_manifest("exa-local")
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "mcp",
+                "setup-runtime-clients",
+                "--runtime-root",
+                str(self.runtime_root),
+                "--clients",
+                "vscode_copilot",
+                "cursor",
+                "codex",
+            ],
+            cwd=Path(__file__).resolve().parents[2],
+            env=env,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        output = json.loads(result.stdout)
+        self.assertEqual(output["status"], "success_with_warnings")
+        self.assertEqual(
+            sorted(artifact["client"] for artifact in output["artifacts"]),
+            ["codex", "cursor"],
+        )
+        self.assertEqual(
+            [item["client"] for item in output["details"]["skipped_clients"]],
+            ["vscode_copilot"],
+        )
+        self.assertIn("exasol", json.loads(cursor_path.read_text(encoding="utf-8"))["mcpServers"])
+        self.assertIn("[mcp_servers.exasol]", codex_path.read_text(encoding="utf-8"))
+        # untouched: the adapter must not overwrite what it cannot parse
+        self.assertEqual(vscode_path.read_text(encoding="utf-8"), "")
+
+        manifest = json.loads(self.manifest_path.read_text(encoding="utf-8"))
+        client_setup = manifest["components"]["mcp_server"]["client_setup"]
+        self.assertEqual(sorted(client_setup["configured_clients"]), ["codex", "cursor"])
+        self.assertEqual(client_setup["skipped_clients"], ["vscode_copilot"])
+
     def _write_manifest(self, dsn: str) -> None:
         manifest = {
             "manifest_version": 1,

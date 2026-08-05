@@ -400,7 +400,7 @@ jobs:
           summary.append("- [ ] Severity is `normal` on everything above. Raise it to "
                          "`recommended` or `critical` only if people need to know now.")
           summary.append("- [ ] These versions were tested **together**, not just "
-                         "individually. The Available column is a tested set.")
+                         "individually. The Tagged column is a tested set.")
           summary.append("- [ ] `kit.version` is untouched, which is correct unless kit "
                          "scripts changed too.")
 

@@ -18,13 +18,13 @@
 **macOS / Linux / WSL**
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/exasol-labs/exasol-personal-local-starterkit/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/krishna-exasol/update-path/main/install.sh | sh
 ```
 
 **Windows (PowerShell)**
 
 ```powershell
-irm https://raw.githubusercontent.com/exasol-labs/exasol-personal-local-starterkit/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/krishna-exasol/update-path/main/install.ps1 | iex
 ```
 
 **Prefer to let your AI do it?** Paste this into Claude Code, Codex, or any coding agent:
@@ -32,7 +32,7 @@ irm https://raw.githubusercontent.com/exasol-labs/exasol-personal-local-starterk
 <div align="left">
 
 ```text
-Install the Exasol starter kit from https://github.com/exasol-labs/exasol-personal-local-starterkit
+Install the Exasol starter kit from https://github.com/krishna-exasol/update-path
 ```
 
 </div>
@@ -58,7 +58,7 @@ At the end: connection details on screen, a managed runtime state under `~/.exas
 
 ## Key features
 
-- 🪶 **No prerequisites to manage.** No Python, Homebrew, or Rust needed.
+- 🪶 **Almost no prerequisites.** No Homebrew or Rust needed. Python 3.11+ is needed.
 - ⚡ **Ready in under 2 minutes.** One command installs and connects the whole stack.
 - 🔒 **Read-only AI.** Your assistant can read everything and change nothing. The database enforces it.
 - 🤖 **Support for multiple AI clients.** Claude, Codex, Cursor, GitHub Copilot, Gemini CLI, OpenCode, Continue.
@@ -73,14 +73,16 @@ At the end: connection details on screen, a managed runtime state under `~/.exas
 
 | Your machine | Minimum Requirements | That's all |
 |---|---|---|
-| **macOS** | 8 GB+ RAM, ~20 GB disk | The database runs natively |
+| **macOS** | 8 GB+ RAM, 10 GB free disk | The database runs natively |
 | **Linux / WSL** | Docker or Podman (running), 4 GB+ RAM | Container runtime required |
 | **Windows** | Docker Desktop (running), 4 GB+ RAM | Native Windows uses the PowerShell installer |
+
+Every platform also needs **Python 3.11+**.
 
 Not sure? Check first. It installs **nothing**:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/exasol-labs/exasol-personal-local-starterkit/main/install.sh | EXAKIT_PREFLIGHT=1 sh
+curl -fsSL https://raw.githubusercontent.com/krishna-exasol/update-path/main/install.sh | EXAKIT_PREFLIGHT=1 sh
 ```
 
 Step-by-step guides: [QUICKSTART](QUICKSTART.md) · [macOS](quickstarts/macos.md) · [WSL](quickstarts/windows-wsl.md) · [Windows + Docker](quickstarts/windows-docker.md)
@@ -204,15 +206,30 @@ releases work with each other".
 
 ```bash
 exakit update-check    # what is installed vs what is available, and why
-exakit update          # apply the quick ones: kit scripts, exapump, MCP server, pyexasol
-exakit update runtime  # the database itself — stops it briefly, keeps your data
+exakit update          # apply everything that is waiting; it asks before it stops the database
+exakit update runtime  # the database itself, on its own — stops it briefly, keeps your data
 ```
 
-`exakit update` finishes in seconds and never stops your database. If a database
-update is waiting, it says so and leaves the moment to you.
+`exakit update` applies the quick components (kit scripts, exapump, MCP server,
+pyexasol) in seconds. If a **database** update is waiting it asks you first,
+because that one stops the database for a minute or two:
 
 ```
-Component  Installed         Available         Severity    Action
+? Stop the database and update the runtime now? [y/N]
+```
+
+Answer `y` and it does the whole job — stops the database, updates the runtime,
+brings it back up and tells you it is running again. Answer `n` and nothing is
+stopped; `exakit update runtime` applies it whenever you like. Your data is kept
+either way: the update reuses the same data volume, and the previous version is
+put back if the new one does not come up.
+
+In a script, a pipe or CI there is nobody to ask, so the database update is
+**never** started on its own — it is deferred exactly as above. Opt in
+deliberately with `exakit update --yes` (or `EXAKIT_CONFIRM_RUNTIME_UPDATE=1`).
+
+```
+Component  Installed         Tagged            Severity    Action
 exakit     0.2.0             0.2.0             -           current
 nano       2026.2.0-nano.2   2026.3.0-nano.1   -           exakit update runtime (heavy)
 exapump    0.11.2            0.12.0            recommended exakit update exapump
@@ -225,9 +242,10 @@ A few things worth knowing:
 - **Severity is the maintainers' judgement.** Only `recommended` and `critical`
   changes ever interrupt another command, at most once a day, on `stderr`.
   Silence them for good with `EXAKIT_NO_UPDATE_NOTICE=1`.
-- **Sometimes the advice is to go back.** If a release turns out to be faulty, the
-  advertised version goes *down* and the row shows `(older)`. Applying it asks you
-  to confirm first — it is never silent.
+- **`Tagged` is the version set the maintainers tested together.** It is usually
+  the newer number, but not always: if a release is withdrawn the tagged version
+  goes *down*, and a machine already on the higher one simply shows both numbers
+  with an action of `none`. The kit never moves a component backwards.
 - **Offline is fine.** Version resolution falls back to a cached copy, then to the
   copy that shipped with your kit. No command ever fails because an update check
   could not reach the network.
@@ -254,7 +272,7 @@ https://github.com/user-attachments/assets/77916db0-d273-4720-8d59-1aedac95d5e8
 
 | Question | Answer |
 |---|---|
-| Do&nbsp;I&nbsp;need&nbsp;Rust&nbsp;/&nbsp;Python&nbsp;/&nbsp;Homebrew? | **No.** The installer brings everything it needs. |
+| Do&nbsp;I&nbsp;need&nbsp;Rust&nbsp;/&nbsp;Python&nbsp;/&nbsp;Homebrew? | **Rust and Homebrew, no.** Python 3.11+ is needed. |
 | Does&nbsp;it&nbsp;cost&nbsp;anything? | No. Exasol Personal Local is free. |
 | What&nbsp;makes&nbsp;this&nbsp;"for&nbsp;Agentic&nbsp;AI"? | An MCP server ships in the box with a dedicated read-only login, so Claude, Cursor, and other MCP clients can query your data directly, with every SQL statement inspectable before it runs. |
 | What&nbsp;sample&nbsp;data&nbsp;is&nbsp;included? | Three bundled datasets: TPC-H retail, smart-meter energy, daily weather, each in its own schema. See the [data dictionary](data/data-dictionary.md). |

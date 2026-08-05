@@ -55,6 +55,14 @@ check "advertised version comes from versions.json" "$_shipped_ds" \
     "$(exakit_versions_value components.dash-server.version "$ROOT/versions.json")"
 check "advertised version (awk fallback reader)" "$_shipped_ds" \
     "$( ( EXAKIT_DISABLE_SYSTEM_PYTHON=1; exakit_ensure_uv() { return 1; }; exakit_versions_value components.dash-server.version "$ROOT/versions.json" ) )"
+# The published manifest can PREDATE an add-on (a kit copy ships it before the
+# advertised set catches up): the available version must fall back to the
+# module's constant instead of reading as unknown — that empty answer used to
+# make `exakit update dash-server` die on a machine whose fetched doc had no
+# dash-server block yet.
+check "a manifest without the add-on falls back to the module constant" \
+    "$EXAKIT_DASH_SERVER_VERSION_FALLBACK" \
+    "$( ( exakit_versions_value() { return 1; }; exakit_component_available dash-server ) )"
 check "env override wins" "9.9.9" "$(EXAKIT_DASH_SERVER_VERSION=9.9.9 _exakit_component_env_override dash-server)"
 check "release url is the tag tarball" \
     "https://github.com/exasol-labs/dash-server/archive/refs/tags/v0.1.0.tar.gz" \

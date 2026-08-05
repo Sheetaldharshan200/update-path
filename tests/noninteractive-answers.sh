@@ -39,6 +39,26 @@ check "unset -> default y" yes "$r"
 if confirm_env EXAKIT_TEST_ANS "q" n </dev/null; then r=yes; else r=no; fi
 check "unset -> default n" no "$r"
 
+echo "the runtime update offer — an unattended run is never asked, so it never stops a database:"
+# `exakit update` applies the runtime (which stops the database) only for an answer
+# it was actually given. These are the two things that decide it: the pre-answer
+# and whether there is a terminal at all.
+unset EXAKIT_CONFIRM_RUNTIME_UPDATE
+_upd_assume_yes=0
+check "nobody has answered yet" "" "$(exakit_runtime_update_preanswer)"
+EXAKIT_CONFIRM_RUNTIME_UPDATE=1
+check "EXAKIT_CONFIRM_RUNTIME_UPDATE=1 opts in" "yes" "$(exakit_runtime_update_preanswer)"
+EXAKIT_CONFIRM_RUNTIME_UPDATE=no
+check "=no is a deliberate refusal" "no" "$(exakit_runtime_update_preanswer)"
+EXAKIT_CONFIRM_RUNTIME_UPDATE=maybe
+check "an unrecognised value answers nothing" "" "$(exakit_runtime_update_preanswer)"
+unset EXAKIT_CONFIRM_RUNTIME_UPDATE
+_upd_assume_yes=1
+check "--yes opts in for one run" "yes" "$(exakit_runtime_update_preanswer)"
+_upd_assume_yes=0
+if exakit_stdin_is_tty </dev/null; then r=terminal; else r=no-terminal; fi
+check "a redirected stdin is not a terminal" "no-terminal" "$r"
+
 echo "EXAKIT_MCP_CLIENTS — client selection parses names, 'all', and numbers:"
 # "claude" (or 1) expands to both Claude surfaces (desktop app + Claude Code
 # CLI); "all" covers every supported client. Keep these in lockstep with
