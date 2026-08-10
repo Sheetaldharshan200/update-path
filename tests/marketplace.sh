@@ -76,6 +76,13 @@ PATH="$WORK/code-bin:$PATH"
 . "$ROOT/setup/lib/dash-server.sh"
 . "$ROOT/setup/lib/exasol-vscode.sh"
 
+# ...and its own port. The default 5100 is where a developer's REAL dash-server
+# listens, and the ownership probe would rightly call that a foreign process
+# holding the suite's port. A sandbox-unique high port keeps every machine
+# reading the same. Explicit, so the manifest never overrides it.
+EXAKIT_DASH_SERVER_PORT="$((5900 + $$ % 90))"
+_EXAKIT_DS_PORT_EXPLICIT=1
+
 manifest_init >/dev/null 2>&1
 
 echo "registry:"
@@ -367,6 +374,7 @@ printf '#!/bin/sh\nexit 0\n' > "$WORK/live-venv/bin/python"
 chmod +x "$WORK/live-venv/bin/python"
 _live_out="$( (
     EXAKIT_DASH_SERVER_VENV="$WORK/live-venv"
+    _dash_server_port_foreign_desc() { return 1; }   # nobody else holds the port
     _dash_server_http_answers() { return 0; }    # something already serves /mcp
     dash_server_validate 2>&1
 ) )"
@@ -670,14 +678,24 @@ rm -f "$EXAKIT_HOME/logs/dash-server.log"
 echo "services and autostart (is it running, and does it come back after a reboot):"
 # A stand-in server on a quiet port: the status probe is an HTTP check, so
 # anything that answers proves the plumbing without installing dash-server.
-EXAKIT_DASH_SERVER_PORT="$((5900 + $$ % 90))"
-mkdir -p "$EXAKIT_HOME/logs"
+mkdir -p "$EXAKIT_HOME/logs" "$EXAKIT_HOME/dash-server-venv/bin"
+# The stand-in server must look like ours to the ownership probe, which matches
+# on the venv path. The real console script is run as
+# `<venv>/bin/python <venv>/bin/dash-server`, so the venv shows up in argv - a
+# bare `python3 -m http.server` never would. A script INSIDE the venv bin
+# reproduces that shape (a symlinked interpreter does not: macOS resolves
+# argv[0] to the framework binary).
+cat > "$EXAKIT_HOME/dash-server-venv/bin/serve.py" <<'SERVEEOF'
+import http.server, socketserver, sys
+with socketserver.TCPServer(("127.0.0.1", int(sys.argv[1])), http.server.SimpleHTTPRequestHandler) as httpd:
+    httpd.serve_forever()
+SERVEEOF
 check "not installed reads as such, never 'stopped'" "not installed" "$(
     ( EXAKIT_DASH_SERVER_BIN="$WORK/nope"; dash_server_status )
 )"
 cat > "$EXAKIT_BIN_DIR/dash-server" <<SRVEOF
 #!/bin/sh
-exec python3 -m http.server $EXAKIT_DASH_SERVER_PORT --bind 127.0.0.1
+exec python3 "$EXAKIT_HOME/dash-server-venv/bin/serve.py" $EXAKIT_DASH_SERVER_PORT
 SRVEOF
 chmod +x "$EXAKIT_BIN_DIR/dash-server"
 check "installed but down reads stopped" "stopped" "$(dash_server_status)"
@@ -689,6 +707,46 @@ dash_server_stop >/dev/null 2>&1
 check "stop takes it down and cleans the pidfile" "stopped cleaned" \
     "$(printf '%s %s' "$(dash_server_status)" "$([ -f "$EXAKIT_DASH_SERVER_PIDFILE" ] && echo kept || echo cleaned)")"
 has "stopping twice is idempotent" "already stopped" "$(dash_server_stop 2>&1)"
+
+echo "a port held by someone else is never mistaken for dash-server:"
+# The old probe asked "does something answer HTTP here", so ANY web server on
+# the port made the kit report a healthy add-on it never started. Ownership is
+# matched on the venv path, the way the real console script is recognised.
+_foreign_port="$((6100 + $$ % 80))"
+python3 -m http.server "$_foreign_port" --bind 127.0.0.1 >/dev/null 2>&1 &
+_foreign_pid=$!
+sleep 2
+_port_verdict="$( (
+    EXAKIT_DASH_SERVER_PORT="$_foreign_port"
+    printf 'status=%s ' "$(dash_server_status | cut -d'(' -f1 | sed 's/ *$//')"
+    printf 'ours=%s ' "$(_dash_server_port_is_ours && echo yes || echo no)"
+    printf 'foreign=%s' "$(_dash_server_port_foreign_desc >/dev/null 2>&1 && echo yes || echo no)"
+) )"
+check "a foreign listener reads as stopped, not running" "status=stopped ours=no foreign=yes" "$_port_verdict"
+has "status names the process holding it" "held by another process" \
+    "$( ( EXAKIT_DASH_SERVER_PORT="$_foreign_port"; dash_server_status ) )"
+_start_refusal="$( ( EXAKIT_DASH_SERVER_PORT="$_foreign_port"; dash_server_start 2>&1 ) )"
+has "start refuses instead of claiming success" "cannot bind" "$_start_refusal"
+has "and says how to move to a free port" "EXAKIT_DASH_SERVER_PORT" "$_start_refusal"
+_val_refusal="$( ( EXAKIT_DASH_SERVER_PORT="$_foreign_port"; dash_server_validate 2>&1 ) )"
+has "validation refuses to claim health on someone else's port" "was not validated" "$_val_refusal"
+# An install with no explicit port steps over the busy one instead of failing.
+_settled="$( (
+    EXAKIT_DASH_SERVER_PORT="$_foreign_port"
+    _EXAKIT_DS_PORT_EXPLICIT=0
+    _dash_server_settle_port >/dev/null 2>&1
+    printf '%s' "$EXAKIT_DASH_SERVER_PORT"
+) )"
+check "an unnamed port steps past the collision" "$((_foreign_port + 1))" "$_settled"
+# A port the user NAMED is refused rather than silently moved.
+_explicit="$( (
+    EXAKIT_DASH_SERVER_PORT="$_foreign_port"
+    _EXAKIT_DS_PORT_EXPLICIT=1
+    _dash_server_settle_port 2>&1 | head -1
+) )"
+has "a named port is refused, never moved behind your back" "is held by another process" "$_explicit"
+kill "$_foreign_pid" 2>/dev/null
+wait "$_foreign_pid" 2>/dev/null || true
 
 # The service registry: database first, then any installed add-on that serves.
 manifest_set runtime.type personal

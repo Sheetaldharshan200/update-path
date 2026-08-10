@@ -561,6 +561,19 @@ if grep -q 'exakit_marketplace_addons()' "$ROOT/setup/lib/common.sh" && \
 else
     check "marketplace(twins)" "yes" "no"
 fi
+# Port ownership, both sides: a foreign listener must never read as a running
+# dash-server, and the install must settle on a port before baking one in.
+if grep -q '_dash_server_port_is_ours()' "$ROOT/setup/lib/dash-server.sh" && \
+   grep -q '_dash_server_port_foreign_desc()' "$ROOT/setup/lib/dash-server.sh" && \
+   grep -q '_dash_server_settle_port()' "$ROOT/setup/lib/dash-server.sh" && \
+   grep -q 'function Test-DashServerPortIsOurs' "$ROOT/setup/lib/dash-server.ps1" && \
+   grep -q 'function Get-DashServerPortForeignDescription' "$ROOT/setup/lib/dash-server.ps1" && \
+   grep -q 'function Confirm-DashServerPort' "$ROOT/setup/lib/dash-server.ps1"; then
+    check "dash-server(port_ownership_twins)" "yes" "yes"
+else
+    check "dash-server(port_ownership_twins)" "yes" "no"
+fi
+
 # Log viewing, both sides: the registry-driven target list, the overview, the
 # tail/follow path, and the add-on hook that folds a new one in.
 if grep -q 'exakit_log_targets()' "$ROOT/setup/lib/common.sh" && \
