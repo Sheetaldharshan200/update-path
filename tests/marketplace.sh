@@ -518,6 +518,35 @@ check "no VS Code anywhere is a soft miss naming the fix" "yes" "$( (
     exasol_vscode_install 2>&1 | grep -q "install VS Code" && echo yes || echo no
 ) )"
 
+echo "the browser UI is validated separately from the control plane:"
+# The packaging gap that shipped a 500 to a user looked healthy on /mcp. A
+# broken page must be reported, never pass silently — and it must not fail the
+# install, because agents can still drive the add-on over MCP.
+_ui_bad="$( (
+    _dash_server_ui_answers() { return 1; }
+    _dash_server_check_ui 2>&1
+) )"
+has "a broken dashboards page is called out" "does not render" "$_ui_bad"
+check "and recorded, not swallowed" "false" "$(manifest_get components.dash_server.ui_validated)"
+_ui_good="$( (
+    _dash_server_ui_answers() { return 0; }
+    _dash_server_check_ui 2>&1
+) )"
+has "a working page is confirmed" "Dashboards page answers" "$_ui_good"
+check "and recorded" "true" "$(manifest_get components.dash_server.ui_validated)"
+# The restore only fills GAPS: a file the install already placed is never
+# overwritten, so a fixed upstream release makes it a silent no-op.
+check "restoring package data leaves existing files alone" "original" "$( (
+    _drp_dir="$WORK/site/dash_server"
+    mkdir -p "$_drp_dir/templates"
+    printf 'original' > "$_drp_dir/templates/keep.html"
+    dash_server_venv_python() { printf '%s\n' "$WORK/stub-py"; }
+    printf '#!/bin/sh\nprintf "%s\\n" "'"$_drp_dir"'"\n' > "$WORK/stub-py"; chmod +x "$WORK/stub-py"
+    fetch() { return 1; }          # no network in the suite: the restore bails out
+    _dash_server_restore_package_data >/dev/null 2>&1
+    cat "$_drp_dir/templates/keep.html"
+) )"
+
 echo "add-on uninstall hooks (what folds them into exakit uninstall):"
 # dash-server: dry narrates, real removes venv + state + launcher + record.
 mkdir -p "$EXAKIT_HOME/dash-server-venv" "$EXAKIT_HOME/dash-server" "$EXAKIT_BIN_DIR"

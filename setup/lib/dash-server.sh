@@ -135,6 +135,7 @@ dash_server_install() {
         # pip in place, but a pre-existing venv (EXAKIT_DASH_SERVER_VENV
         # pointed at one, or an interrupted earlier run) may lack it.
         _dash_server_ensure_pip "$_ds_uv" || return 1
+        _dash_server_restore_package_data
         ok "dash-server installed: $EXAKIT_DASH_SERVER_VENV"
     fi
 
@@ -150,6 +151,51 @@ dash_server_install() {
     manifest_set components.dash_server.command "$EXAKIT_DASH_SERVER_BIN"
     manifest_set components.dash_server.port "$EXAKIT_DASH_SERVER_PORT"
     manifest_set components.dash_server.instance "$EXAKIT_DASH_SERVER_HOME/instance"
+}
+
+# _dash_server_restore_package_data — put back data files the release ships in
+# its source tree but does NOT declare as package data, so pip never installs
+# them.
+#
+# UPSTREAM BUG (dash-server 0.1.0): pyproject's [tool.setuptools.package-data]
+# covers dash_server.exasol and dash_server.dash_apps but not dash_server
+# itself, so all five Jinja templates under src/dash_server/templates are
+# missing from every installed copy. The MCP control plane is unaffected (it
+# renders nothing), which is why validation passed while the browser page
+# answered 500 with TemplateNotFound: dashboard_catalog.html.
+#
+# Rather than ship a broken UI, the install re-downloads the same verified
+# release tarball and copies across any non-.py file that the source has and
+# the installed package lacks. Nothing is overwritten, so a fixed release
+# simply makes this a no-op — the day upstream declares the data, this quietly
+# stops doing anything and can be deleted.
+_dash_server_restore_package_data() {
+    _drp_site="$("$(dash_server_venv_python)" -c 'import dash_server, os; print(os.path.dirname(dash_server.__file__))' 2>/dev/null)"
+    [ -n "$_drp_site" ] && [ -d "$_drp_site" ] || return 0
+
+    _drp_tmp="$(mktemp -d "${TMPDIR:-/tmp}/exakit-ds-data.XXXXXX")" || return 0
+    if ! ( fetch "$(dash_server_release_url "$EXAKIT_DASH_SERVER_VERSION")" "$_drp_tmp/src.tar.gz" ) \
+            >>"${EXAKIT_LOG_FILE:-/dev/null}" 2>&1; then
+        rm -rf "$_drp_tmp"
+        return 0
+    fi
+    ( cd "$_drp_tmp" && tar xzf src.tar.gz ) >>"${EXAKIT_LOG_FILE:-/dev/null}" 2>&1 || {
+        rm -rf "$_drp_tmp"; return 0; }
+    _drp_src="$_drp_tmp/dash-server-${EXAKIT_DASH_SERVER_VERSION}/src/dash_server"
+    [ -d "$_drp_src" ] || { rm -rf "$_drp_tmp"; return 0; }
+
+    _drp_restored=0
+    for _drp_rel in $( cd "$_drp_src" && find . -type f ! -name '*.py' | sed 's|^\./||' ); do
+        [ -f "$_drp_site/$_drp_rel" ] && continue
+        mkdir -p "$_drp_site/$(dirname "$_drp_rel")" 2>/dev/null || continue
+        cp "$_drp_src/$_drp_rel" "$_drp_site/$_drp_rel" 2>/dev/null && \
+            _drp_restored=$((_drp_restored + 1))
+    done
+    rm -rf "$_drp_tmp"
+    if [ "$_drp_restored" -gt 0 ]; then
+        info "Restored $_drp_restored data file(s) the release does not declare as package data (upstream packaging gap; the browser UI needs them)"
+    fi
+    return 0
 }
 
 # _dash_server_ensure_pip <uv> — make sure the venv can run `python -m pip`.
@@ -284,6 +330,7 @@ dash_server_validate() {
     # starting a second instance just to probe would fail on the bind.
     if _dash_server_http_answers; then
         ok "dash-server control plane answers on port $EXAKIT_DASH_SERVER_PORT"
+        _dash_server_check_ui
         manifest_set components.dash_server.validated true
         _dash_server_print_usage
         return 0
@@ -317,6 +364,7 @@ dash_server_validate() {
 
     if [ "$_dsv_ok" -eq 1 ]; then
         ok "dash-server control plane answers on port $EXAKIT_DASH_SERVER_PORT"
+        _dash_server_check_ui
         manifest_set components.dash_server.validated true
         _dash_server_print_usage
     else
@@ -331,6 +379,31 @@ dash_server_validate() {
 _dash_server_http_answers() {
     curl -s -o /dev/null -w '%{http_code}' --max-time 5 \
         "http://127.0.0.1:$EXAKIT_DASH_SERVER_PORT/mcp" 2>/dev/null | grep -qE '^(200|3..|4..)'
+}
+
+# _dash_server_ui_answers — the page a HUMAN opens. Checked separately because
+# the control plane can be perfectly healthy while the browser UI is broken:
+# that is exactly what the missing-templates packaging gap looked like, and
+# probing only /mcp reported the add-on as ready anyway.
+_dash_server_ui_answers() {
+    curl -s -o /dev/null -w '%{http_code}' --max-time 5 \
+        "http://127.0.0.1:$EXAKIT_DASH_SERVER_PORT/" 2>/dev/null | grep -qE '^(200|3..)'
+}
+
+# _dash_server_check_ui — the browser page, reported separately. A broken UI
+# does not fail the install (the MCP control plane is what agents use) but it
+# must never pass silently: that is how a 500 on every dashboard page reached a
+# user while the kit said "ready".
+_dash_server_check_ui() {
+    if _dash_server_ui_answers; then
+        ok "Dashboards page answers: http://127.0.0.1:$EXAKIT_DASH_SERVER_PORT"
+        manifest_set components.dash_server.ui_validated true
+        return 0
+    fi
+    warn "The control plane is up, but the dashboards page at http://127.0.0.1:$EXAKIT_DASH_SERVER_PORT does not render (see: exakit logs dash-server)."
+    warn "Agents can still drive it over MCP. Retry the repair with: exakit update dash-server"
+    manifest_set components.dash_server.ui_validated false
+    return 0
 }
 
 _dash_server_print_usage() {
