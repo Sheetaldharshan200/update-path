@@ -2128,12 +2128,14 @@ _exakit_addon_applicable_reason() {
     return 0
 }
 
-# _exakit_addon_offerable <id> — should this add-on appear at all? Anything
-# already installed by the kit stays visible even if it became inapplicable
-# (VS Code uninstalled after the fact), so it can still be updated or removed
-# instead of turning into orphaned state nothing can reach.
+# _exakit_addon_offerable <id> — should this add-on appear at all? Only an
+# add-on that is BOTH absent and inapplicable is hidden. Anything actually on
+# the machine stays visible: a kit install so it can still be updated or
+# removed (even if the host app disappeared afterwards), and a system install
+# so the screen can say it is already covered rather than silently omitting a
+# tool the user can see for themselves.
 _exakit_addon_offerable() {
-    exakit_marketplace_addon_installed "$1" && return 0
+    _exakit_marketplace_addon_present "$1" && return 0
     _exakit_addon_applicable "$1"
 }
 

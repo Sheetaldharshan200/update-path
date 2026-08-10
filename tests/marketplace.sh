@@ -56,6 +56,22 @@ PATH="$_clean_path"
 EXAKIT_EXASOL_VSCODE_EXTDIR="$WORK/vscode-ext"
 mkdir -p "$EXAKIT_EXASOL_VSCODE_EXTDIR"
 export EXAKIT_EXASOL_VSCODE_EXTDIR
+# ...and a stub `code` ON PATH, so whether the extension add-on is APPLICABLE
+# is fixed too. Without this the suite would read differently on a machine
+# with VS Code than on a CI runner without it: the add-on is deliberately
+# hidden where its host app is missing, which is exactly what the dedicated
+# section below tests by hiding this stub again.
+mkdir -p "$WORK/code-bin"
+cat > "$WORK/code-bin/code" <<'CODESTUBEOF'
+#!/bin/sh
+echo "$*" >> "${CODE_CALLS:-/dev/null}"
+case "$*" in
+    *--list-extensions*) [ -n "${CODE_LISTING:-}" ] && printf '%s\n' "$CODE_LISTING" ;;
+esac
+exit 0
+CODESTUBEOF
+chmod +x "$WORK/code-bin/code"
+PATH="$WORK/code-bin:$PATH"
 . "$ROOT/setup/lib/common.sh"
 . "$ROOT/setup/lib/dash-server.sh"
 . "$ROOT/setup/lib/exasol-vscode.sh"
@@ -370,17 +386,8 @@ has "marketplace without an install refuses" "No installation found" "$_nomanife
 has "and exits non-zero" "rc=1" "$_nomanifest_out"
 
 echo "exasol-vscode (the VS Code extension add-on):"
-# A stub `code` CLI: answers the listing, records every invocation.
-mkdir -p "$WORK/code-bin"
-cat > "$WORK/code-bin/code" <<'CODEEOF'
-#!/bin/sh
-echo "$*" >> "${CODE_CALLS:-/dev/null}"
-case "$*" in
-    *--list-extensions*) [ -n "${CODE_LISTING:-}" ] && printf '%s\n' "$CODE_LISTING" ;;
-esac
-exit 0
-CODEEOF
-chmod +x "$WORK/code-bin/code"
+# The stub `code` CLI created at the top answers the listing and records
+# every invocation; CODE_LISTING and CODE_CALLS steer it per case.
 
 check "live version parses publisher.id@version" "1.7.0" "$( (
     PATH="$WORK/code-bin:$PATH"

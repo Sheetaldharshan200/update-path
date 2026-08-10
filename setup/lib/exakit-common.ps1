@@ -2557,12 +2557,14 @@ function Get-ExakitAddonApplicableReason {
     return ""
 }
 
-# Should this add-on appear at all? Anything already installed by the kit stays
-# visible even if it became inapplicable, so it can still be updated or
-# removed. Twin of _exakit_addon_offerable.
+# Should this add-on appear at all? Only an add-on that is BOTH absent and
+# inapplicable is hidden. Anything actually on the machine stays visible: a kit
+# install so it can still be updated or removed (even if the host app
+# disappeared afterwards), and a system install so the screen can say it is
+# already covered. Twin of _exakit_addon_offerable.
 function Test-ExakitAddonOfferable {
     param([Parameter(Mandatory)][string]$Id)
-    if (Test-ExakitMarketplaceAddonInstalled $Id) { return $true }
+    if (Test-ExakitMarketplaceAddonPresent $Id) { return $true }
     return (Test-ExakitAddonApplicable $Id)
 }
 
