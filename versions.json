@@ -41,6 +41,14 @@
       "repo": "exasol-labs/dash-server",
       "package": "dash-server",
       "severity": "normal"
+    },
+    "exasol-vscode": {
+      "version": "1.7.0",
+      "repo": "exasol-labs/exasol-vscode",
+      "severity": "normal",
+      "sha256": {
+        "vsix": "901badff486da4f41bb285463be152dd036437cdd54fbbde51328954c8e9b3c5"
+      }
     }
   }
 }

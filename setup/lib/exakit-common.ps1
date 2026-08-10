@@ -2407,6 +2407,17 @@ function Get-ExakitMarketplaceAddons {
             VersionFn   = "Get-DashServerInstalledVersion"
             EnvVar      = "EXAKIT_DASH_SERVER_VERSION"
             FallbackVar = "DashServerVersionFallback"
+        },
+        [pscustomobject]@{
+            Id          = "exasol-vscode"
+            Label       = "Exasol for VS Code (editor extension)"
+            Description = "SQL editing and schema browsing for your Exasol database, inside VS Code"
+            InstallFn   = "Install-ExasolVscode"
+            ValidateFn  = "Test-ExasolVscode"
+            UpdateFn    = "Update-ExasolVscode"
+            VersionFn   = "Get-ExasolVscodeInstalledVersion"
+            EnvVar      = "EXAKIT_EXASOL_VSCODE_VERSION"
+            FallbackVar = "ExasolVscodeVersionFallback"
         }
     )
 }

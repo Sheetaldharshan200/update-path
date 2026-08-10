@@ -86,7 +86,7 @@ jobs:
           if not re.match(r"^\d{4}-\d{2}-\d{2}$", str(doc.get("updated", ""))):
               problems.append("updated must be an ISO date (YYYY-MM-DD)")
 
-          expected = {"personal", "nano", "exapump", "mcp", "pyexasol", "dash-server"}
+          expected = {"personal", "nano", "exapump", "mcp", "pyexasol", "dash-server", "exasol-vscode"}
           components = doc.get("components") or {}
           if set(components) != expected:
               problems.append("components must be exactly %s, found %s"
@@ -313,19 +313,34 @@ jobs:
               check_pypi("pyexasol", components["pyexasol"], "pyexasol")
 
           # --- the marketplace add-ons (GitHub-release-installed) --------------
-          # dash-server installs from its release tag's source tarball, so the
-          # tag the installer downloads must exist.
-          dash = components.get("dash-server") or {}
-          if dash:
-              version = dash.get("version")
-              repo = dash.get("repo", "exasol-labs/dash-server")
+          # Each installs from its release tag, so the tag the installer
+          # downloads must exist. exasol-vscode additionally advertises the
+          # vsix digest: assert the release asset carries exactly that digest,
+          # so a stale hash can never ship (the install refuses on mismatch).
+          for addon in ("dash-server", "exasol-vscode"):
+              block = components.get(addon) or {}
+              if not block:
+                  continue
+              version = block.get("version")
+              repo = block.get("repo", "exasol-labs/%s" % addon)
               body, reason = fetch("https://api.github.com/repos/%s/releases/tags/v%s"
                                    % (repo, version), token=True)
               if body is None:
-                  problems.append("dash-server: %s has no release tagged v%s (%s)"
-                                  % (repo, version, reason))
-              else:
-                  print("  ok  dash-server: %s release v%s exists" % (repo, version))
+                  problems.append("%s: %s has no release tagged v%s (%s)"
+                                  % (addon, repo, version, reason))
+                  continue
+              print("  ok  %s: %s release v%s exists" % (addon, repo, version))
+              advertised = (block.get("sha256") or {}).get("vsix")
+              if advertised:
+                  asset_name = "%s-%s.vsix" % (addon, version)
+                  digest = next((a.get("digest", "") for a in body.get("assets", [])
+                                 if a.get("name") == asset_name), "")
+                  if digest != "sha256:%s" % advertised:
+                      problems.append("%s: the advertised vsix digest does not match "
+                                      "the release asset (%s vs %s)"
+                                      % (addon, advertised, digest or "no digest"))
+                  else:
+                      print("  ok  %s: the vsix digest matches the release asset" % addon)
 
           # exapump is deliberately not re-checked here: digest-verify already
           # downloads all five assets and hashes them, which is strictly stronger.

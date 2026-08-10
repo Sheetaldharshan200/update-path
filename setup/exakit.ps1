@@ -85,6 +85,7 @@ if (Test-Path (Join-Path $scriptDir "lib\exakit-common.ps1")) {
 # marketplace) and updated (exakit update <addon>). A missing file only makes
 # the marketplace row unavailable - it must not break every other command.
 if (Test-Path (Join-Path $libDir "dash-server.ps1")) { . (Join-Path $libDir "dash-server.ps1") }
+if (Test-Path (Join-Path $libDir "exasol-vscode.ps1")) { . (Join-Path $libDir "exasol-vscode.ps1") }
 
 function Get-RuntimeType { return (Get-ExakitManifestValue "runtime.type") }
 

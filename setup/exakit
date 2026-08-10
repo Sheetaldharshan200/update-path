@@ -78,6 +78,7 @@ fi
 # marketplace) and updated (exakit update <addon>), so it loads every module
 # it ships. A missing file only makes the marketplace row unavailable.
 [ -f "$_lib_dir/dash-server.sh" ] && . "$_lib_dir/dash-server.sh"
+[ -f "$_lib_dir/exasol-vscode.sh" ] && . "$_lib_dir/exasol-vscode.sh"
 
 _runtime_type() {
     manifest_get runtime.type 2>/dev/null

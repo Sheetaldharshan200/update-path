@@ -49,13 +49,22 @@ for _dir in $PATH; do
 done
 IFS="$_old_ifs"
 PATH="$_clean_path"
+# Same isolation for the VS Code extension: its live probe asks the REAL VS
+# Code unless an extensions dir is forced, so a developer machine that
+# genuinely has the extension would silently cover the add-on. An empty
+# sandbox dir makes every machine — with or without VS Code — read the same.
+EXAKIT_EXASOL_VSCODE_EXTDIR="$WORK/vscode-ext"
+mkdir -p "$EXAKIT_EXASOL_VSCODE_EXTDIR"
+export EXAKIT_EXASOL_VSCODE_EXTDIR
 . "$ROOT/setup/lib/common.sh"
 . "$ROOT/setup/lib/dash-server.sh"
+. "$ROOT/setup/lib/exasol-vscode.sh"
 
 manifest_init >/dev/null 2>&1
 
 echo "registry:"
-check "addons list carries dash-server" "dash-server" "$(exakit_marketplace_addons | cut -d'|' -f1)"
+check "addons list carries both add-ons" "dash-server exasol-vscode" \
+    "$(exakit_marketplace_addons | cut -d'|' -f1 | tr '\n' ' ' | sed 's/ $//')"
 check "addon module is loaded" "yes" "$(exakit_marketplace_addon_available dash-server && echo yes || echo no)"
 check "component block" "components.dash-server" "$(_exakit_component_block dash-server)"
 check "fallback version is the constant" "$EXAKIT_DASH_SERVER_VERSION_FALLBACK" "$(_exakit_component_fallback dash-server)"
@@ -102,7 +111,13 @@ check "live probe answers" "0.1.0" "$(exakit_component_current dash-server)"
 check "installed -> joins update all" "exakit runtime exapump mcp pyexasol dash-server" \
     "$(exakit_update_targets all | tr '\n' ' ' | sed 's/ $//')"
 check "installed-addons list" "dash-server" "$(exakit_marketplace_installed_addons)"
-check "nothing pending once installed" "no" "$(exakit_marketplace_has_pending && echo yes || echo no)"
+# With a second add-on registered, one install no longer empties the offer —
+# and once every add-on is covered, it does.
+check "another add-on keeps the offer pending" "yes" "$(exakit_marketplace_has_pending && echo yes || echo no)"
+check "nothing pending once ALL are covered" "no" "$( (
+    exasol_vscode_system_present() { return 0; }
+    exakit_marketplace_has_pending && echo yes || echo no
+) )"
 
 # Deleting the stub must flip everything back: a stale manifest record alone
 # may never count as installed.
@@ -118,13 +133,15 @@ run_menu() ( # run_menu <env-answer> — echoes "installed:<ids>" + menu output
     _CALLED=""
     dash_server_install() { _CALLED="${_CALLED} dash-server"; return 0; }
     dash_server_validate() { return 0; }
+    exasol_vscode_install() { _CALLED="${_CALLED} exasol-vscode"; return 0; }
+    exasol_vscode_validate() { return 0; }
     EXAKIT_MARKETPLACE_ADDONS="$1"
     exakit_marketplace_menu >/dev/null 2>&1
     printf 'rc=%s called=%s' "$?" "${_CALLED# }"
 )
 check "none installs nothing" "rc=0 called=" "$(run_menu none)"
-check "naming the addon installs it" "rc=0 called=dash-server" "$(run_menu dash-server)"
-check "all installs every pending addon" "rc=0 called=dash-server" "$(run_menu all)"
+check "naming one addon installs only it" "rc=0 called=dash-server" "$(run_menu dash-server)"
+check "all installs every pending addon" "rc=0 called=dash-server exasol-vscode" "$(run_menu all)"
 _unknown_out="$( (run_menu not-a-tool) 2>&1 || true)"
 check "an unknown id refuses" "yes" "$( (EXAKIT_MARKETPLACE_ADDONS=not-a-tool exakit_marketplace_menu >/dev/null 2>&1); [ $? -ne 0 ] && echo yes || echo no )"
 # An installer that fails must not report success.
@@ -219,6 +236,7 @@ printf '#!/bin/sh\nexit 0\n' > "$WORK/system-bin/dash-server"
 chmod +x "$WORK/system-bin/dash-server"
 _sys_out="$( (
     PATH="$WORK/system-bin:$PATH"
+    exasol_vscode_system_present() { return 0; }   # cover the other add-on too
     printf 'present=%s ' "$(_exakit_marketplace_addon_present dash-server && echo yes || echo no)"
     printf 'pending=%s ' "$(exakit_marketplace_has_pending && echo yes || echo no)"
     printf 'kit-managed=%s ' "$(exakit_marketplace_addon_installed dash-server && echo yes || echo no)"
@@ -250,6 +268,7 @@ check "EXAKIT_MARKETPLACE_ADDONS pre-answers the offer" "rc=0 called=dash-server
 # Everything already present: the offer disappears entirely — no hint, no ask.
 check "nothing pending -> the offer is silent" "" "$( (
     PATH="$WORK/system-bin:$PATH"
+    exasol_vscode_system_present() { return 0; }
     exakit_marketplace_offer 2>&1
 ) )"
 # Soft failures: the hint, never the "done and working" celebration.
@@ -320,9 +339,13 @@ echo "everything covered — the menu becomes a status screen:"
 mkdir -p "$EXAKIT_HOME/dash-server-venv/bin"
 printf '#!/bin/sh\necho 0.1.0\n' > "$EXAKIT_HOME/dash-server-venv/bin/python"
 chmod +x "$EXAKIT_HOME/dash-server-venv/bin/python"
-_covered_out="$(exakit_marketplace_menu 2>&1)"
+_covered_out="$( (
+    exasol_vscode_system_present() { return 0; }
+    exakit_marketplace_menu 2>&1
+) )"
 has "no selectable rows -> covered list, no menu" "Everything available is already" "$_covered_out"
 has "the covered list shows the install" "installed" "$_covered_out"
+has "a system install reads as covered, not managed" "on this system" "$_covered_out"
 rm -rf "$EXAKIT_HOME/dash-server-venv"
 
 echo "the module system-present hook overrides the PATH check:"
@@ -345,6 +368,86 @@ _nomanifest_out="$( (
 ) )"
 has "marketplace without an install refuses" "No installation found" "$_nomanifest_out"
 has "and exits non-zero" "rc=1" "$_nomanifest_out"
+
+echo "exasol-vscode (the VS Code extension add-on):"
+# A stub `code` CLI: answers the listing, records every invocation.
+mkdir -p "$WORK/code-bin"
+cat > "$WORK/code-bin/code" <<'CODEEOF'
+#!/bin/sh
+echo "$*" >> "${CODE_CALLS:-/dev/null}"
+case "$*" in
+    *--list-extensions*) [ -n "${CODE_LISTING:-}" ] && printf '%s\n' "$CODE_LISTING" ;;
+esac
+exit 0
+CODEEOF
+chmod +x "$WORK/code-bin/code"
+
+check "live version parses publisher.id@version" "1.7.0" "$( (
+    PATH="$WORK/code-bin:$PATH"
+    CODE_LISTING="other.ext@2.0.0
+exasol.exasol-vscode@1.7.0"
+    export CODE_LISTING
+    _exasol_vscode_live_version
+) )"
+check "extension in VS Code without a kit record = system install" "sys=yes kit=no" "$( (
+    PATH="$WORK/code-bin:$PATH"
+    CODE_LISTING="exasol.exasol-vscode@1.7.0"; export CODE_LISTING
+    printf 'sys=%s ' "$(exasol_vscode_system_present && echo yes || echo no)"
+    printf 'kit=%s' "$(exasol_vscode_installed_version >/dev/null 2>&1 && echo yes || echo no)"
+) )"
+check "kit record + live extension = kit-managed" "sys=no kit=1.7.0" "$( (
+    PATH="$WORK/code-bin:$PATH"
+    CODE_LISTING="exasol.exasol-vscode@1.7.0"; export CODE_LISTING
+    manifest_set components.exasol_vscode.version "1.7.0"
+    printf 'sys=%s ' "$(exasol_vscode_system_present && echo yes || echo no)"
+    printf 'kit=%s' "$(exasol_vscode_installed_version)"
+) )"
+( . /dev/null; manifest_set components.exasol_vscode.version "" ) 2>/dev/null
+python3 - "$EXAKIT_HOME/manifest.json" <<'PY'
+import json, sys
+path = sys.argv[1]
+doc = json.load(open(path))
+doc.get("components", {}).pop("exasol_vscode", None)
+json.dump(doc, open(path, "w"))
+PY
+check "no record and no extension = simply pending" "no" "$( (
+    PATH="$WORK/code-bin:$PATH"
+    CODE_LISTING=""; export CODE_LISTING
+    _exakit_marketplace_addon_present exasol-vscode && echo yes || echo no
+) )"
+check "the sandbox extensions dir is passed through" "yes" "$( (
+    PATH="$WORK/code-bin:$PATH"
+    CODE_CALLS="$WORK/code-calls"; export CODE_CALLS
+    : > "$CODE_CALLS"
+    _exasol_vscode_code --list-extensions >/dev/null 2>&1
+    grep -q -- "--extensions-dir $EXAKIT_EXASOL_VSCODE_EXTDIR" "$CODE_CALLS" && echo yes || echo no
+) )"
+
+echo "exasol-vscode checksum chain (mirrors the exapump precedence):"
+check "the advertised version verifies against versions.json" \
+    "$(exakit_versions_value components.exasol-vscode.sha256.vsix "$ROOT/versions.json")" \
+    "$(exasol_vscode_expected_sha256 "$(exakit_versions_value components.exasol-vscode.version "$ROOT/versions.json")")"
+check "an unadvertised version falls to the pinned table, then the API" "pinned-empty from-api" "$( (
+    exasol_vscode_pinned_sha256() { printf ''; }
+    exasol_vscode_release_digest_from_api() { printf 'from-api\n'; }
+    printf 'pinned-empty %s' "$(exasol_vscode_expected_sha256 0.0.0-not-advertised)"
+) )"
+check "a checksum mismatch refuses the install" "refused rc=1" "$( (
+    PATH="$WORK/code-bin:$PATH"
+    fetch() { printf 'not-the-real-vsix' > "$2"; }
+    exasol_vscode_expected_sha256() { printf '%064d\n' 1; }
+    exasol_vscode_install >/dev/null 2>&1 && printf 'installed' || printf 'refused rc=1'
+) )"
+check "no checksum anywhere refuses the install" "yes" "$( (
+    PATH="$WORK/code-bin:$PATH"
+    fetch() { printf 'payload' > "$2"; }
+    exasol_vscode_expected_sha256() { return 1; }
+    exasol_vscode_install 2>&1 | grep -q "refusing an unverified extension" && echo yes || echo no
+) )"
+check "no VS Code anywhere is a soft miss naming the fix" "yes" "$( (
+    exasol_vscode_code_cli() { return 1; }
+    exasol_vscode_install 2>&1 | grep -q "install VS Code" && echo yes || echo no
+) )"
 
 echo "discovery one-liners:"
 has "update-check discovery line names the addon" "dash-server" "$(exakit_print_marketplace_discovery_line)"

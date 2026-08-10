@@ -231,6 +231,7 @@ for _path in kit.version components.personal.version components.nano.version \
              components.nano.image components.exapump.version components.mcp.version \
              components.mcp.package components.pyexasol.version \
              components.dash-server.version components.dash-server.repo \
+             components.exasol-vscode.version components.exasol-vscode.sha256.vsix \
              components.exapump.sha256.macos-aarch64 \
              components.exapump.sha256.windows-x86_64; do
     both_value "$_path" "$(shipped "$_path")" "$_path" "$REAL"

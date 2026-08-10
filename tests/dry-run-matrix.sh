@@ -408,7 +408,7 @@ fi
 echo "Windows parity guards:"
 if command -v pwsh >/dev/null 2>&1; then
     ps_parse="$(pwsh -NoProfile -Command '
-      $files = @("setup/lib/exakit-common.ps1","setup/lib/nano.ps1","setup/lib/mcp.ps1","setup/lib/dash-server.ps1","setup/setup-windows-docker.ps1","setup/exakit.ps1")
+      $files = @("setup/lib/exakit-common.ps1","setup/lib/nano.ps1","setup/lib/mcp.ps1","setup/lib/dash-server.ps1","setup/lib/exasol-vscode.ps1","setup/setup-windows-docker.ps1","setup/exakit.ps1")
       foreach ($f in $files) {
         $errors = $null
         $null = [System.Management.Automation.PSParser]::Tokenize((Get-Content -Raw $f), [ref]$errors)
@@ -551,6 +551,11 @@ if grep -q 'exakit_marketplace_addons()' "$ROOT/setup/lib/common.sh" && \
    grep -q 'Get-ExakitMarketplaceInstalledAddons' "$ROOT/setup/lib/exakit-common.ps1" && \
    grep -q 'function Update-DashServer' "$ROOT/setup/lib/dash-server.ps1" && \
    grep -q 'function Install-DashServer' "$ROOT/setup/lib/dash-server.ps1" && \
+   grep -q 'exasol_vscode_update' "$ROOT/setup/lib/exasol-vscode.sh" && \
+   grep -q 'exasol_vscode_install' "$ROOT/setup/lib/exasol-vscode.sh" && \
+   grep -q 'function Update-ExasolVscode' "$ROOT/setup/lib/exasol-vscode.ps1" && \
+   grep -q 'function Install-ExasolVscode' "$ROOT/setup/lib/exasol-vscode.ps1" && \
+   grep -q '"exasol-vscode"' "$ROOT/setup/lib/exakit-common.ps1" && \
    grep -q '"marketplace"  { Invoke-CmdMarketplace }' "$ROOT/setup/exakit.ps1"; then
     check "marketplace(twins)" "yes" "yes"
 else
@@ -571,10 +576,10 @@ fi
 # INSTALL the dash-server module (the Windows script dot-sources it and the
 # offer runs after everything else, but no step invokes Install-DashServer /
 # dash_server_install directly), and no shared step may install it.
-if ! grep -q 'dash_server_install' "$ROOT/setup/setup-macos.sh" && \
-   ! grep -q 'dash_server_install' "$ROOT/setup/setup-wsl.sh" && \
-   ! grep -q 'Install-DashServer' "$ROOT/setup/setup-windows-docker.ps1" && \
-   ! grep -q 'dash_server_install' <(awk '/^kit_shared_steps\(\)/,/^}/' "$ROOT/setup/lib/common.sh"); then
+if ! grep -qE 'dash_server_install|exasol_vscode_install' "$ROOT/setup/setup-macos.sh" && \
+   ! grep -qE 'dash_server_install|exasol_vscode_install' "$ROOT/setup/setup-wsl.sh" && \
+   ! grep -qE 'Install-DashServer|Install-ExasolVscode' "$ROOT/setup/setup-windows-docker.ps1" && \
+   ! grep -qE 'dash_server_install|exasol_vscode_install' <(awk '/^kit_shared_steps\(\)/,/^}/' "$ROOT/setup/lib/common.sh"); then
     check "marketplace(not_in_install_flow)" "yes" "yes"
 else
     check "marketplace(not_in_install_flow)" "yes" "no"

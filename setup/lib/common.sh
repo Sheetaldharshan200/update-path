@@ -1942,6 +1942,7 @@ exakit_component_current() {
 # exakit_marketplace_addons — one line per add-on: "id|label|description".
 exakit_marketplace_addons() {
     printf '%s\n' "dash-server|dash-server (AI dashboard host)|Agent-built live dashboards on your Exasol data, operated over MCP"
+    printf '%s\n' "exasol-vscode|Exasol for VS Code (editor extension)|SQL editing and schema browsing for your Exasol database, inside VS Code"
 }
 
 # _exakit_addon_fn <id> <suffix> — the module function for an add-on.
