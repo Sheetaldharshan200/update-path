@@ -214,6 +214,17 @@ dash_server_write_launcher() {
 # database bootstrapped as a connection profile (DASH_SERVER_EXASOL_*). Any of
 # these variables you export yourself take precedence. Re-running
 # `exakit update dash-server` regenerates this wrapper.
+# Already up? dash-server's consumption coordinator is single-process, so a
+# second copy dies on a RuntimeError traceback that reads like a crash. It is
+# not one - the first copy (often started at login by the boot entry) is
+# serving. Say that plainly and stop.
+if command -v curl >/dev/null 2>&1; then
+    if curl -s -o /dev/null --max-time 2 "http://127.0.0.1:@PORT@/mcp" 2>/dev/null; then
+        printf 'dash-server is already running: http://127.0.0.1:@PORT@ (MCP: /mcp)\n'
+        printf 'State: exakit status   Logs: exakit logs dash-server -f   Stop: exakit stop\n'
+        exit 0
+    fi
+fi
 : "${DASH_SERVER_INSTANCE_PATH:=@INSTANCE@}"
 export DASH_SERVER_INSTANCE_PATH
 if [ -n "@DSN@" ] && [ -z "${DASH_SERVER_EXASOL_DSN:-}" ]; then
@@ -240,6 +251,7 @@ EXAKIT_DS_EOF
         -e "s|@PWFILE@|$_dsl_pwfile|g" \
         -e "s|@PROFILE@|$EXAKIT_DASH_SERVER_PROFILE|" \
         -e "s|@USER@|$_dsl_user|" \
+        -e "s|@PORT@|$EXAKIT_DASH_SERVER_PORT|g" \
         -e "s|@VENVBIN@|$EXAKIT_DASH_SERVER_VENV/bin/dash-server|" \
         "$EXAKIT_DASH_SERVER_BIN" && rm -f "$EXAKIT_DASH_SERVER_BIN.exakit-bak"
     chmod 755 "$EXAKIT_DASH_SERVER_BIN"

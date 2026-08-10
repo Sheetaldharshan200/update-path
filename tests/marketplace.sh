@@ -185,6 +185,10 @@ lacks "the password itself never lands in the launcher" "s3cr3t-value" "$_launch
 has  "user overrides win (setdefault DSN guard)" 'DASH_SERVER_EXASOL_DSN:-' "$_launcher_body"
 has  "instance path is kit-managed" "$EXAKIT_HOME/dash-server/instance" "$_launcher_body"
 has  "profile bootstrap goes through the env secret" "DASH_SERVER_EXASOL_SECRET_ENV_VAR" "$_launcher_body"
+# Running the launcher while a copy is already serving must explain, not hand
+# the user dash-server's single-coordinator traceback.
+has  "the launcher refuses a duplicate politely" "already running" "$_launcher_body"
+has  "and points at the state and log commands" "exakit logs dash-server" "$_launcher_body"
 
 echo "generic registry (no per-add-on case arms):"
 # The whole point of the generic arms: an id the registry does not carry must
