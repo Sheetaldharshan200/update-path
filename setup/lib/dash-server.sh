@@ -330,12 +330,134 @@ _dash_server_print_usage() {
     ui_panel_end
 }
 
+# ---------------------------------------------------------------------------
+# Service lifecycle
+# ---------------------------------------------------------------------------
+# dash-server is a long-running HTTP process, so the kit treats it like the
+# database: start it, stop it, ask whether it is up, and bring it back after a
+# reboot. The generic hooks (<id>_start / _stop / _status / _autostart_*) are
+# what fold ANY add-on into `exakit start|stop|status` and the autostart
+# registration — a future add-on defines them and needs no other wiring.
+
+EXAKIT_DASH_SERVER_PIDFILE="${EXAKIT_DASH_SERVER_PIDFILE:-$EXAKIT_DASH_SERVER_HOME/dash-server.pid}"
+EXAKIT_DASH_SERVER_LOG="${EXAKIT_DASH_SERVER_LOG:-$EXAKIT_LOG_DIR/dash-server.log}"
+
+# dash_server_status — running | stopped | not installed. The HTTP probe is the
+# truth: the process may have been started by launchd, by the user in a
+# terminal, or by exakit, and only one of those leaves a pidfile.
+dash_server_status() {
+    if [ ! -x "$EXAKIT_DASH_SERVER_BIN" ]; then
+        printf '%s\n' "not installed"
+        return 0
+    fi
+    if _dash_server_http_answers; then
+        printf '%s\n' "running"
+    else
+        printf '%s\n' "stopped"
+    fi
+}
+
+# _dash_server_pids — the kit-managed dash-server processes: the recorded pid
+# when it is still alive, plus anything running out of this venv (which covers
+# a launchd-started copy, whose pid the kit never recorded). The venv path is
+# unique to this install, so this never matches an unrelated process.
+_dash_server_pids() {
+    _dsp_out=""
+    if [ -f "$EXAKIT_DASH_SERVER_PIDFILE" ]; then
+        _dsp_pid="$(cat "$EXAKIT_DASH_SERVER_PIDFILE" 2>/dev/null)"
+        case "$_dsp_pid" in
+            ''|*[!0-9]*) ;;
+            *) kill -0 "$_dsp_pid" 2>/dev/null && _dsp_out="$_dsp_pid" ;;
+        esac
+    fi
+    if command -v pgrep >/dev/null 2>&1; then
+        for _dsp_extra in $(pgrep -f "$EXAKIT_DASH_SERVER_VENV" 2>/dev/null); do
+            case " $_dsp_out " in
+                *" $_dsp_extra "*) ;;
+                *) _dsp_out="${_dsp_out:+$_dsp_out }$_dsp_extra" ;;
+            esac
+        done
+    fi
+    printf '%s' "$_dsp_out"
+}
+
+# dash_server_start — bring it up in the background and wait until the control
+# plane answers. Idempotent: an already-running server is reported, not
+# duplicated (a second one would fail on the port anyway).
+dash_server_start() {
+    [ -x "$EXAKIT_DASH_SERVER_BIN" ] || {
+        warn "dash-server is not installed — add it with: exakit marketplace"
+        return 1
+    }
+    if _dash_server_http_answers; then
+        ok "dash-server is already running (http://127.0.0.1:$EXAKIT_DASH_SERVER_PORT)"
+        return 0
+    fi
+    mkdir -p "$EXAKIT_DASH_SERVER_HOME" "$EXAKIT_LOG_DIR" 2>/dev/null || true
+    info "Starting dash-server on port $EXAKIT_DASH_SERVER_PORT"
+    # nohup + disown: it must outlive this command, and bash must not announce
+    # its death later in the user's terminal.
+    nohup "$EXAKIT_DASH_SERVER_BIN" --host 127.0.0.1 --port "$EXAKIT_DASH_SERVER_PORT" \
+        >> "$EXAKIT_DASH_SERVER_LOG" 2>&1 &
+    _dss_pid=$!
+    disown 2>/dev/null || true
+    printf '%s\n' "$_dss_pid" > "$EXAKIT_DASH_SERVER_PIDFILE" 2>/dev/null || true
+    _dss_waited=0
+    while [ "$_dss_waited" -lt 60 ]; do
+        if _dash_server_http_answers; then
+            ok "dash-server is running: http://127.0.0.1:$EXAKIT_DASH_SERVER_PORT (MCP: /mcp)"
+            return 0
+        fi
+        kill -0 "$_dss_pid" 2>/dev/null || break
+        sleep 2
+        _dss_waited=$((_dss_waited + 2))
+    done
+    warn "dash-server did not answer on port $EXAKIT_DASH_SERVER_PORT — see $(ui_tilde "$EXAKIT_DASH_SERVER_LOG")"
+    return 1
+}
+
+# dash_server_stop — stop every kit-managed dash-server process, bounded.
+dash_server_stop() {
+    _dst_pids="$(_dash_server_pids)"
+    if [ -z "$_dst_pids" ] && ! _dash_server_http_answers; then
+        ok "dash-server is already stopped"
+        rm -f "$EXAKIT_DASH_SERVER_PIDFILE" 2>/dev/null || true
+        return 0
+    fi
+    info "Stopping dash-server"
+    for _dst_pid in $_dst_pids; do
+        pkill -P "$_dst_pid" 2>/dev/null
+        kill "$_dst_pid" 2>/dev/null
+    done
+    sleep 1
+    for _dst_pid in $(_dash_server_pids); do
+        pkill -9 -P "$_dst_pid" 2>/dev/null
+        kill -9 "$_dst_pid" 2>/dev/null
+    done
+    rm -f "$EXAKIT_DASH_SERVER_PIDFILE" 2>/dev/null || true
+    if _dash_server_http_answers; then
+        warn "Something is still answering on port $EXAKIT_DASH_SERVER_PORT (a dash-server the kit did not start?)"
+        return 1
+    fi
+    ok "dash-server stopped"
+}
+
+# dash_server_autostart_command — what the boot entry runs. The launcher
+# already bootstraps the database profile, so this is simply it.
+dash_server_autostart_command() {
+    printf '%s --host 127.0.0.1 --port %s\n' "$EXAKIT_DASH_SERVER_BIN" "$EXAKIT_DASH_SERVER_PORT"
+}
+
 # dash_server_uninstall [dry] — remove everything the dash-server install put
 # on this machine: the venv, the instance state, the launcher, and the
 # manifest record. With "1" it only narrates the plan. Best-effort and
 # idempotent; safe to run when nothing is installed.
 dash_server_uninstall() {
     _dsu_dry="${1:-0}"
+    if [ "$_dsu_dry" != "1" ]; then
+        # A running server holds its port and would outlive its own files.
+        dash_server_stop >/dev/null 2>&1 || true
+    fi
     for _dsu_path in "$EXAKIT_DASH_SERVER_VENV" "$EXAKIT_DASH_SERVER_HOME" "$EXAKIT_DASH_SERVER_BIN"; do
         [ -e "$_dsu_path" ] || continue
         if [ "$_dsu_dry" = "1" ]; then

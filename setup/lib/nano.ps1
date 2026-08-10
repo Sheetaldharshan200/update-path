@@ -647,6 +647,36 @@ function Set-NanoManifest {
 }
 
 # --- lifecycle (used by exakit) ---------------------------------------------
+# Set-NanoRestartPolicy / Test-NanoRestartPolicySet - the container's own
+# restart policy is what brings the database back after a reboot, and Docker
+# applies it to the EXISTING container: no recreation, no data risk. Twins of
+# _exakit_nano_restart_policy in common.sh.
+function Set-NanoRestartPolicy {
+    param([Parameter(Mandatory)][string]$Policy)
+    $engine = Get-NanoEngine
+    if (-not $engine -or $engine -eq "none") { return $false }
+    Resolve-NanoNames
+    try {
+        $null = & $engine update --restart=$Policy $script:NanoContainer 2>&1
+        return ($LASTEXITCODE -eq 0)
+    } catch {
+        return $false
+    }
+}
+
+function Test-NanoRestartPolicySet {
+    $engine = Get-NanoEngine
+    if (-not $engine -or $engine -eq "none") { return $false }
+    Resolve-NanoNames
+    try {
+        $policy = & $engine inspect -f "{{.HostConfig.RestartPolicy.Name}}" $script:NanoContainer 2>$null
+        $policy = ("" + $policy).Trim()
+        return ($policy -and $policy -ne "no")
+    } catch {
+        return $false
+    }
+}
+
 function Get-NanoStatus {
     Resolve-NanoNames
     if (-not (Test-NanoContainerExists)) { return "not installed" }

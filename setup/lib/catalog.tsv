@@ -10,8 +10,9 @@ exakit	rollback-kit2		Remove exactly what upgrade-kit2 added and return to Kit 1
 exakit	update kit2		Re-stage the Kit 2 assets from the current kit copy (valid once Kit 2 is installed). A newer asset bundle arrives with the kit itself.
 exakit	info	[--json | -j]	Print the connection details panel (DSN, users, schema). --json prints the install record (~/.exasol-starter-kit/manifest.json) verbatim on stdout, with nothing else on it, so scripts and support threads can read it.
 exakit	guide		Friendly walkthrough: connect AI clients (MCP), SQL clients (DBeaver or DbVisualizer), and Python (pyexasol).
-exakit	start		Start the local Exasol database container.
-exakit	stop		Stop the local Exasol database container.
+exakit	start		Start everything the kit runs: the local Exasol database (deploying or starting it as needed) and every installed add-on service.
+exakit	stop		Stop the add-on services and the local Exasol database.
+exakit	autostart	[on|off]	Whether the database and add-on services come back automatically after a restart (launchd on macOS, systemd --user on Linux, the container restart policy for Nano). No argument shows the current state.
 exakit	data-load	[--force | -Force]	Open the focused data-loading menu: bundled sample data or a local CSV/Parquet file. --force reloads the bundled sample.
 exakit	mcp-setup		Permanently configure MCP in supported AI clients.
 exakit	mcp-status	[clients]	Show managed MCP state for all supported AI clients.

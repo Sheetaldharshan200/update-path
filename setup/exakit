@@ -19,8 +19,9 @@
 #                       install record (manifest.json) verbatim, nothing else
 #   guide               friendly walkthrough: connect AI clients (MCP), SQL
 #                       clients (DBeaver, DbVisualizer), and Python (pyexasol)
-#   start               start the local database
-#   stop                stop the local database
+#   start               start the local database and every add-on service
+#   stop                stop them again
+#   autostart [on|off]  whether everything comes back after a restart
 #   data-load [--force] open focused data loading options; --force reloads bundled sample data
 #   mcp-setup           permanently configure MCP in supported AI clients
 #   mcp-doctor          check MCP config, connectivity, and managed state
@@ -39,10 +40,12 @@
 #   rollback-kit2       remove exactly what upgrade-kit2 added; the database and
 #                       every Kit 1 component stay untouched
 #   uninstall [--yes] [--dry-run]
-#                       remove EVERYTHING the kit installed: database + all
-#                       data, MCP client configs, skills, exapump, the kit home
-#                       and the CLI binaries. --dry-run previews; --yes skips
-#                       the typed confirmation
+#                       pick what to remove — components, add-ons, or
+#                       EVERYTHING (database + data, MCP client configs,
+#                       skills, exapump, pyexasol, the kit home and the CLI
+#                       binaries) — with a summary and a typed confirmation.
+#                       --dry-run previews the full plan; --yes is the
+#                       scripted full uninstall
 #   whats-new [version] what changed in this kit version
 #   logs                print the path of the latest setup log
 #   catalog [search]    browse/search every exakit, exapump & exasol command
@@ -102,6 +105,17 @@ cmd_status() {
         personal) printf 'Status:     %s\n' "$(personal_status)" ;;
         *)        printf 'Status:     unknown\n' ;;
     esac
+    # Every add-on that runs as a service, with the state it is actually in —
+    # registry-driven, so a new add-on appears here on its own.
+    for _st_id in $(exakit_service_ids 2>/dev/null); do
+        [ "$_st_id" = "database" ] && continue
+        printf '%-11s %s\n' "$_st_id:" "$(exakit_service_status "$_st_id")"
+    done
+    if [ "$(manifest_get autostart.enabled 2>/dev/null || true)" = "true" ]; then
+        printf 'Autostart:  on (everything comes back after a restart)\n'
+    else
+        printf 'Autostart:  off — turn it on with: exakit autostart on\n'
+    fi
     printf 'Steps done: %s\n' "$(manifest_get steps_completed 2>/dev/null)"
     # pyexasol installs soft: when it is missing, say so here with the one command
     # that fixes it, instead of leaving a silent gap in the install.
@@ -116,21 +130,44 @@ cmd_status() {
 
 cmd_start() {
     _require_install
-    # Self-heal semantics: a stopped runtime is started and health-checked,
-    # and a missing one is deployed — `exakit start` promises a running
-    # database, so it is the one command allowed to (re)create one.
+    # Everything the kit runs, database first: self-heal semantics for the
+    # runtime (a stopped one is started, a missing one deployed — `exakit
+    # start` promises a running database), then every add-on service.
     case "$(_runtime_type)" in
-        nano)     [ "$(nano_status 2>/dev/null)" = "running" ] && { ok "Database is already running"; return 0; } ;;
-        personal) personal_deployment_running 2>/dev/null && { ok "Database is already running"; return 0; } ;;
+        nano)     [ "$(nano_status 2>/dev/null)" = "running" ] && ok "Database is already running" || exakit_ensure_runtime_running deploy ;;
+        personal) personal_deployment_running 2>/dev/null && ok "Database is already running" || exakit_ensure_runtime_running deploy ;;
+        *)        exakit_ensure_runtime_running deploy ;;
     esac
-    exakit_ensure_runtime_running deploy
+    for _start_id in $(exakit_service_ids); do
+        [ "$_start_id" = "database" ] && continue
+        exakit_service_start "$_start_id" || true
+    done
 }
 
 cmd_stop() {
     _require_install
+    # Add-on services first: they talk to the database, so they should be down
+    # before it goes.
+    for _stop_id in $(exakit_service_ids); do
+        [ "$_stop_id" = "database" ] && continue
+        exakit_service_stop "$_stop_id" || true
+    done
     case "$(_runtime_type)" in
         nano)     nano_stop ;;
         personal) personal_stop ;;
+    esac
+}
+
+# cmd_autostart [on|off] — whether everything the kit runs comes back after a
+# restart. With no argument it reports the current state.
+cmd_autostart() {
+    _require_install
+    exakit_init_logging 2>/dev/null || true
+    case "${1:-}" in
+        on|enable)   exakit_autostart_enable ;;
+        off|disable) exakit_autostart_disable ;;
+        ""|status)   exakit_autostart_print ;;
+        *) die "Unknown option '$1' for autostart (use: on, off, or no argument to show the state)." ;;
     esac
 }
 
@@ -378,7 +415,8 @@ Get started:
 Everyday commands:
   status               is the database up and healthy?
   info                 show your connection details
-  start | stop         run or pause the local database
+  start | stop         run or pause the database and add-on services
+  autostart [on|off]   come back automatically after a restart
   data-load            load the sample data or your own CSV / Parquet
   mcp-doctor           check the AI (MCP) connection
   marketplace          optional add-ons (dashboards & more)
@@ -525,6 +563,7 @@ case "${1:-help}" in
     guide)    _with_notice exakit_guide ;;
     start)    _with_notice cmd_start ;;
     stop)     _with_notice cmd_stop ;;
+    autostart) shift; _with_notice cmd_autostart "${1:-}" ;;
     data-load) shift; _with_notice cmd_data_load "${1:-}" ;;
     mcp-setup) _with_notice cmd_mcp_setup ;;
     mcp-repair) shift; _with_notice cmd_mcp_repair "$@" ;;

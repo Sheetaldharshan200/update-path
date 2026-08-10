@@ -2181,6 +2181,13 @@ _exakit_marketplace_install_one() {
     if command -v "$_mi_validate" >/dev/null 2>&1; then
         "$_mi_validate" || true
     fi
+    # A service add-on joins the boot set the moment it is installed, so the
+    # user does not have to remember a second command after saying yes. On
+    # macOS loading the agent also starts it, so it is usable right away.
+    if [ "$(manifest_get autostart.enabled 2>/dev/null || true)" = "true" ] && \
+       command -v "$(_exakit_addon_fn "$1" autostart_command)" >/dev/null 2>&1; then
+        _exakit_autostart_register "$1" || true
+    fi
     return 0
 }
 
@@ -5687,6 +5694,11 @@ kit_shared_steps() {
             "$(exakit_take_failure_note)" "AI skills"
     fi
     exakit_clear_failure_note
+    # The database should be there after a reboot without anyone thinking about
+    # it, the way a system service is. Best-effort and announced: a platform
+    # with no supervisor says so, and `exakit autostart off` reverses it.
+    exakit_autostart_enable || true
+
     # The upgrade news (exakit_print_whats_new_box) and the closing summary
     # (exakit_print_soft_failures) are printed by the setup scripts after the
     # connection panel at the very end of the run — not here, in the middle of
@@ -6000,6 +6012,266 @@ _exakit_uninstall_component() {
 # is actually on this machine is offered, and EVERYTHING is the one row that
 # means the full teardown (kit home and the exakit command included).
 # ⇄ twin: Show-ExakitUninstallMenu in setup/exakit.ps1.
+# ---------------------------------------------------------------------------
+# Services and autostart
+# ---------------------------------------------------------------------------
+# Everything the kit runs as a process — the database and any add-on that
+# serves (dash-server today) — answers the same three questions: are you
+# running, start, stop. Add-ons opt in by defining <id>_status, <id>_start,
+# <id>_stop and <id>_autostart_command; the registry does the rest, so
+# `exakit start|stop|status` and the boot entries pick a new add-on up with no
+# wiring here.
+#
+# Autostart uses the platform's own supervisor rather than anything invented:
+#   macOS  — a LaunchAgent per service in ~/Library/LaunchAgents (RunAtLoad).
+#   Linux  — a systemd --user unit when the session has one.
+#   Nano   — the container's own restart policy, which Docker honours on boot.
+# A registration is a file the user can read, and `exakit autostart off`
+# removes every one of them.
+
+EXAKIT_LAUNCHAGENT_DIR="${EXAKIT_LAUNCHAGENT_DIR:-$HOME/Library/LaunchAgents}"
+EXAKIT_SYSTEMD_USER_DIR="${EXAKIT_SYSTEMD_USER_DIR:-$HOME/.config/systemd/user}"
+EXAKIT_AUTOSTART_PREFIX="com.exasol.exakit"
+
+# exakit_service_ids — every service on this machine, database first. Add-ons
+# appear only when installed AND carrying the service hooks.
+exakit_service_ids() {
+    [ -n "$(manifest_get runtime.type 2>/dev/null || true)" ] && printf '%s\n' database
+    for _si_id in $(exakit_marketplace_installed_addons 2>/dev/null); do
+        command -v "$(_exakit_addon_fn "$_si_id" status)" >/dev/null 2>&1 && printf '%s\n' "$_si_id"
+    done
+    return 0
+}
+
+# exakit_service_status <id> — running | stopped | not installed | unknown.
+exakit_service_status() {
+    if [ "$1" = "database" ]; then
+        case "$(exakit_installation_runtime_type 2>/dev/null || true)" in
+            nano)     nano_status ;;
+            personal) personal_status ;;
+            *)        printf '%s\n' "unknown" ;;
+        esac
+        return 0
+    fi
+    _ss_fn="$(_exakit_addon_fn "$1" status)"
+    if command -v "$_ss_fn" >/dev/null 2>&1; then
+        "$_ss_fn"
+    else
+        printf '%s\n' "unknown"
+    fi
+}
+
+# exakit_service_start <id> / exakit_service_stop <id> — the database self-heals
+# (a missing deployment is refused with the remedy, a stopped one started);
+# add-ons delegate to their own hooks.
+exakit_service_start() {
+    if [ "$1" = "database" ]; then
+        exakit_ensure_runtime_running deploy
+        return $?
+    fi
+    _sst_fn="$(_exakit_addon_fn "$1" start)"
+    command -v "$_sst_fn" >/dev/null 2>&1 || return 0
+    "$_sst_fn"
+}
+
+exakit_service_stop() {
+    if [ "$1" = "database" ]; then
+        case "$(exakit_installation_runtime_type 2>/dev/null || true)" in
+            nano)     nano_stop ;;
+            personal) personal_stop ;;
+        esac
+        return $?
+    fi
+    _ssp_fn="$(_exakit_addon_fn "$1" stop)"
+    command -v "$_ssp_fn" >/dev/null 2>&1 || return 0
+    "$_ssp_fn"
+}
+
+# _exakit_service_autostart_command <id> — the command a boot entry runs, or
+# nothing when the service needs no entry (Nano rides Docker's restart policy).
+_exakit_service_autostart_command() {
+    if [ "$1" = "database" ]; then
+        case "$(exakit_installation_runtime_type 2>/dev/null || true)" in
+            personal)
+                _sac_cli="$(personal_cli 2>/dev/null || true)"
+                [ -n "$_sac_cli" ] && printf '%s start\n' "$_sac_cli"
+                ;;
+            nano) ;;   # the container restart policy covers it
+        esac
+        return 0
+    fi
+    _sac_fn="$(_exakit_addon_fn "$1" autostart_command)"
+    command -v "$_sac_fn" >/dev/null 2>&1 && "$_sac_fn"
+    return 0
+}
+
+_exakit_autostart_label() { printf '%s.%s\n' "$EXAKIT_AUTOSTART_PREFIX" "$1"; }
+
+# _exakit_autostart_register <id> — write the platform's boot entry. Returns 1
+# (with an explanation) when the platform has no supervisor to register with.
+_exakit_autostart_register() {
+    _ar_id="$1"
+    _ar_cmd="$(_exakit_service_autostart_command "$_ar_id")"
+    if [ -z "$_ar_cmd" ]; then
+        # Nano: the container itself carries the policy.
+        if [ "$_ar_id" = "database" ] && \
+           [ "$(exakit_installation_runtime_type 2>/dev/null || true)" = "nano" ]; then
+            _exakit_nano_restart_policy always && \
+                ok "database: the container restarts with Docker"
+            return $?
+        fi
+        return 0
+    fi
+    _ar_label="$(_exakit_autostart_label "$_ar_id")"
+    case "$(detect_os)" in
+        macos)
+            mkdir -p "$EXAKIT_LAUNCHAGENT_DIR" || { warn "Could not create $EXAKIT_LAUNCHAGENT_DIR"; return 1; }
+            _ar_plist="$EXAKIT_LAUNCHAGENT_DIR/$_ar_label.plist"
+            # One <string> per argument: launchd does not run a shell.
+            {
+                printf '<?xml version="1.0" encoding="UTF-8"?>\n'
+                printf '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n'
+                printf '<plist version="1.0">\n<dict>\n'
+                printf '  <key>Label</key><string>%s</string>\n' "$_ar_label"
+                printf '  <key>ProgramArguments</key>\n  <array>\n'
+                for _ar_arg in $_ar_cmd; do
+                    printf '    <string>%s</string>\n' "$_ar_arg"
+                done
+                printf '  </array>\n'
+                printf '  <key>RunAtLoad</key><true/>\n'
+                printf '  <key>StandardOutPath</key><string>%s/autostart-%s.log</string>\n' "$EXAKIT_LOG_DIR" "$_ar_id"
+                printf '  <key>StandardErrorPath</key><string>%s/autostart-%s.log</string>\n' "$EXAKIT_LOG_DIR" "$_ar_id"
+                printf '</dict>\n</plist>\n'
+            } > "$_ar_plist" || { warn "Could not write $_ar_plist"; return 1; }
+            # Load it now so the entry is live without a logout, and so a
+            # rewritten plist replaces the old registration.
+            launchctl unload "$_ar_plist" >/dev/null 2>&1
+            launchctl load "$_ar_plist" >/dev/null 2>&1
+            ok "$_ar_id: starts at login ($(ui_tilde "$_ar_plist"))"
+            ;;
+        linux)
+            if ! command -v systemctl >/dev/null 2>&1 || ! systemctl --user show-environment >/dev/null 2>&1; then
+                warn "$_ar_id: this session has no systemd --user, so nothing was registered."
+                info "Start it by hand after a reboot with: exakit start"
+                return 1
+            fi
+            mkdir -p "$EXAKIT_SYSTEMD_USER_DIR" || { warn "Could not create $EXAKIT_SYSTEMD_USER_DIR"; return 1; }
+            _ar_unit="$EXAKIT_SYSTEMD_USER_DIR/$_ar_label.service"
+            {
+                printf '[Unit]\nDescription=Exasol Starter Kit: %s\n\n' "$_ar_id"
+                printf '[Service]\nType=simple\nExecStart=%s\nRestart=on-failure\n\n' "$_ar_cmd"
+                printf '[Install]\nWantedBy=default.target\n'
+            } > "$_ar_unit" || { warn "Could not write $_ar_unit"; return 1; }
+            systemctl --user daemon-reload >/dev/null 2>&1
+            systemctl --user enable "$_ar_label.service" >/dev/null 2>&1 || {
+                warn "Could not enable $_ar_label.service"; return 1; }
+            ok "$_ar_id: starts at login ($(ui_tilde "$_ar_unit"))"
+            ;;
+        *)
+            warn "$_ar_id: automatic start is not supported on this platform."
+            return 1
+            ;;
+    esac
+}
+
+# _exakit_autostart_unregister <id> — remove the boot entry, quietly.
+_exakit_autostart_unregister() {
+    _au_label="$(_exakit_autostart_label "$1")"
+    _au_plist="$EXAKIT_LAUNCHAGENT_DIR/$_au_label.plist"
+    if [ -f "$_au_plist" ]; then
+        launchctl unload "$_au_plist" >/dev/null 2>&1
+        rm -f "$_au_plist"
+        ok "$1: no longer starts at login"
+    fi
+    _au_unit="$EXAKIT_SYSTEMD_USER_DIR/$_au_label.service"
+    if [ -f "$_au_unit" ]; then
+        systemctl --user disable "$_au_label.service" >/dev/null 2>&1
+        rm -f "$_au_unit"
+        systemctl --user daemon-reload >/dev/null 2>&1
+        ok "$1: no longer starts at login"
+    fi
+    return 0
+}
+
+# _exakit_autostart_registered <id> — is a boot entry in place?
+_exakit_autostart_registered() {
+    _arg_label="$(_exakit_autostart_label "$1")"
+    [ -f "$EXAKIT_LAUNCHAGENT_DIR/$_arg_label.plist" ] && return 0
+    [ -f "$EXAKIT_SYSTEMD_USER_DIR/$_arg_label.service" ] && return 0
+    # Nano needs no file: the container carries the policy itself.
+    if [ "$1" = "database" ] && \
+       [ "$(exakit_installation_runtime_type 2>/dev/null || true)" = "nano" ]; then
+        _exakit_nano_restart_policy_is_set && return 0
+    fi
+    return 1
+}
+
+# _exakit_nano_restart_policy <policy> — apply it to the existing container, no
+# recreation and no data risk.
+_exakit_nano_restart_policy() {
+    command -v detect_container_runtime >/dev/null 2>&1 || return 1
+    _nrp_engine="$(detect_container_runtime 2>/dev/null)"
+    [ -n "$_nrp_engine" ] && [ "$_nrp_engine" != "none" ] || return 1
+    "$_nrp_engine" update --restart="$1" "${EXAKIT_NANO_CONTAINER:-exasol-nano}" >/dev/null 2>&1
+}
+
+_exakit_nano_restart_policy_is_set() {
+    command -v detect_container_runtime >/dev/null 2>&1 || return 1
+    _nrs_engine="$(detect_container_runtime 2>/dev/null)"
+    [ -n "$_nrs_engine" ] && [ "$_nrs_engine" != "none" ] || return 1
+    _nrs_policy="$("$_nrs_engine" inspect -f '{{.HostConfig.RestartPolicy.Name}}' \
+        "${EXAKIT_NANO_CONTAINER:-exasol-nano}" 2>/dev/null)"
+    case "$_nrs_policy" in
+        ''|no) return 1 ;;
+        *) return 0 ;;
+    esac
+}
+
+# exakit_autostart_enable / _disable — every service at once. Best-effort: a
+# platform without a supervisor says so and the rest still applies.
+exakit_autostart_enable() {
+    _ae_any=0
+    for _ae_id in $(exakit_service_ids); do
+        _exakit_autostart_register "$_ae_id" && _ae_any=1
+    done
+    if [ "$_ae_any" = 1 ]; then
+        manifest_set autostart.enabled true
+        info "Everything the kit runs comes back automatically after a restart."
+    else
+        manifest_set autostart.enabled false
+    fi
+    return 0
+}
+
+exakit_autostart_disable() {
+    for _ad_id in $(exakit_service_ids); do
+        _exakit_autostart_unregister "$_ad_id"
+    done
+    # The database container keeps running, it just no longer comes back on boot.
+    [ "$(exakit_installation_runtime_type 2>/dev/null || true)" = "nano" ] && \
+        _exakit_nano_restart_policy no >/dev/null 2>&1
+    manifest_set autostart.enabled false
+    ok "Automatic start after a restart is off."
+    return 0
+}
+
+# exakit_autostart_print — the state of every boot entry.
+exakit_autostart_print() {
+    printf '\n  Automatic start after a restart\n'
+    printf '  -------------------------------\n'
+    printf '%-14s %s\n' "Service" "At login"
+    for _ap_id in $(exakit_service_ids); do
+        if _exakit_autostart_registered "$_ap_id"; then
+            printf '%-14s %s\n' "$_ap_id" "yes"
+        else
+            printf '%-14s %s\n' "$_ap_id" "no"
+        fi
+    done
+    printf '\n'
+    info "Turn it on with: exakit autostart on   ·   off with: exakit autostart off"
+    return 0
+}
+
 exakit_uninstall_menu() {
     _um_labels=("Skip — uninstall nothing")
     _um_keys=("__skip__")
@@ -6135,7 +6407,21 @@ exakit_uninstall_run() {
         [ "$_dry" = "1" ] || rm -rf "$1"
     }
 
-    # 0) Kit-managed marketplace add-ons that live OUTSIDE the kit home (the
+    # 0a) Boot entries first: a LaunchAgent or systemd unit left behind would
+    #     try to start something that no longer exists on the next login.
+    if command -v exakit_service_ids >/dev/null 2>&1; then
+        for _un_svc in $(exakit_service_ids 2>/dev/null); do
+            if _exakit_autostart_registered "$_un_svc" 2>/dev/null; then
+                if [ "$_dry" = "1" ]; then
+                    info "  will remove: the automatic-start entry for $_un_svc"
+                else
+                    _exakit_autostart_unregister "$_un_svc" >/dev/null 2>&1 || true
+                fi
+            fi
+        done
+    fi
+
+    # 0b) Kit-managed marketplace add-ons that live OUTSIDE the kit home (the
     #    VS Code extension). Anything under the kit home or the bin dir is
     #    swept by steps 5-6 regardless; a system-installed copy the kit never
     #    managed is not touched (each hook enforces that itself).

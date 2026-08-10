@@ -18,8 +18,9 @@
 #                         install record (manifest.json) verbatim, nothing else
 #   guide                 friendly walkthrough: connect AI clients (MCP), SQL
 #                         clients (DBeaver, DbVisualizer), and Python (pyexasol)
-#   start                 start the local database
-#   stop                  stop the local database
+#   start                 start the local database and every add-on service
+#   stop                  stop them again
+#   autostart [on|off]    whether everything comes back after a restart
 #   data-load [-Force]    open focused data loading options; -Force reloads bundled sample data
 #   mcp-setup             permanently configure MCP in supported AI clients
 #   mcp-doctor [clients]  check MCP config, connectivity, and managed state
@@ -105,6 +106,15 @@ function Invoke-CmdStatus {
     $status = switch ($type) { "nano" { Get-NanoStatus } default { "unknown" } }
     Write-Host "Status:     $status"
     $steps = @(Get-ExakitManifestValue "steps_completed")
+    foreach ($svcId in (Get-ExakitServiceIds)) {
+        if ($svcId -eq "database") { continue }
+        Write-Host ("{0,-11} {1}" -f "${svcId}:", (Get-ExakitServiceStatus -Id $svcId))
+    }
+    if ((Get-ExakitManifestValue "autostart.enabled") -eq $true) {
+        Write-Host "Autostart:  on (everything comes back after a restart)"
+    } else {
+        Write-Host "Autostart:  off - turn it on with: exakit autostart on"
+    }
     Write-Host "Steps done: $($steps -join ', ')"
     # pyexasol installs soft: when it is missing, say so here with the one command
     # that fixes it, instead of leaving a silent gap in the install.
@@ -117,20 +127,184 @@ function Invoke-CmdStatus {
     Write-Host "Manifest:   $script:ManifestPath"
 }
 
-function Invoke-CmdStart {
-    Assert-ExakitInstalled
-    # Self-heal semantics: a stopped runtime is started and health-checked,
-    # and a missing one is created - `exakit start` promises a running
-    # database, so it is the one command allowed to (re)create one.
-    if ((Get-RuntimeType) -eq "nano" -and (Get-NanoStatus) -eq "running") {
-        Ok "Database is already running"
+# ---------------------------------------------------------------------------
+# Services and autostart (twin of the exakit_service_* set in common.sh)
+# ---------------------------------------------------------------------------
+# Every service answers the same three questions - running, start, stop - and
+# add-ons opt in through the registry (StatusFn/StartFn/StopFn/AutostartFn), so
+# `exakit start|stop|status` and the boot entry pick a new one up with no
+# wiring here. Windows registers a Startup-folder entry; the Nano container
+# carries its own restart policy, which Docker honours on boot.
+function Get-ExakitServiceIds {
+    $ids = @()
+    if (Get-ExakitManifestValue "runtime.type") { $ids += "database" }
+    foreach ($addonId in (Get-ExakitMarketplaceInstalledAddons)) {
+        $addon = Get-ExakitMarketplaceAddon $addonId
+        if ($addon -and $addon.PSObject.Properties["StatusFn"] -and
+            (Get-Command $addon.StatusFn -ErrorAction SilentlyContinue)) { $ids += $addonId }
+    }
+    return $ids
+}
+
+function Get-ExakitServiceStatus {
+    param([Parameter(Mandatory)][string]$Id)
+    if ($Id -eq "database") {
+        if ((Get-RuntimeType) -eq "nano") { return (Get-NanoStatus) }
+        return "unknown"
+    }
+    $addon = Get-ExakitMarketplaceAddon $Id
+    if ($addon -and (Get-Command $addon.StatusFn -ErrorAction SilentlyContinue)) { return (& $addon.StatusFn) }
+    return "unknown"
+}
+
+function Start-ExakitService {
+    param([Parameter(Mandatory)][string]$Id)
+    if ($Id -eq "database") { Confirm-ExakitRuntimeRunning -Deploy; return }
+    $addon = Get-ExakitMarketplaceAddon $Id
+    if ($addon -and $addon.PSObject.Properties["StartFn"] -and
+        (Get-Command $addon.StartFn -ErrorAction SilentlyContinue)) { [void](& $addon.StartFn) }
+}
+
+function Stop-ExakitService {
+    param([Parameter(Mandatory)][string]$Id)
+    if ($Id -eq "database") {
+        if ((Get-RuntimeType) -eq "nano") { Stop-Nano }
         return
     }
-    Confirm-ExakitRuntimeRunning -Deploy
+    $addon = Get-ExakitMarketplaceAddon $Id
+    if ($addon -and $addon.PSObject.Properties["StopFn"] -and
+        (Get-Command $addon.StopFn -ErrorAction SilentlyContinue)) { [void](& $addon.StopFn) }
+}
+
+function Get-ExakitStartupDir {
+    if ($env:EXAKIT_STARTUP_DIR) { return $env:EXAKIT_STARTUP_DIR }
+    return (Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs\Startup")
+}
+
+function Get-ExakitAutostartEntryPath {
+    param([Parameter(Mandatory)][string]$Id)
+    return (Join-Path (Get-ExakitStartupDir) "com.exasol.exakit.$Id.cmd")
+}
+
+function Register-ExakitAutostart {
+    param([Parameter(Mandatory)][string]$Id)
+    if ($Id -eq "database") {
+        # The container's own restart policy is what survives a reboot.
+        if ((Get-RuntimeType) -eq "nano") {
+            if (Set-NanoRestartPolicy -Policy "always") {
+                Ok "database: the container restarts with Docker"
+                return $true
+            }
+            return $false
+        }
+        return $false
+    }
+    $addon = Get-ExakitMarketplaceAddon $Id
+    if (-not ($addon -and $addon.PSObject.Properties["AutostartFn"] -and
+              (Get-Command $addon.AutostartFn -ErrorAction SilentlyContinue))) { return $false }
+    $command = & $addon.AutostartFn
+    if (-not $command) { return $false }
+    $dir = Get-ExakitStartupDir
+    if (-not (Test-Path $dir)) {
+        New-Item -ItemType Directory -Force -Path $dir | Out-Null
+    }
+    $entry = Get-ExakitAutostartEntryPath -Id $Id
+    $lines = @(
+        "@echo off",
+        "rem Starts $Id at login - written by the Exasol Personal Local Starter Kit.",
+        "rem Remove it with: exakit autostart off",
+        "start `"`" /min $command"
+    )
+    Set-Content -Path $entry -Value ($lines -join "`r`n") -Encoding Ascii
+    Ok "$Id`: starts at login ($entry)"
+    return $true
+}
+
+function Unregister-ExakitAutostart {
+    param([Parameter(Mandatory)][string]$Id)
+    if ($Id -eq "database" -and (Get-RuntimeType) -eq "nano") {
+        [void](Set-NanoRestartPolicy -Policy "no")
+    }
+    $entry = Get-ExakitAutostartEntryPath -Id $Id
+    if (Test-Path $entry) {
+        Remove-Item -Force -ErrorAction SilentlyContinue $entry
+        Ok "$Id`: no longer starts at login"
+    }
+}
+
+function Test-ExakitAutostartRegistered {
+    param([Parameter(Mandatory)][string]$Id)
+    if (Test-Path (Get-ExakitAutostartEntryPath -Id $Id)) { return $true }
+    if ($Id -eq "database" -and (Get-RuntimeType) -eq "nano") {
+        return (Test-NanoRestartPolicySet)
+    }
+    return $false
+}
+
+function Enable-ExakitAutostart {
+    $any = $false
+    foreach ($id in (Get-ExakitServiceIds)) {
+        if (Register-ExakitAutostart -Id $id) { $any = $true }
+    }
+    Set-ExakitManifestValue "autostart.enabled" $any
+    if ($any) { Info "Everything the kit runs comes back automatically after a restart." }
+}
+
+function Disable-ExakitAutostart {
+    foreach ($id in (Get-ExakitServiceIds)) { Unregister-ExakitAutostart -Id $id }
+    Set-ExakitManifestValue "autostart.enabled" $false
+    Ok "Automatic start after a restart is off."
+}
+
+function Show-ExakitAutostart {
+    Write-Host ""
+    Write-Host "  Automatic start after a restart"
+    Write-Host "  -------------------------------"
+    Write-Host ("{0,-14} {1}" -f "Service", "At login")
+    foreach ($id in (Get-ExakitServiceIds)) {
+        $state = if (Test-ExakitAutostartRegistered -Id $id) { "yes" } else { "no" }
+        Write-Host ("{0,-14} {1}" -f $id, $state)
+    }
+    Write-Host ""
+    Info "Turn it on with: exakit autostart on   -   off with: exakit autostart off"
+}
+
+function Invoke-CmdAutostart {
+    param([string]$Action = "")
+    Assert-ExakitInstalled
+    Initialize-ExakitLogging
+    switch ($Action) {
+        { $_ -in @("on", "enable") }   { Enable-ExakitAutostart }
+        { $_ -in @("off", "disable") } { Disable-ExakitAutostart }
+        { $_ -in @("", "status") }     { Show-ExakitAutostart }
+        default { Fail "Unknown option '$Action' for autostart (use: on, off, or no argument to show the state)." }
+    }
+}
+
+function Invoke-CmdStart {
+    Assert-ExakitInstalled
+    # Everything the kit runs, database first: self-heal semantics for the
+    # runtime (a stopped one is started, a missing one created - `exakit start`
+    # promises a running database), then every add-on service.
+    if ((Get-RuntimeType) -eq "nano" -and (Get-NanoStatus) -eq "running") {
+        Ok "Database is already running"
+    } else {
+        Confirm-ExakitRuntimeRunning -Deploy
+    }
+    foreach ($id in (Get-ExakitServiceIds)) {
+        if ($id -eq "database") { continue }
+        Start-ExakitService -Id $id
+    }
 }
 
 function Invoke-CmdStop {
     Assert-ExakitInstalled
+    # Add-on services first: they talk to the database, so they should be down
+    # before it goes.
+    foreach ($id in (Get-ExakitServiceIds)) {
+        if ($id -eq "database") { continue }
+        Stop-ExakitService -Id $id
+    }
     switch (Get-RuntimeType) { "nano" { Stop-Nano } }
 }
 
@@ -143,7 +317,16 @@ function Invoke-CmdStop {
 function Invoke-ExakitUninstallRun {
     param([switch]$DryRun)
 
-    # 0) Kit-managed marketplace add-ons that live OUTSIDE the kit home (the
+    # 0a) Boot entries first: a Startup entry left behind would try to start
+    #     something that no longer exists at the next login.
+    foreach ($svcId in (Get-ExakitServiceIds)) {
+        if (Test-ExakitAutostartRegistered -Id $svcId) {
+            if ($DryRun) { Info "  will remove: the automatic-start entry for $svcId" }
+            else { Unregister-ExakitAutostart -Id $svcId }
+        }
+    }
+
+    # 0b) Kit-managed marketplace add-ons that live OUTSIDE the kit home (the
     #    VS Code extension). Registry-driven: a new add-on ships its own
     #    UninstallFn and appears here with no edits. A system-installed copy
     #    the kit never managed is not touched (each hook enforces that).
@@ -1765,6 +1948,7 @@ try {
         "guide"        { Show-ExakitGuide }
         "start"        { Invoke-CmdStart }
         "stop"         { Invoke-CmdStop }
+        "autostart"    { Invoke-CmdAutostart -Action (($RestArgs | Select-Object -First 1)) }
         "data-load"    { Invoke-CmdDataLoad -ForceFlag ($RestArgs | Select-Object -First 1) }
         "mcp-setup"    { Invoke-CmdMcpSetup }
         "mcp-repair"   { Invoke-CmdMcpOperation -Operation "repair" -OpArgs $RestArgs }
@@ -1796,7 +1980,7 @@ try {
     # where a notice on stdout would stop the output being parseable JSON.
     if (-not $script:JsonOutput -and
         @("status", "info", "guide", "start", "stop", "data-load", "preflight",
-          "skills-install", "marketplace", "logs", "mcp-setup", "mcp-doctor", "mcp-status",
+          "skills-install", "marketplace", "autostart", "logs", "mcp-setup", "mcp-doctor", "mcp-status",
           "mcp-repair", "mcp-validate", "mcp-restore", "mcp-remove") -contains $Command) {
         Show-ExakitUpdateNotice
     }

@@ -561,6 +561,35 @@ if grep -q 'exakit_marketplace_addons()' "$ROOT/setup/lib/common.sh" && \
 else
     check "marketplace(twins)" "yes" "no"
 fi
+# Services and autostart, both sides: the registry-driven service set, the
+# start/stop/status hooks, the boot registration, and the autostart command.
+if grep -q 'exakit_service_ids()' "$ROOT/setup/lib/common.sh" && \
+   grep -q '_exakit_autostart_register()' "$ROOT/setup/lib/common.sh" && \
+   grep -q 'exakit_autostart_enable()' "$ROOT/setup/lib/common.sh" && \
+   grep -q 'dash_server_status()' "$ROOT/setup/lib/dash-server.sh" && \
+   grep -q 'dash_server_start()' "$ROOT/setup/lib/dash-server.sh" && \
+   grep -q 'dash_server_autostart_command()' "$ROOT/setup/lib/dash-server.sh" && \
+   grep -q 'autostart) shift; _with_notice cmd_autostart' "$ROOT/setup/exakit" && \
+   grep -q 'function Get-ExakitServiceIds' "$ROOT/setup/exakit.ps1" && \
+   grep -q 'function Register-ExakitAutostart' "$ROOT/setup/exakit.ps1" && \
+   grep -q 'function Enable-ExakitAutostart' "$ROOT/setup/exakit.ps1" && \
+   grep -q 'function Get-DashServerStatus' "$ROOT/setup/lib/dash-server.ps1" && \
+   grep -q 'function Start-DashServer' "$ROOT/setup/lib/dash-server.ps1" && \
+   grep -q 'function Set-NanoRestartPolicy' "$ROOT/setup/lib/nano.ps1" && \
+   grep -q '"autostart"    { Invoke-CmdAutostart' "$ROOT/setup/exakit.ps1"; then
+    check "services(autostart_twins)" "yes" "yes"
+else
+    check "services(autostart_twins)" "yes" "no"
+fi
+# The install turns it on, and the uninstall takes the boot entries away.
+if grep -q 'exakit_autostart_enable' <(awk '/^kit_shared_steps\(\)/,/^}/' "$ROOT/setup/lib/common.sh") && \
+   grep -q '_exakit_autostart_unregister' <(awk '/^exakit_uninstall_run\(\)/,/^}/' "$ROOT/setup/lib/common.sh") && \
+   grep -q 'Unregister-ExakitAutostart' "$ROOT/setup/exakit.ps1"; then
+    check "services(autostart_install_and_sweep)" "yes" "yes"
+else
+    check "services(autostart_install_and_sweep)" "yes" "no"
+fi
+
 # The closing marketplace offer, all three installers: shown after everything
 # ran, and its core is shared (common.sh / exakit-common.ps1), not duplicated.
 if grep -q 'exakit_marketplace_offer' "$ROOT/setup/setup-macos.sh" && \

@@ -2462,6 +2462,10 @@ function Get-ExakitMarketplaceAddons {
             UpdateFn    = "Update-DashServer"
             VersionFn   = "Get-DashServerInstalledVersion"
             UninstallFn = "Uninstall-DashServer"
+            StatusFn    = "Get-DashServerStatus"
+            StartFn     = "Start-DashServer"
+            StopFn      = "Stop-DashServer"
+            AutostartFn = "Get-DashServerAutostartCommand"
             EnvVar      = "EXAKIT_DASH_SERVER_VERSION"
             FallbackVar = "DashServerVersionFallback"
         },

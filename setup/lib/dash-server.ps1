@@ -305,11 +305,110 @@ function Write-DashServerUsagePanel {
     Complete-ExakitPanel
 }
 
+# ---------------------------------------------------------------------------
+# Service lifecycle (twin of the dash_server_start/_stop/_status set)
+# ---------------------------------------------------------------------------
+$script:DashServerPidFile = Join-Path $script:DashServerHome "dash-server.pid"
+$script:DashServerLog = Join-Path $script:LogDir "dash-server.log"
+
+# running | stopped | not installed. The HTTP probe is the truth: the process
+# may have been started by the Startup entry, by the user, or by exakit.
+function Get-DashServerStatus {
+    if (-not (Test-Path (Get-DashServerLauncherPath))) { return "not installed" }
+    if (Test-DashServerHttpAnswers) { return "running" }
+    return "stopped"
+}
+
+# The kit-managed dash-server processes: anything running out of this venv,
+# which covers a Startup-started copy whose pid the kit never recorded.
+function Get-DashServerProcessIds {
+    $ids = @()
+    if (Test-Path $script:DashServerPidFile) {
+        $recorded = (Get-Content $script:DashServerPidFile -ErrorAction SilentlyContinue | Select-Object -First 1)
+        if ($recorded -match '^\d+$' -and (Get-Process -Id ([int]$recorded) -ErrorAction SilentlyContinue)) {
+            $ids += [int]$recorded
+        }
+    }
+    try {
+        foreach ($proc in (Get-CimInstance Win32_Process -ErrorAction Stop |
+                           Where-Object { $_.CommandLine -and $_.CommandLine.Contains($script:DashServerVenv) })) {
+            if ($ids -notcontains [int]$proc.ProcessId) { $ids += [int]$proc.ProcessId }
+        }
+    } catch { }
+    return $ids
+}
+
+# Bring it up in the background and wait until the control plane answers.
+# Idempotent: an already-running server is reported, not duplicated.
+function Start-DashServer {
+    if (-not (Test-Path (Get-DashServerLauncherPath))) {
+        Warn2 "dash-server is not installed - add it with: exakit marketplace"
+        return $false
+    }
+    if (Test-DashServerHttpAnswers) {
+        Ok "dash-server is already running (http://127.0.0.1:$($script:DashServerPort))"
+        return $true
+    }
+    New-Item -ItemType Directory -Force -Path $script:DashServerHome, $script:LogDir | Out-Null
+    Info "Starting dash-server on port $($script:DashServerPort)"
+    try {
+        $proc = Start-Process -FilePath (Get-DashServerLauncherPath) `
+            -ArgumentList @("--host", "127.0.0.1", "--port", $script:DashServerPort) `
+            -WindowStyle Hidden -PassThru `
+            -RedirectStandardOutput $script:DashServerLog -RedirectStandardError "$($script:DashServerLog).err"
+    } catch {
+        Warn2 "dash-server could not be started: $_"
+        return $false
+    }
+    Set-Content -Path $script:DashServerPidFile -Value $proc.Id -Encoding Ascii
+    $waited = 0
+    while ($waited -lt 60) {
+        if (Test-DashServerHttpAnswers) {
+            Ok "dash-server is running: http://127.0.0.1:$($script:DashServerPort) (MCP: /mcp)"
+            return $true
+        }
+        if ($proc.HasExited) { break }
+        Start-Sleep -Seconds 2
+        $waited += 2
+    }
+    Warn2 "dash-server did not answer on port $($script:DashServerPort) - see $($script:DashServerLog)"
+    return $false
+}
+
+# Stop every kit-managed dash-server process, bounded.
+function Stop-DashServer {
+    $ids = Get-DashServerProcessIds
+    if ($ids.Count -eq 0 -and -not (Test-DashServerHttpAnswers)) {
+        Ok "dash-server is already stopped"
+        Remove-Item -Force -ErrorAction SilentlyContinue $script:DashServerPidFile
+        return $true
+    }
+    Info "Stopping dash-server"
+    foreach ($id in $ids) {
+        try { & taskkill.exe /PID $id /T /F 2>$null | Out-Null } catch { }
+    }
+    Remove-Item -Force -ErrorAction SilentlyContinue $script:DashServerPidFile
+    if (Test-DashServerHttpAnswers) {
+        Warn2 "Something is still answering on port $($script:DashServerPort) (a dash-server the kit did not start?)"
+        return $false
+    }
+    Ok "dash-server stopped"
+    return $true
+}
+
+# What the boot entry runs. The launcher already bootstraps the database
+# profile, so this is simply it.
+function Get-DashServerAutostartCommand {
+    return ('"{0}" --host 127.0.0.1 --port {1}' -f (Get-DashServerLauncherPath), $script:DashServerPort)
+}
+
 # Remove everything the dash-server install put on this machine: the venv,
 # the instance state, the launcher, and the manifest record. -DryRun only
 # narrates the plan. Best-effort and idempotent. Twin of dash_server_uninstall.
 function Uninstall-DashServer {
     param([switch]$DryRun)
+    # A running server holds its port and would outlive its own files.
+    if (-not $DryRun) { [void](Stop-DashServer) }
     foreach ($path in @($script:DashServerVenv, $script:DashServerHome, (Get-DashServerLauncherPath))) {
         if (-not ($path -and (Test-Path $path))) { continue }
         if ($DryRun) { Info "  will remove: $path" }

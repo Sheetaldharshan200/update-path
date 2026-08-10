@@ -537,6 +537,94 @@ manifest_set components.exapump.version "0.11.3"
 manifest_del components.exapump
 check "manifest_del clears the whole component block" "absent" "$(manifest_get components.exapump >/dev/null 2>&1 && echo present || echo absent)"
 
+echo "services and autostart (is it running, and does it come back after a reboot):"
+# A stand-in server on a quiet port: the status probe is an HTTP check, so
+# anything that answers proves the plumbing without installing dash-server.
+EXAKIT_DASH_SERVER_PORT="$((5900 + $$ % 90))"
+mkdir -p "$EXAKIT_HOME/logs"
+check "not installed reads as such, never 'stopped'" "not installed" "$(
+    ( EXAKIT_DASH_SERVER_BIN="$WORK/nope"; dash_server_status )
+)"
+cat > "$EXAKIT_BIN_DIR/dash-server" <<SRVEOF
+#!/bin/sh
+exec python3 -m http.server $EXAKIT_DASH_SERVER_PORT --bind 127.0.0.1
+SRVEOF
+chmod +x "$EXAKIT_BIN_DIR/dash-server"
+check "installed but down reads stopped" "stopped" "$(dash_server_status)"
+dash_server_start >/dev/null 2>&1
+check "start brings it up" "running" "$(dash_server_status)"
+check "and records a pidfile" "yes" "$([ -f "$EXAKIT_DASH_SERVER_PIDFILE" ] && echo yes || echo no)"
+has "starting twice is idempotent" "already running" "$(dash_server_start 2>&1)"
+dash_server_stop >/dev/null 2>&1
+check "stop takes it down and cleans the pidfile" "stopped cleaned" \
+    "$(printf '%s %s' "$(dash_server_status)" "$([ -f "$EXAKIT_DASH_SERVER_PIDFILE" ] && echo kept || echo cleaned)")"
+has "stopping twice is idempotent" "already stopped" "$(dash_server_stop 2>&1)"
+
+# The service registry: database first, then any installed add-on that serves.
+manifest_set runtime.type personal
+mkdir -p "$EXAKIT_HOME/dash-server-venv/bin"
+printf '#!/bin/sh\necho 0.1.0\n' > "$EXAKIT_HOME/dash-server-venv/bin/python"
+chmod +x "$EXAKIT_HOME/dash-server-venv/bin/python"
+manifest_set components.dash_server.python "$EXAKIT_HOME/dash-server-venv/bin/python"
+check "the registry lists the database and the service add-on" "database dash-server" \
+    "$(exakit_service_ids | tr '\n' ' ' | sed 's/ $//')"
+# An add-on with no service hooks must not appear as a service.
+check "a non-service add-on stays out of the registry" "no" "$(
+    exakit_service_ids | grep -q exasol-vscode && echo yes || echo no
+)"
+
+# Autostart writes a real boot entry, into a sandbox dir, and takes it away.
+EXAKIT_LAUNCHAGENT_DIR="$WORK/agents"
+EXAKIT_SYSTEMD_USER_DIR="$WORK/systemd"
+mkdir -p "$EXAKIT_LAUNCHAGENT_DIR" "$EXAKIT_SYSTEMD_USER_DIR"
+_as_out="$( (
+    launchctl() { :; }                     # never touch the real session
+    systemctl() { return 1; }
+    personal_cli() { printf '%s\n' "$EXAKIT_BIN_DIR/exasol"; }
+    detect_os() { printf 'macos\n'; }
+    exakit_autostart_enable >/dev/null 2>&1
+    printf 'flag=%s ' "$(manifest_get autostart.enabled)"
+    printf 'db=%s ' "$(_exakit_autostart_registered database && echo yes || echo no)"
+    printf 'ds=%s' "$(_exakit_autostart_registered dash-server && echo yes || echo no)"
+) )"
+check "autostart on registers every service" "flag=true db=yes ds=yes" "$_as_out"
+has "the entry runs the real launcher" "$EXAKIT_BIN_DIR/dash-server" \
+    "$(cat "$EXAKIT_LAUNCHAGENT_DIR/com.exasol.exakit.dash-server.plist" 2>/dev/null)"
+has "and starts at load, so a reboot brings it back" "RunAtLoad" \
+    "$(cat "$EXAKIT_LAUNCHAGENT_DIR/com.exasol.exakit.dash-server.plist" 2>/dev/null)"
+_as_off="$( (
+    launchctl() { :; }
+    systemctl() { return 1; }
+    detect_os() { printf 'macos\n'; }
+    exakit_autostart_disable >/dev/null 2>&1
+    printf 'flag=%s entries=%s' "$(manifest_get autostart.enabled)" "$(ls "$EXAKIT_LAUNCHAGENT_DIR" | wc -l | tr -d ' ')"
+) )"
+check "autostart off removes every entry" "flag=false entries=0" "$_as_off"
+# The full uninstall must not leave a boot entry pointing at deleted files.
+# Its own kit home: the run removes $EXAKIT_HOME wholesale, and the checks
+# after this one still need the suite's sandbox.
+_as_sweep="$( (
+    EXAKIT_HOME="$WORK/sweep-home"
+    EXAKIT_BIN_DIR="$WORK/sweep-bin"
+    EXAKIT_MANIFEST="$EXAKIT_HOME/manifest.json"
+    EXAKIT_LAUNCHAGENT_DIR="$WORK/sweep-agents"
+    mkdir -p "$EXAKIT_HOME" "$EXAKIT_BIN_DIR" "$EXAKIT_LAUNCHAGENT_DIR"
+    launchctl() { :; }
+    systemctl() { return 1; }
+    detect_os() { printf 'macos\n'; }
+    personal_cli() { printf '%s\n' "$EXAKIT_BIN_DIR/exasol"; }
+    manifest_init >/dev/null 2>&1
+    manifest_set runtime.type personal
+    exakit_autostart_enable >/dev/null 2>&1
+    # "some" not a count: how many services this sandbox happens to expose is
+    # not the point — that entries existed and none survived is.
+    [ "$(ls "$EXAKIT_LAUNCHAGENT_DIR" | wc -l | tr -d ' ')" -gt 0 ] && printf 'before=some ' || printf 'before=none '
+    nano_teardown() { :; }; personal_teardown() { :; }; exakit_mcp_operation() { :; }
+    exakit_uninstall_run 0 >/dev/null 2>&1
+    printf 'after=%s' "$(ls "$EXAKIT_LAUNCHAGENT_DIR" 2>/dev/null | wc -l | tr -d ' ')"
+) )"
+check "uninstall sweeps the boot entries too" "before=some after=0" "$_as_sweep"
+
 echo "discovery one-liners:"
 has "update-check discovery line names the addon" "dash-server" "$(exakit_print_marketplace_discovery_line)"
 has "connection panel advertises the marketplace" "exakit marketplace" "$(connection_panel 2>/dev/null)"
