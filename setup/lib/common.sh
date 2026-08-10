@@ -3505,8 +3505,17 @@ exakit_update() {
         # Only the components this run will actually touch are reported: the work
         # plan, not a status table. `exakit update-check` is where everything is
         # listed, including what is already current.
+        #
+        # A marketplace add-on named EXPLICITLY is the exception: its update hook
+        # is also its repair command (it rewrites the launcher a newer kit
+        # improved, re-registers the boot entry, re-reads a changed DSN), so
+        # `exakit update dash-server` must reach the module even when the version
+        # already matches. `update all` still skips it — a routine update stays a
+        # work plan, not a sweep of every component's repair path.
         if [ -n "$_cur" ] && [ -n "$_avail" ] && [ "$_cur" = "$_avail" ]; then
-            continue
+            if [ "$_target" = "all" ] || ! _exakit_addon_registered "$_component"; then
+                continue
+            fi
         fi
         # The table's "update exakit first" verdict has to hold here too, or the
         # manifest's only hard compatibility lever would be advice nobody applies.

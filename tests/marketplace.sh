@@ -240,6 +240,24 @@ echo "soft-fail accounting:"
 check "a soft miss records validated=false" "false" "$(manifest_get components.dash_server.validated)"
 
 echo "update repair path:"
+# Naming an add-on explicitly must reach its module even when the version
+# matches: the hook doubles as the repair command (it rewrites a launcher a
+# newer kit improved). `update all` must still skip it — routine updates are a
+# work plan, not a sweep of every repair path.
+# The hook records into a file: exakit_update's own stdout is noisy, so the
+# marker cannot be read off it.
+: > "$WORK/hook-marker"
+( exakit_component_current() { printf '0.1.0\n'; }
+  exakit_component_available() { printf '0.1.0\n'; }
+  dash_server_update() { printf 'hook-ran' > "$WORK/hook-marker"; }
+  exakit_update dash-server ) >/dev/null 2>&1
+check "explicit update reaches the hook when versions match" "hook-ran" "$(cat "$WORK/hook-marker")"
+: > "$WORK/hook-marker"
+( exakit_component_current() { printf '0.1.0\n'; }
+  exakit_component_available() { printf '0.1.0\n'; }
+  dash_server_update() { printf 'hook-ran' > "$WORK/hook-marker"; }
+  exakit_update all ) >/dev/null 2>&1
+check "update all still skips an already-current add-on" "" "$(cat "$WORK/hook-marker")"
 check "already-current says so and regenerates the launcher" "yes" "$( (
     dash_server_installed_version() { echo "0.0.1-test"; }
     exakit_component_available() { echo "0.0.1-test"; }
