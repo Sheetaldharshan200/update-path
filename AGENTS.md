@@ -30,6 +30,7 @@ Flags do not travel through a pipe, so choices are env vars. They work on all pl
 | `EXAKIT_SKIP_MCP=1` | Skip MCP client setup entirely (run `exakit mcp-setup` later) |
 | `EXAKIT_DATASETS=tpch,weather` | Which bundled datasets to load, by id: `tpch`, `energy`, `weather`. Takes precedence over `EXAKIT_LOAD_SAMPLE` |
 | `EXAKIT_LOAD_SAMPLE=0\|1` | `0` skip data loading, `1` load the bundled sample (tpch) |
+| `EXAKIT_MARKETPLACE_ADDONS=dash-server` | Answer the closing marketplace offer: ids csv, `all`, or `none`. Unset, a non-interactive install skips the offer with a hint |
 | `EXAKIT_REUSE_DB=0\|1` | macOS: adopt an existing database (`1`, the default) or destroy it and deploy fresh (`0`) |
 | `EXAKIT_PREFLIGHT=1` | Check machine requirements only, installs nothing (sh installer only) |
 | `EXAKIT_DRY_RUN=1` | Download the kit for inspection, installs nothing |
@@ -93,11 +94,27 @@ What an agent needs to know:
 - If the advertised version is **older** than the installed one, nothing is offered and nothing is applied: `exakit update-check` shows an action of `none`, and asking for that component by name succeeds and does nothing. The kit has no downgrade path, by any route or override. To withdraw a faulty release, publish a higher version.
 - A component that reports `not installed` (most often `pyexasol`, whose install step is deliberately non-fatal) is repaired by the same command: `exakit update pyexasol`.
 
+## Marketplace add-ons (optional)
+
+Optional tools live behind `exakit marketplace`, never in the install flow. Interactively it is a checkbox menu (Space selects, Enter installs); an agent answers with the environment instead:
+
+```bash
+EXAKIT_MARKETPLACE_ADDONS=dash-server exakit marketplace   # ids csv, or all / none
+```
+
+- **dash-server** — agent-operated Dash hosting: build live dashboards on the local database through its MCP control plane (`http://127.0.0.1:5100/mcp`; start it with `dash-server`).
+- **exasol-vscode** — the Exasol extension for VS Code (SQL editing and schema browsing); installed into VS Code itself, so a copy the user already has from the VS Code Marketplace is respected and never touched.
+- Once installed, an add-on updates through the normal flow (`exakit update dash-server`, and `exakit update` covers it). Add-ons that were never picked are never touched, and one already on the system outside the kit is respected, not managed.
+- An interactive install ends with the same offer once everything ran; `EXAKIT_MARKETPLACE_ADDONS` pre-answers it (see the install answers table above).
+- Add-ons that run as services (dash-server) are managed like the database: `exakit status` shows `running` / `stopped`, `exakit start` and `exakit stop` cover the database and every service together, and `exakit autostart on|off` decides whether they come back after a reboot (on by default from a fresh install — launchd on macOS, systemd --user on Linux, the container restart policy for Nano, a Startup entry on Windows).
+- After a restart, nothing needs a human if autostart is on. If it is off, `exakit start` brings the database and every service back in one command.
+- Building a NEW add-on for the marketplace is a development task, not an install step: the walkthrough with skeleton code is [MARKETPLACE.md](MARKETPLACE.md).
+
 ## Where things live
 
 - State, credentials, logs: `~/.exasol-starter-kit/` (logs under `logs/`; every error message names its remedy, check there before improvising)
 - Kit source copy (read any script): `~/.exasol-starter-kit/kit/`
-- CLI binaries: `~/.local/bin/` (`exakit`, `exapump`, and `exasol` on macOS)
+- CLI binaries: `~/.local/bin/` (`exakit`, `exapump`, `exasol` on macOS, and `dash-server` once that add-on is installed)
 - Never print or log the password files under `~/.exasol-starter-kit/credentials/`
 
 ## After the install

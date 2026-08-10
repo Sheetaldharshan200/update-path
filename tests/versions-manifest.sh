@@ -230,6 +230,8 @@ echo "reader (Python and the awk fallback must agree):"
 for _path in kit.version components.personal.version components.nano.version \
              components.nano.image components.exapump.version components.mcp.version \
              components.mcp.package components.pyexasol.version \
+             components.dash-server.version components.dash-server.repo \
+             components.exasol-vscode.version components.exasol-vscode.sha256.vsix \
              components.exapump.sha256.macos-aarch64 \
              components.exapump.sha256.windows-x86_64; do
     both_value "$_path" "$(shipped "$_path")" "$_path" "$REAL"
@@ -1428,7 +1430,10 @@ soft="$( EXAKIT_HOME="$WORK/soft-home"
     exakit_maybe_offer_mcp_setup() { :; }
     exakit_maybe_offer_skills_install() { :; }
     ensure_path_hint() { :; }
-    _out="$(kit_shared_steps 3 6 "$ROOT/setup" "$WORK/soft-kit" 2>&1)"
+    # exakit_print_soft_failures is called by the setup scripts AFTER the
+    # connection panel (so the account of what is missing is the last thing on
+    # screen), not from inside kit_shared_steps. Same shell, same order here.
+    _out="$(kit_shared_steps 3 6 "$ROOT/setup" "$WORK/soft-kit" 2>&1; exakit_print_soft_failures 2>&1)"
     [ -x "$EXAKIT_BIN_DIR/exakit" ] && printf 'cli ' || printf 'NO-CLI '
     printf '%s ' "$(manifest_get steps_completed | tr -d '\" []' )"
     printf '%s\n' "$_out" | grep -q 'OFFERED-DATA-LOAD' && printf 'data-offered' || printf 'data-skipped'
@@ -1457,8 +1462,8 @@ quiet="$( EXAKIT_HOME="$WORK/soft-ok-home"
     exakit_maybe_offer_mcp_setup() { :; }
     exakit_maybe_offer_skills_install() { :; }
     ensure_path_hint() { :; }
-    _out="$(kit_shared_steps 3 6 "$ROOT/setup" "$WORK/soft-kit" 2>&1)"
-    printf '%s\n' "$_out" | grep -q 'components are missing\|component is missing' && printf 'SPURIOUS' || printf 'silent'
+    _out="$(kit_shared_steps 3 6 "$ROOT/setup" "$WORK/soft-kit" 2>&1; exakit_print_soft_failures 2>&1)"
+    printf '%s\n' "$_out" | grep -q 'did not complete' && printf 'SPURIOUS' || printf 'silent'
     printf ' %s' "$(manifest_get steps_completed | tr -d '\" []' )" )"
 check "a clean run says nothing and marks everything" \
     "silent exapump,mcp,pyexasol,exakit_helper" "$quiet"

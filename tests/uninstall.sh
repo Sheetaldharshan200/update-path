@@ -41,9 +41,15 @@ exakit_repo_root(){ return 1; }   # force the fallback skill-name list
 nano_teardown(){ echo "$SANDBOX/called_nano_teardown $*" > "$SANDBOX/marker_nano"; }
 personal_teardown(){ printf '%s\n' "$*" > "$SANDBOX/marker_personal"; }
 exakit_mcp_operation(){ printf '%s\n' "$*" > "$SANDBOX/marker_mcp"; }
+# The engine sweeps add-on launchers by registry id; mirror the real registry
+# so a machine with the dash-server launcher gets it removed.
+exakit_marketplace_addons(){ printf '%s\n' "dash-server|x|x"; }
 
-# --- pull in only the function under test --------------------------------
-eval "$(awk '/^exakit_uninstall_run\(\)/{f=1} f{print} f&&/^}/{exit}' "$ROOT/setup/lib/common.sh")"
+# --- pull in only the functions under test --------------------------------
+# The engine plus the skills-removal helper it delegates to (shared with the
+# selectable uninstall menu).
+eval "$(awk '/^_exakit_remove_installed_skills\(\)/{f=1} f{print} f&&/^}$/{if(f)exit}' "$ROOT/setup/lib/common.sh")"
+eval "$(awk '/^exakit_uninstall_run\(\)/{f=1} f{print} f&&/^}$/{if(f)exit}' "$ROOT/setup/lib/common.sh")"
 
 exakit_uninstall_run "$DRY"
 HARNESS
@@ -57,10 +63,13 @@ seed() { # (re)create the fake install artifacts
              "$SANDBOX/home/.agents/skills/local-agent-ready-starter" \
              "$SANDBOX/home/.exapump" \
              "$SANDBOX/home/.exasol-starter-kit/pyexasol-venv/bin" \
+             "$SANDBOX/home/.exasol-starter-kit/dash-server-venv/bin" \
+             "$SANDBOX/home/.exasol-starter-kit/dash-server/instance" \
              "$SANDBOX/home/.exasol-starter-kit/credentials"
     : > "$SANDBOX/home/.local/bin/exasol"
     : > "$SANDBOX/home/.local/bin/exakit"
     : > "$SANDBOX/home/.local/bin/exapump"
+    : > "$SANDBOX/home/.local/bin/dash-server"
     : > "$SANDBOX/home/.exapump/config.toml"
     : > "$SANDBOX/home/.exasol-starter-kit/manifest.json"
     # A bystander app must survive: exapump/kit removal must not touch it.
@@ -92,6 +101,9 @@ check "real: exapump gone"        no  "$(exists "$H/.exapump")"
 check "real: exasol bin gone"     no  "$(exists "$H/.local/bin/exasol")"
 check "real: exakit bin gone"     no  "$(exists "$H/.local/bin/exakit")"
 check "real: exapump bin gone"    no  "$(exists "$H/.local/bin/exapump")"
+check "real: dash-server venv gone" no "$(exists "$H/.exasol-starter-kit/dash-server-venv")"
+check "real: dash-server state gone" no "$(exists "$H/.exasol-starter-kit/dash-server")"
+check "real: dash-server bin gone" no "$(exists "$H/.local/bin/dash-server")"
 check "real: skill A gone"        no  "$(exists "$H/.claude/skills/local-agent-ready-starter")"
 check "real: skill B gone"        no  "$(exists "$H/.claude/skills/trusted-ai-workflow")"
 check "real: bystander kept"      yes "$(exists "$H/.local/bin/some-other-tool")"

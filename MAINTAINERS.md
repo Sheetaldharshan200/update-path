@@ -209,6 +209,36 @@ in the kit — is the enablement, and it is deliberately a reviewed change.
 Note that `tests/versions-manifest.sh` asserts the shipped file advertises no Kit
 2. Updating that expectation is part of the same pull request that turns it on.
 
+## Adding a marketplace add-on
+
+Optional tools live behind `exakit marketplace`, never in the install flow, and
+the component registry handles them generically — no case-statement edits on
+either platform. **[MARKETPLACE.md](MARKETPLACE.md) is the full walkthrough,
+with skeleton code for both module files.** One pull request adds:
+
+1. **The module pair** `setup/lib/<id>.sh` + `setup/lib/<id>.ps1` (model:
+   `dash-server.*`). The bash side defines `<id>_install`, `<id>_validate`,
+   `<id>_update` and `<id>_installed_version` (dashes flipped to underscores)
+   plus its own `EXAKIT_<ID>_VERSION` / `EXAKIT_<ID>_VERSION_FALLBACK`
+   constants; the PowerShell side names its functions in the registry entry.
+   Keep the `.ps1` pure ASCII (`tests/ps-encoding-guard.sh` enforces it).
+2. **A `components.<id>` block in versions.json** — `version`, `severity`, and
+   `repo` (installed from a GitHub release) or `package` (from PyPI); that
+   field is what the generic upstream lookup and the auto-bump read.
+3. **One registry line each side**: `exakit_marketplace_addons` in
+   `setup/lib/common.sh` and `Get-ExakitMarketplaceAddons` in
+   `setup/lib/exakit-common.ps1`. Both entries carry the id, a label, and the
+   one-line description shown in the menu and the closing offer.
+
+The CI guards move in the same PR: the expected-components set in
+`.github/workflows/versions.yml`, an `upstream-exists` stanza there (assert
+the advertised release tag / PyPI version is real), and the COUPLED
+fallback-constant entry in `versions-bump.yml` pointing at the module files.
+From then on the bump automation tracks the add-on's releases like every
+other component, and everything user-facing — menu row, post-install offer,
+update flow, uninstall sweep — picks the add-on up from the registry line
+with no further wiring.
+
 ## What users see, and what you can rely on
 
 - Nothing about versions can break a command. Resolution degrades from a fresh

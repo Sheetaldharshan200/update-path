@@ -172,10 +172,30 @@ exakit mcp-setup       # connect AI clients
 exakit mcp-doctor      # AI connection health check
 exakit update-check    # updates available?
 exakit update          # apply the quick ones (seconds, no downtime)
+exakit marketplace     # optional add-ons (dashboards & more)
 exakit help            # every command
 ```
 
 Something failed mid-install? Re-run the install command. It picks up where it left off.
+
+## Optional add-ons: the marketplace
+
+The install stays minimal on purpose; extras live in the marketplace. At the
+end of a successful install the kit asks once whether to add any — or browse
+later with:
+
+```bash
+exakit marketplace
+```
+
+Space selects, Enter installs. The first add-on is **dash-server**, an
+agent-operated dashboard host: your AI assistant builds live, query-backed
+dashboards on the local database through its MCP control plane, and you open
+them in the browser. Installed add-ons update through `exakit update` like
+everything else; a tool you already have (even installed outside the kit) is
+never offered twice. Flowcharts of every scenario:
+[MARKETPLACE-FLOWS.md](MARKETPLACE-FLOWS.md). Building your own add-on:
+[MARKETPLACE.md](MARKETPLACE.md).
 
 ## Staying up to date
 

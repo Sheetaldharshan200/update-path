@@ -86,6 +86,50 @@ detect_free_disk_gb() {
     esac
 }
 
+# detect_docker_data_gb — free space in whole GB where the container engine
+# actually stores images, containers and volumes. 0 when it cannot be told.
+#
+# `df $HOME` is not that place. On a Linux host Docker writes to
+# /var/lib/docker, which is often a different filesystem from the user's home
+# (a separate /var, an LVM volume, a mounted data disk); under Podman it is
+# ~/.local/share/containers, which usually is. Guarding the wrong filesystem is
+# how an install passes its disk check and then dies mid-pull with "no space
+# left on device".
+detect_docker_data_gb() {
+    _ddd_engine="$(detect_container_runtime)"
+    [ "$_ddd_engine" != "none" ] || { echo 0; return; }
+    _ddd_root="$(_detect_engine_probe "$_ddd_engine" info --format '{{.DockerRootDir}}' 2>/dev/null | head -n 1)"
+    # Podman reports its graph root under a different key; ask for that when the
+    # Docker-shaped template comes back empty.
+    if [ -z "$_ddd_root" ] && [ "$_ddd_engine" = "podman" ]; then
+        _ddd_root="$(_detect_engine_probe podman info --format '{{.Store.GraphRoot}}' 2>/dev/null | head -n 1)"
+    fi
+    [ -n "$_ddd_root" ] && [ -d "$_ddd_root" ] || { echo 0; return; }
+    detect_free_disk_gb "$_ddd_root"
+}
+
+# detect_wsl_windows_free_gb — free space in whole GB on the Windows drive
+# backing this WSL distro. 0 when this is not WSL, or when it cannot be told.
+#
+# Inside WSL, `df /` reports the SIZE OF THE VIRTUAL DISK (typically 1 TB), not
+# the space left on the Windows volume that file grows into. A WSL install on a
+# Windows machine with 3 GB free on C: therefore sailed through the 10 GB disk
+# check and failed later, during the image pull, with an error that named
+# neither Windows nor C:. Ask Windows directly instead.
+detect_wsl_windows_free_gb() {
+    [ "$(detect_os)" = "wsl" ] || { echo 0; return; }
+    command -v powershell.exe >/dev/null 2>&1 || { echo 0; return; }
+    # SystemDrive rather than a hard-coded C:, and whole GB so the value matches
+    # every other number in this file. Windows line endings are stripped.
+    _dwf="$(powershell.exe -NoProfile -NonInteractive -Command \
+        '[math]::Floor((Get-CimInstance Win32_LogicalDisk -Filter ("DeviceID=" + [char]39 + $env:SystemDrive + [char]39)).FreeSpace / 1GB)' \
+        2>/dev/null | tr -d '\r\n[:space:]')"
+    case "$_dwf" in
+        ''|*[!0-9]*) echo 0 ;;
+        *)           echo "$_dwf" ;;
+    esac
+}
+
 # detect_container_runtime — prints the first usable runtime:
 #   docker | podman | none
 # "Usable" means the CLI exists and the daemon/socket answers.
@@ -195,8 +239,25 @@ preflight_report() {
     else
         if [ "$_ram" -ge 4 ]; then _pf_ok "Memory: ${_ram} GB (Exasol Nano needs 4+)"
         else _pf_bad "Memory: ${_ram} GB — Exasol Nano needs at least 4 GB"; fi
-        if [ "$_disk" -ge 10 ]; then _pf_ok "Free disk: ${_disk} GB (10+ recommended)"
-        else _pf_bad "Free disk: ${_disk} GB — free up space (10 GB recommended for the database image and data)"; fi
+        if [ "$_disk" -ge 10 ]; then _pf_ok "Free disk at $HOME: ${_disk} GB (10+ recommended)"
+        else _pf_bad "Free disk at $HOME: ${_disk} GB — free up space (10 GB recommended for the database image and data)"; fi
+
+        # The two filesystems $HOME does not speak for. Reported only when they
+        # are knowable and different, so an ordinary Linux box still sees one
+        # disk line: the container engine's data directory (where the image and
+        # the /exa volume actually land) and, under WSL, the Windows drive the
+        # virtual disk grows into — `df` inside WSL reports the vhdx's nominal
+        # size and will happily claim 1 TB free on a Windows machine with 3 GB.
+        _disk_engine="$(detect_docker_data_gb)"
+        if [ "$_disk_engine" -gt 0 ] && [ "$_disk_engine" -ne "$_disk" ]; then
+            if [ "$_disk_engine" -ge 10 ]; then _pf_ok "Free disk where the container engine stores images: ${_disk_engine} GB (10+ recommended)"
+            else _pf_bad "Free disk where the container engine stores images: ${_disk_engine} GB — free up space there (try: docker system prune -a)"; fi
+        fi
+        _disk_windows="$(detect_wsl_windows_free_gb)"
+        if [ "$_disk_windows" -gt 0 ]; then
+            if [ "$_disk_windows" -ge 10 ]; then _pf_ok "Free disk on the Windows system drive: ${_disk_windows} GB (10+ recommended; the WSL disk grows into it)"
+            else _pf_bad "Free disk on the Windows system drive: ${_disk_windows} GB — the WSL virtual disk grows into it, so free up space on Windows"; fi
+        fi
     fi
 
     # base tools

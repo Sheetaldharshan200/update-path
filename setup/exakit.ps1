@@ -18,8 +18,9 @@
 #                         install record (manifest.json) verbatim, nothing else
 #   guide                 friendly walkthrough: connect AI clients (MCP), SQL
 #                         clients (DBeaver, DbVisualizer), and Python (pyexasol)
-#   start                 start the local database
-#   stop                  stop the local database
+#   start                 start the local database and every add-on service
+#   stop                  stop them again
+#   autostart [on|off]    whether everything comes back after a restart
 #   data-load [-Force]    open focused data loading options; -Force reloads bundled sample data
 #   mcp-setup             permanently configure MCP in supported AI clients
 #   mcp-doctor [clients]  check MCP config, connectivity, and managed state
@@ -30,6 +31,9 @@
 #   mcp-restore [snapshot] restore the latest (or a chosen) MCP snapshot
 #   skills-install        install the kit's AI skills for CLI agents
 #                         (~\.claude\skills, ~\.agents\skills)
+#   marketplace           browse optional add-ons (dash-server, ...) and install
+#                         the ones you select; installed add-ons then update
+#                         through `exakit update` like every other component
 #   upgrade-kit2          add the Kit 2 trust assets (bash paths only for now)
 #   rollback-kit2         remove what upgrade-kit2 added (bash paths only for now)
 #   uninstall [-Yes] [-DryRun]
@@ -78,6 +82,11 @@ if (Test-Path (Join-Path $scriptDir "lib\exakit-common.ps1")) {
 # pyexasol is an update target of its own (and its own repair command), so the
 # CLI needs the module even though it takes no part in the runtime commands.
 . (Join-Path $libDir "pyexasol.ps1")
+# Marketplace add-on modules: the CLI is where they are installed (exakit
+# marketplace) and updated (exakit update <addon>). A missing file only makes
+# the marketplace row unavailable - it must not break every other command.
+if (Test-Path (Join-Path $libDir "dash-server.ps1")) { . (Join-Path $libDir "dash-server.ps1") }
+if (Test-Path (Join-Path $libDir "exasol-vscode.ps1")) { . (Join-Path $libDir "exasol-vscode.ps1") }
 
 function Get-RuntimeType { return (Get-ExakitManifestValue "runtime.type") }
 
@@ -97,6 +106,15 @@ function Invoke-CmdStatus {
     $status = switch ($type) { "nano" { Get-NanoStatus } default { "unknown" } }
     Write-Host "Status:     $status"
     $steps = @(Get-ExakitManifestValue "steps_completed")
+    foreach ($svcId in (Get-ExakitServiceIds)) {
+        if ($svcId -eq "database") { continue }
+        Write-Host ("{0,-11} {1}" -f "${svcId}:", (Get-ExakitServiceStatus -Id $svcId))
+    }
+    if ((Get-ExakitManifestValue "autostart.enabled") -eq $true) {
+        Write-Host "Autostart:  on (everything comes back after a restart)"
+    } else {
+        Write-Host "Autostart:  off - turn it on with: exakit autostart on"
+    }
     Write-Host "Steps done: $($steps -join ', ')"
     # pyexasol installs soft: when it is missing, say so here with the one command
     # that fixes it, instead of leaving a silent gap in the install.
@@ -109,13 +127,184 @@ function Invoke-CmdStatus {
     Write-Host "Manifest:   $script:ManifestPath"
 }
 
+# ---------------------------------------------------------------------------
+# Services and autostart (twin of the exakit_service_* set in common.sh)
+# ---------------------------------------------------------------------------
+# Every service answers the same three questions - running, start, stop - and
+# add-ons opt in through the registry (StatusFn/StartFn/StopFn/AutostartFn), so
+# `exakit start|stop|status` and the boot entry pick a new one up with no
+# wiring here. Windows registers a Startup-folder entry; the Nano container
+# carries its own restart policy, which Docker honours on boot.
+function Get-ExakitServiceIds {
+    $ids = @()
+    if (Get-ExakitManifestValue "runtime.type") { $ids += "database" }
+    foreach ($addonId in (Get-ExakitMarketplaceInstalledAddons)) {
+        $addon = Get-ExakitMarketplaceAddon $addonId
+        if ($addon -and $addon.PSObject.Properties["StatusFn"] -and
+            (Get-Command $addon.StatusFn -ErrorAction SilentlyContinue)) { $ids += $addonId }
+    }
+    return $ids
+}
+
+function Get-ExakitServiceStatus {
+    param([Parameter(Mandatory)][string]$Id)
+    if ($Id -eq "database") {
+        if ((Get-RuntimeType) -eq "nano") { return (Get-NanoStatus) }
+        return "unknown"
+    }
+    $addon = Get-ExakitMarketplaceAddon $Id
+    if ($addon -and (Get-Command $addon.StatusFn -ErrorAction SilentlyContinue)) { return (& $addon.StatusFn) }
+    return "unknown"
+}
+
+function Start-ExakitService {
+    param([Parameter(Mandatory)][string]$Id)
+    if ($Id -eq "database") { Confirm-ExakitRuntimeRunning -Deploy; return }
+    $addon = Get-ExakitMarketplaceAddon $Id
+    if ($addon -and $addon.PSObject.Properties["StartFn"] -and
+        (Get-Command $addon.StartFn -ErrorAction SilentlyContinue)) { [void](& $addon.StartFn) }
+}
+
+function Stop-ExakitService {
+    param([Parameter(Mandatory)][string]$Id)
+    if ($Id -eq "database") {
+        if ((Get-RuntimeType) -eq "nano") { Stop-Nano }
+        return
+    }
+    $addon = Get-ExakitMarketplaceAddon $Id
+    if ($addon -and $addon.PSObject.Properties["StopFn"] -and
+        (Get-Command $addon.StopFn -ErrorAction SilentlyContinue)) { [void](& $addon.StopFn) }
+}
+
+function Get-ExakitStartupDir {
+    if ($env:EXAKIT_STARTUP_DIR) { return $env:EXAKIT_STARTUP_DIR }
+    return (Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs\Startup")
+}
+
+function Get-ExakitAutostartEntryPath {
+    param([Parameter(Mandatory)][string]$Id)
+    return (Join-Path (Get-ExakitStartupDir) "com.exasol.exakit.$Id.cmd")
+}
+
+function Register-ExakitAutostart {
+    param([Parameter(Mandatory)][string]$Id)
+    if ($Id -eq "database") {
+        # The container's own restart policy is what survives a reboot.
+        if ((Get-RuntimeType) -eq "nano") {
+            if (Set-NanoRestartPolicy -Policy "always") {
+                Ok "database: the container restarts with Docker"
+                return $true
+            }
+            return $false
+        }
+        return $false
+    }
+    $addon = Get-ExakitMarketplaceAddon $Id
+    if (-not ($addon -and $addon.PSObject.Properties["AutostartFn"] -and
+              (Get-Command $addon.AutostartFn -ErrorAction SilentlyContinue))) { return $false }
+    $command = & $addon.AutostartFn
+    if (-not $command) { return $false }
+    $dir = Get-ExakitStartupDir
+    if (-not (Test-Path $dir)) {
+        New-Item -ItemType Directory -Force -Path $dir | Out-Null
+    }
+    $entry = Get-ExakitAutostartEntryPath -Id $Id
+    $lines = @(
+        "@echo off",
+        "rem Starts $Id at login - written by the Exasol Personal Local Starter Kit.",
+        "rem Remove it with: exakit autostart off",
+        "start `"`" /min $command"
+    )
+    Set-Content -Path $entry -Value ($lines -join "`r`n") -Encoding Ascii
+    Ok "$Id`: starts at login ($entry)"
+    return $true
+}
+
+function Unregister-ExakitAutostart {
+    param([Parameter(Mandatory)][string]$Id)
+    if ($Id -eq "database" -and (Get-RuntimeType) -eq "nano") {
+        [void](Set-NanoRestartPolicy -Policy "no")
+    }
+    $entry = Get-ExakitAutostartEntryPath -Id $Id
+    if (Test-Path $entry) {
+        Remove-Item -Force -ErrorAction SilentlyContinue $entry
+        Ok "$Id`: no longer starts at login"
+    }
+}
+
+function Test-ExakitAutostartRegistered {
+    param([Parameter(Mandatory)][string]$Id)
+    if (Test-Path (Get-ExakitAutostartEntryPath -Id $Id)) { return $true }
+    if ($Id -eq "database" -and (Get-RuntimeType) -eq "nano") {
+        return (Test-NanoRestartPolicySet)
+    }
+    return $false
+}
+
+function Enable-ExakitAutostart {
+    $any = $false
+    foreach ($id in (Get-ExakitServiceIds)) {
+        if (Register-ExakitAutostart -Id $id) { $any = $true }
+    }
+    Set-ExakitManifestValue "autostart.enabled" $any
+    if ($any) { Info "Everything the kit runs comes back automatically after a restart." }
+}
+
+function Disable-ExakitAutostart {
+    foreach ($id in (Get-ExakitServiceIds)) { Unregister-ExakitAutostart -Id $id }
+    Set-ExakitManifestValue "autostart.enabled" $false
+    Ok "Automatic start after a restart is off."
+}
+
+function Show-ExakitAutostart {
+    Write-Host ""
+    Write-Host "  Automatic start after a restart"
+    Write-Host "  -------------------------------"
+    Write-Host ("{0,-14} {1}" -f "Service", "At login")
+    foreach ($id in (Get-ExakitServiceIds)) {
+        $state = if (Test-ExakitAutostartRegistered -Id $id) { "yes" } else { "no" }
+        Write-Host ("{0,-14} {1}" -f $id, $state)
+    }
+    Write-Host ""
+    Info "Turn it on with: exakit autostart on   -   off with: exakit autostart off"
+}
+
+function Invoke-CmdAutostart {
+    param([string]$Action = "")
+    Assert-ExakitInstalled
+    Initialize-ExakitLogging
+    switch ($Action) {
+        { $_ -in @("on", "enable") }   { Enable-ExakitAutostart }
+        { $_ -in @("off", "disable") } { Disable-ExakitAutostart }
+        { $_ -in @("", "status") }     { Show-ExakitAutostart }
+        default { Fail "Unknown option '$Action' for autostart (use: on, off, or no argument to show the state)." }
+    }
+}
+
 function Invoke-CmdStart {
     Assert-ExakitInstalled
-    switch (Get-RuntimeType) { "nano" { Start-Nano } }
+    # Everything the kit runs, database first: self-heal semantics for the
+    # runtime (a stopped one is started, a missing one created - `exakit start`
+    # promises a running database), then every add-on service.
+    if ((Get-RuntimeType) -eq "nano" -and (Get-NanoStatus) -eq "running") {
+        Ok "Database is already running"
+    } else {
+        Confirm-ExakitRuntimeRunning -Deploy
+    }
+    foreach ($id in (Get-ExakitServiceIds)) {
+        if ($id -eq "database") { continue }
+        Start-ExakitService -Id $id
+    }
 }
 
 function Invoke-CmdStop {
     Assert-ExakitInstalled
+    # Add-on services first: they talk to the database, so they should be down
+    # before it goes.
+    foreach ($id in (Get-ExakitServiceIds)) {
+        if ($id -eq "database") { continue }
+        Stop-ExakitService -Id $id
+    }
     switch (Get-RuntimeType) { "nano" { Stop-Nano } }
 }
 
@@ -127,6 +316,28 @@ function Invoke-CmdStop {
 # PATH entry are intentionally left in place and only reported.
 function Invoke-ExakitUninstallRun {
     param([switch]$DryRun)
+
+    # 0a) Boot entries first: a Startup entry left behind would try to start
+    #     something that no longer exists at the next login.
+    foreach ($svcId in (Get-ExakitServiceIds)) {
+        if (Test-ExakitAutostartRegistered -Id $svcId) {
+            if ($DryRun) { Info "  will remove: the automatic-start entry for $svcId" }
+            else { Unregister-ExakitAutostart -Id $svcId }
+        }
+    }
+
+    # 0b) Kit-managed marketplace add-ons that live OUTSIDE the kit home (the
+    #    VS Code extension). Registry-driven: a new add-on ships its own
+    #    UninstallFn and appears here with no edits. A system-installed copy
+    #    the kit never managed is not touched (each hook enforces that).
+    foreach ($addonId in (Get-ExakitMarketplaceInstalledAddons)) {
+        $addonEntry = Get-ExakitMarketplaceAddon $addonId
+        if ($addonEntry -and $addonEntry.PSObject.Properties["UninstallFn"] -and
+            (Get-Command $addonEntry.UninstallFn -ErrorAction SilentlyContinue)) {
+            try { [void](& $addonEntry.UninstallFn -DryRun:$DryRun) }
+            catch { Warn2 "Removing the $addonId add-on reported issues (continuing uninstall)" }
+        }
+    }
 
     # 1) Database + all data (the Windows runtime is Nano).
     $type = Get-RuntimeType
@@ -196,7 +407,13 @@ function Invoke-ExakitUninstallRun {
     #    it re-reads the file after we exit. So collect the binaries and hand
     #    their removal to a detached process that waits for us to exit first.
     $binPaths = @()
-    foreach ($bin in @("exakit.cmd", "exapump.exe", "exasol.exe", "exakit.ps1")) {
+    # Marketplace add-on launchers are swept by registry id - a new add-on
+    # needs no edit here.
+    $binNames = @("exakit.cmd", "exapump.exe", "exasol.exe", "exakit.ps1")
+    if (Get-Command Get-ExakitMarketplaceAddons -ErrorAction SilentlyContinue) {
+        foreach ($addon in Get-ExakitMarketplaceAddons) { $binNames += "$($addon.Id).cmd" }
+    }
+    foreach ($bin in $binNames) {
         $p = Join-Path $script:BinDir $bin
         if (Test-Path $p) {
             if ($DryRun) { Info "  will remove: CLI binary $p" }
@@ -253,32 +470,196 @@ function Invoke-CmdUninstall {
         return
     }
 
-    Write-Host ""
-    Warn2 "exakit uninstall PERMANENTLY removes the Exasol Personal Local Starter Kit."
-    Info "The following will be removed:"
-    Invoke-ExakitUninstallRun -DryRun
-    Write-Host ""
-    Warn2 "This is IRREVERSIBLE - all local database data will be lost."
-    Info "Not touched: uv/uvx (shared tool) and any PATH entry in your profile."
-
-    if ($DryRun) { Write-Host ""; Info "Dry run only - nothing was removed."; return }
-
-    if (-not $AssumeYes) {
-        if (-not [Environment]::UserInteractive -or [Console]::IsInputRedirected) {
-            Fail "uninstall needs an interactive terminal to confirm; re-run with -Yes to proceed non-interactively."
-        }
-        Write-Host "  ! Type " -ForegroundColor Red -NoNewline
-        Write-Host "UNINSTALL" -ForegroundColor White -NoNewline
-        Write-Host " to confirm (anything else cancels): " -ForegroundColor Red -NoNewline
-        $answer = Read-Host
-        if ($answer -cne "UNINSTALL") { Info "Uninstall cancelled."; return }
+    # -DryRun previews the FULL plan; -Yes is the scripted full uninstall.
+    # Everything else goes through the selectable menu: pick what goes, see
+    # what that means, type the word. Twin of cmd_uninstall in setup/exakit.
+    if ($DryRun) {
+        Write-Host ""
+        Warn2 "exakit uninstall PERMANENTLY removes the Exasol Personal Local Starter Kit."
+        Info "A full uninstall (the EVERYTHING row, or -Yes) removes:"
+        Invoke-ExakitUninstallRun -DryRun
+        Write-Host ""
+        Info "Not touched: uv/uvx (shared tool), any PATH entry in your profile, and anything the kit did not install."
+        Info "Dry run only - nothing was removed. Pick individual pieces interactively with: exakit uninstall"
+        return
     }
 
+    if ($AssumeYes) {
+        Write-Host ""
+        Warn2 "exakit uninstall -Yes removes the FULL kit (all local database data included)."
+        Invoke-ExakitUninstallRun
+        Write-Host ""
+        Ok "Uninstall complete - the Exasol Personal Local Starter Kit has been removed."
+        return
+    }
+
+    Show-ExakitUninstallMenu
+}
+
+# The interactive `exakit uninstall`: pick exactly what goes, see exactly what
+# that means, then type the word. Registry-driven for add-ons - a new add-on
+# ships its own UninstallFn and appears here with no edits. Twin of
+# exakit_uninstall_menu in setup/lib/common.sh.
+function Show-ExakitUninstallMenu {
+    $tee = $script:UiTee; $corner = $script:UiCorner
+    $labels = New-Object System.Collections.Generic.List[string]
+    $keys = New-Object System.Collections.Generic.List[string]
+    [void]$labels.Add("Skip - uninstall nothing")
+    [void]$keys.Add("__skip__")
+
+    # Components, only the ones present on this machine.
+    $components = @()
+    $runtimeType = Get-ExakitManifestValue "runtime.type"
+    if ($runtimeType) { $components += ,@("database", "Database + ALL its data (the local Exasol $runtimeType deployment)") }
+    if (Get-ExakitManifestValue "components.mcp_server.configs") {
+        $components += ,@("mcp_configs", "MCP client configs (Claude, Cursor, Codex, ...)")
+    }
+    foreach ($skillRoot in @((Join-Path $HOME ".claude\skills"), (Join-Path $HOME ".agents\skills"))) {
+        if (Test-Path (Join-Path $skillRoot "local-agent-ready-starter")) {
+            $components += ,@("skills", "AI skills (~\.claude\skills, ~\.agents\skills)")
+            break
+        }
+    }
+    if (Test-Path (Join-Path $script:BinDir "exapump.exe")) {
+        $components += ,@("exapump", "exapump (binary + connection profiles)")
+    }
+    if (Test-Path (Join-Path $script:ExakitHome "pyexasol-venv")) {
+        $components += ,@("pyexasol", "pyexasol (the managed Python venv)")
+    }
+    if ($components.Count -gt 0) {
+        [void]$labels.Add("#Components")
+        [void]$keys.Add("__header__")
+        for ($i = 0; $i -lt $components.Count; $i++) {
+            $conn = if ($i -eq $components.Count - 1) { $corner } else { $tee }
+            [void]$labels.Add("$conn $($components[$i][1])")
+            [void]$keys.Add($components[$i][0])
+        }
+    }
+
+    # Kit-managed add-ons, each removable on its own (registry-driven).
+    $addons = @(Get-ExakitMarketplaceInstalledAddons)
+    if ($addons.Count -gt 0) {
+        [void]$labels.Add("#Add-ons (kit-managed)")
+        [void]$keys.Add("__header__")
+        for ($i = 0; $i -lt $addons.Count; $i++) {
+            $conn = if ($i -eq $addons.Count - 1) { $corner } else { $tee }
+            [void]$labels.Add("$conn $($addons[$i])")
+            [void]$keys.Add($addons[$i])
+        }
+    }
+
+    [void]$labels.Add("EVERYTHING - the full kit: all of the above, the kit home, and the exakit command itself")
+    [void]$keys.Add("everything")
+    $everyIdx = $labels.Count
+
+    # EVERYTHING is a MASTER toggle over every row above it: picking it ticks
+    # them all, and unticking any single row releases it - so the screen can
+    # never claim "everything" while something sits unticked. Skip stays the
+    # exclusive opt-out.
+    if ($everyIdx -gt 2) {
+        $selection = Read-ExakitCheckboxMenu -Title "Select what to uninstall" `
+            -Options $labels.ToArray() -Defaults @(1) -ExclusiveIndex 1 `
+            -GroupParent $everyIdx -GroupFirst 2 -GroupLast ($everyIdx - 1) -GroupMode "all"
+    } else {
+        $selection = Read-ExakitCheckboxMenu -Title "Select what to uninstall" `
+            -Options $labels.ToArray() -Defaults @(1) -ExclusiveIndex 1
+    }
+    if ($selection -contains 1) { Info "Nothing was uninstalled."; return }
+
+    $picked = @()
+    $pickedLabels = @()
+    foreach ($idx in $selection) {
+        if ($idx -lt 2) { continue }
+        $key = $keys[$idx - 1]
+        if ($key.StartsWith("__")) { continue }
+        if ($key -eq "everything") {
+            # EVERYTHING swallows any other pick - the full run covers it all.
+            $picked = @("everything")
+            $pickedLabels = @("EVERYTHING - the full kit (database + data, MCP configs, skills, exapump, pyexasol, add-ons, kit home, exakit)")
+            break
+        }
+        $picked += $key
+        $pickedLabels += ($labels[$idx - 1] -replace ("^" + [regex]::Escape($tee) + " "), "" -replace ("^" + [regex]::Escape($corner) + " "), "")
+    }
+    if ($picked.Count -eq 0) { Info "Nothing selected - nothing was uninstalled."; return }
+
+    # The informed consent: exactly what was picked, then the typed gate.
     Write-Host ""
-    Invoke-ExakitUninstallRun
+    Start-ExakitPanel "This will PERMANENTLY remove"
+    foreach ($line in $pickedLabels) { Write-ExakitPanelLine $line }
+    Complete-ExakitPanel
     Write-Host ""
-    Ok "Uninstall complete - the Exasol Personal Local Starter Kit has been removed."
-    Info "If a PATH entry for $script:BinDir remains in your profile, remove it manually if you no longer need it."
+    Warn2 "This is IRREVERSIBLE. Removed data cannot be recovered."
+    if ($picked -contains "database" -or $picked -contains "everything") {
+        Warn2 "The database selection deletes ALL local database data."
+    }
+    if (-not [Environment]::UserInteractive -or [Console]::IsInputRedirected) {
+        Fail "uninstall needs an interactive terminal to confirm; use -Yes for the scripted full uninstall."
+    }
+    $answer = Read-Host "  ! Type UNINSTALL to remove the items above (anything else cancels)"
+    if ($answer -cne "UNINSTALL") { Info "Uninstall cancelled - nothing was removed."; return }
+
+    Write-Host ""
+    foreach ($key in $picked) { Invoke-ExakitUninstallComponent -Key $key }
+    Write-Host ""
+    Ok "Done. See where you stand with: exakit status"
+}
+
+# One selectable piece of the kit, removed on its own. Twin of
+# _exakit_uninstall_component in setup/lib/common.sh.
+function Invoke-ExakitUninstallComponent {
+    param([Parameter(Mandatory)][string]$Key)
+    switch ($Key) {
+        "database" {
+            Info "Removing the local Exasol Nano deployment and all data"
+            try { Remove-Nano -Data } catch { Warn2 "Database removal reported errors" }
+            Remove-ExakitStepDone "runtime"
+        }
+        "mcp_configs" {
+            Info "Removing the managed MCP configuration from the AI clients"
+            try { [void](Invoke-McpOperation -Operation "uninstall" -InputArgs @()) }
+            catch { Warn2 "Removing the managed MCP client config reported issues" }
+        }
+        "skills" {
+            foreach ($root in @((Join-Path $HOME ".claude\skills"), (Join-Path $HOME ".agents\skills"))) {
+                foreach ($name in @("local-agent-ready-starter", "trusted-ai-workflow")) {
+                    $p = Join-Path $root $name
+                    if (Test-Path $p) {
+                        Info "AI skill $p"
+                        Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $p
+                    }
+                }
+            }
+        }
+        "exapump" {
+            Info "Removing exapump and its profiles"
+            Remove-Item -Force -ErrorAction SilentlyContinue (Join-Path $script:BinDir "exapump.exe")
+            Remove-Item -Recurse -Force -ErrorAction SilentlyContinue (Join-Path $HOME ".exapump")
+            Remove-ExakitManifestValue "components.exapump"
+            Remove-ExakitStepDone "exapump"
+        }
+        "pyexasol" {
+            Info "Removing the pyexasol venv"
+            Remove-Item -Recurse -Force -ErrorAction SilentlyContinue (Join-Path $script:ExakitHome "pyexasol-venv")
+            Remove-ExakitManifestValue "components.pyexasol"
+            Remove-ExakitStepDone "pyexasol"
+        }
+        "everything" {
+            Invoke-ExakitUninstallRun
+            Info "If a PATH entry for $script:BinDir remains in your profile, remove it manually if you no longer need it."
+        }
+        default {
+            # A marketplace add-on: its module owns the removal.
+            $addonEntry = Get-ExakitMarketplaceAddon $Key
+            if ($addonEntry -and $addonEntry.PSObject.Properties["UninstallFn"] -and
+                (Get-Command $addonEntry.UninstallFn -ErrorAction SilentlyContinue)) {
+                try { [void](& $addonEntry.UninstallFn) }
+                catch { Warn2 "Removing the $Key add-on reported issues" }
+            } else {
+                Warn2 "The $Key module carries no uninstall - update the kit: exakit update exakit"
+            }
+        }
+    }
 }
 
 # Get-ExakitVersionCell <component> <recorded> - what is on the machine now, and what
@@ -321,6 +702,12 @@ function Invoke-CmdVersion {
     Write-Host "exapump:        $(Get-ExakitVersionCell 'exapump' (Get-ExakitManifestValue 'components.exapump.version'))"
     Write-Host "MCP server:     $(Get-ExakitManifestValue 'components.mcp_server.package') $(Get-ExakitVersionCell 'mcp' (Get-ExakitManifestValue 'components.mcp_server.version'))"
     Write-Host "pyexasol:       $(Get-ExakitVersionCell 'pyexasol' (Get-ExakitManifestValue 'components.pyexasol.version'))"
+    # Marketplace add-ons appear only once installed: this screen reports what
+    # is on the machine, and the marketplace command is the catalog.
+    foreach ($addonId in (Get-ExakitMarketplaceInstalledAddons)) {
+        $recordKey = "components." + ($addonId -replace "-", "_") + ".version"
+        Write-Host ("{0,-15} {1}" -f "${addonId}:", (Get-ExakitVersionCell $addonId (Get-ExakitManifestValue $recordKey)))
+    }
     if (Test-ExakitUpdatesPending) {
         # The same framed panel the connection details use, rather than three loose
         # lines that read like an error: this is good news, and it is the only thing
@@ -336,11 +723,30 @@ function Invoke-CmdVersion {
 function Get-ExakitUpdateTargets {
     param([string]$Target = "all")
     switch ($Target) {
-        "all" { return @("exakit", "runtime", "exapump", "mcp", "pyexasol") }
+        "all" {
+            # Marketplace add-ons join the routine update set only once they
+            # are installed: `exakit update all` must never install a tool the
+            # user did not pick from `exakit marketplace`.
+            return @(@("exakit", "runtime", "exapump", "mcp", "pyexasol") + (Get-ExakitMarketplaceInstalledAddons))
+        }
         { $_ -in @("runtime", "database", "db") } { return @("runtime") }
         { $_ -in @("nano", "personal", "exakit", "exapump", "mcp", "pyexasol", "kit2") } { return @($Target) }
-        default { Fail "Unknown update target: $Target" }
+        default {
+            # Any registered marketplace add-on is a valid explicit target.
+            if (Get-ExakitMarketplaceAddon $Target) { return @($Target) }
+            Fail "Unknown update target: $Target"
+        }
     }
+}
+
+# The marketplace core (registry, menu, apply, offer) lives in
+# setup/lib/exakit-common.ps1 so the installer's closing offer can use it too
+# - mirroring the bash side, where it all lives in common.sh. This file only
+# carries the command entry point.
+function Invoke-CmdMarketplace {
+    if (-not (Test-Path $script:ManifestPath)) { Fail "No installation found. Run the installer first." }
+    Initialize-ExakitLogging
+    Show-ExakitMarketplaceMenu
 }
 
 # exakit_update_actual_target equivalent: "runtime" names whichever runtime is
@@ -525,6 +931,19 @@ function Get-ExakitComponentCurrent {
             if ((Get-RuntimeType) -eq "personal") { return (Get-ExakitManifestValue "runtime.version") }
             return ""
         }
+        default {
+            # Marketplace add-ons: the module's own probe is the authority (it
+            # asks the actual install and returns nothing for a provably absent
+            # one, so a stale manifest record can never claim "installed").
+            $addon = Get-ExakitMarketplaceAddon $Component
+            if (-not $addon) { return "" }
+            if (Get-Command $addon.VersionFn -ErrorAction SilentlyContinue) {
+                $live = & $addon.VersionFn
+                if ($live) { return $live }
+                return ""
+            }
+            return (Get-ExakitManifestValue ("components." + ($Component -replace "-", "_") + ".version"))
+        }
     }
 }
 
@@ -545,6 +964,16 @@ function Get-ExakitComponentLatest {
             if ((Get-RuntimeType) -eq "personal") { return (Get-ExakitComponentLatest "personal") }
             return ""
         }
+        default {
+            # Marketplace add-ons declare their upstream in versions.json:
+            # repo -> a GitHub release, package -> PyPI. No per-add-on arm.
+            if (-not (Get-ExakitMarketplaceAddon $Component)) { return "" }
+            $repo = Get-ExakitVersionsValue -Path "components.$Component.repo"
+            if ($repo) { return (Get-ExakitLatestGithubRelease $repo) }
+            $package = Get-ExakitVersionsValue -Path "components.$Component.package"
+            if ($package) { return (Get-ExakitLatestPypiVersion $package) }
+            return ""
+        }
     }
 }
 
@@ -559,6 +988,11 @@ function Get-ExakitComponentBlock {
         "runtime" {
             if ((Get-RuntimeType) -eq "nano") { return "components.nano" }
             if ((Get-RuntimeType) -eq "personal") { return "components.personal" }
+            return $null
+        }
+        default {
+            # Every marketplace add-on lives at components.<id> by convention.
+            if (Get-ExakitMarketplaceAddon $Component) { return "components.$Component" }
             return $null
         }
     }
@@ -581,6 +1015,11 @@ function Get-ExakitComponentEnvOverride {
         "pyexasol" { return $env:EXAKIT_PYEXASOL_VERSION }
         "nano" { return $env:EXAKIT_NANO_TAG }
         "personal" { return $env:EXAKIT_PERSONAL_VERSION }
+        default {
+            # Marketplace add-ons name their override in the registry.
+            $addon = Get-ExakitMarketplaceAddon $component
+            if ($addon) { return [Environment]::GetEnvironmentVariable($addon.EnvVar) }
+        }
     }
     return ""
 }
@@ -601,7 +1040,14 @@ function Get-ExakitComponentAvailable {
     if ($script:VersionPolicy -ne "manifest") { return (Get-ExakitComponentFallback $Component) }
     $block = Get-ExakitComponentBlock $Component
     if (-not $block) { return "" }
-    return (Get-ExakitVersionsValue -Path "$block.version")
+    $value = Get-ExakitVersionsValue -Path "$block.version"
+    if ($value) { return $value }
+    # A marketplace add-on can be newer than the published manifest (the kit
+    # copy carrying it ships before the advertised set catches up): its
+    # module's own fallback constant answers instead of "unknown" - the same
+    # version the marketplace install would actually install.
+    if (Get-ExakitMarketplaceAddon $Component) { return (Get-ExakitComponentFallback $Component) }
+    return ""
 }
 
 # The last-known-good constant for a Component: what a no-network install picks.
@@ -617,6 +1063,15 @@ function Get-ExakitComponentFallback {
         # The kit's own version is not one of the constants: it comes from the copy
         # on disk, which is exactly what is installed.
         "exakit" { return (Get-ExakitKitBundledVersion) }
+        default {
+            # Marketplace add-ons: the module defines the constant the registry
+            # names (empty when the module is not loaded).
+            $addon = Get-ExakitMarketplaceAddon $component
+            if ($addon) {
+                $var = Get-Variable -Scope Script -Name $addon.FallbackVar -ErrorAction SilentlyContinue
+                if ($var) { return $var.Value }
+            }
+        }
     }
     return ""
 }
@@ -877,6 +1332,7 @@ function Invoke-CmdUpdateCheck {
         Remove-Item -Force $script:NoticePlanPath -ErrorAction SilentlyContinue
     }
     Write-ExakitVersionsSourceLine
+    Write-ExakitMarketplaceDiscoveryLine
     if ($updates -gt 1) { Info "Apply the quick ones in one go with: exakit update" }
     if ($heavyPending) { Info "A runtime change stops the database - exakit update offers it on a console, or run it directly: exakit update runtime" }
 }
@@ -1221,6 +1677,14 @@ function Invoke-CmdUpdate {
                 if ($available) { Update-Pyexasol | Out-Null }
             }
             "kit2" { Write-ExakitKit2NotAvailable -Command "exakit update kit2" }
+            default {
+                # Marketplace add-ons dispatch to their module's update function.
+                $addon = Get-ExakitMarketplaceAddon $component
+                if ($addon -and $available) {
+                    if (Get-Command $addon.UpdateFn -ErrorAction SilentlyContinue) { & $addon.UpdateFn | Out-Null }
+                    else { Fail "The $component module is not available in this version." }
+                }
+            }
         }
         $acted += 1
     }
@@ -1280,6 +1744,9 @@ function Invoke-CmdDataLoad {
         Fail "Unknown option '$ForceFlag' for data-load (only -Force/--force is supported)."
     }
     Initialize-ExakitLogging
+    # Loading data needs a database that answers - a stopped one used to make
+    # the dataset checks silently trust the manifest and the load itself fail.
+    Confirm-ExakitRuntimeRunning -Deploy
     if ($ForceFlag) {
         $kitRoot = Get-ExakitRepoRoot
         if (-not $kitRoot) { Fail "Could not find the kit's sql/ and data/ files to load." }
@@ -1445,6 +1912,7 @@ function Show-ExakitUsage {
         "  start | stop         run or pause the local database"
         "  data-load            load the sample data or your own CSV / Parquet"
         "  mcp-doctor           check the AI (MCP) connection"
+        "  marketplace          optional add-ons (dashboards & more)"
         ""
         "Keeping up to date:"
         "  version              which versions you have, and which are tested"
@@ -1480,6 +1948,7 @@ try {
         "guide"        { Show-ExakitGuide }
         "start"        { Invoke-CmdStart }
         "stop"         { Invoke-CmdStop }
+        "autostart"    { Invoke-CmdAutostart -Action (($RestArgs | Select-Object -First 1)) }
         "data-load"    { Invoke-CmdDataLoad -ForceFlag ($RestArgs | Select-Object -First 1) }
         "mcp-setup"    { Invoke-CmdMcpSetup }
         "mcp-repair"   { Invoke-CmdMcpOperation -Operation "repair" -OpArgs $RestArgs }
@@ -1489,6 +1958,7 @@ try {
         "mcp-remove"   { Invoke-CmdMcpOperation -Operation "uninstall" -OpArgs $RestArgs }
         "mcp-restore"  { Invoke-CmdMcpRestore -SnapshotId ($RestArgs | Select-Object -First 1) }
         "skills-install" { Invoke-CmdSkillsInstall }
+        "marketplace"  { Invoke-CmdMarketplace }
         "upgrade-kit2"  { Write-ExakitKit2NotAvailable -Command "exakit upgrade-kit2" }
         "rollback-kit2" { Write-ExakitKit2NotAvailable -Command "exakit rollback-kit2" }
         "uninstall"    { Invoke-CmdUninstall -AssumeYes:($RestArgs -contains "-Yes" -or $RestArgs -contains "--yes" -or $RestArgs -contains "-y") -DryRun:($RestArgs -contains "-DryRun" -or $RestArgs -contains "--dry-run" -or $RestArgs -contains "-n") }
@@ -1510,7 +1980,7 @@ try {
     # where a notice on stdout would stop the output being parseable JSON.
     if (-not $script:JsonOutput -and
         @("status", "info", "guide", "start", "stop", "data-load", "preflight",
-          "skills-install", "logs", "mcp-setup", "mcp-doctor", "mcp-status",
+          "skills-install", "marketplace", "autostart", "logs", "mcp-setup", "mcp-doctor", "mcp-status",
           "mcp-repair", "mcp-validate", "mcp-restore", "mcp-remove") -contains $Command) {
         Show-ExakitUpdateNotice
     }

@@ -79,4 +79,13 @@ connection_panel
 # Only when the kit version moved during this run, and never able to fail it: the
 # trap is already released and every reader inside degrades to silence.
 exakit_print_whats_new_box "$KIT_ROOT" || true
+# Last on screen, after the payoff panel: anything that did not complete, with
+# the one command that installs it. A step that failed mid-run scrolls away;
+# this is what the user is still looking at when the installer exits.
+exakit_print_soft_failures
+# The closing offer: optional marketplace add-ons, asked exactly once, only on
+# an interactive run whose steps all completed, and only while something is
+# actually on offer. The subshell keeps any failure inside it from ending an
+# install that already succeeded.
+( exakit_marketplace_offer ) || true
 info "Next: exakit status | exakit info | exakit version | exakit update | exakit help"

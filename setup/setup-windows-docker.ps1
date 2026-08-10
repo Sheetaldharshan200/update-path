@@ -19,6 +19,13 @@ $KitRoot = Split-Path -Parent $ScriptDir
 . (Join-Path $LibDir "exapump.ps1")
 . (Join-Path $LibDir "mcp.ps1")
 . (Join-Path $LibDir "pyexasol.ps1")
+# Marketplace add-on modules: sourcing installs NOTHING - the modules are
+# needed only so the closing marketplace offer can install what the user says
+# yes to. A module missing from an older kit copy just skips its row.
+foreach ($addonEntry in (Get-ExakitMarketplaceAddons)) {
+    $addonModule = Join-Path $LibDir "$($addonEntry.Id).ps1"
+    if (Test-Path $addonModule) { . $addonModule }
+}
 
 Initialize-ExakitLogging
 Initialize-ExakitManifest
@@ -81,11 +88,10 @@ try {
     if ($exapumpSupported -and (Test-ExakitSoftFailed "exapump")) {
         Info "Skipping the sample data - it is loaded with exapump, which is not installed"
     } elseif ($exapumpSupported) {
-        try {
-            Request-ExakitDataLoadOffer -KitRoot $KitRoot
-        } catch [ExakitFailException] {
-            Warn2 "Sample data load did not finish cleanly. Retry any time with: exakit data-load"
-        }
+        [void](Invoke-ExakitBestEffort -Component "sample_data" -Repair "exakit data-load" `
+            -Label "sample data" `
+            -Warning "Sample data load did not finish cleanly." `
+            -Body { Request-ExakitDataLoadOffer -KitRoot $KitRoot })
     }
 
     # --- step 4: MCP server (AI agent bridge) ----------------------------------
@@ -104,11 +110,17 @@ try {
     # A failed pyexasol install must not end the run: the exakit helper step
     # below still has to happen, or the user is left without the command that
     # manages everything else. The step stays unmarked so a re-run retries it.
+    #
+    # Test-PyexasolConnection runs INSIDE the soft step. Outside it, the step was
+    # soft in name only: the driver could install fine and any Fail() raised while
+    # validating (an unwritable manifest, say) still ended the run before the
+    # exakit helper below existed. Install and validate are one isolated unit.
     if (Begin-ExakitStep "pyexasol" "Step 4/5  pyexasol (Exasol Python driver)") {
         if (Invoke-ExakitSoftStep -Component "pyexasol" -Repair "exakit update pyexasol" -Body {
-                Install-Pyexasol
+                if (-not (Install-Pyexasol)) { return $false }
+                Test-PyexasolConnection
+                return $true
             }) {
-            Test-PyexasolConnection
             Set-ExakitStepDone "pyexasol"
         }
     }
@@ -165,37 +177,50 @@ try {
         Ok "exakit installed ($(Join-Path $script:BinDir 'exakit.cmd'))"
     }
 
-    Write-ExakitSoftFailures
+    # The upgrade news (Write-ExakitWhatsNewBox) and the closing summary
+    # (Write-ExakitSoftFailures) are printed after the connection panel at the
+    # very end of the run - not here, in the middle of the step output where
+    # the connection details would push them off the screen.
 
-    # What changed in an upgrade is announced by Write-ExakitWhatsNewBox, after the
-    # connection panel at the very end of the run - not here, in the middle of the
-    # step output where the connection details would push it off the screen.
+    [void](Invoke-ExakitBestEffort -Component "mcp_clients" -Repair "exakit mcp-setup" `
+        -Label "AI client (MCP) setup" `
+        -Warning "Your local runtime is installed, but MCP client setup did not finish cleanly." `
+        -Body { Request-ExakitMcpSetupOffer })
 
-    try {
-        Request-ExakitMcpSetupOffer
-    } catch [ExakitFailException] {
-        Warn2 "Your local runtime is installed, but MCP client setup did not finish cleanly."
-        Warn2 "Retry any time with: exakit mcp-setup"
-    }
-
-    try {
-        Request-ExakitSkillsInstallOffer
-    } catch [ExakitFailException] {
-        Warn2 "Skills install did not finish cleanly. Retry any time with: exakit skills-install"
-    }
+    [void](Invoke-ExakitBestEffort -Component "skills" -Repair "exakit skills-install" `
+        -Label "AI skills" `
+        -Warning "Skills install did not finish cleanly." `
+        -Body { Request-ExakitSkillsInstallOffer })
 
     Ok "Setup complete"
     Show-ExakitConnectionPanel
     # Only when the kit version moved during this run, and never able to fail it:
     # every reader inside degrades to silence.
     Write-ExakitWhatsNewBox -KitRoot $KitRoot
+    # Last on screen, after the payoff panel: anything that did not complete, with
+    # the one command that installs it. A step that failed mid-run scrolls away;
+    # this is what the user is still looking at when the installer exits.
+    Write-ExakitSoftFailures
+    # The closing offer: optional marketplace add-ons, asked exactly once, only
+    # on an interactive run whose steps all completed, and only while something
+    # is actually on offer (an add-on already on this machine is never
+    # advertised). Best-effort: nothing in it may end an install that already
+    # succeeded.
+    [void](Invoke-ExakitBestEffort -Component "marketplace" -Repair "exakit marketplace" `
+        -Label "marketplace add-ons" `
+        -Warning "The marketplace offer did not finish cleanly." `
+        -Body { Request-ExakitMarketplaceOffer })
     Info "Next: exakit status | exakit info | exakit version | exakit update | exakit help"
 } catch [ExakitFailException] {
+    # A hard stop (no container runtime, no database) still owes the user the
+    # account of what had already been skipped before it.
+    Write-ExakitSoftFailures
     exit 1
 } catch {
     # Same "card" shape as Fail(): prominent x header + dim gutter line to the log.
     Write-Host ""
     Write-Host ("  {0}{1} {2}Unexpected error: $_{3}" -f $script:UiErr, $script:UiCross, $script:UiBold, $script:UiReset)
     if ($script:LogFile) { Write-Host ("    {0}{1} Log: {2}{3}" -f $script:UiDim, $script:UiVB, $script:LogFile, $script:UiReset) }
+    Write-ExakitSoftFailures
     exit 1
 }

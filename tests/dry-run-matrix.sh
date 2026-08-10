@@ -136,7 +136,10 @@ check "mcp_credentials(legacy fallback)" "mcp_readonly" "$_mcp_user"
 rm -rf "$_mcp_test_dir"
 
 echo "update command routing:"
-update_targets="$(bash -c ". '$ROOT/setup/lib/common.sh'; exakit_update_targets all" | tr '\n' ' ')"
+# Sandboxed kit home: on a machine whose REAL install carries a marketplace
+# add-on, the installed-addons probe would otherwise read the real manifest
+# and legitimately append it to the targets — the fixture wants a clean box.
+update_targets="$(bash -c "EXAKIT_HOME=\$(mktemp -d); EXAKIT_BIN_DIR=\"\$EXAKIT_HOME/bin\"; . '$ROOT/setup/lib/common.sh'; exakit_update_targets all" | tr '\n' ' ')"
 check "update_targets(all)" "exakit runtime exapump mcp pyexasol " "$update_targets"
 personal_target="$(bash -c ". '$ROOT/setup/lib/common.sh'; exakit_update_targets personal" | tr '\n' ' ')"
 check "update_targets(personal)" "personal " "$personal_target"
@@ -165,7 +168,13 @@ printf '#!/bin/sh\necho 2.2.2\n' > "$_stub_bin/python"
 chmod +x "$_stub_bin/exapump" "$_stub_bin/python"
 update_action="$(bash -c "
 EXAKIT_VERSION_POLICY=pinned
+EXAKIT_HOME=\$(mktemp -d); EXAKIT_BIN_DIR=\"\$EXAKIT_HOME/bin\"
 . '$ROOT/setup/lib/common.sh'
+# The mcp row probes the REAL AI client configs for their pinned server
+# version; on a machine with a live install that pin (e.g. 2.0.0) outruns the
+# stub's advertised 1.11.0 and the row flips to 'yours is newer'. The record
+# below is the fixture — keep the probe out of the sandbox.
+exakit_installed_mcp_version() { return 1; }
 manifest_get() {
   case \"\$1\" in
     runtime.type) printf '%s\n' nano ;;
@@ -399,7 +408,7 @@ fi
 echo "Windows parity guards:"
 if command -v pwsh >/dev/null 2>&1; then
     ps_parse="$(pwsh -NoProfile -Command '
-      $files = @("setup/lib/exakit-common.ps1","setup/lib/nano.ps1","setup/lib/mcp.ps1","setup/setup-windows-docker.ps1","setup/exakit.ps1")
+      $files = @("setup/lib/exakit-common.ps1","setup/lib/nano.ps1","setup/lib/mcp.ps1","setup/lib/dash-server.ps1","setup/lib/exasol-vscode.ps1","setup/setup-windows-docker.ps1","setup/exakit.ps1")
       foreach ($f in $files) {
         $errors = $null
         $null = [System.Management.Automation.PSParser]::Tokenize((Get-Content -Raw $f), [ref]$errors)
@@ -482,6 +491,129 @@ if grep -q 'exakit_soft_step exapump' "$ROOT/setup/lib/common.sh" && \
 else
     check "install(components_soft_fail)" "yes" "no"
 fi
+echo "runtime self-heal (exakit_ensure_runtime_running):"
+# The four states, against stubbed runtime helpers: running is left alone,
+# stopped is started and health-checked, missing is deployed only when the
+# caller allows it and refused with the remedy otherwise.
+heal_case() { # heal_case <running> <exists> <deploy-arg> — echoes the calls made
+    bash -c '
+        EXAKIT_HOME="$(mktemp -d)"; EXAKIT_BIN_DIR="$EXAKIT_HOME/bin"
+        . "'"$ROOT"'/setup/lib/common.sh" >/dev/null 2>&1
+        manifest_get() { [ "$1" = runtime.type ] && echo personal; }
+        personal_deployment_running() { return '"$1"'; }
+        personal_deployment_exists()  { return '"$2"'; }
+        personal_start()       { printf "start "; }
+        personal_wait_ready()  { printf "wait "; }
+        personal_deploy_local(){ printf "deploy "; }
+        info() { :; }; die() { printf "die"; exit 1; }
+        exakit_ensure_runtime_running '"$3"'
+        rm -rf "$EXAKIT_HOME"
+    ' 2>/dev/null
+}
+check "self_heal(running -> untouched)"        ""            "$(heal_case 0 0 "")"
+check "self_heal(stopped -> start + wait)"     "start wait " "$(heal_case 1 0 "")"
+check "self_heal(missing + deploy -> deploys)" "deploy "     "$(heal_case 1 1 deploy)"
+check "self_heal(missing, no deploy -> dies)"  "die"         "$(heal_case 1 1 "")"
+# ...and the commands that speak SQL actually use it, on both sides.
+if grep -q 'exakit_ensure_runtime_running$' "$ROOT/setup/lib/common.sh" >/dev/null 2>&1 || \
+   grep -q 'exakit_ensure_runtime_running' <(awk '/^exakit_mcp_setup\(\)/,/^}/' "$ROOT/setup/lib/common.sh") && \
+   grep -q 'exakit_ensure_runtime_running deploy' "$ROOT/setup/exakit" && \
+   grep -q 'Confirm-ExakitRuntimeRunning' "$ROOT/setup/lib/mcp.ps1" && \
+   grep -q 'Confirm-ExakitRuntimeRunning -Deploy' "$ROOT/setup/exakit.ps1"; then
+    check "self_heal(wired_into_sql_commands)" "yes" "yes"
+else
+    check "self_heal(wired_into_sql_commands)" "yes" "no"
+fi
+
+# A re-run over an existing install must START a stopped database, not skip
+# the step: everything after it talks SQL, and skipping used to surface as
+# "Connection refused" in the MCP user creation (macOS was the odd one out —
+# the Nano paths already restarted). All three installers, same behaviour.
+if grep -q 'personal_deployment_running' "$ROOT/setup/setup-macos.sh" && \
+   grep -q 'personal_start' "$ROOT/setup/setup-macos.sh" && \
+   grep -q 'personal_wait_ready' "$ROOT/setup/setup-macos.sh" && \
+   grep -qE 'nano_status.*!=.*running' "$ROOT/setup/setup-wsl.sh" && \
+   grep -q 'Get-NanoStatus) -ne "running"' "$ROOT/setup/setup-windows-docker.ps1"; then
+    check "install(rerun_starts_stopped_runtime)" "yes" "yes"
+else
+    check "install(rerun_starts_stopped_runtime)" "yes" "no"
+fi
+
+# The marketplace, both sides. The registry, the installed-only gate on
+# `update all`, the command dispatch, and the dash-server module twins must
+# exist on each side, or the Windows path silently loses the add-on layer.
+if grep -q 'exakit_marketplace_addons()' "$ROOT/setup/lib/common.sh" && \
+   grep -q 'exakit_marketplace_installed_addons' "$ROOT/setup/lib/common.sh" && \
+   grep -q 'dash_server_update' "$ROOT/setup/lib/dash-server.sh" && \
+   grep -q 'dash_server_install' "$ROOT/setup/lib/dash-server.sh" && \
+   grep -q 'marketplace) shift; _with_notice cmd_marketplace' "$ROOT/setup/exakit" && \
+   grep -q 'function Get-ExakitMarketplaceAddons' "$ROOT/setup/lib/exakit-common.ps1" && \
+   grep -q 'Get-ExakitMarketplaceInstalledAddons' "$ROOT/setup/lib/exakit-common.ps1" && \
+   grep -q 'function Update-DashServer' "$ROOT/setup/lib/dash-server.ps1" && \
+   grep -q 'function Install-DashServer' "$ROOT/setup/lib/dash-server.ps1" && \
+   grep -q 'exasol_vscode_update' "$ROOT/setup/lib/exasol-vscode.sh" && \
+   grep -q 'exasol_vscode_install' "$ROOT/setup/lib/exasol-vscode.sh" && \
+   grep -q 'function Update-ExasolVscode' "$ROOT/setup/lib/exasol-vscode.ps1" && \
+   grep -q 'function Install-ExasolVscode' "$ROOT/setup/lib/exasol-vscode.ps1" && \
+   grep -q '"exasol-vscode"' "$ROOT/setup/lib/exakit-common.ps1" && \
+   grep -q '"marketplace"  { Invoke-CmdMarketplace }' "$ROOT/setup/exakit.ps1"; then
+    check "marketplace(twins)" "yes" "yes"
+else
+    check "marketplace(twins)" "yes" "no"
+fi
+# Services and autostart, both sides: the registry-driven service set, the
+# start/stop/status hooks, the boot registration, and the autostart command.
+if grep -q 'exakit_service_ids()' "$ROOT/setup/lib/common.sh" && \
+   grep -q '_exakit_autostart_register()' "$ROOT/setup/lib/common.sh" && \
+   grep -q 'exakit_autostart_enable()' "$ROOT/setup/lib/common.sh" && \
+   grep -q 'dash_server_status()' "$ROOT/setup/lib/dash-server.sh" && \
+   grep -q 'dash_server_start()' "$ROOT/setup/lib/dash-server.sh" && \
+   grep -q 'dash_server_autostart_command()' "$ROOT/setup/lib/dash-server.sh" && \
+   grep -q 'autostart) shift; _with_notice cmd_autostart' "$ROOT/setup/exakit" && \
+   grep -q 'function Get-ExakitServiceIds' "$ROOT/setup/exakit.ps1" && \
+   grep -q 'function Register-ExakitAutostart' "$ROOT/setup/exakit.ps1" && \
+   grep -q 'function Enable-ExakitAutostart' "$ROOT/setup/exakit.ps1" && \
+   grep -q 'function Get-DashServerStatus' "$ROOT/setup/lib/dash-server.ps1" && \
+   grep -q 'function Start-DashServer' "$ROOT/setup/lib/dash-server.ps1" && \
+   grep -q 'function Set-NanoRestartPolicy' "$ROOT/setup/lib/nano.ps1" && \
+   grep -q '"autostart"    { Invoke-CmdAutostart' "$ROOT/setup/exakit.ps1"; then
+    check "services(autostart_twins)" "yes" "yes"
+else
+    check "services(autostart_twins)" "yes" "no"
+fi
+# The install turns it on, and the uninstall takes the boot entries away.
+if grep -q 'exakit_autostart_enable' <(awk '/^kit_shared_steps\(\)/,/^}/' "$ROOT/setup/lib/common.sh") && \
+   grep -q '_exakit_autostart_unregister' <(awk '/^exakit_uninstall_run\(\)/,/^}/' "$ROOT/setup/lib/common.sh") && \
+   grep -q 'Unregister-ExakitAutostart' "$ROOT/setup/exakit.ps1"; then
+    check "services(autostart_install_and_sweep)" "yes" "yes"
+else
+    check "services(autostart_install_and_sweep)" "yes" "no"
+fi
+
+# The closing marketplace offer, all three installers: shown after everything
+# ran, and its core is shared (common.sh / exakit-common.ps1), not duplicated.
+if grep -q 'exakit_marketplace_offer' "$ROOT/setup/setup-macos.sh" && \
+   grep -q 'exakit_marketplace_offer' "$ROOT/setup/setup-wsl.sh" && \
+   grep -q 'Request-ExakitMarketplaceOffer' "$ROOT/setup/setup-windows-docker.ps1" && \
+   grep -q 'exakit_marketplace_offer()' "$ROOT/setup/lib/common.sh" && \
+   grep -q 'function Request-ExakitMarketplaceOffer' "$ROOT/setup/lib/exakit-common.ps1"; then
+    check "marketplace(closing_offer)" "yes" "yes"
+else
+    check "marketplace(closing_offer)" "yes" "no"
+fi
+# The marketplace must stay OUT of the install steps: no setup script may
+# INSTALL the dash-server module (the Windows script dot-sources it and the
+# offer runs after everything else, but no step invokes Install-DashServer /
+# dash_server_install directly), and no shared step may install it.
+if ! grep -qE 'dash_server_install|exasol_vscode_install' "$ROOT/setup/setup-macos.sh" && \
+   ! grep -qE 'dash_server_install|exasol_vscode_install' "$ROOT/setup/setup-wsl.sh" && \
+   ! grep -qE 'Install-DashServer|Install-ExasolVscode' "$ROOT/setup/setup-windows-docker.ps1" && \
+   ! grep -qE 'dash_server_install|exasol_vscode_install' <(awk '/^kit_shared_steps\(\)/,/^}/' "$ROOT/setup/lib/common.sh"); then
+    check "marketplace(not_in_install_flow)" "yes" "yes"
+else
+    check "marketplace(not_in_install_flow)" "yes" "no"
+fi
+
 # Release notes, both sides: the command, the print after a self-update, and the
 # file travelling into the kit copy (without that last part `exakit whats-new`
 # works from a checkout and then dies with it).

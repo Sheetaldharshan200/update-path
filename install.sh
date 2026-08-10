@@ -48,6 +48,9 @@
 #                           data/datasets/<id>/ ids, e.g. "tpch,weather");
 #                           takes precedence over EXAKIT_LOAD_SAMPLE
 #   EXAKIT_LOAD_SAMPLE=0|1  0 skip data loading, 1 load the bundled sample (tpch)
+#   EXAKIT_MARKETPLACE_ADDONS=...  answer the closing marketplace offer: add-on
+#                           ids (csv, e.g. "dash-server"), all, or none; unset,
+#                           a non-interactive install skips the offer
 #   GITHUB_TOKEN=...        auth for downloading from a private repo
 #
 # Windows (PowerShell): use install.ps1 instead.

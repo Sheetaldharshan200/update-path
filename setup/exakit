@@ -19,8 +19,9 @@
 #                       install record (manifest.json) verbatim, nothing else
 #   guide               friendly walkthrough: connect AI clients (MCP), SQL
 #                       clients (DBeaver, DbVisualizer), and Python (pyexasol)
-#   start               start the local database
-#   stop                stop the local database
+#   start               start the local database and every add-on service
+#   stop                stop them again
+#   autostart [on|off]  whether everything comes back after a restart
 #   data-load [--force] open focused data loading options; --force reloads bundled sample data
 #   mcp-setup           permanently configure MCP in supported AI clients
 #   mcp-doctor          check MCP config, connectivity, and managed state
@@ -31,15 +32,20 @@
 #   mcp-restore         restore the latest (or a chosen) MCP snapshot
 #   skills-install      install the kit's AI skills for CLI agents
 #                       (~/.claude/skills, ~/.agents/skills)
+#   marketplace         browse optional add-ons (dash-server, ...) and install
+#                       the ones you select; installed add-ons then update
+#                       through `exakit update` like every other component
 #   upgrade-kit2        add the Kit 2 trust assets (Trusted AI Workflow add-on)
 #                       on top of this install; nothing is reinstalled
 #   rollback-kit2       remove exactly what upgrade-kit2 added; the database and
 #                       every Kit 1 component stay untouched
 #   uninstall [--yes] [--dry-run]
-#                       remove EVERYTHING the kit installed: database + all
-#                       data, MCP client configs, skills, exapump, the kit home
-#                       and the CLI binaries. --dry-run previews; --yes skips
-#                       the typed confirmation
+#                       pick what to remove — components, add-ons, or
+#                       EVERYTHING (database + data, MCP client configs,
+#                       skills, exapump, pyexasol, the kit home and the CLI
+#                       binaries) — with a summary and a typed confirmation.
+#                       --dry-run previews the full plan; --yes is the
+#                       scripted full uninstall
 #   whats-new [version] what changed in this kit version
 #   logs                print the path of the latest setup log
 #   catalog [search]    browse/search every exakit, exapump & exasol command
@@ -71,6 +77,11 @@ fi
 # pyexasol is an update target of its own (and its own repair command), so the
 # CLI needs the module even though it takes no part in the runtime commands.
 [ -f "$_lib_dir/pyexasol.sh" ] && . "$_lib_dir/pyexasol.sh"
+# Marketplace add-on modules: the CLI is where they are installed (exakit
+# marketplace) and updated (exakit update <addon>), so it loads every module
+# it ships. A missing file only makes the marketplace row unavailable.
+[ -f "$_lib_dir/dash-server.sh" ] && . "$_lib_dir/dash-server.sh"
+[ -f "$_lib_dir/exasol-vscode.sh" ] && . "$_lib_dir/exasol-vscode.sh"
 
 _runtime_type() {
     manifest_get runtime.type 2>/dev/null
@@ -94,6 +105,17 @@ cmd_status() {
         personal) printf 'Status:     %s\n' "$(personal_status)" ;;
         *)        printf 'Status:     unknown\n' ;;
     esac
+    # Every add-on that runs as a service, with the state it is actually in —
+    # registry-driven, so a new add-on appears here on its own.
+    for _st_id in $(exakit_service_ids 2>/dev/null); do
+        [ "$_st_id" = "database" ] && continue
+        printf '%-11s %s\n' "$_st_id:" "$(exakit_service_status "$_st_id")"
+    done
+    if [ "$(manifest_get autostart.enabled 2>/dev/null || true)" = "true" ]; then
+        printf 'Autostart:  on (everything comes back after a restart)\n'
+    else
+        printf 'Autostart:  off — turn it on with: exakit autostart on\n'
+    fi
     printf 'Steps done: %s\n' "$(manifest_get steps_completed 2>/dev/null)"
     # pyexasol installs soft: when it is missing, say so here with the one command
     # that fixes it, instead of leaving a silent gap in the install.
@@ -108,17 +130,44 @@ cmd_status() {
 
 cmd_start() {
     _require_install
+    # Everything the kit runs, database first: self-heal semantics for the
+    # runtime (a stopped one is started, a missing one deployed — `exakit
+    # start` promises a running database), then every add-on service.
     case "$(_runtime_type)" in
-        nano)     nano_start ;;
-        personal) personal_start ;;
+        nano)     [ "$(nano_status 2>/dev/null)" = "running" ] && ok "Database is already running" || exakit_ensure_runtime_running deploy ;;
+        personal) personal_deployment_running 2>/dev/null && ok "Database is already running" || exakit_ensure_runtime_running deploy ;;
+        *)        exakit_ensure_runtime_running deploy ;;
     esac
+    for _start_id in $(exakit_service_ids); do
+        [ "$_start_id" = "database" ] && continue
+        exakit_service_start "$_start_id" || true
+    done
 }
 
 cmd_stop() {
     _require_install
+    # Add-on services first: they talk to the database, so they should be down
+    # before it goes.
+    for _stop_id in $(exakit_service_ids); do
+        [ "$_stop_id" = "database" ] && continue
+        exakit_service_stop "$_stop_id" || true
+    done
     case "$(_runtime_type)" in
         nano)     nano_stop ;;
         personal) personal_stop ;;
+    esac
+}
+
+# cmd_autostart [on|off] — whether everything the kit runs comes back after a
+# restart. With no argument it reports the current state.
+cmd_autostart() {
+    _require_install
+    exakit_init_logging 2>/dev/null || true
+    case "${1:-}" in
+        on|enable)   exakit_autostart_enable ;;
+        off|disable) exakit_autostart_disable ;;
+        ""|status)   exakit_autostart_print ;;
+        *) die "Unknown option '$1' for autostart (use: on, off, or no argument to show the state)." ;;
     esac
 }
 
@@ -144,33 +193,31 @@ cmd_uninstall() {
         exit 0
     fi
 
-    printf '\n'
-    warn "exakit uninstall PERMANENTLY removes the Exasol Personal Local Starter Kit."
-    info "The following will be removed:"
-    exakit_uninstall_run 1
-    printf '\n'
-    warn "This is IRREVERSIBLE — all local database data will be lost."
-    info "Not touched: uv/uvx (shared tool) and any PATH line in your shell profile."
-
+    # --dry-run previews the FULL plan; --yes is the scripted full uninstall
+    # (automation and AGENTS.md rely on both). Everything else goes through
+    # the selectable menu: pick what goes, see what that means, type the word.
     if [ "$_uni_dry" = 1 ]; then
         printf '\n'
-        info "Dry run only — nothing was removed."
+        warn "exakit uninstall PERMANENTLY removes the Exasol Personal Local Starter Kit."
+        info "A full uninstall (the EVERYTHING row, or --yes) removes:"
+        exakit_uninstall_run 1
+        printf '\n'
+        info "Not touched: uv/uvx (shared tool), any PATH line in your shell profile, and anything the kit did not install."
+        info "Dry run only — nothing was removed. Pick individual pieces interactively with: exakit uninstall"
         exit 0
     fi
 
-    if [ "$_uni_yes" != 1 ]; then
-        _tty="$(_exakit_prompt_tty)"
-        [ -n "$_tty" ] || die "uninstall needs an interactive terminal to confirm; re-run with --yes to proceed non-interactively."
-        printf '\033[1;31m  !\033[0m Type \033[1mUNINSTALL\033[0m to confirm (anything else cancels): '
-        if [ "$_tty" = "/dev/tty" ]; then read -r _answer < /dev/tty; else read -r _answer; fi
-        [ "$_answer" = "UNINSTALL" ] || { info "Uninstall cancelled."; exit 0; }
+    if [ "$_uni_yes" = 1 ]; then
+        printf '\n'
+        warn "exakit uninstall --yes removes the FULL kit (all local database data included)."
+        exakit_uninstall_run 0
+        printf '\n'
+        ok "Uninstall complete — the Exasol Personal Local Starter Kit has been removed."
+        info "If a PATH entry for $EXAKIT_BIN_DIR remains in your shell profile (~/.zshrc, ~/.bashrc, ~/.profile), remove it manually if you no longer need it."
+        exit 0
     fi
 
-    printf '\n'
-    exakit_uninstall_run 0
-    printf '\n'
-    ok "Uninstall complete — the Exasol Personal Local Starter Kit has been removed."
-    info "If a PATH entry for $EXAKIT_BIN_DIR remains in your shell profile (~/.zshrc, ~/.bashrc, ~/.profile), remove it manually if you no longer need it."
+    exakit_uninstall_menu
 }
 
 # _version_cell <component> <recorded> — what is on the machine now, and what the
@@ -224,6 +271,12 @@ cmd_version() {
         "$(_version_cell mcp "$(manifest_get components.mcp_server.version 2>/dev/null || true)")"
     printf 'pyexasol:       %s\n' \
         "$(_version_cell pyexasol "$(manifest_get components.pyexasol.version 2>/dev/null || true)")"
+    # Marketplace add-ons appear only once installed: this screen reports what
+    # is on the machine, and the marketplace command is the catalog.
+    for _ver_addon in $(exakit_marketplace_installed_addons 2>/dev/null); do
+        printf '%-15s %s\n' "$_ver_addon:" \
+            "$(_version_cell "$_ver_addon" "$(manifest_get "components.$(printf '%s' "$_ver_addon" | tr '-' '_').version" 2>/dev/null || true)")"
+    done
     if exakit_updates_pending; then
         # The same framed panel the connection details use, rather than three loose
         # lines that read like an error: this is good news, and it is the only thing
@@ -274,6 +327,9 @@ cmd_data_load() {
     command -v exakit_load_sample_data >/dev/null 2>&1 || \
         die "The exapump data-loading module is not available in this kit build."
     exakit_init_logging
+    # Loading data needs a database that answers — a stopped one used to make
+    # the dataset checks silently trust the manifest and the load itself fail.
+    exakit_ensure_runtime_running deploy
     if [ "${1:-}" = "--force" ]; then
         _kit_root="$(exakit_repo_root)" || \
             die "Could not find the kit's sql/ and data/ files to load."
@@ -333,6 +389,12 @@ cmd_skills_install() {
     exakit_install_skills || die "Could not install the kit's AI skills"
 }
 
+cmd_marketplace() {
+    [ -f "$EXAKIT_MANIFEST" ] || die "No installation found. Run the installer first."
+    exakit_init_logging
+    exakit_marketplace_menu "$@"
+}
+
 usage() {
     # `exakit help --all` prints the full command reference: the leading
     # comment block (from line 2) up to the first non-comment line — no
@@ -353,9 +415,11 @@ Get started:
 Everyday commands:
   status               is the database up and healthy?
   info                 show your connection details
-  start | stop         run or pause the local database
+  start | stop         run or pause the database and add-on services
+  autostart [on|off]   come back automatically after a restart
   data-load            load the sample data or your own CSV / Parquet
   mcp-doctor           check the AI (MCP) connection
+  marketplace          optional add-ons (dashboards & more)
 
 Keeping up to date:
   version              which versions you have, and which are tested
@@ -499,6 +563,7 @@ case "${1:-help}" in
     guide)    _with_notice exakit_guide ;;
     start)    _with_notice cmd_start ;;
     stop)     _with_notice cmd_stop ;;
+    autostart) shift; _with_notice cmd_autostart "${1:-}" ;;
     data-load) shift; _with_notice cmd_data_load "${1:-}" ;;
     mcp-setup) _with_notice cmd_mcp_setup ;;
     mcp-repair) shift; _with_notice cmd_mcp_repair "$@" ;;
@@ -508,6 +573,7 @@ case "${1:-help}" in
     mcp-remove) shift; _with_notice cmd_mcp_remove "$@" ;;
     mcp-restore) shift; _with_notice cmd_mcp_restore "$@" ;;
     skills-install) _with_notice cmd_skills_install ;;
+    marketplace) shift; _with_notice cmd_marketplace "$@" ;;
     upgrade-kit2)  cmd_kit2_script upgrade-kit2.sh ;;
     rollback-kit2) cmd_kit2_script rollback-kit2.sh ;;
     uninstall) shift; cmd_uninstall "$@" ;;

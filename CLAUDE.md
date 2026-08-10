@@ -19,6 +19,17 @@ Working on the code in this repo:
 
 - Shell must stay **bash 3.2** compatible (macOS default); PowerShell must
   stay **5.1** compatible (no ternary, no `??`).
+- **Adding an optional tool (marketplace add-on)?** Follow
+  [MARKETPLACE.md](MARKETPLACE.md) — it is the full walkthrough with skeleton
+  code. The short version: a `setup/lib/<id>.sh` + `.ps1` module pair
+  (dash-server is the reference implementation), a `components.<id>` block in
+  versions.json, and one registry line each side
+  (`exakit_marketplace_addons` in common.sh, `Get-ExakitMarketplaceAddons` in
+  exakit-common.ps1) plus the two CI-guard entries. Never add per-add-on case
+  arms to the registry functions — the generic arms handle registered add-ons,
+  and `tests/marketplace.sh` fails on hand-wired ones. Never install an
+  add-on from the setup scripts; the marketplace and its closing offer are
+  the only install paths.
 - `setup/lib/ui.sh` and `setup/lib/ui.ps1` are close twins of the shared
   visual layer (banner, palette, status glyphs, spinner, progress, panels):
   when you change a function that exists in both, mirror it in the other,

@@ -37,6 +37,9 @@ function Write-PyexasolNotInstalled {
     param([Parameter(Mandatory)][string]$Reason)
     Warn2 "pyexasol was not installed: $Reason"
     Warn2 "Everything else in the kit is unaffected. Retry with: exakit update pyexasol"
+    # Hand the reason to the closing summary, which prints it next to the repair
+    # command; without this the user is told only that pyexasol is missing.
+    Set-ExakitFailureReason $Reason
     Set-ExakitManifestValue "components.pyexasol.validated" $false
     return $false
 }

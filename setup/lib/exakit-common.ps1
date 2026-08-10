@@ -83,6 +83,9 @@ $script:McpVersion      = if ($env:EXAKIT_MCP_VERSION) { $env:EXAKIT_MCP_VERSION
 $script:PyexasolPackage = if ($env:EXAKIT_PYEXASOL_PACKAGE) { $env:EXAKIT_PYEXASOL_PACKAGE } else { "pyexasol" }
 $script:PyexasolVersionFallback = if ($env:EXAKIT_PYEXASOL_VERSION_FALLBACK) { $env:EXAKIT_PYEXASOL_VERSION_FALLBACK } else { "2.3.0" }
 $script:PyexasolVersion = if ($env:EXAKIT_PYEXASOL_VERSION) { $env:EXAKIT_PYEXASOL_VERSION } else { "" }
+# Marketplace add-ons (dash-server, ...) carry their own version constants in
+# their module files - they are not part of the install flow, so nothing here
+# needs to know them.
 $script:DbPort          = if ($env:EXAKIT_DB_PORT) { $env:EXAKIT_DB_PORT } else { "8563" }
 
 # The versions manifest (versions.json at the root of the kit repository on
@@ -177,33 +180,58 @@ function Write-ExakitMenuHint([string]$Text) {
 function Read-ExakitCheckboxMenu {
     param(
         [string]$Title, [string[]]$Options, [int[]]$Defaults = @(), [int]$ExclusiveIndex = 0,
-        [int]$GroupParent = 0, [int]$GroupFirst = 0, [int]$GroupLast = 0
+        [int]$GroupParent = 0, [int]$GroupFirst = 0, [int]$GroupLast = 0,
+        [string]$GroupMode = "any"
     )
     # $ExclusiveIndex (1-based, 0 = none): an option that cannot be combined
     # with the others - think "Skip for now". Selecting it clears every other
     # choice; selecting any other choice clears it.
     # $GroupParent/$GroupFirst/$GroupLast (optional): row $GroupParent is a
-    # group checkbox whose children are rows $GroupFirst..$GroupLast. Toggling
-    # the parent ON selects every child; OFF clears them all. Toggling a child
-    # re-derives the parent (checked while ANY child is checked).
+    # group checkbox whose children are rows $GroupFirst..$GroupLast (header
+    # and disabled rows in that range are skipped). Toggling the parent ON
+    # selects every child; OFF clears them all. Toggling a child re-derives the
+    # parent per $GroupMode: "any" (default) leaves it checked while ANY child
+    # is checked (a group header), "all" only while EVERY child is checked - a
+    # MASTER toggle, which is how EVERYTHING behaves in the uninstall menu.
     Info $Title
     $sel = New-Object 'System.Collections.Generic.List[int]'
     foreach ($d in $Defaults) {
         if ($d -ge 1 -and $d -le $Options.Count -and -not $sel.Contains($d)) { [void]$sel.Add($d) }
     }
+    # The SELECTABLE rows in the group's range: header (#) and disabled (!) rows
+    # sit inside it but can never be checked, so a select-all skips them and an
+    # all-children rule must not wait on them.
+    $groupChildren = {
+        $out = @()
+        for ($c = $GroupFirst; $c -le $GroupLast; $c++) {
+            if ($c -lt 1 -or $c -gt $Options.Count) { continue }
+            if ($Options[$c - 1].StartsWith("#") -or $Options[$c - 1].StartsWith("!")) { continue }
+            $out += $c
+        }
+        return $out
+    }
     $applyGroup = {
         param($toggled)
         if ($GroupParent -lt 1) { return }
+        $children = & $groupChildren
         if ($toggled -eq $GroupParent) {
             $parentOn = $sel.Contains($GroupParent)
-            for ($c = $GroupFirst; $c -le $GroupLast; $c++) {
+            foreach ($c in $children) {
                 if ($parentOn) { if (-not $sel.Contains($c)) { [void]$sel.Add($c) } }
                 else { [void]$sel.Remove($c) }
             }
         } elseif ($toggled -ge $GroupFirst -and $toggled -le $GroupLast) {
-            $any = $false
-            for ($c = $GroupFirst; $c -le $GroupLast; $c++) { if ($sel.Contains($c)) { $any = $true; break } }
-            if ($any) { if (-not $sel.Contains($GroupParent)) { [void]$sel.Add($GroupParent) } }
+            # "all" makes the parent a MASTER toggle - checked only while EVERY
+            # child is checked, so unticking any one of them releases it.
+            # "any" (default) is the group-header rule.
+            $on = $false
+            if ($GroupMode -eq "all") {
+                $on = $true
+                foreach ($c in $children) { if (-not $sel.Contains($c)) { $on = $false; break } }
+            } else {
+                foreach ($c in $children) { if ($sel.Contains($c)) { $on = $true; break } }
+            }
+            if ($on) { if (-not $sel.Contains($GroupParent)) { [void]$sel.Add($GroupParent) } }
             else { [void]$sel.Remove($GroupParent) }
         }
     }
@@ -382,6 +410,13 @@ class ExakitFailException : System.Exception {
 function Fail([string]$Msg) {
     Stop-ExakitSpinner
     Restore-ExakitCursor
+    # Record the reason before it is printed, so a soft step that swallows this
+    # exception can quote the real sentence in the closing summary rather than a
+    # bare exception type. Defined further down the file; guarded because Fail()
+    # can run while the library is still being dot-sourced.
+    if (Get-Command Set-ExakitFailureReason -ErrorAction SilentlyContinue) {
+        Set-ExakitFailureReason $Msg
+    }
     # Rendered as a small "card": prominent cross header, then a dim gutter
     # line to the log - the same shape as ui.sh's die().
     Write-Host ""
@@ -706,6 +741,37 @@ function Set-ExakitManifestValue {
     Save-ExakitManifest $doc
 }
 
+# Remove a key (and everything under it) from the manifest. Silent when the
+# key is already absent; a partial uninstall must not fail over bookkeeping.
+# Twin of manifest_del in common.sh.
+function Remove-ExakitManifestValue {
+    param([Parameter(Mandatory)][string]$Path)
+    $doc = Read-ExakitManifest
+    if ($null -eq $doc) { return }
+    $parts = $Path -split "\."
+    $node = $doc
+    foreach ($part in $parts[0..($parts.Count - 2)]) {
+        if ($node.PSObject.Properties[$part]) { $node = $node.$part } else { return }
+    }
+    if ($node.PSObject.Properties[$parts[-1]]) {
+        $node.PSObject.Properties.Remove($parts[-1])
+        Save-ExakitManifest $doc
+    }
+}
+
+# Drop a step flag so a re-run of the installer reinstalls what a partial
+# uninstall removed. Twin of exakit_unmark_step in common.sh.
+function Remove-ExakitStepDone {
+    param([Parameter(Mandatory)][string]$Step)
+    $doc = Read-ExakitManifest
+    if ($null -eq $doc) { return }
+    $steps = Get-ManifestValue -Manifest $doc -Path "steps_completed"
+    if ($null -eq $steps) { return }
+    $remaining = @([array]$steps | Where-Object { $_ -ne $Step })
+    Set-ManifestValue -Manifest $doc -Path "steps_completed" -Value $remaining
+    Save-ExakitManifest $doc
+}
+
 # ---------------------------------------------------------------------------
 # Versions manifest (versions.json)
 # ---------------------------------------------------------------------------
@@ -835,24 +901,75 @@ function Format-ExakitManifestDate {
 # component installers Fail() on error, and a broken exapump used to stop setup
 # before the exakit command existed, leaving a deployed database with nothing to
 # repair it.
-$script:ExakitSoftFailed = @{}
+$script:ExakitSoftFailed = [ordered]@{}
+
+# The reason the step now running gave up, set by Fail() and by the soft-miss
+# reporters that return $false instead of throwing (Write-PyexasolNotInstalled).
+# The twin of the bash failure note; a single process needs no file for it.
+$script:ExakitLastFailureReason = ""
+
+function Set-ExakitFailureReason {
+    param([string]$Reason)
+    $script:ExakitLastFailureReason = $Reason
+}
+
+function Get-ExakitFailureReason {
+    $reason = $script:ExakitLastFailureReason
+    $script:ExakitLastFailureReason = ""
+    return $reason
+}
+
+# Register-ExakitSoftFailure - book a step as "did not complete" without the
+# running machinery of Invoke-ExakitSoftStep.
+#
+# The soft-step wrapper is for component installers that Fail(); this is for the
+# steps whose failure is caught and warned about locally (the data load, the AI
+# client wiring, the skills copy). Before this they were invisible to the closing
+# summary, so a user whose sample data never loaded saw a clean "Setup complete".
+function Register-ExakitSoftFailure {
+    param(
+        [Parameter(Mandatory)][string]$Component,
+        [Parameter(Mandatory)][string]$Repair,
+        [string]$Reason = "",
+        [string]$Label = ""
+    )
+    # First failure wins: a later, vaguer report must not overwrite the specific
+    # reason the original failure recorded.
+    if ($script:ExakitSoftFailed.Contains($Component)) { return }
+    if (-not $Label) { $Label = $Component }
+    $script:ExakitSoftFailed[$Component] = [pscustomobject]@{
+        Repair = $Repair
+        Reason = $Reason
+        Label  = $Label
+    }
+}
 
 function Invoke-ExakitSoftStep {
     param(
         [Parameter(Mandatory)][string]$Component,
         [Parameter(Mandatory)][string]$Repair,
-        [Parameter(Mandatory)][scriptblock]$Body
+        [Parameter(Mandatory)][scriptblock]$Body,
+        [string]$Label = ""
     )
+    Set-ExakitFailureReason ""
     try {
         $result = & $Body
         # Install-Pyexasol reports a soft miss by returning $false rather than
-        # throwing, so a returned $false counts as a failure too.
+        # throwing, so a returned $false counts as a failure too. Its reason is
+        # in $script:ExakitLastFailureReason, not in an exception message.
         if ($result -is [bool] -and -not $result) {
-            throw "reported failure"
+            $soft = Get-ExakitFailureReason
+            if (-not $soft) { $soft = "the step reported failure (see the log)" }
+            throw $soft
         }
+        Set-ExakitFailureReason ""
         return $true
     } catch {
-        $script:ExakitSoftFailed[$Component] = $Repair
+        # Fail() records the message it printed; an ordinary exception carries
+        # its own. Either way the summary gets a real sentence, not "failed".
+        $reason = Get-ExakitFailureReason
+        if (-not $reason) { $reason = ("" + $_) }
+        Register-ExakitSoftFailure -Component $Component -Repair $Repair -Reason $reason -Label $Label
         Write-ExakitLog "WARN" "$Component did not finish: $_"
         Warn2 "$Component did not finish - carrying on so the rest of the install completes"
         return $false
@@ -861,23 +978,68 @@ function Invoke-ExakitSoftStep {
 
 function Test-ExakitSoftFailed {
     param([Parameter(Mandatory)][string]$Component)
-    return $script:ExakitSoftFailed.ContainsKey($Component)
+    return $script:ExakitSoftFailed.Contains($Component)
 }
 
-# The closing account of what did not make it, with the one line that fixes each.
+# Invoke-ExakitBestEffort - run a closing offer (data load, MCP client setup,
+# skills) so that NOTHING it does can end the run, and a failure still reaches
+# the closing summary.
+#
+# The catch is deliberately untyped. These blocks used to catch
+# [ExakitFailException] only, which covers a Fail() inside the offer but not a
+# cmdlet error, a bad path, or a null reference - any of those aborted an install
+# whose database was already up and running.
+function Invoke-ExakitBestEffort {
+    param(
+        [Parameter(Mandatory)][string]$Component,
+        [Parameter(Mandatory)][string]$Repair,
+        [Parameter(Mandatory)][string]$Label,
+        [Parameter(Mandatory)][scriptblock]$Body,
+        [string]$Warning = ""
+    )
+    Set-ExakitFailureReason ""
+    try {
+        & $Body
+        Set-ExakitFailureReason ""
+        return $true
+    } catch {
+        $reason = Get-ExakitFailureReason
+        if (-not $reason) { $reason = ("" + $_) }
+        Write-ExakitLog "WARN" "$Component did not finish: $_"
+        if ($Warning) { Warn2 $Warning }
+        Warn2 "Carrying on so the rest of the install completes. Retry with: $Repair"
+        Register-ExakitSoftFailure -Component $Component -Repair $Repair -Reason $reason -Label $Label
+        return $false
+    }
+}
+
+# The closing account of what did not make it: what went wrong, and the one
+# command that installs it. Printed last, after the connection panel, so it is
+# the final thing on screen rather than something scrolled past mid-install.
 function Write-ExakitSoftFailures {
     if ($script:ExakitSoftFailed.Count -eq 0) { return }
     Write-Host ""
     if ($script:ExakitSoftFailed.Count -eq 1) {
-        Warn2 "The install finished, but one component is missing:"
+        Warn2 "The install finished, but one step did not complete:"
     } else {
-        Warn2 "The install finished, but $($script:ExakitSoftFailed.Count) components are missing:"
+        Warn2 "The install finished, but $($script:ExakitSoftFailed.Count) steps did not complete:"
     }
-    foreach ($component in ($script:ExakitSoftFailed.Keys | Sort-Object)) {
-        Write-Host ("      {0,-10} {1}" -f $component, $script:ExakitSoftFailed[$component])
+    Write-Host ""
+    foreach ($component in $script:ExakitSoftFailed.Keys) {
+        $entry = $script:ExakitSoftFailed[$component]
+        $reason = $entry.Reason
+        if (-not $reason) { $reason = "the step did not finish (see the log)" }
+        if ($script:UiFancy) {
+            Write-Host ("      {0}{1}{2} is not installed: {3}" -f $script:UiBold, $entry.Label, $script:UiReset, $reason)
+            Write-Host ("        reinstall it with:  {0}{1}{2}" -f $script:UiAccent, $entry.Repair, $script:UiReset)
+        } else {
+            Write-Host ("      {0} is not installed: {1}" -f $entry.Label, $reason)
+            Write-Host ("        reinstall it with:  {0}" -f $entry.Repair)
+        }
     }
     Write-Host ""
     Info "Everything else is ready - the database, and the exakit command itself."
+    if ($script:LogFile) { Info "Full detail for each failure: $script:LogFile" }
     Info "See where you stand any time with: exakit status"
 }
 
@@ -2239,6 +2401,398 @@ function Install-ExakitSkills {
 # agents can find them. Mirrors exakit_maybe_offer_skills_install. Always
 # installs - no prompt - so the skills are present without requiring
 # interactive confirmation, on both interactive and non-interactive runs.
+# Confirm-ExakitRuntimeRunning [-Deploy] - the kit's self-heal for "the
+# database is not answering", shared by every command about to speak SQL. A
+# container that is merely stopped is started (Install-Nano self-heals both
+# halves: it starts an existing container, creates a missing one, and waits
+# for ready); a missing one is created only when the caller allows it, and
+# otherwise refused with the exact command that fixes it.
+# Twin of exakit_ensure_runtime_running in common.sh (the personal runtime is
+# macOS-only, so this side only knows Nano).
+function Confirm-ExakitRuntimeRunning {
+    param([switch]$Deploy)
+    if ((Get-ExakitManifestValue "runtime.type") -ne "nano") { return }
+    if (-not (Get-Command Get-NanoStatus -ErrorAction SilentlyContinue)) { return }
+    if ((Get-NanoStatus) -eq "running") { return }
+    $exists = $false
+    if (Get-Command Test-NanoContainerExists -ErrorAction SilentlyContinue) {
+        $exists = Test-NanoContainerExists
+    }
+    if ($exists) {
+        Info "Self-heal: the database container exists but is not running - starting it"
+        Install-Nano
+        return
+    }
+    if ($Deploy) {
+        Info "Self-heal: no database container found - creating one"
+        Install-Nano
+        return
+    }
+    Fail "No database container found. Create one with: exakit start (or re-run the installer)"
+}
+
+# ---------------------------------------------------------------------------
+# Marketplace add-ons (twin of the exakit_marketplace_* block in common.sh)
+# ---------------------------------------------------------------------------
+# Optional tools the kit can install but the setup scripts never do: the user
+# picks them from `exakit marketplace` (Space toggles, Enter installs), or
+# says yes to the closing offer after an install. Only kit-managed installs
+# join the routine update flow, and an add-on that is already on the machine
+# (kit-managed or a system install) is never advertised.
+#
+# Adding a new add-on is three additive changes - NO switch-statement surgery.
+# Every registry function (version block, env override, fallback, upstream
+# lookup, installed probe, update targets/dispatch) handles registered add-ons
+# through a generic default arm driven by this registry:
+#   1. Ship its module as setup/lib/<id>.ps1 (+ the .sh twin), defining the
+#      functions named below plus its own $script:<X>VersionFallback constant.
+#   2. Add a components.<id> block to versions.json: version, severity, and
+#      repo (GitHub-release-installed) or package (PyPI-installed).
+#   3. Add one entry here.
+# (CI guards move with it: the expected-components set in versions.yml and the
+# COUPLED fallback-constant table in versions-bump.yml.)
+function Get-ExakitMarketplaceAddons {
+    return @(
+        [pscustomobject]@{
+            Id          = "dash-server"
+            Label       = "dash-server (AI dashboard host)"
+            Description = "Agent-built live dashboards on your Exasol data, operated over MCP"
+            InstallFn   = "Install-DashServer"
+            ValidateFn  = "Test-DashServer"
+            UpdateFn    = "Update-DashServer"
+            VersionFn   = "Get-DashServerInstalledVersion"
+            UninstallFn = "Uninstall-DashServer"
+            StatusFn    = "Get-DashServerStatus"
+            StartFn     = "Start-DashServer"
+            StopFn      = "Stop-DashServer"
+            AutostartFn = "Get-DashServerAutostartCommand"
+            EnvVar      = "EXAKIT_DASH_SERVER_VERSION"
+            FallbackVar = "DashServerVersionFallback"
+        },
+        [pscustomobject]@{
+            Id          = "exasol-vscode"
+            Label       = "Exasol for VS Code (editor extension)"
+            Description = "SQL editing and schema browsing for your Exasol database, inside VS Code"
+            InstallFn   = "Install-ExasolVscode"
+            ValidateFn  = "Test-ExasolVscode"
+            UpdateFn    = "Update-ExasolVscode"
+            VersionFn   = "Get-ExasolVscodeInstalledVersion"
+            UninstallFn = "Uninstall-ExasolVscode"
+            ApplicableFn = "Test-ExasolVscodeApplicable"
+            ReasonFn     = "Get-ExasolVscodeApplicableReason"
+            EnvVar      = "EXAKIT_EXASOL_VSCODE_VERSION"
+            FallbackVar = "ExasolVscodeVersionFallback"
+        }
+    )
+}
+
+# The registry row for one id, or $null - the gate every generic registry arm
+# runs first, so an unknown name still reads as "unknown component" everywhere.
+function Get-ExakitMarketplaceAddon {
+    param([string]$Id)
+    if (-not $Id) { return $null }
+    return (Get-ExakitMarketplaceAddons | Where-Object { $_.Id -eq $Id } | Select-Object -First 1)
+}
+
+# KIT-MANAGED install only: the component answers for itself
+# (Get-ExakitComponentCurrent probes the actual install and returns nothing
+# for a provably absent one). This is what gates the update flow - the kit
+# only ever updates what it manages. Get-ExakitComponentCurrent lives in
+# exakit.ps1; the setup script reaches the module probe directly instead.
+function Test-ExakitMarketplaceAddonInstalled {
+    param([Parameter(Mandatory)][string]$Id)
+    if (Get-Command Get-ExakitComponentCurrent -ErrorAction SilentlyContinue) {
+        return [bool](Get-ExakitComponentCurrent $Id)
+    }
+    $addon = Get-ExakitMarketplaceAddon $Id
+    if ($addon -and (Get-Command $addon.VersionFn -ErrorAction SilentlyContinue)) {
+        return [bool](& $addon.VersionFn)
+    }
+    return $false
+}
+
+# Is the tool already on this machine OUTSIDE the kit? A same-named command on
+# PATH that is not the kit's own launcher counts. The kit never offers,
+# updates or uninstalls such an install - it only stops advertising a tool
+# the user already has.
+function Test-ExakitAddonSystemPresent {
+    param([Parameter(Mandatory)][string]$Id)
+    $found = Get-Command $Id -ErrorAction SilentlyContinue
+    if (-not $found -or -not $found.Source) { return $false }
+    # The kit's own launcher on PATH is a kit install, not a system one.
+    $dir = Split-Path -Parent $found.Source
+    try {
+        if ((Resolve-Path $dir -ErrorAction Stop).Path -eq (Resolve-Path $script:BinDir -ErrorAction Stop).Path) { return $false }
+    } catch { }
+    return $true
+}
+
+# Installed by the kit OR already on the system. "Present" is what the offer,
+# the menu and the discovery lines key on: a tool the user has, from anywhere,
+# is never advertised.
+function Test-ExakitMarketplaceAddonPresent {
+    param([Parameter(Mandatory)][string]$Id)
+    if (Test-ExakitMarketplaceAddonInstalled $Id) { return $true }
+    return (Test-ExakitAddonSystemPresent $Id)
+}
+
+# Does this add-on make sense on THIS machine at all? An add-on that extends
+# something the user does not have (the VS Code extension without VS Code) is
+# not "available then failing" - it is simply not on offer. A registry entry
+# with no ApplicableFn is applicable. Twin of _exakit_addon_applicable.
+function Test-ExakitAddonApplicable {
+    param([Parameter(Mandatory)][string]$Id)
+    $addon = Get-ExakitMarketplaceAddon $Id
+    if (-not $addon) { return $true }
+    if (-not $addon.PSObject.Properties["ApplicableFn"]) { return $true }
+    if (-not (Get-Command $addon.ApplicableFn -ErrorAction SilentlyContinue)) { return $true }
+    return [bool](& $addon.ApplicableFn)
+}
+
+function Get-ExakitAddonApplicableReason {
+    param([Parameter(Mandatory)][string]$Id)
+    $addon = Get-ExakitMarketplaceAddon $Id
+    if ($addon -and $addon.PSObject.Properties["ReasonFn"] -and
+        (Get-Command $addon.ReasonFn -ErrorAction SilentlyContinue)) { return (& $addon.ReasonFn) }
+    return ""
+}
+
+# Should this add-on appear at all? Only an add-on that is BOTH absent and
+# inapplicable is hidden. Anything actually on the machine stays visible: a kit
+# install so it can still be updated or removed (even if the host app
+# disappeared afterwards), and a system install so the screen can say it is
+# already covered. Twin of _exakit_addon_offerable.
+function Test-ExakitAddonOfferable {
+    param([Parameter(Mandatory)][string]$Id)
+    if (Test-ExakitMarketplaceAddonPresent $Id) { return $true }
+    return (Test-ExakitAddonApplicable $Id)
+}
+
+function Get-ExakitMarketplaceInstalledAddons {
+    $installed = @()
+    foreach ($addon in Get-ExakitMarketplaceAddons) {
+        if (Test-ExakitMarketplaceAddonInstalled $addon.Id) { $installed += $addon.Id }
+    }
+    return $installed
+}
+
+# True while at least one add-on is not on this machine yet (neither
+# kit-managed nor a system install). Drives the discovery one-liners and the
+# closing offer.
+function Test-ExakitMarketplaceHasPending {
+    foreach ($addon in Get-ExakitMarketplaceAddons) {
+        if (-not (Test-ExakitAddonOfferable $addon.Id)) { continue }
+        if (-not (Test-ExakitMarketplaceAddonPresent $addon.Id)) { return $true }
+    }
+    return $false
+}
+
+# One dim line under the update-check table while something in the marketplace
+# is still on offer. It advertises, it never acts.
+function Write-ExakitMarketplaceDiscoveryLine {
+    $pending = @()
+    foreach ($addon in Get-ExakitMarketplaceAddons) {
+        if (-not (Test-ExakitAddonOfferable $addon.Id)) { continue }
+        if (-not (Test-ExakitMarketplaceAddonPresent $addon.Id)) { $pending += $addon.Id }
+    }
+    if ($pending.Count -eq 0) { return }
+    Write-Host "    Optional add-ons are available ($($pending -join ', ')) - browse them with: exakit marketplace" -ForegroundColor DarkGray
+}
+
+# The marketplace menu body, wearing the kit's two established looks:
+#   1. the STATE, as the same aligned table Invoke-CmdUpdateCheck prints
+#      (Add-on / Status / Version / Action, one row per add-on);
+#   2. the SELECTION, as the same tree-checkbox the data-load menu uses: a
+#      group row with the add-ons hanging off UiTee/UiCorner connectors,
+#      Space toggles, Enter installs, Cancel as the exclusive default.
+# Only installable add-ons become menu rows - everything else is answered by
+# the table. Non-interactive runs answer with EXAKIT_MARKETPLACE_ADDONS: a csv
+# of ids, "all", or "none". Twin of exakit_marketplace_menu in common.sh.
+function Show-ExakitMarketplaceMenu {
+    $rows = @()      # each: @{ Id = <id or $null when not selectable>; Label = <menu child>; Table = <state row> }
+    foreach ($addon in Get-ExakitMarketplaceAddons) {
+        # Not applicable here and not installed: not an option on this machine,
+        # so it is not shown at all - no row, no table line.
+        if (-not (Test-ExakitAddonOfferable $addon.Id)) { continue }
+        if (Test-ExakitMarketplaceAddonInstalled $addon.Id) {
+            $ver = ""
+            if (Get-Command Get-ExakitComponentCurrent -ErrorAction SilentlyContinue) { $ver = Get-ExakitComponentCurrent $addon.Id }
+            elseif (Get-Command $addon.VersionFn -ErrorAction SilentlyContinue) { $ver = & $addon.VersionFn }
+            if (-not $ver) { $ver = "?" }
+            $rows += @{ Id = $null; Label = ""
+                Table = ("{0,-14} {1,-20} {2,-14} {3}" -f $addon.Id, "installed", $ver, "exakit update $($addon.Id)") }
+        } elseif (Test-ExakitAddonSystemPresent $addon.Id) {
+            # The user already has the tool from somewhere else - covered, and
+            # the kit does not manage it.
+            $rows += @{ Id = $null; Label = ""
+                Table = ("{0,-14} {1,-20} {2,-14} {3}" -f $addon.Id, "on this system", "-", "managed outside the kit") }
+        } elseif (-not (Get-Command $addon.InstallFn -ErrorAction SilentlyContinue)) {
+            $rows += @{ Id = $null; Label = ""
+                Table = ("{0,-14} {1,-20} {2,-14} {3}" -f $addon.Id, "not in this kit copy", "-", "exakit update exakit") }
+        } else {
+            $advertised = ""
+            if (Get-Command Get-ExakitComponentAvailable -ErrorAction SilentlyContinue) { $advertised = Get-ExakitComponentAvailable $addon.Id }
+            if (-not $advertised) { $advertised = "unknown" }
+            $rows += @{ Id = $addon.Id; Label = "$($addon.Label) - $($addon.Description)"
+                Table = ("{0,-14} {1,-20} {2,-14} {3}" -f $addon.Id, "available", $advertised, "select below to install") }
+        }
+    }
+
+    # The env answer wins over any menu, so agents and CI never need a TTY.
+    if ($env:EXAKIT_MARKETPLACE_ADDONS) {
+        $answer = ("" + $env:EXAKIT_MARKETPLACE_ADDONS).ToLower().Replace(" ", "")
+        if ($answer -eq "none") { Info "EXAKIT_MARKETPLACE_ADDONS=none - installing nothing."; return }
+        $picked = @()
+        if ($answer -eq "all") {
+            foreach ($row in $rows) { if ($row.Id) { $picked += $row.Id } }
+        } else {
+            $known = @(Get-ExakitMarketplaceAddons | ForEach-Object { $_.Id })
+            foreach ($token in ($answer -split ",")) {
+                if (-not $token) { continue }
+                if ($rows | Where-Object { $_.Id -eq $token }) { $picked += $token }
+                elseif ($known -contains $token -and -not (Test-ExakitAddonApplicable $token)) {
+                    $why = Get-ExakitAddonApplicableReason $token
+                    Fail ("$token is not available on this machine" + $(if ($why) { ": $why" } else { "" }))
+                }
+                elseif ($known -contains $token) { Info "$token is already present - a kit-managed one updates with: exakit update $token" }
+                else { Fail "Unknown marketplace add-on in EXAKIT_MARKETPLACE_ADDONS: '$token' (known: $($known -join ' '))" }
+            }
+        }
+        if ($picked.Count -eq 0) { Info "Nothing to install - every requested add-on is already present."; return }
+        Invoke-ExakitMarketplaceApply -Ids $picked
+        return
+    }
+
+    # The state table - same shape as the update-check table, so the two
+    # screens read as one family.
+    Write-Host ""
+    Write-Host "  Marketplace add-ons"
+    Write-Host "  -------------------"
+    Write-Host ("{0,-14} {1,-20} {2,-14} {3}" -f "Add-on", "Status", "Version", "Action")
+    foreach ($row in $rows) { Write-Host $row.Table }
+    Write-Host ""
+
+    $selectable = @($rows | Where-Object { $_.Id })
+    if ($selectable.Count -eq 0) {
+        Info "Everything available is already covered. Updates: exakit update-check"
+        return
+    }
+
+    # The selection - same tree the data-load menu draws: a group row with the
+    # add-ons hanging off connectors (UiTee/UiCorner from the ui palette;
+    # ASCII in plain mode), the available add-ons pre-selected so Enter alone
+    # installs what is on offer, and Cancel as the exclusive opt-out. A
+    # non-interactive run keeps the pre-selected defaults, exactly like the
+    # data-load menu (EXAKIT_MARKETPLACE_ADDONS=none is the scripted opt-out).
+    # Mirrors exakit_marketplace_menu in common.sh.
+    $tee = $script:UiTee; $corner = $script:UiCorner
+    $menuLabels = New-Object System.Collections.Generic.List[string]
+    $menuIds = New-Object System.Collections.Generic.List[string]
+    [void]$menuLabels.Add("Available add-ons")
+    [void]$menuIds.Add("__group__")
+    $child = 0
+    foreach ($row in $selectable) {
+        $child += 1
+        $conn = if ($child -eq $selectable.Count) { $corner } else { $tee }
+        [void]$menuLabels.Add("$conn $($row.Label)")
+        [void]$menuIds.Add($row.Id)
+    }
+    [void]$menuLabels.Add("Cancel (install nothing)")
+    [void]$menuIds.Add("__cancel__")
+    $cancelIdx = $menuLabels.Count
+    # Default: the group AND every available add-on pre-selected - the same
+    # posture as the data-load menu, where Enter alone acts on what is on
+    # offer and Cancel is the explicit opt-out.
+    $defaults = @(1..($selectable.Count + 1))
+    $selection = Read-ExakitCheckboxMenu -Title "Select add-ons to install" `
+        -Options $menuLabels.ToArray() -Defaults $defaults -ExclusiveIndex $cancelIdx `
+        -GroupParent 1 -GroupFirst 2 -GroupLast ($selectable.Count + 1)
+    if ($selection -contains $cancelIdx) {
+        Info "Marketplace closed - nothing was installed."
+        return
+    }
+    $picked = @()
+    foreach ($idx in $selection) {
+        if ($idx -ge 1 -and $idx -lt $cancelIdx -and -not $menuIds[$idx - 1].StartsWith("__")) { $picked += $menuIds[$idx - 1] }
+    }
+    if ($picked.Count -eq 0) { Info "Nothing selected - nothing was installed."; return }
+    Invoke-ExakitMarketplaceApply -Ids $picked
+}
+
+# Install each picked add-on in turn. One failure does not strand the rest.
+function Invoke-ExakitMarketplaceApply {
+    param([Parameter(Mandatory)][string[]]$Ids)
+    $failed = 0
+    foreach ($id in $Ids) {
+        $addon = Get-ExakitMarketplaceAddon $id
+        if (-not $addon) { continue }
+        Info "Installing add-on: $id"
+        $installed = $false
+        try {
+            $installed = & $addon.InstallFn
+        } catch {
+            Warn2 "$id installer reported: $_"
+            $installed = $false
+        }
+        if ($installed) {
+            if ($addon.ValidateFn -and (Get-Command $addon.ValidateFn -ErrorAction SilentlyContinue)) {
+                try { & $addon.ValidateFn } catch { Warn2 "$id validation reported: $_" }
+            }
+            Ok "$id installed - it now updates with: exakit update (or exakit update $id)"
+        } else {
+            Warn2 "$id did not finish installing - retry with: exakit marketplace (or exakit update $id)"
+            $failed += 1
+        }
+    }
+    if ($failed -gt 0) { Fail "$failed add-on(s) did not finish installing." }
+}
+
+# Request-ExakitMarketplaceOffer - the closing moment of an install:
+# everything ran, the panel is on screen, and this asks ONE question - add
+# optional tools now, or maybe later? Dynamic by design: an add-on already on
+# the machine is not on offer, when nothing is left the question disappears,
+# a run with soft failures gets the one-line hint instead of a victory lap,
+# and a non-interactive run also gets the hint - unless
+# EXAKIT_MARKETPLACE_ADDONS pre-answers, which installs without asking.
+# Twin of exakit_marketplace_offer in common.sh.
+function Request-ExakitMarketplaceOffer {
+    if (-not (Test-ExakitMarketplaceHasPending)) { return }
+
+    # A scripted answer wins over any prompt (same contract as the menu).
+    if ($env:EXAKIT_MARKETPLACE_ADDONS) {
+        Show-ExakitMarketplaceMenu
+        return
+    }
+
+    # "Done and working" must be true before it is said: a run that recorded
+    # soft failures points at the marketplace without the celebration.
+    $softFailed = $false
+    $softState = Get-Variable -Scope Script -Name ExakitSoftFailed -ErrorAction SilentlyContinue
+    if ($softState -and $softState.Value -and $softState.Value.Count -gt 0) { $softFailed = $true }
+    $interactive = ([Environment]::UserInteractive -and -not [Console]::IsInputRedirected)
+    if ($softFailed -or -not $interactive) {
+        Info "Optional add-ons (dashboards & more): exakit marketplace"
+        return
+    }
+
+    # One gate question first - the same cursor menu every other kit choice
+    # uses, no typing: Yes is pre-ticked, No is the exclusive opt-out. Only a
+    # Yes opens the marketplace selection itself (where the available add-ons
+    # come pre-selected, so Enter installs them and Cancel still backs out).
+    Write-Host ""
+    Ok "Your Starter Kit installation is done and working."
+    Info "The marketplace has more useful tools for it."
+    $gate = Read-ExakitCheckboxMenu -Title "Do you want to add optional tools?" `
+        -Options @("Yes - show the marketplace", "No - maybe later") `
+        -Defaults @(1) -ExclusiveIndex 2
+    if ($gate -contains 1) {
+        try { Show-ExakitMarketplaceMenu } catch { Warn2 "The marketplace did not finish cleanly: $_" }
+        Info "Browse again any time with: exakit marketplace"
+    } else {
+        Info "Maybe later - browse any time with: exakit marketplace"
+    }
+}
+
 function Request-ExakitSkillsInstallOffer {
     $repoRoot = Get-ExakitRepoRoot
     if (-not $repoRoot) { return }
@@ -2284,6 +2838,12 @@ function Show-ExakitConnectionPanel {
     Write-ExakitPanelLine "Manifest:     $(Get-ExakitTilde $script:ManifestPath)"
     Write-ExakitPanelLine "Logs:         $(Get-ExakitTilde $script:LogDir)"
     Write-ExakitPanelLine "SQL client:   DBeaver or DbVisualizer"
+    # One line, only while something is still on offer: the marketplace is the
+    # optional layer on top of a finished install, so this is where it is
+    # discovered - never during the install itself. Mirrors connection_panel.
+    if (Test-ExakitMarketplaceHasPending) {
+        Write-ExakitPanelLine "Add-ons:      optional tools (dashboards & more): exakit marketplace"
+    }
     Complete-ExakitPanel
     Write-Host ""
 }
