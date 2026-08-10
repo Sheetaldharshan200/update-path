@@ -107,6 +107,7 @@ EXAKIT_MARKETPLACE_ADDONS=dash-server exakit marketplace   # ids csv, or all / n
 - Once installed, an add-on updates through the normal flow (`exakit update dash-server`, and `exakit update` covers it). Add-ons that were never picked are never touched, and one already on the system outside the kit is respected, not managed.
 - An interactive install ends with the same offer once everything ran; `EXAKIT_MARKETPLACE_ADDONS` pre-answers it (see the install answers table above).
 - Add-ons that run as services (dash-server) are managed like the database: `exakit status` shows `running` / `stopped`, `exakit start` and `exakit stop` cover the database and every service together, and `exakit autostart on|off` decides whether they come back after a reboot (on by default from a fresh install — launchd on macOS, systemd --user on Linux, the container restart policy for Nano, a Startup entry on Windows).
+- `exakit logs` lists every log the kit can show (installer run, database container, each add-on service, and what the boot entries wrote at login) with size and last-updated; `exakit logs <target>` tails one, `-f` follows it, `--path` prints just the path for piping.
 - After a restart, nothing needs a human if autostart is on. If it is off, `exakit start` brings the database and every service back in one command.
 - Building a NEW add-on for the marketplace is a development task, not an install step: the walkthrough with skeleton code is [MARKETPLACE.md](MARKETPLACE.md).
 

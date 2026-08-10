@@ -311,6 +311,11 @@ function Write-DashServerUsagePanel {
 $script:DashServerPidFile = Join-Path $script:DashServerHome "dash-server.pid"
 $script:DashServerLog = Join-Path $script:LogDir "dash-server.log"
 
+# What `exakit logs dash-server` shows. Twin of dash_server_log_path.
+function Get-DashServerLogPath {
+    return $script:DashServerLog
+}
+
 # running | stopped | not installed. The HTTP probe is the truth: the process
 # may have been started by the Startup entry, by the user, or by exakit.
 function Get-DashServerStatus {

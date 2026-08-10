@@ -62,7 +62,7 @@ needs no edits there. The conventions, for an id like `my-tool`:
 
 | Convention | Value for `my-tool` |
 |---|---|
-| Module functions (bash; dashes → underscores) | `my_tool_install`, `my_tool_validate`, `my_tool_update`, `my_tool_installed_version`, `my_tool_uninstall`; a tool that *runs* adds `my_tool_status`, `my_tool_start`, `my_tool_stop`, `my_tool_autostart_command`; a tool that extends a host app adds `my_tool_applicable` (+ `my_tool_applicable_reason`) |
+| Module functions (bash; dashes → underscores) | `my_tool_install`, `my_tool_validate`, `my_tool_update`, `my_tool_installed_version`, `my_tool_uninstall`; a tool that *runs* adds `my_tool_status`, `my_tool_start`, `my_tool_stop`, `my_tool_autostart_command`, `my_tool_log_path`; a tool that extends a host app adds `my_tool_applicable` (+ `my_tool_applicable_reason`) |
 | Version env override / fallback (bash) | `EXAKIT_MY_TOOL_VERSION`, `EXAKIT_MY_TOOL_VERSION_FALLBACK` |
 | versions.json block | `components.my-tool` (`repo` = GitHub release, `package` = PyPI — the generic upstream lookup reads whichever is present) |
 | Manifest keys | `components.my_tool.*`, `desired.my_tool` |
@@ -172,6 +172,7 @@ my_tool_uninstall() {
 # my_tool_start()             { ... }   # background it, wait until it answers
 # my_tool_stop()              { ... }   # bounded, idempotent
 # my_tool_autostart_command() { ... }   # what the boot entry runs
+# my_tool_log_path()          { ... }   # what `exakit logs my-tool` shows
 
 # OPTIONAL: sharpen "already on this system" detection beyond the default
 # same-named-binary-on-PATH check.

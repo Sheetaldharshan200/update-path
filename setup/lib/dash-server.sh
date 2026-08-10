@@ -342,6 +342,11 @@ _dash_server_print_usage() {
 EXAKIT_DASH_SERVER_PIDFILE="${EXAKIT_DASH_SERVER_PIDFILE:-$EXAKIT_DASH_SERVER_HOME/dash-server.pid}"
 EXAKIT_DASH_SERVER_LOG="${EXAKIT_DASH_SERVER_LOG:-$EXAKIT_LOG_DIR/dash-server.log}"
 
+# dash_server_log_path — what `exakit logs dash-server` shows.
+dash_server_log_path() {
+    printf '%s\n' "$EXAKIT_DASH_SERVER_LOG"
+}
+
 # dash_server_status — running | stopped | not installed. The HTTP probe is the
 # truth: the process may have been started by launchd, by the user in a
 # terminal, or by exakit, and only one of those leaves a pidfile.

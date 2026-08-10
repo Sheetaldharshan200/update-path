@@ -584,6 +584,38 @@ manifest_set components.exapump.version "0.11.3"
 manifest_del components.exapump
 check "manifest_del clears the whole component block" "absent" "$(manifest_get components.exapump >/dev/null 2>&1 && echo present || echo absent)"
 
+echo "component logs (one command reaches every one of them):"
+mkdir -p "$EXAKIT_HOME/logs"
+printf 'installer line one\ninstaller line two\n' > "$EXAKIT_HOME/logs/install-20260810-090000.log"
+check "the setup log is a target" "setup" "$(exakit_log_targets | cut -d'|' -f1 | grep -x setup)"
+# An add-on is viewable as soon as its module names a log — the same
+# registry-driven contract the other hooks use.
+printf 'dash line\n' > "$EXAKIT_HOME/logs/dash-server.log"
+mkdir -p "$EXAKIT_HOME/dash-server-venv/bin"
+printf '#!/bin/sh\necho 0.1.0\n' > "$EXAKIT_HOME/dash-server-venv/bin/python"
+chmod +x "$EXAKIT_HOME/dash-server-venv/bin/python"
+manifest_set components.dash_server.python "$EXAKIT_HOME/dash-server-venv/bin/python"
+check "an installed add-on with a log hook is a target" "dash-server" \
+    "$(exakit_log_targets | cut -d'|' -f1 | grep -x dash-server)"
+check "--path prints the file, nothing else" "$EXAKIT_HOME/logs/dash-server.log" \
+    "$(exakit_logs_show dash-server 0 200 1)"
+has "viewing one tails its content" "dash line" "$(exakit_logs_show dash-server 0 200 0)"
+has "the overview lists the targets in a table" "Target" "$(exakit_logs_overview)"
+has "and names the add-on" "dash-server" "$(exakit_logs_overview)"
+# An unknown name explains itself and lists what exists, rather than dying bare.
+_log_unknown="$( (exakit_logs_show not-a-log 0 200 0) 2>&1 || true)"
+has "an unknown target lists what is available" "Available:" "$_log_unknown"
+check "and it fails rather than printing nothing" "no" "$(
+    ( exakit_logs_show not-a-log 0 200 0 ) >/dev/null 2>&1 && echo yes || echo no
+)"
+# A log the module names but nothing has written yet is a clear message, not a
+# confusing empty screen.
+has "a not-yet-written log says so" "has not been written yet" "$( (
+    dash_server_log_path() { printf '%s\n' "$WORK/never-written.log"; }
+    exakit_logs_show dash-server 0 200 0
+) 2>&1 || true)"
+rm -f "$EXAKIT_HOME/logs/dash-server.log"
+
 echo "services and autostart (is it running, and does it come back after a reboot):"
 # A stand-in server on a quiet port: the status probe is an HTTP check, so
 # anything that answers proves the plumbing without installing dash-server.

@@ -6050,6 +6050,140 @@ _exakit_uninstall_component() {
 # means the full teardown (kit home and the exakit command included).
 # ⇄ twin: Show-ExakitUninstallMenu in setup/exakit.ps1.
 # ---------------------------------------------------------------------------
+# Logs
+# ---------------------------------------------------------------------------
+# One command reaches every log the kit can show: the install run, the database
+# container's own output, each service add-on's log, and whatever the boot
+# entries wrote at login. Add-ons opt in with <id>_log_path, so a new one is
+# viewable with no wiring here.
+
+# exakit_log_targets — one line per viewable log: "id|label|kind|source".
+# kind=file → source is a path; kind=cmd → source is a command to run (the
+# container keeps its log itself, there is no file to tail).
+exakit_log_targets() {
+    _lt_setup="$(ls -t "$EXAKIT_LOG_DIR"/install-*.log 2>/dev/null | head -1)"
+    [ -n "$_lt_setup" ] && printf 'setup|Installer and setup runs|file|%s\n' "$_lt_setup"
+
+    if [ "$(exakit_installation_runtime_type 2>/dev/null || true)" = "nano" ]; then
+        _lt_engine="$(detect_container_runtime 2>/dev/null || true)"
+        if [ -n "$_lt_engine" ] && [ "$_lt_engine" != "none" ]; then
+            printf 'database|Database container|cmd|%s logs %s\n' \
+                "$_lt_engine" "${EXAKIT_NANO_CONTAINER:-exasol-nano}"
+        fi
+    fi
+
+    for _lt_id in $(exakit_marketplace_installed_addons 2>/dev/null); do
+        _lt_fn="$(_exakit_addon_fn "$_lt_id" log_path)"
+        command -v "$_lt_fn" >/dev/null 2>&1 || continue
+        _lt_path="$("$_lt_fn" 2>/dev/null || true)"
+        [ -n "$_lt_path" ] && printf '%s|%s service|file|%s\n' "$_lt_id" "$_lt_id" "$_lt_path"
+    done
+
+    # What the boot entries wrote at login — the only record of a start that
+    # happened while nobody was watching.
+    for _lt_auto in "$EXAKIT_LOG_DIR"/autostart-*.log; do
+        [ -f "$_lt_auto" ] || continue
+        _lt_name="$(basename "$_lt_auto" .log)"
+        printf '%s|%s at login|file|%s\n' "$_lt_name" "${_lt_name#autostart-}" "$_lt_auto"
+    done
+    return 0
+}
+
+# _exakit_log_size <file> / _exakit_log_mtime <file> — small, portable columns.
+# `date -r <file>` is understood by both BSD (macOS) and GNU date.
+_exakit_log_size() {
+    [ -f "$1" ] || { printf '%s' "-"; return 0; }
+    _ls_bytes="$(wc -c < "$1" 2>/dev/null | tr -d ' ')"
+    case "$_ls_bytes" in
+        ''|*[!0-9]*) printf '%s' "-" ;;
+        *) if [ "$_ls_bytes" -ge 1048576 ]; then printf '%sM' "$((_ls_bytes / 1048576))"
+           elif [ "$_ls_bytes" -ge 1024 ]; then printf '%sK' "$((_ls_bytes / 1024))"
+           else printf '%sB' "$_ls_bytes"; fi ;;
+    esac
+}
+
+_exakit_log_mtime() {
+    [ -f "$1" ] || { printf '%s' "-"; return 0; }
+    date -r "$1" '+%Y-%m-%d %H:%M' 2>/dev/null || printf '%s' "-"
+}
+
+# exakit_logs_overview — what can be viewed, in the kit's table shape.
+exakit_logs_overview() {
+    _lo_rows="$(exakit_log_targets)"
+    if [ -z "$_lo_rows" ]; then
+        info "No logs yet. They appear here after an install or once a service has run."
+        return 0
+    fi
+    printf '\n  Component logs\n'
+    printf '  --------------\n'
+    printf '%-22s %-26s %-8s %s\n' "Target" "What" "Size" "Updated"
+    while IFS='|' read -r _lo_id _lo_label _lo_kind _lo_src; do
+        [ -n "$_lo_id" ] || continue
+        if [ "$_lo_kind" = "cmd" ]; then
+            printf '%-22s %-26s %-8s %s\n' "$_lo_id" "$_lo_label" "live" "kept by the engine"
+        else
+            printf '%-22s %-26s %-8s %s\n' "$_lo_id" "$_lo_label" \
+                "$(_exakit_log_size "$_lo_src")" "$(_exakit_log_mtime "$_lo_src")"
+        fi
+    done <<EXAKIT_LO_EOF
+$_lo_rows
+EXAKIT_LO_EOF
+    printf '\n'
+    info "View one:  exakit logs <target>        (add -f to follow it live)"
+    info "Its path:  exakit logs <target> --path"
+    return 0
+}
+
+# exakit_logs_show <target> [follow] [lines] [path_only]
+exakit_logs_show() {
+    _lsh_target="$1"
+    _lsh_follow="${2:-0}"
+    _lsh_lines="${3:-200}"
+    _lsh_path_only="${4:-0}"
+    _lsh_found=""
+    while IFS='|' read -r _lsh_id _lsh_label _lsh_kind _lsh_src; do
+        [ "$_lsh_id" = "$_lsh_target" ] || continue
+        _lsh_found="$_lsh_kind|$_lsh_src"
+        break
+    done <<EXAKIT_LSH_EOF
+$(exakit_log_targets)
+EXAKIT_LSH_EOF
+    if [ -z "$_lsh_found" ]; then
+        _lsh_known="$(exakit_log_targets | cut -d'|' -f1 | tr '\n' ' ' | sed 's/ $//')"
+        die "No log called '$_lsh_target'.${_lsh_known:+ Available: $_lsh_known}"
+    fi
+    _lsh_kind="${_lsh_found%%|*}"
+    _lsh_src="${_lsh_found#*|}"
+
+    if [ "$_lsh_kind" = "cmd" ]; then
+        if [ "$_lsh_path_only" = "1" ]; then
+            printf '%s\n' "$_lsh_src"
+            return 0
+        fi
+        # The container engine owns this log; ask it, with the same shape of
+        # options the file path uses.
+        if [ "$_lsh_follow" = "1" ]; then
+            $_lsh_src --tail "$_lsh_lines" -f
+        else
+            $_lsh_src --tail "$_lsh_lines"
+        fi
+        return $?
+    fi
+
+    if [ "$_lsh_path_only" = "1" ]; then
+        printf '%s\n' "$_lsh_src"
+        return 0
+    fi
+    [ -f "$_lsh_src" ] || die "The $_lsh_target log has not been written yet ($_lsh_src)."
+    if [ "$_lsh_follow" = "1" ]; then
+        info "Following $_lsh_src — Ctrl-C to stop"
+        tail -n "$_lsh_lines" -f "$_lsh_src"
+    else
+        tail -n "$_lsh_lines" "$_lsh_src"
+    fi
+}
+
+# ---------------------------------------------------------------------------
 # Services and autostart
 # ---------------------------------------------------------------------------
 # Everything the kit runs as a process — the database and any add-on that
