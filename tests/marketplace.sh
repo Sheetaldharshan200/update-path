@@ -423,6 +423,46 @@ check "the sandbox extensions dir is passed through" "yes" "$( (
     grep -q -- "--extensions-dir $EXAKIT_EXASOL_VSCODE_EXTDIR" "$CODE_CALLS" && echo yes || echo no
 ) )"
 
+echo "an add-on that needs a host app is only offered when the app is there:"
+# No VS Code on this machine → the extension is not an option at all: no menu
+# row, no table line, nothing pending, nothing in the discovery line. The kit
+# never advertises something it cannot install here.
+_no_code="$( (
+    exasol_vscode_code_cli() { return 1; }          # no VS Code anywhere
+    printf 'applicable=%s ' "$(_exakit_addon_applicable exasol-vscode && echo yes || echo no)"
+    printf 'offerable=%s ' "$(_exakit_addon_offerable exasol-vscode && echo yes || echo no)"
+    printf 'in-menu=%s ' "$(exakit_marketplace_menu 2>&1 | grep -c exasol-vscode)"
+    printf 'in-discovery=%s' "$(exakit_print_marketplace_discovery_line 2>&1 | grep -c exasol-vscode)"
+) )"
+check "without the host app it is hidden everywhere" \
+    "applicable=no offerable=no in-menu=0 in-discovery=0" "$_no_code"
+# With VS Code present it is a normal, selectable add-on again.
+_with_code="$( (
+    exasol_vscode_code_cli() { printf '/stub/code\n'; }
+    printf 'applicable=%s ' "$(_exakit_addon_applicable exasol-vscode && echo yes || echo no)"
+    printf 'in-menu=%s' "$(exakit_marketplace_menu 2>&1 | grep -c exasol-vscode)"
+) )"
+has "with the host app present it is offered again" "applicable=yes" "$_with_code"
+check "and appears in the menu" "yes" "$(
+    printf '%s' "$_with_code" | grep -q 'in-menu=0' && echo no || echo yes
+)"
+# Naming it explicitly on a machine without the app explains why, instead of
+# claiming the add-on is unknown or failing deep in the installer.
+_named="$( (
+    exasol_vscode_code_cli() { return 1; }
+    EXAKIT_MARKETPLACE_ADDONS="exasol-vscode"
+    exakit_marketplace_menu 2>&1
+) )"
+has "naming it anyway explains the host app is missing" "VS Code was not found" "$_named"
+lacks "and never calls it unknown" "Unknown marketplace add-on" "$_named"
+# A kit-installed copy stays visible even if the app disappears afterwards, so
+# it can still be updated or removed rather than becoming unreachable state.
+check "an installed copy stays visible without the app" "yes" "$( (
+    exasol_vscode_code_cli() { return 1; }
+    exakit_marketplace_addon_installed() { return 0; }
+    _exakit_addon_offerable exasol-vscode && echo yes || echo no
+) )"
+
 echo "exasol-vscode checksum chain (mirrors the exapump precedence):"
 check "the advertised version verifies against versions.json" \
     "$(exakit_versions_value components.exasol-vscode.sha256.vsix "$ROOT/versions.json")" \

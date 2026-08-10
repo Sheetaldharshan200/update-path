@@ -28,6 +28,13 @@ scenario as a flowchart — see [MARKETPLACE-FLOWS.md](MARKETPLACE-FLOWS.md).
   description, Space selects, Enter installs. Non-interactive runs (agents,
   CI) answer with `EXAKIT_MARKETPLACE_ADDONS=<ids csv | all | none>` instead —
   this also pre-answers the closing offer.
+- **Dynamic by applicability.** An add-on that extends something the user does
+  not have is not offered at all — no row, no table line, no mention anywhere.
+  The VS Code extension is only listed on a machine that has VS Code; naming
+  it anyway (`EXAKIT_MARKETPLACE_ADDONS=exasol-vscode`) explains that the host
+  app is missing instead of failing deep in the installer. A copy the kit
+  already installed stays visible even if the host app disappears later, so it
+  can still be updated or removed.
 - **Dynamic by presence.** An add-on already on the machine is never
   advertised — whether the kit installed it (shown as *installed (vX)*) or it
   was already on the system outside the kit (shown as *already on this system —
@@ -55,7 +62,7 @@ needs no edits there. The conventions, for an id like `my-tool`:
 
 | Convention | Value for `my-tool` |
 |---|---|
-| Module functions (bash; dashes → underscores) | `my_tool_install`, `my_tool_validate`, `my_tool_update`, `my_tool_installed_version`, `my_tool_uninstall`; a tool that *runs* adds `my_tool_status`, `my_tool_start`, `my_tool_stop`, `my_tool_autostart_command` |
+| Module functions (bash; dashes → underscores) | `my_tool_install`, `my_tool_validate`, `my_tool_update`, `my_tool_installed_version`, `my_tool_uninstall`; a tool that *runs* adds `my_tool_status`, `my_tool_start`, `my_tool_stop`, `my_tool_autostart_command`; a tool that extends a host app adds `my_tool_applicable` (+ `my_tool_applicable_reason`) |
 | Version env override / fallback (bash) | `EXAKIT_MY_TOOL_VERSION`, `EXAKIT_MY_TOOL_VERSION_FALLBACK` |
 | versions.json block | `components.my-tool` (`repo` = GitHub release, `package` = PyPI — the generic upstream lookup reads whichever is present) |
 | Manifest keys | `components.my_tool.*`, `desired.my_tool` |
@@ -151,6 +158,12 @@ my_tool_uninstall() {
     # manifest_del components.my_tool; manifest_del desired.my_tool
     return 0
 }
+
+# OPTIONAL — only for an add-on that extends a host application. Return
+# non-zero when the host is absent and the add-on is hidden everywhere instead
+# of being offered and then failing (see exasol_vscode_applicable).
+# my_tool_applicable()        { command -v the-host-app >/dev/null 2>&1; }
+# my_tool_applicable_reason() { printf '%s\n' "the host app was not found"; }
 
 # OPTIONAL — only for an add-on that RUNS as a service. Defining these four
 # folds it into `exakit status`, `exakit start`, `exakit stop` and the boot

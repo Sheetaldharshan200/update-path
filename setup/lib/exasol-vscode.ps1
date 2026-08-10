@@ -77,6 +77,19 @@ function Get-ExasolVscodeInstalledVersion {
     return (Get-ExasolVscodeLiveVersion)
 }
 
+# An editor extension is only an option when the editor is here. Without VS
+# Code the add-on is not offered at all: no row in the marketplace, no mention
+# in the closing offer or the discovery lines. An already kit-installed copy
+# stays visible either way, so it can still be updated or removed.
+# Twin of exasol_vscode_applicable.
+function Test-ExasolVscodeApplicable {
+    return [bool](Get-ExasolVscodeCodeCli)
+}
+
+function Get-ExasolVscodeApplicableReason {
+    return "VS Code was not found (install it from https://code.visualstudio.com, then run: exakit marketplace)"
+}
+
 function Get-ExasolVscodeAssetName {
     param([Parameter(Mandatory)][string]$Version)
     return "exasol-vscode-$Version.vsix"

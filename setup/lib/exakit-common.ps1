@@ -2478,6 +2478,8 @@ function Get-ExakitMarketplaceAddons {
             UpdateFn    = "Update-ExasolVscode"
             VersionFn   = "Get-ExasolVscodeInstalledVersion"
             UninstallFn = "Uninstall-ExasolVscode"
+            ApplicableFn = "Test-ExasolVscodeApplicable"
+            ReasonFn     = "Get-ExasolVscodeApplicableReason"
             EnvVar      = "EXAKIT_EXASOL_VSCODE_VERSION"
             FallbackVar = "ExasolVscodeVersionFallback"
         }
@@ -2534,6 +2536,36 @@ function Test-ExakitMarketplaceAddonPresent {
     return (Test-ExakitAddonSystemPresent $Id)
 }
 
+# Does this add-on make sense on THIS machine at all? An add-on that extends
+# something the user does not have (the VS Code extension without VS Code) is
+# not "available then failing" - it is simply not on offer. A registry entry
+# with no ApplicableFn is applicable. Twin of _exakit_addon_applicable.
+function Test-ExakitAddonApplicable {
+    param([Parameter(Mandatory)][string]$Id)
+    $addon = Get-ExakitMarketplaceAddon $Id
+    if (-not $addon) { return $true }
+    if (-not $addon.PSObject.Properties["ApplicableFn"]) { return $true }
+    if (-not (Get-Command $addon.ApplicableFn -ErrorAction SilentlyContinue)) { return $true }
+    return [bool](& $addon.ApplicableFn)
+}
+
+function Get-ExakitAddonApplicableReason {
+    param([Parameter(Mandatory)][string]$Id)
+    $addon = Get-ExakitMarketplaceAddon $Id
+    if ($addon -and $addon.PSObject.Properties["ReasonFn"] -and
+        (Get-Command $addon.ReasonFn -ErrorAction SilentlyContinue)) { return (& $addon.ReasonFn) }
+    return ""
+}
+
+# Should this add-on appear at all? Anything already installed by the kit stays
+# visible even if it became inapplicable, so it can still be updated or
+# removed. Twin of _exakit_addon_offerable.
+function Test-ExakitAddonOfferable {
+    param([Parameter(Mandatory)][string]$Id)
+    if (Test-ExakitMarketplaceAddonInstalled $Id) { return $true }
+    return (Test-ExakitAddonApplicable $Id)
+}
+
 function Get-ExakitMarketplaceInstalledAddons {
     $installed = @()
     foreach ($addon in Get-ExakitMarketplaceAddons) {
@@ -2547,6 +2579,7 @@ function Get-ExakitMarketplaceInstalledAddons {
 # closing offer.
 function Test-ExakitMarketplaceHasPending {
     foreach ($addon in Get-ExakitMarketplaceAddons) {
+        if (-not (Test-ExakitAddonOfferable $addon.Id)) { continue }
         if (-not (Test-ExakitMarketplaceAddonPresent $addon.Id)) { return $true }
     }
     return $false
@@ -2557,6 +2590,7 @@ function Test-ExakitMarketplaceHasPending {
 function Write-ExakitMarketplaceDiscoveryLine {
     $pending = @()
     foreach ($addon in Get-ExakitMarketplaceAddons) {
+        if (-not (Test-ExakitAddonOfferable $addon.Id)) { continue }
         if (-not (Test-ExakitMarketplaceAddonPresent $addon.Id)) { $pending += $addon.Id }
     }
     if ($pending.Count -eq 0) { return }
@@ -2575,6 +2609,9 @@ function Write-ExakitMarketplaceDiscoveryLine {
 function Show-ExakitMarketplaceMenu {
     $rows = @()      # each: @{ Id = <id or $null when not selectable>; Label = <menu child>; Table = <state row> }
     foreach ($addon in Get-ExakitMarketplaceAddons) {
+        # Not applicable here and not installed: not an option on this machine,
+        # so it is not shown at all - no row, no table line.
+        if (-not (Test-ExakitAddonOfferable $addon.Id)) { continue }
         if (Test-ExakitMarketplaceAddonInstalled $addon.Id) {
             $ver = ""
             if (Get-Command Get-ExakitComponentCurrent -ErrorAction SilentlyContinue) { $ver = Get-ExakitComponentCurrent $addon.Id }
@@ -2611,6 +2648,10 @@ function Show-ExakitMarketplaceMenu {
             foreach ($token in ($answer -split ",")) {
                 if (-not $token) { continue }
                 if ($rows | Where-Object { $_.Id -eq $token }) { $picked += $token }
+                elseif ($known -contains $token -and -not (Test-ExakitAddonApplicable $token)) {
+                    $why = Get-ExakitAddonApplicableReason $token
+                    Fail ("$token is not available on this machine" + $(if ($why) { ": $why" } else { "" }))
+                }
                 elseif ($known -contains $token) { Info "$token is already present - a kit-managed one updates with: exakit update $token" }
                 else { Fail "Unknown marketplace add-on in EXAKIT_MARKETPLACE_ADDONS: '$token' (known: $($known -join ' '))" }
             }

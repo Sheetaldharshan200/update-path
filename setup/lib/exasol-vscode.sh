@@ -96,6 +96,19 @@ exasol_vscode_system_present() {
     _exasol_vscode_live_version >/dev/null 2>&1
 }
 
+# exasol_vscode_applicable — an editor extension is only an option when the
+# editor is here. Without VS Code the add-on is not offered at all: no row in
+# the marketplace, no mention in the closing offer or the discovery lines.
+# (An already kit-installed copy stays visible either way, so it can still be
+# updated or removed — see _exakit_addon_offerable.)
+exasol_vscode_applicable() {
+    exasol_vscode_code_cli >/dev/null 2>&1
+}
+
+exasol_vscode_applicable_reason() {
+    printf '%s\n' "VS Code was not found (install it from https://code.visualstudio.com, then run: exakit marketplace)"
+}
+
 exasol_vscode_asset_name() {
     printf 'exasol-vscode-%s.vsix\n' "$1"
 }

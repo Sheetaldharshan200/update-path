@@ -2110,6 +2110,33 @@ _exakit_marketplace_load_modules() {
     return 0
 }
 
+# _exakit_addon_applicable <id> — does this add-on make sense on THIS machine
+# at all? An add-on that extends something the user does not have (the VS Code
+# extension without VS Code) is not "available then failing" — it is simply not
+# on offer, and nothing advertises it. A module with no opinion is applicable.
+_exakit_addon_applicable() {
+    _aa_fn="$(_exakit_addon_fn "$1" applicable)"
+    command -v "$_aa_fn" >/dev/null 2>&1 || return 0
+    "$_aa_fn"
+}
+
+# _exakit_addon_applicable_reason <id> — the one line that explains why it is
+# not on offer, when the module cares to say.
+_exakit_addon_applicable_reason() {
+    _ar_fn="$(_exakit_addon_fn "$1" applicable_reason)"
+    command -v "$_ar_fn" >/dev/null 2>&1 && "$_ar_fn"
+    return 0
+}
+
+# _exakit_addon_offerable <id> — should this add-on appear at all? Anything
+# already installed by the kit stays visible even if it became inapplicable
+# (VS Code uninstalled after the fact), so it can still be updated or removed
+# instead of turning into orphaned state nothing can reach.
+_exakit_addon_offerable() {
+    exakit_marketplace_addon_installed "$1" && return 0
+    _exakit_addon_applicable "$1"
+}
+
 # exakit_marketplace_addon_installed <id> — KIT-MANAGED install only: the
 # component answers for itself (exakit_component_current probes the actual
 # install and fails for a provably absent one, so a stale manifest record
@@ -2162,6 +2189,7 @@ exakit_marketplace_installed_addons() {
 exakit_marketplace_has_pending() {
     [ -n "$(exakit_marketplace_addons | while IFS='|' read -r _mp_id _mp_label _mp_desc; do
         [ -n "$_mp_id" ] || continue
+        _exakit_addon_offerable "$_mp_id" || continue
         _exakit_marketplace_addon_present "$_mp_id" || printf '%s\n' "$_mp_id"
     done)" ]
 }
@@ -2198,6 +2226,7 @@ exakit_print_marketplace_discovery_line() {
     _md_pending=""
     _md_pending="$(exakit_marketplace_addons | while IFS='|' read -r _md_id _md_label _md_desc; do
         [ -n "$_md_id" ] || continue
+        _exakit_addon_offerable "$_md_id" || continue
         _exakit_marketplace_addon_present "$_md_id" || printf '%s ' "$_md_id"
     done)"
     [ -n "$_md_pending" ] || return 0
@@ -2226,6 +2255,9 @@ exakit_marketplace_menu() {
     _mm_selectable=0
     while IFS='|' read -r _mm_id _mm_label _mm_desc; do
         [ -n "$_mm_id" ] || continue
+        # Not applicable here and not installed: it is not an option on this
+        # machine, so it is not shown at all — no row, no table line.
+        _exakit_addon_offerable "$_mm_id" || continue
         if exakit_marketplace_addon_installed "$_mm_id"; then
             _mm_ver="$(exakit_component_current "$_mm_id" 2>/dev/null || true)"
             _mm_rows+=("$(printf '%-14s %-20s %-14s %s' "$_mm_id" "installed" "${_mm_ver:-?}" "exakit update $_mm_id")")
@@ -2276,6 +2308,9 @@ EXAKIT_MM_EOF
                         info "$_mm_tok is already installed — update it with: exakit update $_mm_tok"
                     elif _exakit_addon_registered "$_mm_tok" && _exakit_addon_system_present "$_mm_tok"; then
                         info "$_mm_tok is already on this system — the kit leaves it alone"
+                    elif _exakit_addon_registered "$_mm_tok" && ! _exakit_addon_applicable "$_mm_tok"; then
+                        _mm_why="$(_exakit_addon_applicable_reason "$_mm_tok")"
+                        die "$_mm_tok is not available on this machine${_mm_why:+: $_mm_why}"
                     elif _exakit_addon_registered "$_mm_tok"; then
                         # Registered but no module in this kit copy: a real
                         # add-on the user asked for by name — say what fixes it
