@@ -45,8 +45,11 @@ exakit_mcp_operation(){ printf '%s\n' "$*" > "$SANDBOX/marker_mcp"; }
 # so a machine with the dash-server launcher gets it removed.
 exakit_marketplace_addons(){ printf '%s\n' "dash-server|x|x"; }
 
-# --- pull in only the function under test --------------------------------
-eval "$(awk '/^exakit_uninstall_run\(\)/{f=1} f{print} f&&/^}/{exit}' "$ROOT/setup/lib/common.sh")"
+# --- pull in only the functions under test --------------------------------
+# The engine plus the skills-removal helper it delegates to (shared with the
+# selectable uninstall menu).
+eval "$(awk '/^_exakit_remove_installed_skills\(\)/{f=1} f{print} f&&/^}$/{if(f)exit}' "$ROOT/setup/lib/common.sh")"
+eval "$(awk '/^exakit_uninstall_run\(\)/{f=1} f{print} f&&/^}$/{if(f)exit}' "$ROOT/setup/lib/common.sh")"
 
 exakit_uninstall_run "$DRY"
 HARNESS

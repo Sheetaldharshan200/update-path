@@ -13,9 +13,10 @@
 #     checksum-verified with the same three-tier chain exapump uses
 #     (versions.json -> the pinned digest below -> the release API).
 #   - installed with VS Code's own CLI: code --install-extension <vsix>.
-#     The extension lives in VS Code's extensions dir, NOT under the kit home,
-#     so `exakit uninstall` leaves it alone — remove it any time with:
-#     code --uninstall-extension exasol.exasol-vscode
+#     The extension lives in VS Code's extensions dir, NOT under the kit home;
+#     `exakit uninstall` removes a KIT-INSTALLED copy through the
+#     exasol_vscode_uninstall hook below (selectable on its own from the
+#     uninstall menu), and never touches one the user installed themselves.
 #   - a copy the user already installed from the VS Code Marketplace counts as
 #     "on this system": the kit never offers a second one and never manages it.
 #
@@ -271,8 +272,40 @@ exasol_vscode_validate() {
     ui_panel_line "Open VS Code    the Exasol view appears in the activity bar"
     ui_panel_line "Connect it      DSN and credentials: exakit info"
     ui_panel_line "Update          exakit update exasol-vscode"
-    ui_panel_line "Remove          code --uninstall-extension ${EXAKIT_EXASOL_VSCODE_EXT_ID}"
+    ui_panel_line "Remove          exakit uninstall (pick Exasol for VS Code)"
     ui_panel_end
+    return 0
+}
+
+# exasol_vscode_uninstall [dry] — remove the KIT-MANAGED extension from VS
+# Code, through VS Code's own CLI, plus the manifest record. With "1" it only
+# narrates the plan. A copy the kit never installed (no manifest record — a
+# VS Code Marketplace install) is refused: the kit does not uninstall what it
+# does not manage. Best-effort and idempotent.
+exasol_vscode_uninstall() {
+    _evd_dry="${1:-0}"
+    if [ -z "$(manifest_get components.exasol_vscode.version 2>/dev/null || true)" ]; then
+        info "The Exasol VS Code extension is not kit-managed — nothing to remove."
+        info "A copy you installed yourself is removed inside VS Code, or with: code --uninstall-extension ${EXAKIT_EXASOL_VSCODE_EXT_ID}"
+        return 0
+    fi
+    if [ "$_evd_dry" = "1" ]; then
+        info "  will remove: the Exasol VS Code extension (${EXAKIT_EXASOL_VSCODE_EXT_ID}) from VS Code"
+        return 0
+    fi
+    if _exasol_vscode_live_version >/dev/null 2>&1; then
+        info "Removing the Exasol VS Code extension (${EXAKIT_EXASOL_VSCODE_EXT_ID})"
+        if ! _exasol_vscode_code --uninstall-extension "$EXAKIT_EXASOL_VSCODE_EXT_ID" \
+                >>"${EXAKIT_LOG_FILE:-/dev/null}" 2>&1; then
+            warn "code --uninstall-extension reported issues (see log) — remove it inside VS Code if it is still listed."
+        fi
+        if _exasol_vscode_live_version >/dev/null 2>&1; then
+            warn "VS Code still lists ${EXAKIT_EXASOL_VSCODE_EXT_ID} — a running VS Code may hold it; remove it from the Extensions view."
+        fi
+    fi
+    manifest_del components.exasol_vscode
+    manifest_del desired.exasol_vscode
+    ok "Exasol for VS Code removed — reinstall any time with: exakit marketplace"
     return 0
 }
 

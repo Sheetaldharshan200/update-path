@@ -55,7 +55,7 @@ needs no edits there. The conventions, for an id like `my-tool`:
 
 | Convention | Value for `my-tool` |
 |---|---|
-| Module functions (bash; dashes → underscores) | `my_tool_install`, `my_tool_validate`, `my_tool_update`, `my_tool_installed_version` |
+| Module functions (bash; dashes → underscores) | `my_tool_install`, `my_tool_validate`, `my_tool_update`, `my_tool_installed_version`, `my_tool_uninstall` |
 | Version env override / fallback (bash) | `EXAKIT_MY_TOOL_VERSION`, `EXAKIT_MY_TOOL_VERSION_FALLBACK` |
 | versions.json block | `components.my-tool` (`repo` = GitHub release, `package` = PyPI — the generic upstream lookup reads whichever is present) |
 | Manifest keys | `components.my_tool.*`, `desired.my_tool` |
@@ -138,6 +138,18 @@ my_tool_update() {
     my_tool_validate || true
     manifest_set desired.my_tool "$EXAKIT_MY_TOOL_VERSION"
     ok "my-tool updated; database data was not changed"
+}
+
+# Remove what the install put on this machine (with "1": narrate the plan
+# only). This one hook folds the add-on into the selectable
+# `exakit uninstall` menu AND the full teardown — no other wiring exists.
+# Best-effort, idempotent, and it must refuse anything the kit does not
+# manage (see exasol_vscode_uninstall for the pattern).
+my_tool_uninstall() {
+    _dry="${1:-0}"
+    # rm the kit-managed artifacts; then:
+    # manifest_del components.my_tool; manifest_del desired.my_tool
+    return 0
 }
 
 # OPTIONAL: sharpen "already on this system" detection beyond the default

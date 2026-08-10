@@ -168,23 +168,36 @@ fi
 say "8/8 uninstall sweeps the add-on"
 (
     . "$ROOT/setup/lib/common.sh" >/dev/null 2>&1
+    # The add-on modules must be loaded: the full run dispatches each
+    # kit-managed add-on's own uninstall hook (that is what removes the
+    # kit-installed VS Code extension).
+    . "$ROOT/setup/lib/dash-server.sh" >/dev/null 2>&1
+    . "$ROOT/setup/lib/exasol-vscode.sh" >/dev/null 2>&1
     # The database/MCP steps are stubbed: this sandbox never had either.
     nano_teardown() { :; }
     personal_teardown() { :; }
     exakit_mcp_operation() { :; }
-    manifest_get() { case "$1" in runtime.type) echo "" ;; *) command manifest_get "$1" ;; esac; }
     exakit_uninstall_run 0 >/dev/null 2>&1
     :
 )
 [ ! -e "$EXAKIT_HOME/dash-server-venv" ] || fail "uninstall left the dash-server venv behind"
 [ ! -e "$EXAKIT_BIN_DIR/dash-server" ] || fail "uninstall left the dash-server launcher behind"
 echo "  ok  venv, state and launcher removed"
-# The VS Code extension deliberately survives: it lives in VS Code, not under
-# the kit home, and removing a user's editor extension is not the kit's call.
+# The KIT-INSTALLED extension goes with the kit: the full uninstall runs the
+# add-on's own hook (VS Code's --uninstall-extension) before the sweep. VS
+# Code's LISTING is the truth here — uninstall updates extensions.json
+# immediately but defers deleting the folder until its next cleanup pass, so
+# an ls of the extensions dir would report a ghost. A copy the user installed
+# from the VS Code Marketplace would be refused by the same hook — that path
+# is pinned by the unit tests.
 if [ -n "${EXAKIT_EXASOL_VSCODE_EXTDIR:-}" ] && [ -d "$EXAKIT_EXASOL_VSCODE_EXTDIR" ]; then
-    ls "$EXAKIT_EXASOL_VSCODE_EXTDIR" 2>/dev/null | grep -qi exasol \
-        || fail "uninstall removed the VS Code extension — it must be left alone"
-    echo "  ok  the VS Code extension is deliberately left alone (remove: code --uninstall-extension exasol.exasol-vscode)"
+    _ext_after="$(
+        . "$ROOT/setup/lib/common.sh" >/dev/null 2>&1
+        . "$ROOT/setup/lib/exasol-vscode.sh" >/dev/null 2>&1
+        _exasol_vscode_live_version 2>/dev/null || true
+    )"
+    [ -z "$_ext_after" ] || fail "uninstall left the kit-installed VS Code extension behind (VS Code still lists $_ext_after)"
+    echo "  ok  the kit-installed VS Code extension was removed through its own hook (VS Code no longer lists it)"
 fi
 
 say "PASS — marketplace install, update flow and uninstall all work end to end"

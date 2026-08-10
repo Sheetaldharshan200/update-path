@@ -449,6 +449,66 @@ check "no VS Code anywhere is a soft miss naming the fix" "yes" "$( (
     exasol_vscode_install 2>&1 | grep -q "install VS Code" && echo yes || echo no
 ) )"
 
+echo "add-on uninstall hooks (what folds them into exakit uninstall):"
+# dash-server: dry narrates, real removes venv + state + launcher + record.
+mkdir -p "$EXAKIT_HOME/dash-server-venv" "$EXAKIT_HOME/dash-server" "$EXAKIT_BIN_DIR"
+: > "$EXAKIT_BIN_DIR/dash-server"
+manifest_set components.dash_server.version "0.1.0"
+_ds_dry="$(dash_server_uninstall 1 2>&1)"
+has "dash-server dry-run narrates, removes nothing" "will remove" "$_ds_dry"
+check "and the venv survives a dry-run" "yes" "$([ -d "$EXAKIT_HOME/dash-server-venv" ] && echo yes || echo no)"
+dash_server_uninstall 0 >/dev/null 2>&1
+check "real run removes venv, state and launcher" "GONE GONE GONE" "$(
+    for p in "$EXAKIT_HOME/dash-server-venv" "$EXAKIT_HOME/dash-server" "$EXAKIT_BIN_DIR/dash-server"; do
+        [ -e "$p" ] && printf 'KEPT ' || printf 'GONE '
+    done | sed 's/ $//'
+)"
+check "and clears the manifest record" "absent" "$(manifest_get components.dash_server.version >/dev/null 2>&1 && echo present || echo absent)"
+
+# exasol-vscode: a kit-managed copy is removed through VS Code's own CLI; a
+# copy the kit never installed is refused, and the CLI is never invoked.
+_vs_kit="$( (
+    PATH="$WORK/code-bin:$PATH"
+    CODE_LISTING="exasol.exasol-vscode@1.7.0"; export CODE_LISTING
+    CODE_CALLS="$WORK/un-calls"; export CODE_CALLS
+    : > "$CODE_CALLS"
+    manifest_set components.exasol_vscode.version "1.7.0"
+    exasol_vscode_uninstall 0 >/dev/null 2>&1
+    grep -q -- "--uninstall-extension exasol.exasol-vscode" "$CODE_CALLS" && printf 'cli-called '
+    manifest_get components.exasol_vscode.version >/dev/null 2>&1 && printf 'record-kept' || printf 'record-cleared'
+) )"
+check "kit-managed extension: removed via code CLI, record cleared" "cli-called record-cleared" "$_vs_kit"
+_vs_sys="$( (
+    PATH="$WORK/code-bin:$PATH"
+    CODE_LISTING="exasol.exasol-vscode@1.7.0"; export CODE_LISTING
+    CODE_CALLS="$WORK/un-calls-2"; export CODE_CALLS
+    : > "$CODE_CALLS"
+    exasol_vscode_uninstall 0 2>&1 | grep -q "not kit-managed" && printf 'refused '
+    grep -q -- "--uninstall-extension" "$CODE_CALLS" && printf 'cli-called' || printf 'cli-untouched'
+) )"
+check "a Marketplace-installed copy is refused, CLI untouched" "refused cli-untouched" "$_vs_sys"
+
+echo "the selectable uninstall (registry-driven, zero wiring per add-on):"
+check "the executor dispatches an add-on to its own hook" "hook-ran" "$( (
+    dash_server_uninstall() { printf 'hook-ran'; }
+    _exakit_uninstall_component dash-server 0
+) )"
+check "an add-on without a hook explains instead of failing" "yes" "$( (
+    unset -f exasol_vscode_uninstall
+    _exakit_uninstall_component exasol-vscode 0 2>&1 | grep -q "update the kit" && echo yes || echo no
+) )"
+check "an unknown target warns, never dies" "rc=0" "$( (
+    _exakit_uninstall_component not-a-thing 0 >/dev/null 2>&1
+    printf 'rc=%s' "$?"
+) )"
+# Partial bookkeeping: removing a piece unmarks its step so a re-run reinstalls.
+manifest_set steps_completed '["exapump","pyexasol"]'
+exakit_unmark_step exapump
+check "a partial removal unmarks the step flag" '["pyexasol"]' "$(manifest_get steps_completed)"
+manifest_set components.exapump.version "0.11.3"
+manifest_del components.exapump
+check "manifest_del clears the whole component block" "absent" "$(manifest_get components.exapump >/dev/null 2>&1 && echo present || echo absent)"
+
 echo "discovery one-liners:"
 has "update-check discovery line names the addon" "dash-server" "$(exakit_print_marketplace_discovery_line)"
 has "connection panel advertises the marketplace" "exakit marketplace" "$(connection_panel 2>/dev/null)"

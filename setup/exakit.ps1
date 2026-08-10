@@ -143,6 +143,19 @@ function Invoke-CmdStop {
 function Invoke-ExakitUninstallRun {
     param([switch]$DryRun)
 
+    # 0) Kit-managed marketplace add-ons that live OUTSIDE the kit home (the
+    #    VS Code extension). Registry-driven: a new add-on ships its own
+    #    UninstallFn and appears here with no edits. A system-installed copy
+    #    the kit never managed is not touched (each hook enforces that).
+    foreach ($addonId in (Get-ExakitMarketplaceInstalledAddons)) {
+        $addonEntry = Get-ExakitMarketplaceAddon $addonId
+        if ($addonEntry -and $addonEntry.PSObject.Properties["UninstallFn"] -and
+            (Get-Command $addonEntry.UninstallFn -ErrorAction SilentlyContinue)) {
+            try { [void](& $addonEntry.UninstallFn -DryRun:$DryRun) }
+            catch { Warn2 "Removing the $addonId add-on reported issues (continuing uninstall)" }
+        }
+    }
+
     # 1) Database + all data (the Windows runtime is Nano).
     $type = Get-RuntimeType
     if ($type) {
@@ -274,32 +287,185 @@ function Invoke-CmdUninstall {
         return
     }
 
-    Write-Host ""
-    Warn2 "exakit uninstall PERMANENTLY removes the Exasol Personal Local Starter Kit."
-    Info "The following will be removed:"
-    Invoke-ExakitUninstallRun -DryRun
-    Write-Host ""
-    Warn2 "This is IRREVERSIBLE - all local database data will be lost."
-    Info "Not touched: uv/uvx (shared tool) and any PATH entry in your profile."
-
-    if ($DryRun) { Write-Host ""; Info "Dry run only - nothing was removed."; return }
-
-    if (-not $AssumeYes) {
-        if (-not [Environment]::UserInteractive -or [Console]::IsInputRedirected) {
-            Fail "uninstall needs an interactive terminal to confirm; re-run with -Yes to proceed non-interactively."
-        }
-        Write-Host "  ! Type " -ForegroundColor Red -NoNewline
-        Write-Host "UNINSTALL" -ForegroundColor White -NoNewline
-        Write-Host " to confirm (anything else cancels): " -ForegroundColor Red -NoNewline
-        $answer = Read-Host
-        if ($answer -cne "UNINSTALL") { Info "Uninstall cancelled."; return }
+    # -DryRun previews the FULL plan; -Yes is the scripted full uninstall.
+    # Everything else goes through the selectable menu: pick what goes, see
+    # what that means, type the word. Twin of cmd_uninstall in setup/exakit.
+    if ($DryRun) {
+        Write-Host ""
+        Warn2 "exakit uninstall PERMANENTLY removes the Exasol Personal Local Starter Kit."
+        Info "A full uninstall (the EVERYTHING row, or -Yes) removes:"
+        Invoke-ExakitUninstallRun -DryRun
+        Write-Host ""
+        Info "Not touched: uv/uvx (shared tool), any PATH entry in your profile, and anything the kit did not install."
+        Info "Dry run only - nothing was removed. Pick individual pieces interactively with: exakit uninstall"
+        return
     }
 
+    if ($AssumeYes) {
+        Write-Host ""
+        Warn2 "exakit uninstall -Yes removes the FULL kit (all local database data included)."
+        Invoke-ExakitUninstallRun
+        Write-Host ""
+        Ok "Uninstall complete - the Exasol Personal Local Starter Kit has been removed."
+        return
+    }
+
+    Show-ExakitUninstallMenu
+}
+
+# The interactive `exakit uninstall`: pick exactly what goes, see exactly what
+# that means, then type the word. Registry-driven for add-ons - a new add-on
+# ships its own UninstallFn and appears here with no edits. Twin of
+# exakit_uninstall_menu in setup/lib/common.sh.
+function Show-ExakitUninstallMenu {
+    $tee = $script:UiTee; $corner = $script:UiCorner
+    $labels = New-Object System.Collections.Generic.List[string]
+    $keys = New-Object System.Collections.Generic.List[string]
+    [void]$labels.Add("Skip - uninstall nothing")
+    [void]$keys.Add("__skip__")
+
+    # Components, only the ones present on this machine.
+    $components = @()
+    $runtimeType = Get-ExakitManifestValue "runtime.type"
+    if ($runtimeType) { $components += ,@("database", "Database + ALL its data (the local Exasol $runtimeType deployment)") }
+    if (Get-ExakitManifestValue "components.mcp_server.configs") {
+        $components += ,@("mcp_configs", "MCP client configs (Claude, Cursor, Codex, ...)")
+    }
+    foreach ($skillRoot in @((Join-Path $HOME ".claude\skills"), (Join-Path $HOME ".agents\skills"))) {
+        if (Test-Path (Join-Path $skillRoot "local-agent-ready-starter")) {
+            $components += ,@("skills", "AI skills (~\.claude\skills, ~\.agents\skills)")
+            break
+        }
+    }
+    if (Test-Path (Join-Path $script:BinDir "exapump.exe")) {
+        $components += ,@("exapump", "exapump (binary + connection profiles)")
+    }
+    if (Test-Path (Join-Path $script:ExakitHome "pyexasol-venv")) {
+        $components += ,@("pyexasol", "pyexasol (the managed Python venv)")
+    }
+    if ($components.Count -gt 0) {
+        [void]$labels.Add("#Components")
+        [void]$keys.Add("__header__")
+        for ($i = 0; $i -lt $components.Count; $i++) {
+            $conn = if ($i -eq $components.Count - 1) { $corner } else { $tee }
+            [void]$labels.Add("$conn $($components[$i][1])")
+            [void]$keys.Add($components[$i][0])
+        }
+    }
+
+    # Kit-managed add-ons, each removable on its own (registry-driven).
+    $addons = @(Get-ExakitMarketplaceInstalledAddons)
+    if ($addons.Count -gt 0) {
+        [void]$labels.Add("#Add-ons (kit-managed)")
+        [void]$keys.Add("__header__")
+        for ($i = 0; $i -lt $addons.Count; $i++) {
+            $conn = if ($i -eq $addons.Count - 1) { $corner } else { $tee }
+            [void]$labels.Add("$conn $($addons[$i])")
+            [void]$keys.Add($addons[$i])
+        }
+    }
+
+    [void]$labels.Add("EVERYTHING - the full kit: all of the above, the kit home, and the exakit command itself")
+    [void]$keys.Add("everything")
+
+    $selection = Read-ExakitCheckboxMenu -Title "Select what to uninstall" `
+        -Options $labels.ToArray() -Defaults @(1) -ExclusiveIndex 1
+    if ($selection -contains 1) { Info "Nothing was uninstalled."; return }
+
+    $picked = @()
+    $pickedLabels = @()
+    foreach ($idx in $selection) {
+        if ($idx -lt 2) { continue }
+        $key = $keys[$idx - 1]
+        if ($key.StartsWith("__")) { continue }
+        if ($key -eq "everything") {
+            # EVERYTHING swallows any other pick - the full run covers it all.
+            $picked = @("everything")
+            $pickedLabels = @("EVERYTHING - the full kit (database + data, MCP configs, skills, exapump, pyexasol, add-ons, kit home, exakit)")
+            break
+        }
+        $picked += $key
+        $pickedLabels += ($labels[$idx - 1] -replace ("^" + [regex]::Escape($tee) + " "), "" -replace ("^" + [regex]::Escape($corner) + " "), "")
+    }
+    if ($picked.Count -eq 0) { Info "Nothing selected - nothing was uninstalled."; return }
+
+    # The informed consent: exactly what was picked, then the typed gate.
     Write-Host ""
-    Invoke-ExakitUninstallRun
+    Start-ExakitPanel "This will PERMANENTLY remove"
+    foreach ($line in $pickedLabels) { Write-ExakitPanelLine $line }
+    Complete-ExakitPanel
     Write-Host ""
-    Ok "Uninstall complete - the Exasol Personal Local Starter Kit has been removed."
-    Info "If a PATH entry for $script:BinDir remains in your profile, remove it manually if you no longer need it."
+    Warn2 "This is IRREVERSIBLE. Removed data cannot be recovered."
+    if ($picked -contains "database" -or $picked -contains "everything") {
+        Warn2 "The database selection deletes ALL local database data."
+    }
+    if (-not [Environment]::UserInteractive -or [Console]::IsInputRedirected) {
+        Fail "uninstall needs an interactive terminal to confirm; use -Yes for the scripted full uninstall."
+    }
+    $answer = Read-Host "  ! Type UNINSTALL to remove the items above (anything else cancels)"
+    if ($answer -cne "UNINSTALL") { Info "Uninstall cancelled - nothing was removed."; return }
+
+    Write-Host ""
+    foreach ($key in $picked) { Invoke-ExakitUninstallComponent -Key $key }
+    Write-Host ""
+    Ok "Done. See where you stand with: exakit status"
+}
+
+# One selectable piece of the kit, removed on its own. Twin of
+# _exakit_uninstall_component in setup/lib/common.sh.
+function Invoke-ExakitUninstallComponent {
+    param([Parameter(Mandatory)][string]$Key)
+    switch ($Key) {
+        "database" {
+            Info "Removing the local Exasol Nano deployment and all data"
+            try { Remove-Nano -Data } catch { Warn2 "Database removal reported errors" }
+            Remove-ExakitStepDone "runtime"
+        }
+        "mcp_configs" {
+            Info "Removing the managed MCP configuration from the AI clients"
+            try { [void](Invoke-McpOperation -Operation "uninstall" -InputArgs @()) }
+            catch { Warn2 "Removing the managed MCP client config reported issues" }
+        }
+        "skills" {
+            foreach ($root in @((Join-Path $HOME ".claude\skills"), (Join-Path $HOME ".agents\skills"))) {
+                foreach ($name in @("local-agent-ready-starter", "trusted-ai-workflow")) {
+                    $p = Join-Path $root $name
+                    if (Test-Path $p) {
+                        Info "AI skill $p"
+                        Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $p
+                    }
+                }
+            }
+        }
+        "exapump" {
+            Info "Removing exapump and its profiles"
+            Remove-Item -Force -ErrorAction SilentlyContinue (Join-Path $script:BinDir "exapump.exe")
+            Remove-Item -Recurse -Force -ErrorAction SilentlyContinue (Join-Path $HOME ".exapump")
+            Remove-ExakitManifestValue "components.exapump"
+            Remove-ExakitStepDone "exapump"
+        }
+        "pyexasol" {
+            Info "Removing the pyexasol venv"
+            Remove-Item -Recurse -Force -ErrorAction SilentlyContinue (Join-Path $script:ExakitHome "pyexasol-venv")
+            Remove-ExakitManifestValue "components.pyexasol"
+            Remove-ExakitStepDone "pyexasol"
+        }
+        "everything" {
+            Invoke-ExakitUninstallRun
+            Info "If a PATH entry for $script:BinDir remains in your profile, remove it manually if you no longer need it."
+        }
+        default {
+            # A marketplace add-on: its module owns the removal.
+            $addonEntry = Get-ExakitMarketplaceAddon $Key
+            if ($addonEntry -and $addonEntry.PSObject.Properties["UninstallFn"] -and
+                (Get-Command $addonEntry.UninstallFn -ErrorAction SilentlyContinue)) {
+                try { [void](& $addonEntry.UninstallFn) }
+                catch { Warn2 "Removing the $Key add-on reported issues" }
+            } else {
+                Warn2 "The $Key module carries no uninstall - update the kit: exakit update exakit"
+            }
+        }
+    }
 }
 
 # Get-ExakitVersionCell <component> <recorded> - what is on the machine now, and what

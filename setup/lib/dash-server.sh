@@ -330,6 +330,29 @@ _dash_server_print_usage() {
     ui_panel_end
 }
 
+# dash_server_uninstall [dry] — remove everything the dash-server install put
+# on this machine: the venv, the instance state, the launcher, and the
+# manifest record. With "1" it only narrates the plan. Best-effort and
+# idempotent; safe to run when nothing is installed.
+dash_server_uninstall() {
+    _dsu_dry="${1:-0}"
+    for _dsu_path in "$EXAKIT_DASH_SERVER_VENV" "$EXAKIT_DASH_SERVER_HOME" "$EXAKIT_DASH_SERVER_BIN"; do
+        [ -e "$_dsu_path" ] || continue
+        if [ "$_dsu_dry" = "1" ]; then
+            info "  will remove: $_dsu_path"
+        else
+            info "Removing $_dsu_path"
+            rm -rf "$_dsu_path"
+        fi
+    done
+    if [ "$_dsu_dry" != "1" ]; then
+        manifest_del components.dash_server
+        manifest_del desired.dash_server
+        ok "dash-server removed — reinstall any time with: exakit marketplace"
+    fi
+    return 0
+}
+
 # dash_server_update — install the advertised version into the venv. Doubles as
 # the repair command after a failed marketplace install. Asked for explicitly,
 # so a failure here IS a failure.

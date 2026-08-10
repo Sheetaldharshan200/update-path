@@ -747,6 +747,54 @@ print(node if isinstance(node, str) else json.dumps(node))
 PY
 }
 
+# manifest_del <dot.path> — remove a key (and everything under it) from the
+# manifest. Silent when the key is already absent; a partial uninstall must
+# not fail over bookkeeping.
+manifest_del() {
+    [ -f "$EXAKIT_MANIFEST" ] || return 0
+    require_python3
+    run_python - "$EXAKIT_MANIFEST" "$1" <<'PY' || warn "Could not update the manifest ($1)"
+import json, os, sys
+path, key = sys.argv[1], sys.argv[2]
+with open(path) as f:
+    doc = json.load(f)
+node = doc
+parts = key.split(".")
+for part in parts[:-1]:
+    if not (isinstance(node, dict) and part in node):
+        sys.exit(0)
+    node = node[part]
+if isinstance(node, dict):
+    node.pop(parts[-1], None)
+tmp = path + ".tmp"
+with open(tmp, "w") as f:
+    json.dump(doc, f, indent=2)
+os.chmod(tmp, 0o600)
+os.replace(tmp, path)
+PY
+}
+
+# exakit_unmark_step <step> — drop a step flag so a re-run of the installer
+# reinstalls what a partial uninstall removed.
+exakit_unmark_step() {
+    [ -f "$EXAKIT_MANIFEST" ] || return 0
+    require_python3
+    run_python - "$EXAKIT_MANIFEST" "$1" <<'PY' || warn "Could not update the manifest (steps_completed)"
+import json, os, sys
+path, step = sys.argv[1], sys.argv[2]
+with open(path) as f:
+    doc = json.load(f)
+steps = doc.get("steps_completed")
+if isinstance(steps, list) and step in steps:
+    doc["steps_completed"] = [s for s in steps if s != step]
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(doc, f, indent=2)
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, path)
+PY
+}
+
 # ---------------------------------------------------------------------------
 # Versions manifest (versions.json)
 # ---------------------------------------------------------------------------
@@ -1927,10 +1975,13 @@ exakit_component_current() {
 # lookup, installed probe, update targets/dispatch) handles registered add-ons
 # through a generic arm driven by these conventions:
 #   1. Ship its module as setup/lib/<id>.sh (+ the .ps1 twin), defining
-#      <id>_install, <id>_validate, <id>_update and <id>_installed_version —
-#      with dashes flipped to underscores, since a shell function name cannot
-#      carry a dash — plus its own EXAKIT_<ID>_VERSION and
-#      EXAKIT_<ID>_VERSION_FALLBACK constants.
+#      <id>_install, <id>_validate, <id>_update, <id>_installed_version and
+#      <id>_uninstall — with dashes flipped to underscores, since a shell
+#      function name cannot carry a dash — plus its own EXAKIT_<ID>_VERSION
+#      and EXAKIT_<ID>_VERSION_FALLBACK constants. The uninstall hook takes a
+#      dry flag ("1" narrates the plan) and is what folds the add-on into the
+#      selectable `exakit uninstall` menu and the full teardown, with no
+#      further wiring.
 #   2. Add a components.<id> block to versions.json: version, severity, and
 #      repo (GitHub-release-installed) or package (PyPI-installed) — that
 #      field is what the generic upstream lookup reads.
@@ -5775,6 +5826,237 @@ read_credential() {
 # Deliberately NOT removed (reported instead): uv/uvx (a shared third-party
 # Python runner the user may rely on elsewhere) and the PATH line added to the
 # shell profile (unmarked and shared with other tools — unsafe to edit blindly).
+# _exakit_remove_installed_skills <dry> — the kit's AI skills, wherever they
+# were installed. Prefer the live list from the kit's skills/ dir; fall back
+# to the known names when the checkout is already gone.
+_exakit_remove_installed_skills() {
+    _rs_dry="${1:-0}"
+    _skill_names=""
+    _repo_root="$(exakit_repo_root 2>/dev/null || true)"
+    if [ -n "$_repo_root" ] && [ -d "$_repo_root/skills" ]; then
+        for _sd in "$_repo_root"/skills/*/; do
+            [ -f "$_sd/SKILL.md" ] || continue
+            _skill_names="$_skill_names $(basename "$_sd")"
+        done
+    fi
+    [ -n "$_skill_names" ] || _skill_names="local-agent-ready-starter trusted-ai-workflow"
+    for _root in "$HOME/.claude/skills" "$HOME/.agents/skills"; do
+        for _name in $_skill_names; do
+            if [ -e "$_root/$_name" ]; then
+                if [ "$_rs_dry" = "1" ]; then
+                    info "  will remove: AI skill $_root/$_name"
+                else
+                    info "AI skill $_root/$_name"
+                    rm -rf "$_root/$_name"
+                fi
+            fi
+        done
+    done
+    return 0
+}
+
+# _exakit_uninstall_component <key> <dry> — one selectable piece of the kit,
+# removed on its own. Each removal also clears its manifest record and step
+# flag, so `exakit status`, update-check and an installer re-run all read the
+# machine honestly afterwards. Best-effort throughout: one piece failing must
+# not strand the others.
+_exakit_uninstall_component() {
+    _uc_key="$1"
+    _uc_dry="${2:-0}"
+    case "$_uc_key" in
+        database)
+            _uc_type="$(manifest_get runtime.type 2>/dev/null || true)"
+            if [ "$_uc_dry" = "1" ]; then
+                info "  will remove: the local Exasol $_uc_type deployment and ALL its data"
+                return 0
+            fi
+            info "Removing the local Exasol $_uc_type deployment and all data"
+            case "$_uc_type" in
+                nano)     nano_teardown --data     || warn "Database removal reported errors" ;;
+                personal) personal_teardown --data || warn "Database removal reported errors" ;;
+                *)        warn "Unknown runtime type '$_uc_type'; skipping database removal" ;;
+            esac
+            exakit_unmark_step runtime
+            ;;
+        mcp_configs)
+            if [ "$_uc_dry" = "1" ]; then
+                info "  will remove: the managed MCP configuration from the AI clients"
+                return 0
+            fi
+            info "Removing the managed MCP configuration from the AI clients"
+            if command -v exakit_mcp_operation >/dev/null 2>&1; then
+                exakit_mcp_operation uninstall >/dev/null 2>&1 || \
+                    warn "Removing the managed MCP client config reported issues"
+            fi
+            ;;
+        skills)
+            _exakit_remove_installed_skills "$_uc_dry"
+            ;;
+        exapump)
+            if [ "$_uc_dry" = "1" ]; then
+                info "  will remove: exapump ($EXAKIT_BIN_DIR/exapump and the profiles at ~/.exapump)"
+                return 0
+            fi
+            info "Removing exapump and its profiles"
+            rm -f "$EXAKIT_BIN_DIR/exapump"
+            rm -rf "$HOME/.exapump" "$EXAKIT_HOME/libexec"
+            manifest_del components.exapump
+            exakit_unmark_step exapump
+            ;;
+        pyexasol)
+            if [ "$_uc_dry" = "1" ]; then
+                info "  will remove: pyexasol (the managed venv at $EXAKIT_HOME/pyexasol-venv)"
+                return 0
+            fi
+            info "Removing the pyexasol venv"
+            rm -rf "${EXAKIT_PYEXASOL_VENV:-$EXAKIT_HOME/pyexasol-venv}"
+            manifest_del components.pyexasol
+            exakit_unmark_step pyexasol
+            ;;
+        everything)
+            exakit_uninstall_run "$_uc_dry"
+            ;;
+        *)
+            # A marketplace add-on: its module owns the removal.
+            if _exakit_addon_registered "$_uc_key"; then
+                _uc_fn="$(_exakit_addon_fn "$_uc_key" uninstall)"
+                if command -v "$_uc_fn" >/dev/null 2>&1; then
+                    "$_uc_fn" "$_uc_dry" || warn "Removing the $_uc_key add-on reported issues"
+                else
+                    warn "The $_uc_key module carries no uninstall — update the kit: exakit update exakit"
+                fi
+            else
+                warn "Unknown uninstall target: $_uc_key"
+            fi
+            ;;
+    esac
+    return 0
+}
+
+# exakit_uninstall_menu — the interactive `exakit uninstall`: pick exactly
+# what goes, see exactly what that means, then type the word. The selection
+# is the same tree-checkbox every other kit choice uses; Skip is the
+# exclusive, pre-selected default, so Enter alone removes nothing. Only what
+# is actually on this machine is offered, and EVERYTHING is the one row that
+# means the full teardown (kit home and the exakit command included).
+# ⇄ twin: Show-ExakitUninstallMenu in setup/exakit.ps1.
+exakit_uninstall_menu() {
+    _um_labels=("Skip — uninstall nothing")
+    _um_keys=("__skip__")
+    _um_tee="${UI_TEE:-|-}"; _um_corner="${UI_CORNER:-\`-}"
+
+    # Components, only the ones present.
+    _um_rows=""
+    _um_type="$(manifest_get runtime.type 2>/dev/null || true)"
+    [ -n "$_um_type" ] && _um_rows="$_um_rows database|Database + ALL its data (the local Exasol $_um_type deployment)
+"
+    [ -n "$(manifest_get components.mcp_server.configs 2>/dev/null || true)" ] && \
+        _um_rows="${_um_rows}mcp_configs|MCP client configs (Claude, Cursor, Codex, ...)
+"
+    if [ -e "$HOME/.claude/skills/local-agent-ready-starter" ] || [ -e "$HOME/.agents/skills/local-agent-ready-starter" ]; then
+        _um_rows="${_um_rows}skills|AI skills (~/.claude/skills, ~/.agents/skills)
+"
+    fi
+    { [ -x "$EXAKIT_BIN_DIR/exapump" ] || [ -d "$HOME/.exapump" ]; } && \
+        _um_rows="${_um_rows}exapump|exapump (binary + connection profiles)
+"
+    [ -d "${EXAKIT_PYEXASOL_VENV:-$EXAKIT_HOME/pyexasol-venv}" ] && \
+        _um_rows="${_um_rows}pyexasol|pyexasol (the managed Python venv)
+"
+    if [ -n "$_um_rows" ]; then
+        _um_labels+=("#Components")
+        _um_keys+=("__header__")
+        _um_count="$(printf '%s' "$_um_rows" | grep -c '|')"
+        _um_i=0
+        while IFS='|' read -r _um_key _um_label; do
+            [ -n "$_um_key" ] || continue
+            _um_i=$((_um_i + 1))
+            if [ "$_um_i" -eq "$_um_count" ]; then _um_conn="$_um_corner"; else _um_conn="$_um_tee"; fi
+            _um_labels+=("$_um_conn $_um_label")
+            _um_keys+=("$_um_key")
+        done <<EXAKIT_UM_EOF
+$_um_rows
+EXAKIT_UM_EOF
+    fi
+
+    # Kit-managed add-ons, each removable on its own.
+    _um_addons="$(exakit_marketplace_installed_addons 2>/dev/null || true)"
+    if [ -n "$_um_addons" ]; then
+        _um_labels+=("#Add-ons (kit-managed)")
+        _um_keys+=("__header__")
+        _um_count="$(printf '%s\n' $_um_addons | grep -c .)"
+        _um_i=0
+        for _um_id in $_um_addons; do
+            _um_i=$((_um_i + 1))
+            if [ "$_um_i" -eq "$_um_count" ]; then _um_conn="$_um_corner"; else _um_conn="$_um_tee"; fi
+            _um_labels+=("$_um_conn $_um_id")
+            _um_keys+=("$_um_id")
+        done
+    fi
+
+    _um_labels+=("EVERYTHING — the full kit: all of the above, the kit home, and the exakit command itself")
+    _um_keys+=("everything")
+
+    EXAKIT_CHECKBOX_EXCLUSIVE=1
+    ui_checkbox_menu "Select what to uninstall" "1" "${_um_labels[@]}"
+    case ",$EXAKIT_CHECKBOX_SELECTION," in
+        *",1,"*)
+            info "Nothing was uninstalled."
+            return 0
+            ;;
+    esac
+
+    _um_picked=""
+    _um_picked_labels=""
+    for _um_idx in $(printf '%s' "$EXAKIT_CHECKBOX_SELECTION" | tr ',' ' '); do
+        [ "$_um_idx" -ge 2 ] || continue
+        _um_key="${_um_keys[$((_um_idx - 1))]}"
+        case "$_um_key" in __*__) continue ;; esac
+        # EVERYTHING swallows any other pick — the full run covers it all.
+        if [ "$_um_key" = "everything" ]; then
+            _um_picked="everything"
+            _um_picked_labels="EVERYTHING — the full kit (database + data, MCP configs, skills, exapump, pyexasol, add-ons, kit home, exakit)"
+            break
+        fi
+        _um_picked="${_um_picked:+$_um_picked }$_um_key"
+        _um_picked_labels="${_um_picked_labels:+$_um_picked_labels
+}$(printf '%s' "${_um_labels[$((_um_idx - 1))]}" | sed "s/^$_um_tee //; s/^$_um_corner //")"
+    done
+    [ -n "$_um_picked" ] || { info "Nothing selected — nothing was uninstalled."; return 0; }
+
+    # The informed consent: exactly what was picked, in plain words, then the
+    # irreversibility warning, then the typed gate. --yes never reaches this
+    # menu (it is the scripted FULL uninstall), so the word is always typed.
+    printf '\n'
+    ui_panel_begin "This will PERMANENTLY remove"
+    # No pipeline here: ui_panel_line buffers in the CURRENT shell, and a
+    # pipeline stage is a subshell that would swallow every line.
+    while IFS= read -r _um_line; do
+        [ -n "$_um_line" ] && ui_panel_line "$_um_line"
+    done <<EXAKIT_UM_PANEL_EOF
+$_um_picked_labels
+EXAKIT_UM_PANEL_EOF
+    ui_panel_end
+    printf '\n'
+    warn "This is IRREVERSIBLE. Removed data cannot be recovered."
+    case " $_um_picked " in
+        *" database "*|everything*) warn "The database selection deletes ALL local database data." ;;
+    esac
+    _um_tty="$(_exakit_prompt_tty)"
+    [ -n "$_um_tty" ] || die "uninstall needs an interactive terminal to confirm; use --yes for the scripted full uninstall."
+    printf '\033[1;31m  !\033[0m Type \033[1mUNINSTALL\033[0m to remove the items above (anything else cancels): '
+    if [ "$_um_tty" = "/dev/tty" ]; then read -r _um_answer < /dev/tty; else read -r _um_answer; fi
+    [ "$_um_answer" = "UNINSTALL" ] || { info "Uninstall cancelled — nothing was removed."; return 0; }
+
+    printf '\n'
+    for _um_key in $_um_picked; do
+        _exakit_uninstall_component "$_um_key" 0
+    done
+    printf '\n'
+    ok "Done. See where you stand with: exakit status"
+    return 0
+}
+
 exakit_uninstall_run() {
     _dry="${1:-0}"
     _step() { # _step <message>  — narrate the action (or the plan line)
@@ -5783,6 +6065,18 @@ exakit_uninstall_run() {
     _rm() { # _rm <path> — remove a path unless dry-run
         [ "$_dry" = "1" ] || rm -rf "$1"
     }
+
+    # 0) Kit-managed marketplace add-ons that live OUTSIDE the kit home (the
+    #    VS Code extension). Anything under the kit home or the bin dir is
+    #    swept by steps 5-6 regardless; a system-installed copy the kit never
+    #    managed is not touched (each hook enforces that itself).
+    if command -v exakit_marketplace_installed_addons >/dev/null 2>&1; then
+        for _un_id in $(exakit_marketplace_installed_addons 2>/dev/null); do
+            _un_fn="$(_exakit_addon_fn "$_un_id" uninstall)"
+            command -v "$_un_fn" >/dev/null 2>&1 || continue
+            "$_un_fn" "$_dry" || warn "Removing the $_un_id add-on reported issues (continuing uninstall)"
+        done
+    fi
 
     # 1) Database + all data. Uses the runtime removal helper (always --data),
     #    which for Personal also reaps any orphaned runner daemon on the DB port.
@@ -5808,25 +6102,8 @@ exakit_uninstall_run() {
         fi
     fi
 
-    # 3) Installed AI skills. Prefer the live list from the kit's skills/ dir;
-    #    fall back to the known names when the checkout is already gone.
-    _skill_names=""
-    _repo_root="$(exakit_repo_root 2>/dev/null || true)"
-    if [ -n "$_repo_root" ] && [ -d "$_repo_root/skills" ]; then
-        for _sd in "$_repo_root"/skills/*/; do
-            [ -f "$_sd/SKILL.md" ] || continue
-            _skill_names="$_skill_names $(basename "$_sd")"
-        done
-    fi
-    [ -n "$_skill_names" ] || _skill_names="local-agent-ready-starter trusted-ai-workflow"
-    for _root in "$HOME/.claude/skills" "$HOME/.agents/skills"; do
-        for _name in $_skill_names; do
-            if [ -e "$_root/$_name" ]; then
-                _step "AI skill $_root/$_name"
-                _rm "$_root/$_name"
-            fi
-        done
-    done
+    # 3) Installed AI skills (shared with the selectable uninstall menu).
+    _exakit_remove_installed_skills "$_dry"
 
     # 4) exapump profile store (the kit created it; the binary goes in step 6).
     if [ -e "$HOME/.exapump" ]; then

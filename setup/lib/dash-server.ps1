@@ -305,6 +305,27 @@ function Write-DashServerUsagePanel {
     Complete-ExakitPanel
 }
 
+# Remove everything the dash-server install put on this machine: the venv,
+# the instance state, the launcher, and the manifest record. -DryRun only
+# narrates the plan. Best-effort and idempotent. Twin of dash_server_uninstall.
+function Uninstall-DashServer {
+    param([switch]$DryRun)
+    foreach ($path in @($script:DashServerVenv, $script:DashServerHome, (Get-DashServerLauncherPath))) {
+        if (-not ($path -and (Test-Path $path))) { continue }
+        if ($DryRun) { Info "  will remove: $path" }
+        else {
+            Info "Removing $path"
+            Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $path
+        }
+    }
+    if (-not $DryRun) {
+        Remove-ExakitManifestValue "components.dash_server"
+        Remove-ExakitManifestValue "desired.dash_server"
+        Ok "dash-server removed - reinstall any time with: exakit marketplace"
+    }
+    return $true
+}
+
 # Update-DashServer - install the advertised version into the venv. Doubles as
 # the repair command after a failed marketplace install. Asked for explicitly,
 # so a failure here IS a failure. Twin of dash_server_update.

@@ -229,13 +229,24 @@ and the kit's own launcher on PATH is not mistaken for a system install.
 
 ## Scenario 6: Removal
 
+`exakit uninstall` is a selection too: Skip is the pre-selected safe default,
+then the components actually on the machine, then the kit-managed add-ons —
+each removable on its own — then EVERYTHING. What was picked is shown back in
+a summary panel before the typed UNINSTALL gate.
+
 ```mermaid
 flowchart TD
-    A[exakit uninstall] --> B[Preview lists everything,<br>including add-on state and launchers]
-    B --> C{Confirmed?}
-    C -->|No or --dry-run| D[Nothing removed]
-    C -->|Yes| E[Database, MCP configs, skills,<br>kit home - including every add-on<br>venv and its state - and the<br>CLI launchers, by registry id]
-    E --> F[A system-installed tool and any<br>bystander binary are untouched]
+    A[exakit uninstall] --> B{Mode}
+    B -->|--dry-run| C[Full plan printed,<br>nothing removed]
+    B -->|--yes| D[Scripted FULL uninstall]
+    B -->|interactive| E[Selection: Skip default, then<br>components, add-ons, EVERYTHING]
+    E -->|Skip or nothing| F[Nothing removed]
+    E -->|Picked items| G[Summary panel: exactly what goes,<br>irreversibility spelled out]
+    G -->|Type UNINSTALL| H[Only the picked pieces removed;<br>manifest records and step flags<br>cleared so status and a re-run<br>stay honest]
+    G -->|Anything else| F
+    D --> I[Everything: database + data,<br>MCP configs, skills, kit home,<br>launchers by registry id, and each<br>kit-managed add-on via its own hook]
+    H --> J[A Marketplace-installed VS Code<br>extension and any bystander<br>binary are never touched]
+    I --> J
 ```
 
 ## Where the marketplace appears
@@ -261,7 +272,8 @@ flowchart TD
 | Update one add-on | `exakit update dash-server` | Advertised version installed and revalidated |
 | Update everything | `exakit update` | Installed add-ons included, others never touched |
 | Tool already on the system | any surface | Respected and skipped; the kit does not manage it |
-| Remove the kit | `exakit uninstall` | Add-on venv, state and launcher removed with everything else |
+| Remove one add-on | `exakit uninstall` | Pick it from the selection; its own hook removes it, summary + typed gate first |
+| Remove the kit | `exakit uninstall` (EVERYTHING row, or `--yes`) | Full teardown, kit-managed add-ons included via their hooks; Marketplace-installed copies untouched |
 
 Every behavior in this document is enforced by the automated suites
 (`tests/marketplace.sh`, `tests/dry-run-matrix.sh`, `tests/uninstall.sh`) and

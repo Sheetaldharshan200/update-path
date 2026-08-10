@@ -156,33 +156,31 @@ cmd_uninstall() {
         exit 0
     fi
 
-    printf '\n'
-    warn "exakit uninstall PERMANENTLY removes the Exasol Personal Local Starter Kit."
-    info "The following will be removed:"
-    exakit_uninstall_run 1
-    printf '\n'
-    warn "This is IRREVERSIBLE — all local database data will be lost."
-    info "Not touched: uv/uvx (shared tool) and any PATH line in your shell profile."
-
+    # --dry-run previews the FULL plan; --yes is the scripted full uninstall
+    # (automation and AGENTS.md rely on both). Everything else goes through
+    # the selectable menu: pick what goes, see what that means, type the word.
     if [ "$_uni_dry" = 1 ]; then
         printf '\n'
-        info "Dry run only — nothing was removed."
+        warn "exakit uninstall PERMANENTLY removes the Exasol Personal Local Starter Kit."
+        info "A full uninstall (the EVERYTHING row, or --yes) removes:"
+        exakit_uninstall_run 1
+        printf '\n'
+        info "Not touched: uv/uvx (shared tool), any PATH line in your shell profile, and anything the kit did not install."
+        info "Dry run only — nothing was removed. Pick individual pieces interactively with: exakit uninstall"
         exit 0
     fi
 
-    if [ "$_uni_yes" != 1 ]; then
-        _tty="$(_exakit_prompt_tty)"
-        [ -n "$_tty" ] || die "uninstall needs an interactive terminal to confirm; re-run with --yes to proceed non-interactively."
-        printf '\033[1;31m  !\033[0m Type \033[1mUNINSTALL\033[0m to confirm (anything else cancels): '
-        if [ "$_tty" = "/dev/tty" ]; then read -r _answer < /dev/tty; else read -r _answer; fi
-        [ "$_answer" = "UNINSTALL" ] || { info "Uninstall cancelled."; exit 0; }
+    if [ "$_uni_yes" = 1 ]; then
+        printf '\n'
+        warn "exakit uninstall --yes removes the FULL kit (all local database data included)."
+        exakit_uninstall_run 0
+        printf '\n'
+        ok "Uninstall complete — the Exasol Personal Local Starter Kit has been removed."
+        info "If a PATH entry for $EXAKIT_BIN_DIR remains in your shell profile (~/.zshrc, ~/.bashrc, ~/.profile), remove it manually if you no longer need it."
+        exit 0
     fi
 
-    printf '\n'
-    exakit_uninstall_run 0
-    printf '\n'
-    ok "Uninstall complete — the Exasol Personal Local Starter Kit has been removed."
-    info "If a PATH entry for $EXAKIT_BIN_DIR remains in your shell profile (~/.zshrc, ~/.bashrc, ~/.profile), remove it manually if you no longer need it."
+    exakit_uninstall_menu
 }
 
 # _version_cell <component> <recorded> — what is on the machine now, and what the

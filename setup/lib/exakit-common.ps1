@@ -716,6 +716,37 @@ function Set-ExakitManifestValue {
     Save-ExakitManifest $doc
 }
 
+# Remove a key (and everything under it) from the manifest. Silent when the
+# key is already absent; a partial uninstall must not fail over bookkeeping.
+# Twin of manifest_del in common.sh.
+function Remove-ExakitManifestValue {
+    param([Parameter(Mandatory)][string]$Path)
+    $doc = Read-ExakitManifest
+    if ($null -eq $doc) { return }
+    $parts = $Path -split "\."
+    $node = $doc
+    foreach ($part in $parts[0..($parts.Count - 2)]) {
+        if ($node.PSObject.Properties[$part]) { $node = $node.$part } else { return }
+    }
+    if ($node.PSObject.Properties[$parts[-1]]) {
+        $node.PSObject.Properties.Remove($parts[-1])
+        Save-ExakitManifest $doc
+    }
+}
+
+# Drop a step flag so a re-run of the installer reinstalls what a partial
+# uninstall removed. Twin of exakit_unmark_step in common.sh.
+function Remove-ExakitStepDone {
+    param([Parameter(Mandatory)][string]$Step)
+    $doc = Read-ExakitManifest
+    if ($null -eq $doc) { return }
+    $steps = Get-ManifestValue -Manifest $doc -Path "steps_completed"
+    if ($null -eq $steps) { return }
+    $remaining = @([array]$steps | Where-Object { $_ -ne $Step })
+    Set-ManifestValue -Manifest $doc -Path "steps_completed" -Value $remaining
+    Save-ExakitManifest $doc
+}
+
 # ---------------------------------------------------------------------------
 # Versions manifest (versions.json)
 # ---------------------------------------------------------------------------
@@ -2405,6 +2436,7 @@ function Get-ExakitMarketplaceAddons {
             ValidateFn  = "Test-DashServer"
             UpdateFn    = "Update-DashServer"
             VersionFn   = "Get-DashServerInstalledVersion"
+            UninstallFn = "Uninstall-DashServer"
             EnvVar      = "EXAKIT_DASH_SERVER_VERSION"
             FallbackVar = "DashServerVersionFallback"
         },
@@ -2416,6 +2448,7 @@ function Get-ExakitMarketplaceAddons {
             ValidateFn  = "Test-ExasolVscode"
             UpdateFn    = "Update-ExasolVscode"
             VersionFn   = "Get-ExasolVscodeInstalledVersion"
+            UninstallFn = "Uninstall-ExasolVscode"
             EnvVar      = "EXAKIT_EXASOL_VSCODE_VERSION"
             FallbackVar = "ExasolVscodeVersionFallback"
         }
