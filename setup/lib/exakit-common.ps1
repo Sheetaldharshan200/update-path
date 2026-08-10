@@ -180,33 +180,58 @@ function Write-ExakitMenuHint([string]$Text) {
 function Read-ExakitCheckboxMenu {
     param(
         [string]$Title, [string[]]$Options, [int[]]$Defaults = @(), [int]$ExclusiveIndex = 0,
-        [int]$GroupParent = 0, [int]$GroupFirst = 0, [int]$GroupLast = 0
+        [int]$GroupParent = 0, [int]$GroupFirst = 0, [int]$GroupLast = 0,
+        [string]$GroupMode = "any"
     )
     # $ExclusiveIndex (1-based, 0 = none): an option that cannot be combined
     # with the others - think "Skip for now". Selecting it clears every other
     # choice; selecting any other choice clears it.
     # $GroupParent/$GroupFirst/$GroupLast (optional): row $GroupParent is a
-    # group checkbox whose children are rows $GroupFirst..$GroupLast. Toggling
-    # the parent ON selects every child; OFF clears them all. Toggling a child
-    # re-derives the parent (checked while ANY child is checked).
+    # group checkbox whose children are rows $GroupFirst..$GroupLast (header
+    # and disabled rows in that range are skipped). Toggling the parent ON
+    # selects every child; OFF clears them all. Toggling a child re-derives the
+    # parent per $GroupMode: "any" (default) leaves it checked while ANY child
+    # is checked (a group header), "all" only while EVERY child is checked - a
+    # MASTER toggle, which is how EVERYTHING behaves in the uninstall menu.
     Info $Title
     $sel = New-Object 'System.Collections.Generic.List[int]'
     foreach ($d in $Defaults) {
         if ($d -ge 1 -and $d -le $Options.Count -and -not $sel.Contains($d)) { [void]$sel.Add($d) }
     }
+    # The SELECTABLE rows in the group's range: header (#) and disabled (!) rows
+    # sit inside it but can never be checked, so a select-all skips them and an
+    # all-children rule must not wait on them.
+    $groupChildren = {
+        $out = @()
+        for ($c = $GroupFirst; $c -le $GroupLast; $c++) {
+            if ($c -lt 1 -or $c -gt $Options.Count) { continue }
+            if ($Options[$c - 1].StartsWith("#") -or $Options[$c - 1].StartsWith("!")) { continue }
+            $out += $c
+        }
+        return $out
+    }
     $applyGroup = {
         param($toggled)
         if ($GroupParent -lt 1) { return }
+        $children = & $groupChildren
         if ($toggled -eq $GroupParent) {
             $parentOn = $sel.Contains($GroupParent)
-            for ($c = $GroupFirst; $c -le $GroupLast; $c++) {
+            foreach ($c in $children) {
                 if ($parentOn) { if (-not $sel.Contains($c)) { [void]$sel.Add($c) } }
                 else { [void]$sel.Remove($c) }
             }
         } elseif ($toggled -ge $GroupFirst -and $toggled -le $GroupLast) {
-            $any = $false
-            for ($c = $GroupFirst; $c -le $GroupLast; $c++) { if ($sel.Contains($c)) { $any = $true; break } }
-            if ($any) { if (-not $sel.Contains($GroupParent)) { [void]$sel.Add($GroupParent) } }
+            # "all" makes the parent a MASTER toggle - checked only while EVERY
+            # child is checked, so unticking any one of them releases it.
+            # "any" (default) is the group-header rule.
+            $on = $false
+            if ($GroupMode -eq "all") {
+                $on = $true
+                foreach ($c in $children) { if (-not $sel.Contains($c)) { $on = $false; break } }
+            } else {
+                foreach ($c in $children) { if ($sel.Contains($c)) { $on = $true; break } }
+            }
+            if ($on) { if (-not $sel.Contains($GroupParent)) { [void]$sel.Add($GroupParent) } }
             else { [void]$sel.Remove($GroupParent) }
         }
     }

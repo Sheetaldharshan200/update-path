@@ -367,9 +367,20 @@ function Show-ExakitUninstallMenu {
 
     [void]$labels.Add("EVERYTHING - the full kit: all of the above, the kit home, and the exakit command itself")
     [void]$keys.Add("everything")
+    $everyIdx = $labels.Count
 
-    $selection = Read-ExakitCheckboxMenu -Title "Select what to uninstall" `
-        -Options $labels.ToArray() -Defaults @(1) -ExclusiveIndex 1
+    # EVERYTHING is a MASTER toggle over every row above it: picking it ticks
+    # them all, and unticking any single row releases it - so the screen can
+    # never claim "everything" while something sits unticked. Skip stays the
+    # exclusive opt-out.
+    if ($everyIdx -gt 2) {
+        $selection = Read-ExakitCheckboxMenu -Title "Select what to uninstall" `
+            -Options $labels.ToArray() -Defaults @(1) -ExclusiveIndex 1 `
+            -GroupParent $everyIdx -GroupFirst 2 -GroupLast ($everyIdx - 1) -GroupMode "all"
+    } else {
+        $selection = Read-ExakitCheckboxMenu -Title "Select what to uninstall" `
+            -Options $labels.ToArray() -Defaults @(1) -ExclusiveIndex 1
+    }
     if ($selection -contains 1) { Info "Nothing was uninstalled."; return }
 
     $picked = @()

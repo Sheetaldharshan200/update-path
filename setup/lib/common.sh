@@ -195,23 +195,64 @@ _ui_checkbox_toggle() {
 # Selecting it clears every other choice; selecting any other choice clears it.
 # "a" (select all) selects all non-exclusive options.
 #
-# EXAKIT_CHECKBOX_GROUP (optional, cleared after each call): "parent:first:last"
-# — row <parent> is a group checkbox whose children are rows <first>..<last>.
+# EXAKIT_CHECKBOX_GROUP (optional, cleared after each call):
+# "parent:first:last[:mode]" — row <parent> is a group checkbox whose children
+# are rows <first>..<last> (header and disabled rows in that range are skipped).
 # Toggling the parent ON selects every child; toggling it OFF clears them all.
-# Toggling a child re-derives the parent (checked while ANY child is checked).
+# Toggling a child re-derives the parent:
+#   mode "any" (default) — checked while ANY child is checked. The parent reads
+#                          as a group header, e.g. "Sample datasets".
+#   mode "all"           — checked only while EVERY child is checked, so the
+#                          parent reads as a MASTER toggle: pick it and you get
+#                          everything, untick any one row and it releases.
+#                          Used by "EVERYTHING" in the uninstall menu.
 EXAKIT_CHECKBOX_SELECTION=""
 EXAKIT_CHECKBOX_EXCLUSIVE=""
 EXAKIT_CHECKBOX_GROUP=""
+# Published by ui_checkbox_menu for the group helpers: the rows that can
+# actually be checked (headers and disabled rows excluded).
+_UI_CHECKBOX_SELECTABLE=""
 
 # _ui_checkbox_apply_group <selected_csv> <toggled_idx> <group_spec> — pure
 # post-toggle parent/child rule, echoing the adjusted csv.
+# _ui_checkbox_group_children <first> <last> — the SELECTABLE rows in a group's
+# range. Header and disabled rows sit inside the range (a group can span a small
+# tree) but can never be checked, so a select-all must skip them and an
+# all-children rule must not wait for them. _UI_CHECKBOX_SELECTABLE is published
+# by ui_checkbox_menu; empty means "every row is selectable" (pure callers, and
+# the unit tests, can set it themselves).
+_ui_checkbox_group_children() {
+    _cgc_out=""
+    _cgc_i="$1"
+    while [ "$_cgc_i" -le "$2" ]; do
+        if [ -z "${_UI_CHECKBOX_SELECTABLE:-}" ]; then
+            _cgc_out="$_cgc_out $_cgc_i"
+        else
+            case " ${_UI_CHECKBOX_SELECTABLE} " in
+                *" $_cgc_i "*) _cgc_out="$_cgc_out $_cgc_i" ;;
+            esac
+        fi
+        _cgc_i=$((_cgc_i + 1))
+    done
+    printf '%s' "${_cgc_out# }"
+}
+
 _ui_checkbox_apply_group() {
     _cg_sel="$1"; _cg_toggled="$2"; _cg_spec="$3"
     [ -n "$_cg_spec" ] || { printf '%s' "$_cg_sel"; return 0; }
     _cg_parent="${_cg_spec%%:*}"
     _cg_rest="${_cg_spec#*:}"
     _cg_first="${_cg_rest%%:*}"
-    _cg_last="${_cg_rest#*:}"
+    _cg_rest="${_cg_rest#*:}"
+    _cg_last="${_cg_rest%%:*}"
+    # Optional 4th field: "all" makes the parent a MASTER toggle — checked only
+    # while EVERY child is checked, so unticking any one of them unticks it.
+    # Default "any" (the parent is a group header: checked while any child is).
+    case "$_cg_spec" in
+        *:*:*:*) _cg_mode="${_cg_spec##*:}" ;;
+        *)       _cg_mode="any" ;;
+    esac
+    _cg_children="$(_ui_checkbox_group_children "$_cg_first" "$_cg_last")"
     if [ "$_cg_toggled" = "$_cg_parent" ]; then
         # Parent toggled: rebuild the child range to match the parent's state.
         case ",$_cg_sel," in
@@ -226,29 +267,35 @@ _ui_checkbox_apply_group() {
             _cg_out="${_cg_out:+$_cg_out,}$_cg_tok"
         done
         if [ "$_cg_parent_on" = 1 ]; then
-            _cg_i="$_cg_first"
-            while [ "$_cg_i" -le "$_cg_last" ]; do
+            for _cg_i in $_cg_children; do
                 _cg_out="${_cg_out:+$_cg_out,}$_cg_i"
-                _cg_i=$((_cg_i + 1))
             done
         fi
         printf '%s' "$_cg_out"
         return 0
     fi
     if [ "$_cg_toggled" -ge "$_cg_first" ] && [ "$_cg_toggled" -le "$_cg_last" ]; then
-        # Child toggled: parent is checked while ANY child is checked.
-        _cg_any=0
-        _cg_i="$_cg_first"
-        while [ "$_cg_i" -le "$_cg_last" ]; do
-            case ",$_cg_sel," in *",$_cg_i,"*) _cg_any=1; break ;; esac
-            _cg_i=$((_cg_i + 1))
-        done
+        # Child toggled: re-derive the parent from the children.
+        _cg_on=0
+        if [ "$_cg_mode" = "all" ]; then
+            _cg_on=1
+            for _cg_i in $_cg_children; do
+                case ",$_cg_sel," in
+                    *",$_cg_i,"*) ;;
+                    *) _cg_on=0; break ;;
+                esac
+            done
+        else
+            for _cg_i in $_cg_children; do
+                case ",$_cg_sel," in *",$_cg_i,"*) _cg_on=1; break ;; esac
+            done
+        fi
         _cg_out=""
         for _cg_tok in $(printf '%s' "$_cg_sel" | tr ',' ' '); do
             [ "$_cg_tok" = "$_cg_parent" ] && continue
             _cg_out="${_cg_out:+$_cg_out,}$_cg_tok"
         done
-        [ "$_cg_any" = 1 ] && _cg_out="${_cg_out:+$_cg_out,}$_cg_parent"
+        [ "$_cg_on" = 1 ] && _cg_out="${_cg_out:+$_cg_out,}$_cg_parent"
         printf '%s' "$_cg_out"
         return 0
     fi
@@ -314,11 +361,23 @@ ui_checkbox_menu() {
     _cb_cur=0
     _cb_step 1                                            # first selectable row
 
+    # Publish the checkable rows for the group helpers: a select-all must skip
+    # headers and disabled rows, and an all-children rule must not wait on them.
+    _UI_CHECKBOX_SELECTABLE=""
+    _cb_i=1
+    while [ "$_cb_i" -le "$_cb_n" ]; do
+        if ! _cb_is_header "$_cb_i" && ! _cb_is_disabled "$_cb_i"; then
+            _UI_CHECKBOX_SELECTABLE="${_UI_CHECKBOX_SELECTABLE:+$_UI_CHECKBOX_SELECTABLE }$_cb_i"
+        fi
+        _cb_i=$((_cb_i + 1))
+    done
+
     _cb_tty="$(_exakit_prompt_tty)"
     if [ -z "$_cb_tty" ]; then
         EXAKIT_CHECKBOX_SELECTION="$_cb_defaults"
         EXAKIT_CHECKBOX_EXCLUSIVE=""
         EXAKIT_CHECKBOX_GROUP=""
+        _UI_CHECKBOX_SELECTABLE=""
         _cb_i=1
         for _cb_label in "$@"; do
             case ",$_cb_defaults," in *",$_cb_i,"*) ok "$_cb_label (selected by default)" ;; esac
@@ -411,6 +470,7 @@ ui_checkbox_menu() {
     EXAKIT_CHECKBOX_SELECTION="$(printf '%s' "$_cb_sel" | tr ',' '\n' | sort -n | paste -sd, -)"
     EXAKIT_CHECKBOX_EXCLUSIVE=""
     EXAKIT_CHECKBOX_GROUP=""
+    _UI_CHECKBOX_SELECTABLE=""
     return 0
 }
 
@@ -5996,7 +6056,16 @@ EXAKIT_UM_EOF
 
     _um_labels+=("EVERYTHING — the full kit: all of the above, the kit home, and the exakit command itself")
     _um_keys+=("everything")
+    _um_every_idx="${#_um_labels[@]}"
 
+    # EVERYTHING is a MASTER toggle over every row above it: picking it ticks
+    # them all, and unticking any single row releases it — so the screen can
+    # never claim "everything" while something sits unticked. Skip stays the
+    # exclusive opt-out. (No children means nothing but Skip and EVERYTHING is
+    # on offer, and a group spec would be meaningless.)
+    if [ "$_um_every_idx" -gt 2 ]; then
+        EXAKIT_CHECKBOX_GROUP="$_um_every_idx:2:$((_um_every_idx - 1)):all"
+    fi
     EXAKIT_CHECKBOX_EXCLUSIVE=1
     ui_checkbox_menu "Select what to uninstall" "1" "${_um_labels[@]}"
     case ",$EXAKIT_CHECKBOX_SELECTION," in

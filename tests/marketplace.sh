@@ -488,6 +488,34 @@ _vs_sys="$( (
 ) )"
 check "a Marketplace-installed copy is refused, CLI untouched" "refused cli-untouched" "$_vs_sys"
 
+echo "EVERYTHING behaves as a master toggle (uninstall menu):"
+# Layout under test — the shape exakit_uninstall_menu builds:
+#   1 Skip · 2 #Components · 3,4 components · 5 #Add-ons · 6 add-on · 7 EVERYTHING
+# Rows 2 and 5 are headers: a select-all must skip them, and the all-children
+# rule must not wait on them. The primitive is pure, so these are exact.
+_UI_CHECKBOX_SELECTABLE="1 3 4 6 7"
+_GROUP="7:2:6:all"
+sorted() { printf '%s' "$1" | tr ',' '\n' | sort -n | tr '\n' ',' | sed 's/,$//'; }
+# Ticking EVERYTHING ticks every selectable child (never the headers).
+check "picking EVERYTHING ticks every row" "3,4,6,7" \
+    "$(sorted "$(_ui_checkbox_apply_group "7" 7 "$_GROUP")")"
+# Unticking any single child releases EVERYTHING, and leaves the rest ticked.
+check "unticking one row releases EVERYTHING" "3,6" \
+    "$(sorted "$(_ui_checkbox_apply_group "3,6,7" 4 "$_GROUP")")"
+# Ticking the last missing child re-derives EVERYTHING on its own.
+check "ticking the last row re-derives EVERYTHING" "3,4,6,7" \
+    "$(sorted "$(_ui_checkbox_apply_group "3,4,6" 6 "$_GROUP")")"
+# Unticking EVERYTHING clears the whole selection.
+check "unticking EVERYTHING clears every row" "" \
+    "$(sorted "$(_ui_checkbox_apply_group "3,4,6" 7 "$_GROUP")")"
+# A header can never be checked, so it never blocks the all-children rule.
+check "headers never count as children" "3,4,6,7" \
+    "$(sorted "$(_ui_checkbox_apply_group "3,4,6,7" 4 "$_GROUP")")"
+# The default "any" mode is untouched — the data-load menu depends on it.
+check "any-mode parent stays checked while one child is" "1,2" \
+    "$( _UI_CHECKBOX_SELECTABLE="1 2 3"; sorted "$(_ui_checkbox_apply_group "2" 2 "1:2:3")" )"
+_UI_CHECKBOX_SELECTABLE=""
+
 echo "the selectable uninstall (registry-driven, zero wiring per add-on):"
 check "the executor dispatches an add-on to its own hook" "hook-ran" "$( (
     dash_server_uninstall() { printf 'hook-ran'; }
