@@ -76,6 +76,13 @@ PATH="$WORK/code-bin:$PATH"
 . "$ROOT/setup/lib/dash-server.sh"
 . "$ROOT/setup/lib/exasol-vscode.sh"
 
+# ...and its own port. The default 5100 is where a developer's REAL dash-server
+# listens, and the ownership probe would rightly call that a foreign process
+# holding the suite's port. A sandbox-unique high port keeps every machine
+# reading the same. Explicit, so the manifest never overrides it.
+EXAKIT_DASH_SERVER_PORT="$((5900 + $$ % 90))"
+_EXAKIT_DS_PORT_EXPLICIT=1
+
 manifest_init >/dev/null 2>&1
 
 echo "registry:"
@@ -185,6 +192,10 @@ lacks "the password itself never lands in the launcher" "s3cr3t-value" "$_launch
 has  "user overrides win (setdefault DSN guard)" 'DASH_SERVER_EXASOL_DSN:-' "$_launcher_body"
 has  "instance path is kit-managed" "$EXAKIT_HOME/dash-server/instance" "$_launcher_body"
 has  "profile bootstrap goes through the env secret" "DASH_SERVER_EXASOL_SECRET_ENV_VAR" "$_launcher_body"
+# Running the launcher while a copy is already serving must explain, not hand
+# the user dash-server's single-coordinator traceback.
+has  "the launcher refuses a duplicate politely" "already running" "$_launcher_body"
+has  "and points at the state and log commands" "exakit logs dash-server" "$_launcher_body"
 
 echo "generic registry (no per-add-on case arms):"
 # The whole point of the generic arms: an id the registry does not carry must
@@ -236,6 +247,24 @@ echo "soft-fail accounting:"
 check "a soft miss records validated=false" "false" "$(manifest_get components.dash_server.validated)"
 
 echo "update repair path:"
+# Naming an add-on explicitly must reach its module even when the version
+# matches: the hook doubles as the repair command (it rewrites a launcher a
+# newer kit improved). `update all` must still skip it — routine updates are a
+# work plan, not a sweep of every repair path.
+# The hook records into a file: exakit_update's own stdout is noisy, so the
+# marker cannot be read off it.
+: > "$WORK/hook-marker"
+( exakit_component_current() { printf '0.1.0\n'; }
+  exakit_component_available() { printf '0.1.0\n'; }
+  dash_server_update() { printf 'hook-ran' > "$WORK/hook-marker"; }
+  exakit_update dash-server ) >/dev/null 2>&1
+check "explicit update reaches the hook when versions match" "hook-ran" "$(cat "$WORK/hook-marker")"
+: > "$WORK/hook-marker"
+( exakit_component_current() { printf '0.1.0\n'; }
+  exakit_component_available() { printf '0.1.0\n'; }
+  dash_server_update() { printf 'hook-ran' > "$WORK/hook-marker"; }
+  exakit_update all ) >/dev/null 2>&1
+check "update all still skips an already-current add-on" "" "$(cat "$WORK/hook-marker")"
 check "already-current says so and regenerates the launcher" "yes" "$( (
     dash_server_installed_version() { echo "0.0.1-test"; }
     exakit_component_available() { echo "0.0.1-test"; }
@@ -345,6 +374,7 @@ printf '#!/bin/sh\nexit 0\n' > "$WORK/live-venv/bin/python"
 chmod +x "$WORK/live-venv/bin/python"
 _live_out="$( (
     EXAKIT_DASH_SERVER_VENV="$WORK/live-venv"
+    _dash_server_port_foreign_desc() { return 1; }   # nobody else holds the port
     _dash_server_http_answers() { return 0; }    # something already serves /mcp
     dash_server_validate 2>&1
 ) )"
@@ -496,6 +526,35 @@ check "no VS Code anywhere is a soft miss naming the fix" "yes" "$( (
     exasol_vscode_install 2>&1 | grep -q "install VS Code" && echo yes || echo no
 ) )"
 
+echo "the browser UI is validated separately from the control plane:"
+# The packaging gap that shipped a 500 to a user looked healthy on /mcp. A
+# broken page must be reported, never pass silently — and it must not fail the
+# install, because agents can still drive the add-on over MCP.
+_ui_bad="$( (
+    _dash_server_ui_answers() { return 1; }
+    _dash_server_check_ui 2>&1
+) )"
+has "a broken dashboards page is called out" "does not render" "$_ui_bad"
+check "and recorded, not swallowed" "false" "$(manifest_get components.dash_server.ui_validated)"
+_ui_good="$( (
+    _dash_server_ui_answers() { return 0; }
+    _dash_server_check_ui 2>&1
+) )"
+has "a working page is confirmed" "Dashboards page answers" "$_ui_good"
+check "and recorded" "true" "$(manifest_get components.dash_server.ui_validated)"
+# The restore only fills GAPS: a file the install already placed is never
+# overwritten, so a fixed upstream release makes it a silent no-op.
+check "restoring package data leaves existing files alone" "original" "$( (
+    _drp_dir="$WORK/site/dash_server"
+    mkdir -p "$_drp_dir/templates"
+    printf 'original' > "$_drp_dir/templates/keep.html"
+    dash_server_venv_python() { printf '%s\n' "$WORK/stub-py"; }
+    printf '#!/bin/sh\nprintf "%s\\n" "'"$_drp_dir"'"\n' > "$WORK/stub-py"; chmod +x "$WORK/stub-py"
+    fetch() { return 1; }          # no network in the suite: the restore bails out
+    _dash_server_restore_package_data >/dev/null 2>&1
+    cat "$_drp_dir/templates/keep.html"
+) )"
+
 echo "add-on uninstall hooks (what folds them into exakit uninstall):"
 # dash-server: dry narrates, real removes venv + state + launcher + record.
 mkdir -p "$EXAKIT_HOME/dash-server-venv" "$EXAKIT_HOME/dash-server" "$EXAKIT_BIN_DIR"
@@ -584,17 +643,59 @@ manifest_set components.exapump.version "0.11.3"
 manifest_del components.exapump
 check "manifest_del clears the whole component block" "absent" "$(manifest_get components.exapump >/dev/null 2>&1 && echo present || echo absent)"
 
+echo "component logs (one command reaches every one of them):"
+mkdir -p "$EXAKIT_HOME/logs"
+printf 'installer line one\ninstaller line two\n' > "$EXAKIT_HOME/logs/install-20260810-090000.log"
+check "the setup log is a target" "setup" "$(exakit_log_targets | cut -d'|' -f1 | grep -x setup)"
+# An add-on is viewable as soon as its module names a log — the same
+# registry-driven contract the other hooks use.
+printf 'dash line\n' > "$EXAKIT_HOME/logs/dash-server.log"
+mkdir -p "$EXAKIT_HOME/dash-server-venv/bin"
+printf '#!/bin/sh\necho 0.1.0\n' > "$EXAKIT_HOME/dash-server-venv/bin/python"
+chmod +x "$EXAKIT_HOME/dash-server-venv/bin/python"
+manifest_set components.dash_server.python "$EXAKIT_HOME/dash-server-venv/bin/python"
+check "an installed add-on with a log hook is a target" "dash-server" \
+    "$(exakit_log_targets | cut -d'|' -f1 | grep -x dash-server)"
+check "--path prints the file, nothing else" "$EXAKIT_HOME/logs/dash-server.log" \
+    "$(exakit_logs_show dash-server 0 200 1)"
+has "viewing one tails its content" "dash line" "$(exakit_logs_show dash-server 0 200 0)"
+has "the overview lists the targets in a table" "Target" "$(exakit_logs_overview)"
+has "and names the add-on" "dash-server" "$(exakit_logs_overview)"
+# An unknown name explains itself and lists what exists, rather than dying bare.
+_log_unknown="$( (exakit_logs_show not-a-log 0 200 0) 2>&1 || true)"
+has "an unknown target lists what is available" "Available:" "$_log_unknown"
+check "and it fails rather than printing nothing" "no" "$(
+    ( exakit_logs_show not-a-log 0 200 0 ) >/dev/null 2>&1 && echo yes || echo no
+)"
+# A log the module names but nothing has written yet is a clear message, not a
+# confusing empty screen.
+has "a not-yet-written log says so" "has not been written yet" "$( (
+    dash_server_log_path() { printf '%s\n' "$WORK/never-written.log"; }
+    exakit_logs_show dash-server 0 200 0
+) 2>&1 || true)"
+rm -f "$EXAKIT_HOME/logs/dash-server.log"
+
 echo "services and autostart (is it running, and does it come back after a reboot):"
 # A stand-in server on a quiet port: the status probe is an HTTP check, so
 # anything that answers proves the plumbing without installing dash-server.
-EXAKIT_DASH_SERVER_PORT="$((5900 + $$ % 90))"
-mkdir -p "$EXAKIT_HOME/logs"
+mkdir -p "$EXAKIT_HOME/logs" "$EXAKIT_HOME/dash-server-venv/bin"
+# The stand-in server must look like ours to the ownership probe, which matches
+# on the venv path. The real console script is run as
+# `<venv>/bin/python <venv>/bin/dash-server`, so the venv shows up in argv - a
+# bare `python3 -m http.server` never would. A script INSIDE the venv bin
+# reproduces that shape (a symlinked interpreter does not: macOS resolves
+# argv[0] to the framework binary).
+cat > "$EXAKIT_HOME/dash-server-venv/bin/serve.py" <<'SERVEEOF'
+import http.server, socketserver, sys
+with socketserver.TCPServer(("127.0.0.1", int(sys.argv[1])), http.server.SimpleHTTPRequestHandler) as httpd:
+    httpd.serve_forever()
+SERVEEOF
 check "not installed reads as such, never 'stopped'" "not installed" "$(
     ( EXAKIT_DASH_SERVER_BIN="$WORK/nope"; dash_server_status )
 )"
 cat > "$EXAKIT_BIN_DIR/dash-server" <<SRVEOF
 #!/bin/sh
-exec python3 -m http.server $EXAKIT_DASH_SERVER_PORT --bind 127.0.0.1
+exec python3 "$EXAKIT_HOME/dash-server-venv/bin/serve.py" $EXAKIT_DASH_SERVER_PORT
 SRVEOF
 chmod +x "$EXAKIT_BIN_DIR/dash-server"
 check "installed but down reads stopped" "stopped" "$(dash_server_status)"
@@ -606,6 +707,46 @@ dash_server_stop >/dev/null 2>&1
 check "stop takes it down and cleans the pidfile" "stopped cleaned" \
     "$(printf '%s %s' "$(dash_server_status)" "$([ -f "$EXAKIT_DASH_SERVER_PIDFILE" ] && echo kept || echo cleaned)")"
 has "stopping twice is idempotent" "already stopped" "$(dash_server_stop 2>&1)"
+
+echo "a port held by someone else is never mistaken for dash-server:"
+# The old probe asked "does something answer HTTP here", so ANY web server on
+# the port made the kit report a healthy add-on it never started. Ownership is
+# matched on the venv path, the way the real console script is recognised.
+_foreign_port="$((6100 + $$ % 80))"
+python3 -m http.server "$_foreign_port" --bind 127.0.0.1 >/dev/null 2>&1 &
+_foreign_pid=$!
+sleep 2
+_port_verdict="$( (
+    EXAKIT_DASH_SERVER_PORT="$_foreign_port"
+    printf 'status=%s ' "$(dash_server_status | cut -d'(' -f1 | sed 's/ *$//')"
+    printf 'ours=%s ' "$(_dash_server_port_is_ours && echo yes || echo no)"
+    printf 'foreign=%s' "$(_dash_server_port_foreign_desc >/dev/null 2>&1 && echo yes || echo no)"
+) )"
+check "a foreign listener reads as stopped, not running" "status=stopped ours=no foreign=yes" "$_port_verdict"
+has "status names the process holding it" "held by another process" \
+    "$( ( EXAKIT_DASH_SERVER_PORT="$_foreign_port"; dash_server_status ) )"
+_start_refusal="$( ( EXAKIT_DASH_SERVER_PORT="$_foreign_port"; dash_server_start 2>&1 ) )"
+has "start refuses instead of claiming success" "cannot bind" "$_start_refusal"
+has "and says how to move to a free port" "EXAKIT_DASH_SERVER_PORT" "$_start_refusal"
+_val_refusal="$( ( EXAKIT_DASH_SERVER_PORT="$_foreign_port"; dash_server_validate 2>&1 ) )"
+has "validation refuses to claim health on someone else's port" "was not validated" "$_val_refusal"
+# An install with no explicit port steps over the busy one instead of failing.
+_settled="$( (
+    EXAKIT_DASH_SERVER_PORT="$_foreign_port"
+    _EXAKIT_DS_PORT_EXPLICIT=0
+    _dash_server_settle_port >/dev/null 2>&1
+    printf '%s' "$EXAKIT_DASH_SERVER_PORT"
+) )"
+check "an unnamed port steps past the collision" "$((_foreign_port + 1))" "$_settled"
+# A port the user NAMED is refused rather than silently moved.
+_explicit="$( (
+    EXAKIT_DASH_SERVER_PORT="$_foreign_port"
+    _EXAKIT_DS_PORT_EXPLICIT=1
+    _dash_server_settle_port 2>&1 | head -1
+) )"
+has "a named port is refused, never moved behind your back" "is held by another process" "$_explicit"
+kill "$_foreign_pid" 2>/dev/null
+wait "$_foreign_pid" 2>/dev/null || true
 
 # The service registry: database first, then any installed add-on that serves.
 manifest_set runtime.type personal

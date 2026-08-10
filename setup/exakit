@@ -47,7 +47,8 @@
 #                       --dry-run previews the full plan; --yes is the
 #                       scripted full uninstall
 #   whats-new [version] what changed in this kit version
-#   logs                print the path of the latest setup log
+#   logs [target]       every log the kit can show; no target lists them
+#                       (-f follows, --lines N, --path prints the path)
 #   catalog [search]    browse/search every exakit, exapump & exasol command
 #   help                this text
 #
@@ -308,14 +309,33 @@ cmd_kit2_script() {
     bash "$_k2_script"
 }
 
+# cmd_logs [target] [-f|--follow] [--lines N] [--path] — every log the kit can
+# show, in one place. No target lists what is available; a target tails it.
 cmd_logs() {
-    _latest="$(ls -t "$EXAKIT_LOG_DIR"/*.log 2>/dev/null | head -1)"
-    if [ -n "$_latest" ]; then
-        echo "$_latest"
-    else
-        echo "No logs found in $EXAKIT_LOG_DIR" >&2
-        exit 1
+    _log_target=""
+    _log_follow=0
+    _log_lines=200
+    _log_path_only=0
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            -f|--follow) _log_follow=1 ;;
+            --path)      _log_path_only=1 ;;
+            --lines)     shift; _log_lines="${1:-200}" ;;
+            -n)          shift; _log_lines="${1:-200}" ;;
+            -*)          die "Unknown option '$1' for logs (supported: -f/--follow, --lines N, --path)." ;;
+            *)           [ -n "$_log_target" ] && die "Only one log target at a time (got '$_log_target' and '$1')."
+                         _log_target="$1" ;;
+        esac
+        shift
+    done
+    case "$_log_lines" in
+        ''|*[!0-9]*) die "--lines needs a number (got '$_log_lines')." ;;
+    esac
+    if [ -z "$_log_target" ]; then
+        exakit_logs_overview
+        return 0
     fi
+    exakit_logs_show "$_log_target" "$_log_follow" "$_log_lines" "$_log_path_only"
 }
 
 cmd_data_load() {
@@ -419,6 +439,7 @@ Everyday commands:
   autostart [on|off]   come back automatically after a restart
   data-load            load the sample data or your own CSV / Parquet
   mcp-doctor           check the AI (MCP) connection
+  logs [target]        installer, database and service logs
   marketplace          optional add-ons (dashboards & more)
 
 Keeping up to date:
@@ -578,7 +599,7 @@ case "${1:-help}" in
     rollback-kit2) cmd_kit2_script rollback-kit2.sh ;;
     uninstall) shift; cmd_uninstall "$@" ;;
     whats-new) shift; cmd_whats_new "${1:-}" ;;
-    logs)     _with_notice cmd_logs ;;
+    logs)     shift; cmd_logs "$@" ;;
     catalog)  shift; cmd_catalog "${1:-}" ;;
     help|-h|--help) shift; usage "${1:-}" ;;
     *) echo "exakit: unknown command '${1}'" >&2; usage >&2; exit 2 ;;

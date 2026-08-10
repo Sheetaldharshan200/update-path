@@ -42,7 +42,8 @@
 #                         home and the CLI binaries. -DryRun previews; -Yes
 #                         skips the typed confirmation
 #   whats-new [version]   what changed in this kit version
-#   logs                  print the path of the latest setup log
+#   logs [target]         every log the kit can show; no target lists them
+#                         (-f follows, --lines N, --path prints the path)
 #   catalog [search]      browse/search every exakit, exapump & exasol command
 #   help                  this text
 #
@@ -1731,10 +1732,118 @@ function Invoke-CmdWhatsNew {
     }
 }
 
-function Invoke-CmdLogs {
-    $latest = Get-ChildItem -Path $script:LogDir -Filter "*.log" -ErrorAction SilentlyContinue |
+# ---------------------------------------------------------------------------
+# Logs (twin of the exakit_log_targets / exakit_logs_* set in common.sh)
+# ---------------------------------------------------------------------------
+# One command reaches every log the kit can show. Add-ons opt in with a LogFn
+# in their registry entry, so a new one is viewable with no wiring here.
+function Get-ExakitLogTargets {
+    $targets = @()
+    $setup = Get-ChildItem -Path $script:LogDir -Filter "install-*.log" -ErrorAction SilentlyContinue |
         Sort-Object LastWriteTime -Descending | Select-Object -First 1
-    if ($latest) { Write-Host $latest.FullName } else { Write-Host "No logs found in $script:LogDir" -ForegroundColor Red; exit 1 }
+    if ($setup) {
+        $targets += [pscustomobject]@{ Id = "setup"; Label = "Installer and setup runs"; Kind = "file"; Source = $setup.FullName }
+    }
+    if ((Get-RuntimeType) -eq "nano") {
+        $engine = Get-NanoEngine
+        if ($engine -and $engine -ne "none") {
+            Resolve-NanoNames
+            $targets += [pscustomobject]@{ Id = "database"; Label = "Database container"; Kind = "cmd"
+                Source = $engine; Container = $script:NanoContainer }
+        }
+    }
+    foreach ($addonId in (Get-ExakitMarketplaceInstalledAddons)) {
+        $addon = Get-ExakitMarketplaceAddon $addonId
+        if (-not ($addon -and $addon.PSObject.Properties["LogFn"] -and
+                  (Get-Command $addon.LogFn -ErrorAction SilentlyContinue))) { continue }
+        $path = & $addon.LogFn
+        if ($path) {
+            $targets += [pscustomobject]@{ Id = $addonId; Label = "$addonId service"; Kind = "file"; Source = $path }
+        }
+    }
+    return $targets
+}
+
+function Show-ExakitLogsOverview {
+    $targets = Get-ExakitLogTargets
+    if ($targets.Count -eq 0) {
+        Info "No logs yet. They appear here after an install or once a service has run."
+        return
+    }
+    Write-Host ""
+    Write-Host "  Component logs"
+    Write-Host "  --------------"
+    Write-Host ("{0,-22} {1,-26} {2,-8} {3}" -f "Target", "What", "Size", "Updated")
+    foreach ($target in $targets) {
+        if ($target.Kind -eq "cmd") {
+            Write-Host ("{0,-22} {1,-26} {2,-8} {3}" -f $target.Id, $target.Label, "live", "kept by the engine")
+            continue
+        }
+        $size = "-"; $updated = "-"
+        if (Test-Path $target.Source) {
+            $item = Get-Item $target.Source
+            $size = if ($item.Length -ge 1MB) { "$([int]($item.Length / 1MB))M" }
+                    elseif ($item.Length -ge 1KB) { "$([int]($item.Length / 1KB))K" }
+                    else { "$($item.Length)B" }
+            $updated = $item.LastWriteTime.ToString("yyyy-MM-dd HH:mm")
+        }
+        Write-Host ("{0,-22} {1,-26} {2,-8} {3}" -f $target.Id, $target.Label, $size, $updated)
+    }
+    Write-Host ""
+    Info "View one:  exakit logs <target>        (add -f to follow it live)"
+    Info "Its path:  exakit logs <target> --path"
+}
+
+function Show-ExakitLog {
+    param([Parameter(Mandatory)][string]$Target, [switch]$Follow, [int]$Lines = 200, [switch]$PathOnly)
+    $entry = Get-ExakitLogTargets | Where-Object { $_.Id -eq $Target } | Select-Object -First 1
+    if (-not $entry) {
+        $known = ((Get-ExakitLogTargets | ForEach-Object { $_.Id }) -join " ")
+        Fail ("No log called '$Target'." + $(if ($known) { " Available: $known" } else { "" }))
+    }
+    if ($entry.Kind -eq "cmd") {
+        if ($PathOnly) { Write-Host "$($entry.Source) logs $($entry.Container)"; return }
+        $engineArgs = @("logs", "--tail", $Lines, $entry.Container)
+        if ($Follow) { $engineArgs += "-f" }
+        & $entry.Source @engineArgs
+        return
+    }
+    if ($PathOnly) { Write-Host $entry.Source; return }
+    if (-not (Test-Path $entry.Source)) {
+        Fail "The $Target log has not been written yet ($($entry.Source))."
+    }
+    if ($Follow) {
+        Info "Following $($entry.Source) - Ctrl-C to stop"
+        Get-Content -Path $entry.Source -Tail $Lines -Wait
+    } else {
+        Get-Content -Path $entry.Source -Tail $Lines
+    }
+}
+
+# exakit logs [target] [-f] [--lines N] [--path] - every log the kit can show,
+# in one place. No target lists what is available; a target tails it.
+function Invoke-CmdLogs {
+    param([string[]]$LogArgs = @())
+    $target = ""
+    $follow = $false
+    $pathOnly = $false
+    $lines = 200
+    for ($i = 0; $i -lt $LogArgs.Count; $i++) {
+        switch ($LogArgs[$i]) {
+            { $_ -in @("-f", "--follow", "-Follow") } { $follow = $true }
+            { $_ -in @("--path", "-Path") }           { $pathOnly = $true }
+            { $_ -in @("--lines", "-n", "-Lines") }   { $i++; $lines = [int]$LogArgs[$i] }
+            default {
+                if ($LogArgs[$i].StartsWith("-")) {
+                    Fail "Unknown option '$($LogArgs[$i])' for logs (supported: -f/--follow, --lines N, --path)."
+                }
+                if ($target) { Fail "Only one log target at a time (got '$target' and '$($LogArgs[$i])')." }
+                $target = $LogArgs[$i]
+            }
+        }
+    }
+    if (-not $target) { Show-ExakitLogsOverview; return }
+    Show-ExakitLog -Target $target -Follow:$follow -Lines $lines -PathOnly:$pathOnly
 }
 
 function Invoke-CmdDataLoad {
@@ -1963,7 +2072,7 @@ try {
         "rollback-kit2" { Write-ExakitKit2NotAvailable -Command "exakit rollback-kit2" }
         "uninstall"    { Invoke-CmdUninstall -AssumeYes:($RestArgs -contains "-Yes" -or $RestArgs -contains "--yes" -or $RestArgs -contains "-y") -DryRun:($RestArgs -contains "-DryRun" -or $RestArgs -contains "--dry-run" -or $RestArgs -contains "-n") }
         "whats-new"    { Invoke-CmdWhatsNew -Version ($RestArgs | Select-Object -First 1) }
-        "logs"         { Invoke-CmdLogs }
+        "logs"         { Invoke-CmdLogs -LogArgs $RestArgs }
         "catalog"      { Invoke-CmdCatalog -Search ($RestArgs | Select-Object -First 1) }
         { $_ -in @("help", "-h", "--help") } { Show-ExakitUsage -All:($RestArgs -contains "--all" -or $RestArgs -contains "-a") }
         default {

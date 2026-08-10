@@ -2466,6 +2466,7 @@ function Get-ExakitMarketplaceAddons {
             StartFn     = "Start-DashServer"
             StopFn      = "Stop-DashServer"
             AutostartFn = "Get-DashServerAutostartCommand"
+            LogFn       = "Get-DashServerLogPath"
             EnvVar      = "EXAKIT_DASH_SERVER_VERSION"
             FallbackVar = "DashServerVersionFallback"
         },

@@ -561,6 +561,35 @@ if grep -q 'exakit_marketplace_addons()' "$ROOT/setup/lib/common.sh" && \
 else
     check "marketplace(twins)" "yes" "no"
 fi
+# Port ownership, both sides: a foreign listener must never read as a running
+# dash-server, and the install must settle on a port before baking one in.
+if grep -q '_dash_server_port_is_ours()' "$ROOT/setup/lib/dash-server.sh" && \
+   grep -q '_dash_server_port_foreign_desc()' "$ROOT/setup/lib/dash-server.sh" && \
+   grep -q '_dash_server_settle_port()' "$ROOT/setup/lib/dash-server.sh" && \
+   grep -q 'function Test-DashServerPortIsOurs' "$ROOT/setup/lib/dash-server.ps1" && \
+   grep -q 'function Get-DashServerPortForeignDescription' "$ROOT/setup/lib/dash-server.ps1" && \
+   grep -q 'function Confirm-DashServerPort' "$ROOT/setup/lib/dash-server.ps1"; then
+    check "dash-server(port_ownership_twins)" "yes" "yes"
+else
+    check "dash-server(port_ownership_twins)" "yes" "no"
+fi
+
+# Log viewing, both sides: the registry-driven target list, the overview, the
+# tail/follow path, and the add-on hook that folds a new one in.
+if grep -q 'exakit_log_targets()' "$ROOT/setup/lib/common.sh" && \
+   grep -q 'exakit_logs_overview()' "$ROOT/setup/lib/common.sh" && \
+   grep -q 'exakit_logs_show()' "$ROOT/setup/lib/common.sh" && \
+   grep -q 'dash_server_log_path()' "$ROOT/setup/lib/dash-server.sh" && \
+   grep -q 'function Get-ExakitLogTargets' "$ROOT/setup/exakit.ps1" && \
+   grep -q 'function Show-ExakitLogsOverview' "$ROOT/setup/exakit.ps1" && \
+   grep -q 'function Show-ExakitLog' "$ROOT/setup/exakit.ps1" && \
+   grep -q 'function Get-DashServerLogPath' "$ROOT/setup/lib/dash-server.ps1" && \
+   grep -q 'LogFn' "$ROOT/setup/lib/exakit-common.ps1"; then
+    check "logs(viewer_twins)" "yes" "yes"
+else
+    check "logs(viewer_twins)" "yes" "no"
+fi
+
 # Services and autostart, both sides: the registry-driven service set, the
 # start/stop/status hooks, the boot registration, and the autostart command.
 if grep -q 'exakit_service_ids()' "$ROOT/setup/lib/common.sh" && \

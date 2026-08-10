@@ -38,7 +38,77 @@ EXAKIT_DASH_SERVER_PACKAGE="${EXAKIT_DASH_SERVER_PACKAGE:-dash-server}"
 EXAKIT_DASH_SERVER_VENV="${EXAKIT_DASH_SERVER_VENV:-$EXAKIT_HOME/dash-server-venv}"
 EXAKIT_DASH_SERVER_HOME="${EXAKIT_DASH_SERVER_HOME:-$EXAKIT_HOME/dash-server}"
 EXAKIT_DASH_SERVER_BIN="${EXAKIT_DASH_SERVER_BIN:-$EXAKIT_BIN_DIR/dash-server}"
+# An explicit choice outranks everything; otherwise the port this install
+# actually settled on (it may have moved at install time to dodge a busy 5100)
+# is read from the manifest the first time it is needed - lazily, because
+# reading the manifest costs a Python start and every CLI run sources this.
+if [ -n "${EXAKIT_DASH_SERVER_PORT:-}" ]; then
+    _EXAKIT_DS_PORT_EXPLICIT=1
+else
+    _EXAKIT_DS_PORT_EXPLICIT=0
+fi
 EXAKIT_DASH_SERVER_PORT="${EXAKIT_DASH_SERVER_PORT:-5100}"
+_EXAKIT_DS_PORT_RESOLVED=0
+
+_dash_server_resolve_port() {
+    [ "${_EXAKIT_DS_PORT_RESOLVED:-0}" = "1" ] && return 0
+    _EXAKIT_DS_PORT_RESOLVED=1
+    [ "$_EXAKIT_DS_PORT_EXPLICIT" = "1" ] && return 0
+    [ -f "$EXAKIT_MANIFEST" ] || return 0
+    _drp_recorded="$(manifest_get components.dash_server.port 2>/dev/null || true)"
+    case "$_drp_recorded" in
+        ''|*[!0-9]*) ;;
+        *) EXAKIT_DASH_SERVER_PORT="$_drp_recorded" ;;
+    esac
+    return 0
+}
+
+# --- who holds the port -----------------------------------------------------
+# "Something answers on 5100" is NOT "dash-server is running": any web server
+# on that port would pass an HTTP probe, and the kit would report a healthy
+# add-on that was never started. These three answer the real question.
+
+_dash_server_port_pids() {
+    command -v lsof >/dev/null 2>&1 || return 0
+    lsof -nP -iTCP:"$EXAKIT_DASH_SERVER_PORT" -sTCP:LISTEN -t 2>/dev/null | sort -u
+}
+
+# Is the listener one of OUR processes? Matched on the venv path, which is
+# unique to this install, so an unrelated program never counts.
+_dash_server_port_is_ours() {
+    _dpo_pids="$(_dash_server_port_pids)"
+    [ -n "$_dpo_pids" ] || return 1
+    for _dpo_pid in $_dpo_pids; do
+        case "$(ps -o command= -p "$_dpo_pid" 2>/dev/null)" in
+            *"$EXAKIT_DASH_SERVER_VENV"*) return 0 ;;
+        esac
+    done
+    return 1
+}
+
+# "pid N (name)" when someone ELSE holds the port; non-zero when it is free or
+# ours.
+_dash_server_port_foreign_desc() {
+    _dpf_pids="$(_dash_server_port_pids)"
+    [ -n "$_dpf_pids" ] || return 1
+    _dash_server_port_is_ours && return 1
+    for _dpf_pid in $_dpf_pids; do
+        printf 'pid %s (%s)' "$_dpf_pid" \
+            "$(ps -o comm= -p "$_dpf_pid" 2>/dev/null | sed 's|.*/||' | tr -d ' ')"
+        return 0
+    done
+    return 1
+}
+
+# Is OUR server up? lsof answers precisely; without it fall back to the HTTP
+# probe, which is the old behaviour and the best a machine without lsof allows.
+_dash_server_running() {
+    if command -v lsof >/dev/null 2>&1; then
+        _dash_server_port_is_ours
+        return $?
+    fi
+    _dash_server_http_answers
+}
 EXAKIT_DASH_SERVER_PROFILE="${EXAKIT_DASH_SERVER_PROFILE:-starter-kit}"
 
 dash_server_venv_python() {
@@ -84,6 +154,9 @@ dash_server_install() {
         [ -n "$EXAKIT_DASH_SERVER_VERSION" ] || EXAKIT_DASH_SERVER_VERSION="$EXAKIT_DASH_SERVER_VERSION_FALLBACK"
         export EXAKIT_DASH_SERVER_VERSION
     fi
+
+    _dash_server_resolve_port
+    _dash_server_settle_port || return 1
 
     _ds_uv=""
     if command -v uv >/dev/null 2>&1; then
@@ -135,6 +208,7 @@ dash_server_install() {
         # pip in place, but a pre-existing venv (EXAKIT_DASH_SERVER_VENV
         # pointed at one, or an interrupted earlier run) may lack it.
         _dash_server_ensure_pip "$_ds_uv" || return 1
+        _dash_server_restore_package_data
         ok "dash-server installed: $EXAKIT_DASH_SERVER_VENV"
     fi
 
@@ -150,6 +224,86 @@ dash_server_install() {
     manifest_set components.dash_server.command "$EXAKIT_DASH_SERVER_BIN"
     manifest_set components.dash_server.port "$EXAKIT_DASH_SERVER_PORT"
     manifest_set components.dash_server.instance "$EXAKIT_DASH_SERVER_HOME/instance"
+}
+
+# _dash_server_restore_package_data — put back data files the release ships in
+# its source tree but does NOT declare as package data, so pip never installs
+# them.
+#
+# UPSTREAM BUG (dash-server 0.1.0): pyproject's [tool.setuptools.package-data]
+# covers dash_server.exasol and dash_server.dash_apps but not dash_server
+# itself, so all five Jinja templates under src/dash_server/templates are
+# missing from every installed copy. The MCP control plane is unaffected (it
+# renders nothing), which is why validation passed while the browser page
+# answered 500 with TemplateNotFound: dashboard_catalog.html.
+#
+# Rather than ship a broken UI, the install re-downloads the same verified
+# release tarball and copies across any non-.py file that the source has and
+# the installed package lacks. Nothing is overwritten, so a fixed release
+# simply makes this a no-op — the day upstream declares the data, this quietly
+# stops doing anything and can be deleted.
+_dash_server_restore_package_data() {
+    _drp_site="$("$(dash_server_venv_python)" -c 'import dash_server, os; print(os.path.dirname(dash_server.__file__))' 2>/dev/null)"
+    [ -n "$_drp_site" ] && [ -d "$_drp_site" ] || return 0
+
+    _drp_tmp="$(mktemp -d "${TMPDIR:-/tmp}/exakit-ds-data.XXXXXX")" || return 0
+    if ! ( fetch "$(dash_server_release_url "$EXAKIT_DASH_SERVER_VERSION")" "$_drp_tmp/src.tar.gz" ) \
+            >>"${EXAKIT_LOG_FILE:-/dev/null}" 2>&1; then
+        rm -rf "$_drp_tmp"
+        return 0
+    fi
+    ( cd "$_drp_tmp" && tar xzf src.tar.gz ) >>"${EXAKIT_LOG_FILE:-/dev/null}" 2>&1 || {
+        rm -rf "$_drp_tmp"; return 0; }
+    _drp_src="$_drp_tmp/dash-server-${EXAKIT_DASH_SERVER_VERSION}/src/dash_server"
+    [ -d "$_drp_src" ] || { rm -rf "$_drp_tmp"; return 0; }
+
+    _drp_restored=0
+    for _drp_rel in $( cd "$_drp_src" && find . -type f ! -name '*.py' | sed 's|^\./||' ); do
+        [ -f "$_drp_site/$_drp_rel" ] && continue
+        mkdir -p "$_drp_site/$(dirname "$_drp_rel")" 2>/dev/null || continue
+        cp "$_drp_src/$_drp_rel" "$_drp_site/$_drp_rel" 2>/dev/null && \
+            _drp_restored=$((_drp_restored + 1))
+    done
+    rm -rf "$_drp_tmp"
+    if [ "$_drp_restored" -gt 0 ]; then
+        info "Restored $_drp_restored data file(s) the release does not declare as package data (upstream packaging gap; the browser UI needs them)"
+    fi
+    return 0
+}
+
+# _dash_server_settle_port — decide which port THIS install will use, before a
+# launcher or a boot entry bakes one in.
+#
+# A port the user named is honoured or refused: silently moving an explicit
+# choice would be worse than saying it is taken. An unnamed one defaults to
+# 5100 and steps up when something else already holds it, so an install does
+# not fail over a port collision the kit can simply avoid. Our own running
+# server is not a collision.
+_dash_server_settle_port() {
+    _dsp_foreign="$(_dash_server_port_foreign_desc || true)"
+    [ -n "$_dsp_foreign" ] || return 0
+
+    if [ "$_EXAKIT_DS_PORT_EXPLICIT" = "1" ]; then
+        _dash_server_not_installed "port $EXAKIT_DASH_SERVER_PORT is held by another process ($_dsp_foreign) — pick a free one with EXAKIT_DASH_SERVER_PORT=<port>"
+        return 1
+    fi
+
+    _dsp_taken="$EXAKIT_DASH_SERVER_PORT"
+    _dsp_try=$((EXAKIT_DASH_SERVER_PORT + 1))
+    _dsp_tries=0
+    while [ "$_dsp_tries" -lt 20 ]; do
+        EXAKIT_DASH_SERVER_PORT="$_dsp_try"
+        if ! _dash_server_port_foreign_desc >/dev/null 2>&1; then
+            warn "Port $_dsp_taken is held by another process ($_dsp_foreign)."
+            info "dash-server will use port $EXAKIT_DASH_SERVER_PORT instead (recorded, so every command agrees)."
+            return 0
+        fi
+        _dsp_try=$((_dsp_try + 1))
+        _dsp_tries=$((_dsp_tries + 1))
+    done
+    EXAKIT_DASH_SERVER_PORT="$_dsp_taken"
+    _dash_server_not_installed "no free port found between $_dsp_taken and $((_dsp_taken + 20)) — free one, or name one with EXAKIT_DASH_SERVER_PORT=<port>"
+    return 1
 }
 
 # _dash_server_ensure_pip <uv> — make sure the venv can run `python -m pip`.
@@ -196,6 +350,7 @@ _dash_server_credentials() {
 # setdefault: anything the user exports themselves wins. Re-running the
 # installer or `exakit update dash-server` regenerates the wrapper.
 dash_server_write_launcher() {
+    _dash_server_resolve_port
     _dsl_dsn="$(manifest_get runtime.dsn 2>/dev/null || true)"
     _dsl_creds="$(_dash_server_credentials)"
     _dsl_user="$(printf '%s' "$_dsl_creds" | cut -f1)"
@@ -214,6 +369,30 @@ dash_server_write_launcher() {
 # database bootstrapped as a connection profile (DASH_SERVER_EXASOL_*). Any of
 # these variables you export yourself take precedence. Re-running
 # `exakit update dash-server` regenerates this wrapper.
+# Already up? dash-server's consumption coordinator is single-process, so a
+# second copy dies on a RuntimeError traceback that reads like a crash. It is
+# not one - the first copy (often started at login by the boot entry) is
+# serving. Say that plainly and stop.
+_ds_holder=""
+if command -v lsof >/dev/null 2>&1; then
+    for _ds_pid in $(lsof -nP -iTCP:@PORT@ -sTCP:LISTEN -t 2>/dev/null | sort -u); do
+        case "$(ps -o command= -p "$_ds_pid" 2>/dev/null)" in
+            *"@VENVDIR@"*) _ds_holder="ours" ;;
+            *) [ -n "$_ds_holder" ] || _ds_holder="pid $_ds_pid ($(ps -o comm= -p "$_ds_pid" 2>/dev/null | sed 's|.*/||'))" ;;
+        esac
+    done
+elif command -v curl >/dev/null 2>&1; then
+    curl -s -o /dev/null --max-time 2 "http://127.0.0.1:@PORT@/mcp" 2>/dev/null && _ds_holder="ours"
+fi
+if [ "$_ds_holder" = "ours" ]; then
+    printf 'dash-server is already running: http://127.0.0.1:@PORT@ (MCP: /mcp)\n'
+    printf 'State: exakit status   Logs: exakit logs dash-server -f   Stop: exakit stop\n'
+    exit 0
+elif [ -n "$_ds_holder" ]; then
+    printf 'Port @PORT@ is held by another process (%s), so dash-server cannot start.\n' "$_ds_holder"
+    printf 'Move it: EXAKIT_DASH_SERVER_PORT=<port> exakit update dash-server\n'
+    exit 1
+fi
 : "${DASH_SERVER_INSTANCE_PATH:=@INSTANCE@}"
 export DASH_SERVER_INSTANCE_PATH
 if [ -n "@DSN@" ] && [ -z "${DASH_SERVER_EXASOL_DSN:-}" ]; then
@@ -240,6 +419,8 @@ EXAKIT_DS_EOF
         -e "s|@PWFILE@|$_dsl_pwfile|g" \
         -e "s|@PROFILE@|$EXAKIT_DASH_SERVER_PROFILE|" \
         -e "s|@USER@|$_dsl_user|" \
+        -e "s|@PORT@|$EXAKIT_DASH_SERVER_PORT|g" \
+        -e "s|@VENVDIR@|$EXAKIT_DASH_SERVER_VENV|g" \
         -e "s|@VENVBIN@|$EXAKIT_DASH_SERVER_VENV/bin/dash-server|" \
         "$EXAKIT_DASH_SERVER_BIN" && rm -f "$EXAKIT_DASH_SERVER_BIN.exakit-bak"
     chmod 755 "$EXAKIT_DASH_SERVER_BIN"
@@ -266,12 +447,21 @@ dash_server_validate() {
         return 0
     fi
 
+    _dash_server_resolve_port
+    _dsv_foreign="$(_dash_server_port_foreign_desc || true)"
+    if [ -n "$_dsv_foreign" ]; then
+        warn "Port $EXAKIT_DASH_SERVER_PORT is held by another process ($_dsv_foreign) — dash-server was not validated."
+        info "Move it with: EXAKIT_DASH_SERVER_PORT=<port> exakit update dash-server"
+        manifest_set components.dash_server.validated false
+        return 0
+    fi
     info "Validating dash-server (MCP control plane on port $EXAKIT_DASH_SERVER_PORT)"
     # Something already answering on the port IS a running dash-server as far
     # as this check can tell (the kit's own launcher is the likely reason);
     # starting a second instance just to probe would fail on the bind.
     if _dash_server_http_answers; then
         ok "dash-server control plane answers on port $EXAKIT_DASH_SERVER_PORT"
+        _dash_server_check_ui
         manifest_set components.dash_server.validated true
         _dash_server_print_usage
         return 0
@@ -305,6 +495,7 @@ dash_server_validate() {
 
     if [ "$_dsv_ok" -eq 1 ]; then
         ok "dash-server control plane answers on port $EXAKIT_DASH_SERVER_PORT"
+        _dash_server_check_ui
         manifest_set components.dash_server.validated true
         _dash_server_print_usage
     else
@@ -319,6 +510,31 @@ dash_server_validate() {
 _dash_server_http_answers() {
     curl -s -o /dev/null -w '%{http_code}' --max-time 5 \
         "http://127.0.0.1:$EXAKIT_DASH_SERVER_PORT/mcp" 2>/dev/null | grep -qE '^(200|3..|4..)'
+}
+
+# _dash_server_ui_answers — the page a HUMAN opens. Checked separately because
+# the control plane can be perfectly healthy while the browser UI is broken:
+# that is exactly what the missing-templates packaging gap looked like, and
+# probing only /mcp reported the add-on as ready anyway.
+_dash_server_ui_answers() {
+    curl -s -o /dev/null -w '%{http_code}' --max-time 5 \
+        "http://127.0.0.1:$EXAKIT_DASH_SERVER_PORT/" 2>/dev/null | grep -qE '^(200|3..)'
+}
+
+# _dash_server_check_ui — the browser page, reported separately. A broken UI
+# does not fail the install (the MCP control plane is what agents use) but it
+# must never pass silently: that is how a 500 on every dashboard page reached a
+# user while the kit said "ready".
+_dash_server_check_ui() {
+    if _dash_server_ui_answers; then
+        ok "Dashboards page answers: http://127.0.0.1:$EXAKIT_DASH_SERVER_PORT"
+        manifest_set components.dash_server.ui_validated true
+        return 0
+    fi
+    warn "The control plane is up, but the dashboards page at http://127.0.0.1:$EXAKIT_DASH_SERVER_PORT does not render (see: exakit logs dash-server)."
+    warn "Agents can still drive it over MCP. Retry the repair with: exakit update dash-server"
+    manifest_set components.dash_server.ui_validated false
+    return 0
 }
 
 _dash_server_print_usage() {
@@ -342,19 +558,31 @@ _dash_server_print_usage() {
 EXAKIT_DASH_SERVER_PIDFILE="${EXAKIT_DASH_SERVER_PIDFILE:-$EXAKIT_DASH_SERVER_HOME/dash-server.pid}"
 EXAKIT_DASH_SERVER_LOG="${EXAKIT_DASH_SERVER_LOG:-$EXAKIT_LOG_DIR/dash-server.log}"
 
+# dash_server_log_path — what `exakit logs dash-server` shows.
+dash_server_log_path() {
+    printf '%s\n' "$EXAKIT_DASH_SERVER_LOG"
+}
+
 # dash_server_status — running | stopped | not installed. The HTTP probe is the
 # truth: the process may have been started by launchd, by the user in a
 # terminal, or by exakit, and only one of those leaves a pidfile.
 dash_server_status() {
+    _dash_server_resolve_port
     if [ ! -x "$EXAKIT_DASH_SERVER_BIN" ]; then
         printf '%s\n' "not installed"
         return 0
     fi
-    if _dash_server_http_answers; then
+    if _dash_server_running; then
         printf '%s\n' "running"
-    else
-        printf '%s\n' "stopped"
+        return 0
     fi
+    _dss_foreign="$(_dash_server_port_foreign_desc || true)"
+    if [ -n "$_dss_foreign" ]; then
+        printf 'stopped (port %s is held by another process: %s)\n' \
+            "$EXAKIT_DASH_SERVER_PORT" "$_dss_foreign"
+        return 0
+    fi
+    printf '%s\n' "stopped"
 }
 
 # _dash_server_pids — the kit-managed dash-server processes: the recorded pid
@@ -389,9 +617,16 @@ dash_server_start() {
         warn "dash-server is not installed — add it with: exakit marketplace"
         return 1
     }
-    if _dash_server_http_answers; then
+    _dash_server_resolve_port
+    if _dash_server_running; then
         ok "dash-server is already running (http://127.0.0.1:$EXAKIT_DASH_SERVER_PORT)"
         return 0
+    fi
+    _dst_foreign="$(_dash_server_port_foreign_desc || true)"
+    if [ -n "$_dst_foreign" ]; then
+        warn "Port $EXAKIT_DASH_SERVER_PORT is held by another process ($_dst_foreign), so dash-server cannot bind it."
+        info "Move dash-server to a free port with: EXAKIT_DASH_SERVER_PORT=<port> exakit update dash-server"
+        return 1
     fi
     mkdir -p "$EXAKIT_DASH_SERVER_HOME" "$EXAKIT_LOG_DIR" 2>/dev/null || true
     info "Starting dash-server on port $EXAKIT_DASH_SERVER_PORT"
@@ -418,6 +653,7 @@ dash_server_start() {
 
 # dash_server_stop — stop every kit-managed dash-server process, bounded.
 dash_server_stop() {
+    _dash_server_resolve_port
     _dst_pids="$(_dash_server_pids)"
     if [ -z "$_dst_pids" ] && ! _dash_server_http_answers; then
         ok "dash-server is already stopped"
@@ -445,6 +681,7 @@ dash_server_stop() {
 # dash_server_autostart_command — what the boot entry runs. The launcher
 # already bootstraps the database profile, so this is simply it.
 dash_server_autostart_command() {
+    _dash_server_resolve_port
     printf '%s --host 127.0.0.1 --port %s\n' "$EXAKIT_DASH_SERVER_BIN" "$EXAKIT_DASH_SERVER_PORT"
 }
 

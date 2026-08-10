@@ -34,6 +34,18 @@ trap 'pkill -f "$SANDBOX" 2>/dev/null; rm -rf "$SANDBOX"' EXIT
 
 export EXAKIT_HOME="$SANDBOX/home"
 export EXAKIT_BIN_DIR="$SANDBOX/bin"
+# The machine running this may have a REAL dash-server on PATH — the developer's
+# own install, or a previous run of this very test. The kit would then read it
+# as a system install and decline to offer the add-on, and the sandbox would
+# never get one. Rebuild PATH without any directory that carries it.
+_clean_path=""
+_old_ifs="$IFS"; IFS=:
+for _dir in $PATH; do
+    [ -x "$_dir/dash-server" ] || _clean_path="${_clean_path:+$_clean_path:}$_dir"
+done
+IFS="$_old_ifs"
+PATH="$_clean_path"
+export PATH
 # A quiet high port so a dash-server the user already runs on 5100 cannot
 # collide with the validation probe.
 export EXAKIT_DASH_SERVER_PORT="$((5300 + $$ % 400))"
