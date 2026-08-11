@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "updated": "2026-08-04",
+  "updated": "2026-08-11",
   "kit": {
     "version": "0.2.0"
   },
@@ -49,6 +49,11 @@
       "sha256": {
         "vsix": "901badff486da4f41bb285463be152dd036437cdd54fbbde51328954c8e9b3c5"
       }
+    },
+    "json-tables": {
+      "version": "50d05da0f6da",
+      "severity": "normal",
+      "note": "prebuilt by the kit's pkg/json-tables workflow; users need no Rust toolchain"
     }
   }
 }

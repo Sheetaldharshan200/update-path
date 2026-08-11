@@ -408,7 +408,7 @@ fi
 echo "Windows parity guards:"
 if command -v pwsh >/dev/null 2>&1; then
     ps_parse="$(pwsh -NoProfile -Command '
-      $files = @("setup/lib/exakit-common.ps1","setup/lib/nano.ps1","setup/lib/mcp.ps1","setup/lib/dash-server.ps1","setup/lib/exasol-vscode.ps1","setup/setup-windows-docker.ps1","setup/exakit.ps1")
+      $files = @("setup/lib/exakit-common.ps1","setup/lib/nano.ps1","setup/lib/mcp.ps1","setup/lib/dash-server.ps1","setup/lib/exasol-vscode.ps1","setup/lib/json-tables.ps1","setup/setup-windows-docker.ps1","setup/exakit.ps1")
       foreach ($f in $files) {
         $errors = $null
         $null = [System.Management.Automation.PSParser]::Tokenize((Get-Content -Raw $f), [ref]$errors)
@@ -556,6 +556,11 @@ if grep -q 'exakit_marketplace_addons()' "$ROOT/setup/lib/common.sh" && \
    grep -q 'function Update-ExasolVscode' "$ROOT/setup/lib/exasol-vscode.ps1" && \
    grep -q 'function Install-ExasolVscode' "$ROOT/setup/lib/exasol-vscode.ps1" && \
    grep -q '"exasol-vscode"' "$ROOT/setup/lib/exakit-common.ps1" && \
+   grep -q 'json_tables_update' "$ROOT/setup/lib/json-tables.sh" && \
+   grep -q 'json_tables_install' "$ROOT/setup/lib/json-tables.sh" && \
+   grep -q 'function Update-JsonTables' "$ROOT/setup/lib/json-tables.ps1" && \
+   grep -q 'function Install-JsonTables' "$ROOT/setup/lib/json-tables.ps1" && \
+   grep -q '"json-tables"' "$ROOT/setup/lib/exakit-common.ps1" && \
    grep -q '"marketplace"  { Invoke-CmdMarketplace }' "$ROOT/setup/exakit.ps1"; then
     check "marketplace(twins)" "yes" "yes"
 else
@@ -634,13 +639,32 @@ fi
 # INSTALL the dash-server module (the Windows script dot-sources it and the
 # offer runs after everything else, but no step invokes Install-DashServer /
 # dash_server_install directly), and no shared step may install it.
-if ! grep -qE 'dash_server_install|exasol_vscode_install' "$ROOT/setup/setup-macos.sh" && \
-   ! grep -qE 'dash_server_install|exasol_vscode_install' "$ROOT/setup/setup-wsl.sh" && \
-   ! grep -qE 'Install-DashServer|Install-ExasolVscode' "$ROOT/setup/setup-windows-docker.ps1" && \
-   ! grep -qE 'dash_server_install|exasol_vscode_install' <(awk '/^kit_shared_steps\(\)/,/^}/' "$ROOT/setup/lib/common.sh"); then
+if ! grep -qE 'dash_server_install|exasol_vscode_install|json_tables_install' "$ROOT/setup/setup-macos.sh" && \
+   ! grep -qE 'dash_server_install|exasol_vscode_install|json_tables_install' "$ROOT/setup/setup-wsl.sh" && \
+   ! grep -qE 'Install-DashServer|Install-ExasolVscode|Install-JsonTables' "$ROOT/setup/setup-windows-docker.ps1" && \
+   ! grep -qE 'dash_server_install|exasol_vscode_install|json_tables_install' <(awk '/^kit_shared_steps\(\)/,/^}/' "$ROOT/setup/lib/common.sh"); then
     check "marketplace(not_in_install_flow)" "yes" "yes"
 else
     check "marketplace(not_in_install_flow)" "yes" "no"
+fi
+
+# json-tables: the no-Rust chain. The packaging workflow builds the engine and
+# the wheel, the module downloads them from the mirror release and puts a cargo
+# shim in front of the CLI, and versions.json is only bumped AFTER a successful
+# publish -- so no installed kit is ever offered a version whose artifacts do
+# not exist. Each of those is load-bearing.
+if grep -q 'mirror-json-tables' "$ROOT/.github/workflows/pkg-json-tables.yml" && \
+   grep -q 'version=${{ needs.check.outputs.sha }}' "$ROOT/.github/workflows/pkg-json-tables.yml" && \
+   grep -qE '^  advertise:' "$ROOT/.github/workflows/pkg-json-tables.yml" && \
+   grep -q 'needs: \[check, publish\]' "$ROOT/.github/workflows/pkg-json-tables.yml" && \
+   grep -q 'json_tables_write_shim()' "$ROOT/setup/lib/json-tables.sh" && \
+   grep -q 'json_tables_latest()' "$ROOT/setup/lib/json-tables.sh" && \
+   grep -q 'json_tables_system_present()' "$ROOT/setup/lib/json-tables.sh" && \
+   grep -q 'exakit_data_file_kind()' "$ROOT/setup/lib/exapump.sh" && \
+   grep -q 'exakit_load_local_json()' "$ROOT/setup/lib/exapump.sh"; then
+    check "json_tables(prebuilt_chain)" "yes" "yes"
+else
+    check "json_tables(prebuilt_chain)" "yes" "no"
 fi
 
 # Release notes, both sides: the command, the print after a self-update, and the

@@ -66,12 +66,12 @@ mkdir -p "$EXAKIT_HOME" "$EXAKIT_BIN_DIR"
     manifest_set runtime.password_file "$EXAKIT_HOME/credentials/runtime_sys_password"
 ) || fail "could not seed the sandbox manifest"
 
-say "1/8 exakit marketplace installs dash-server from its GitHub release"
+say "1/9 exakit marketplace installs dash-server from its GitHub release"
 if ! EXAKIT_MARKETPLACE_ADDONS=dash-server bash "$ROOT/setup/exakit" marketplace; then
     fail "exakit marketplace did not complete"
 fi
 
-say "2/8 the venv answers for the advertised version"
+say "2/9 the venv answers for the advertised version"
 _advertised="$(
     . "$ROOT/setup/lib/common.sh" >/dev/null 2>&1
     exakit_versions_value components.dash-server.version "$ROOT/versions.json"
@@ -85,7 +85,7 @@ grep -q "DASH_SERVER_EXASOL_DSN" "$EXAKIT_BIN_DIR/dash-server" || fail "the laun
 grep -q "not-a-real-password" "$EXAKIT_BIN_DIR/dash-server" && fail "the launcher leaked the password"
 echo "  ok  dash-server $_installed installed, launcher in place"
 
-say "3/8 validation recorded the live HTTP probe"
+say "3/9 validation recorded the live HTTP probe"
 _validated="$(
     . "$ROOT/setup/lib/common.sh" >/dev/null 2>&1
     manifest_get components.dash_server.validated
@@ -93,7 +93,7 @@ _validated="$(
 [ "$_validated" = "true" ] || fail "components.dash_server.validated is '$_validated', expected true (did the control-plane probe fail?)"
 echo "  ok  control plane answered on port $EXAKIT_DASH_SERVER_PORT during validation"
 
-say "4/8 the installed add-on joins the update flow"
+say "4/9 the installed add-on joins the update flow"
 _targets="$(
     . "$ROOT/setup/lib/common.sh" >/dev/null 2>&1
     . "$ROOT/setup/lib/dash-server.sh" >/dev/null 2>&1
@@ -109,7 +109,7 @@ case "$_version_out" in
     *) fail "exakit version does not report dash-server" ;;
 esac
 
-say "5/8 update says already current; a second marketplace run offers nothing"
+say "5/9 update says already current; a second marketplace run offers nothing"
 _update_out="$(bash "$ROOT/setup/exakit" update dash-server 2>&1)" || fail "exakit update dash-server failed: $_update_out"
 case "$_update_out" in
     *"already current"*) echo "  ok  exakit update dash-server: already current" ;;
@@ -121,7 +121,7 @@ case "$_second" in
     *) fail "second marketplace run did not recognize the install: $_second" ;;
 esac
 
-say "6/8 exasol-vscode installs from its release, checksum-verified, into an isolated extensions dir"
+say "6/9 exasol-vscode installs from its release, checksum-verified, into an isolated extensions dir"
 # The extension add-on needs VS Code itself; without one this half SKIPs
 # rather than failing (the dash-server half above has already proven the
 # marketplace machinery). The sandbox extensions dir guarantees the user's
@@ -154,7 +154,7 @@ else
     ls "$EXAKIT_EXASOL_VSCODE_EXTDIR" | grep -qi exasol || fail "nothing landed in the isolated extensions dir"
     echo "  ok  exasol.exasol-vscode@$_ext_live installed into the sandbox extensions dir"
 
-    say "7/8 the extension joins the update flow and a second run offers nothing"
+    say "7/9 the extension joins the update flow and a second run offers nothing"
     _ext_update="$(bash "$ROOT/setup/exakit" update exasol-vscode 2>&1)" || fail "exakit update exasol-vscode failed: $_ext_update"
     case "$_ext_update" in
         *"already current"*) echo "  ok  exakit update exasol-vscode: already current" ;;
@@ -177,7 +177,66 @@ else
     esac
 fi
 
-say "8/8 uninstall sweeps the add-on"
+say "8/9 json-tables installs from the kit's own mirror release and a real JSON file becomes tables"
+# The whole point of this add-on is the no-Rust story: the engine and the wheel
+# are prebuilt by .github/workflows/pkg-json-tables.yml and served from the
+# `mirror-json-tables` release. Until that workflow has been run once the
+# release does not exist -- then this stage SKIPS (with the reason) instead of
+# failing, so the rest of the e2e stays meaningful.
+_jt_repo="$(
+    . "$ROOT/setup/lib/common.sh" >/dev/null 2>&1
+    . "$ROOT/setup/lib/json-tables.sh" >/dev/null 2>&1
+    json_tables_mirror_repo
+)"
+if ! curl -fsSIL --max-time 15 \
+        "https://github.com/$_jt_repo/releases/tag/mirror-json-tables" >/dev/null 2>&1; then
+    echo "  SKIP  the mirror-json-tables release does not exist in $_jt_repo yet"
+    echo "        run the 'pkg / json-tables' workflow once, then this stage goes live"
+elif ! (
+    . "$ROOT/setup/lib/common.sh" >/dev/null 2>&1
+    . "$ROOT/setup/lib/json-tables.sh" >/dev/null 2>&1
+    json_tables_applicable
+); then
+    echo "  SKIP  no prebuilt engine is published for this platform"
+else
+    _jt_out="$(
+        . "$ROOT/setup/lib/common.sh" >/dev/null 2>&1
+        . "$ROOT/setup/lib/dash-server.sh" >/dev/null 2>&1
+        . "$ROOT/setup/lib/exasol-vscode.sh" >/dev/null 2>&1
+        . "$ROOT/setup/lib/json-tables.sh" >/dev/null 2>&1
+        EXAKIT_MARKETPLACE_ADDONS="json-tables" exakit_marketplace_menu 2>&1
+    )" || fail "the json-tables marketplace install failed: $_jt_out"
+    [ -x "$EXAKIT_BIN_DIR/exasol-json-tables" ] || fail "no launcher was written"
+    [ -x "$EXAKIT_HOME/json-tables/libexec/json_to_parquet" ] || fail "no prebuilt engine was installed"
+    [ -x "$EXAKIT_HOME/json-tables/shim/cargo" ] || fail "no cargo shim was written"
+    case "$_jt_out" in
+        *"Checksum verified"*) echo "  ok  artifacts were checksum-verified against the release digests" ;;
+        *) fail "the install did not verify its downloads: $_jt_out" ;;
+    esac
+    # The real proof: a JSON document goes through the launcher (venv CLI ->
+    # cargo shim -> prebuilt engine) and comes out as Parquet. No Rust anywhere.
+    _jt_work="$SANDBOX/jt-e2e"
+    mkdir -p "$_jt_work"
+    printf '[{"id":1,"name":"alpha","tags":["x","y"]},{"id":2,"name":"beta","tags":["z"]}]\n' \
+        > "$_jt_work/sample.json"
+    PATH="$EXAKIT_BIN_DIR:$PATH" "$EXAKIT_BIN_DIR/exasol-json-tables" ingest \
+        --input "$_jt_work/sample.json" --output-dir "$_jt_work/out" \
+        >"$_jt_work/ingest.log" 2>&1 \
+        || fail "the ingest round trip failed: $(cat "$_jt_work/ingest.log")"
+    [ -n "$(find "$_jt_work/out" -name '*.parquet' 2>/dev/null | head -1)" ] \
+        || fail "the ingest produced no Parquet"
+    echo "  ok  JSON in, Parquet out, through the prebuilt engine (no Rust toolchain on this runner)"
+    # And the version recorded is the mirror's own version= line, so
+    # update-check can never see an offer it cannot install.
+    _jt_recorded="$(
+        . "$ROOT/setup/lib/common.sh" >/dev/null 2>&1
+        manifest_get components.json_tables.version 2>/dev/null
+    )"
+    [ -n "$_jt_recorded" ] || fail "no version was recorded in the manifest"
+    echo "  ok  recorded version: $_jt_recorded (the mirror build)"
+fi
+
+say "9/9 uninstall sweeps the add-on"
 (
     . "$ROOT/setup/lib/common.sh" >/dev/null 2>&1
     # The add-on modules must be loaded: the full run dispatches each
@@ -185,6 +244,7 @@ say "8/8 uninstall sweeps the add-on"
     # kit-installed VS Code extension).
     . "$ROOT/setup/lib/dash-server.sh" >/dev/null 2>&1
     . "$ROOT/setup/lib/exasol-vscode.sh" >/dev/null 2>&1
+    . "$ROOT/setup/lib/json-tables.sh" >/dev/null 2>&1
     # The database/MCP steps are stubbed: this sandbox never had either.
     nano_teardown() { :; }
     personal_teardown() { :; }
@@ -194,6 +254,9 @@ say "8/8 uninstall sweeps the add-on"
 )
 [ ! -e "$EXAKIT_HOME/dash-server-venv" ] || fail "uninstall left the dash-server venv behind"
 [ ! -e "$EXAKIT_BIN_DIR/dash-server" ] || fail "uninstall left the dash-server launcher behind"
+[ ! -e "$EXAKIT_HOME/json-tables-venv" ] || fail "uninstall left the json-tables venv behind"
+[ ! -e "$EXAKIT_HOME/json-tables" ] || fail "uninstall left the json-tables engine/shim behind"
+[ ! -e "$EXAKIT_BIN_DIR/exasol-json-tables" ] || fail "uninstall left the json-tables launcher behind"
 echo "  ok  venv, state and launcher removed"
 # The KIT-INSTALLED extension goes with the kit: the full uninstall runs the
 # add-on's own hook (VS Code's --uninstall-extension) before the sweep. VS

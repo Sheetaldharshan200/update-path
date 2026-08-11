@@ -62,9 +62,9 @@ needs no edits there. The conventions, for an id like `my-tool`:
 
 | Convention | Value for `my-tool` |
 |---|---|
-| Module functions (bash; dashes → underscores) | `my_tool_install`, `my_tool_validate`, `my_tool_update`, `my_tool_installed_version`, `my_tool_uninstall`; a tool that *runs* adds `my_tool_status`, `my_tool_start`, `my_tool_stop`, `my_tool_autostart_command`, `my_tool_log_path`; a tool that extends a host app adds `my_tool_applicable` (+ `my_tool_applicable_reason`) |
+| Module functions (bash; dashes → underscores) | `my_tool_install`, `my_tool_validate`, `my_tool_update`, `my_tool_installed_version`, `my_tool_uninstall`; a tool that *runs* adds `my_tool_status`, `my_tool_start`, `my_tool_stop`, `my_tool_autostart_command`, `my_tool_log_path`; a tool that extends a host app adds `my_tool_applicable` (+ `my_tool_applicable_reason`); a tool whose installable version is not a plain upstream release adds `my_tool_latest`; sharpen manual-install detection with `my_tool_system_present` |
 | Version env override / fallback (bash) | `EXAKIT_MY_TOOL_VERSION`, `EXAKIT_MY_TOOL_VERSION_FALLBACK` |
-| versions.json block | `components.my-tool` (`repo` = GitHub release, `package` = PyPI — the generic upstream lookup reads whichever is present) |
+| versions.json block | `components.my-tool` (`repo` = GitHub release, `package` = PyPI — the generic upstream lookup reads whichever is present; neither, plus a `my_tool_latest` hook, when the kit repackages the tool itself — see json-tables) |
 | Manifest keys | `components.my_tool.*`, `desired.my_tool` |
 | Kit-managed state | venv/state under `$EXAKIT_HOME`, launcher at `$EXAKIT_BIN_DIR/my-tool` (swept by uninstall automatically, by registry id) |
 | PowerShell functions | named explicitly in the registry entry (no derivation) |
@@ -75,6 +75,21 @@ needs no edits there. The conventions, for an id like `my-tool`:
 
 Three changes, one PR. `setup/lib/dash-server.sh` / `.ps1` are the reference
 implementation — copy them when in doubt.
+
+Pick your reference by what the tool is:
+
+- **A Python package with a working wheel** → copy dash-server.
+- **An extension to a host application** → copy exasol-vscode (the
+  `_applicable` gate, the host-app CLI discovery, the refusal to touch a copy
+  the user installed themselves).
+- **A tool users cannot install as shipped** (needs a toolchain, ships no
+  binaries, hardcodes a build step) → copy **json-tables**: a packaging
+  workflow in this repo (`.github/workflows/pkg-json-tables.yml`) builds the
+  artifacts once for every platform and publishes them to a `mirror-<id>`
+  release here; the module downloads the prebuilt pair digest-verified,
+  resolves "latest" from that release (`<id>_latest` hook) so nothing is ever
+  advertised before it is built, and the workflow's `advertise` job bumps
+  versions.json by pull request only after a successful publish.
 
 ### 1. Ship the module pair
 
@@ -175,8 +190,15 @@ my_tool_uninstall() {
 # my_tool_log_path()          { ... }   # what `exakit logs my-tool` shows
 
 # OPTIONAL: sharpen "already on this system" detection beyond the default
-# same-named-binary-on-PATH check.
+# check (the id AND the launcher's basename from EXAKIT_MY_TOOL_BIN on PATH),
+# e.g. an import probe for PATH-less pip installs (see json_tables_system_present).
 # my_tool_system_present() { ... }
+
+# OPTIONAL — only when "installable" is stricter than "released upstream".
+# json-tables is the model: the kit prebuilds its artifacts in a packaging
+# workflow, so what CAN be installed is what that workflow has published, not
+# what upstream tagged. The generic upstream lookup calls this hook first.
+# my_tool_latest() { ... }   # print the newest INSTALLABLE version
 ```
 
 **`setup/lib/my-tool.ps1`** — the twin. Same shape with the house verbs

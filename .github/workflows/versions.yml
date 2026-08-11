@@ -86,7 +86,8 @@ jobs:
           if not re.match(r"^\d{4}-\d{2}-\d{2}$", str(doc.get("updated", ""))):
               problems.append("updated must be an ISO date (YYYY-MM-DD)")
 
-          expected = {"personal", "nano", "exapump", "mcp", "pyexasol", "dash-server", "exasol-vscode"}
+          expected = {"personal", "nano", "exapump", "mcp", "pyexasol", "dash-server",
+                      "exasol-vscode", "json-tables"}
           components = doc.get("components") or {}
           if set(components) != expected:
               problems.append("components must be exactly %s, found %s"
@@ -317,6 +318,49 @@ jobs:
           # downloads must exist. exasol-vscode additionally advertises the
           # vsix digest: assert the release asset carries exactly that digest,
           # so a stale hash can never ship (the install refuses on mismatch).
+          # json-tables is not released upstream in installable form: the kit
+          # prebuilds it (pkg-json-tables.yml) and serves it from this repo's
+          # own mirror-json-tables release. The check is therefore against the
+          # MIRROR: the advertised version must be exactly the build sitting on
+          # that release (its body carries version=<build>), because that is
+          # the only version `exakit update` can actually download. This is
+          # the merge gate behind the ordering promise -- the advertise PR that
+          # bumps this version can only pass CI after the artifacts exist.
+          jt = components.get("json-tables") or {}
+          if jt.get("version"):
+              body, reason = fetch("https://api.github.com/repos/%s/releases/tags/mirror-json-tables"
+                                   % os.environ.get("GITHUB_REPOSITORY", ""), token=True)
+              if body is None:
+                  # Bootstrap state: the workflow has never run. Users are safe
+                  # (the module resolves installable versions from the mirror
+                  # and soft-fails with the fix when it is absent), so this is
+                  # a loud notice, not a merge-blocker -- otherwise the PR that
+                  # introduces the add-on could never land. Once the release
+                  # exists, the version check below is a hard failure.
+                  print("::warning::json-tables: the mirror-json-tables release does not exist yet (%s) -- "
+                        "run the 'pkg / json-tables' workflow to publish the prebuilt artifacts" % reason)
+              else:
+                  import re as _re
+                  built = _re.search(r"version=([A-Za-z0-9._+-]+)", body.get("body") or "")
+                  built = built.group(1) if built else ""
+                  if built != jt["version"]:
+                      problems.append("json-tables: versions.json advertises %s but the mirror release "
+                                      "carries %s -- the prebuilt artifacts must exist BEFORE the bump "
+                                      "(the pkg workflow's advertise job does this in the right order)"
+                                      % (jt["version"], built or "nothing"))
+                  else:
+                      print("  ok  json-tables: the mirror release carries the advertised build %s" % built)
+                  wanted = {"exasol-json-tables-ingest-linux-x86_64",
+                            "exasol-json-tables-ingest-linux-aarch64",
+                            "exasol-json-tables-ingest-macos-aarch64"}
+                  names = {a.get("name", "") for a in body.get("assets") or []}
+                  missing = sorted(wanted - names)
+                  if missing:
+                      problems.append("json-tables: the mirror release is missing engine binaries: %s"
+                                      % ", ".join(missing))
+                  if not any(n.endswith(".whl") for n in names):
+                      problems.append("json-tables: the mirror release carries no wheel")
+
           for addon in ("dash-server", "exasol-vscode"):
               block = components.get(addon) or {}
               if not block:

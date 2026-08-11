@@ -2483,6 +2483,21 @@ function Get-ExakitMarketplaceAddons {
             ReasonFn     = "Get-ExasolVscodeApplicableReason"
             EnvVar      = "EXAKIT_EXASOL_VSCODE_VERSION"
             FallbackVar = "ExasolVscodeVersionFallback"
+        },
+        [pscustomobject]@{
+            Id          = "json-tables"
+            Label       = "JSON Tables (JSON into Exasol)"
+            Description = "Ingest, query and reshape JSON-shaped data - the engine ships prebuilt, no Rust toolchain"
+            InstallFn   = "Install-JsonTables"
+            ValidateFn  = "Test-JsonTables"
+            UpdateFn    = "Update-JsonTables"
+            VersionFn   = "Get-JsonTablesInstalledVersion"
+            UninstallFn = "Uninstall-JsonTables"
+            ApplicableFn = "Test-JsonTablesApplicable"
+            ReasonFn     = "Get-JsonTablesApplicableReason"
+            LogFn        = "Get-JsonTablesLogPath"
+            EnvVar      = "EXAKIT_JSON_TABLES_VERSION"
+            FallbackVar = "JsonTablesVersionFallback"
         }
     )
 }

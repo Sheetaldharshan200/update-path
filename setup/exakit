@@ -83,6 +83,7 @@ fi
 # it ships. A missing file only makes the marketplace row unavailable.
 [ -f "$_lib_dir/dash-server.sh" ] && . "$_lib_dir/dash-server.sh"
 [ -f "$_lib_dir/exasol-vscode.sh" ] && . "$_lib_dir/exasol-vscode.sh"
+[ -f "$_lib_dir/json-tables.sh" ] && . "$_lib_dir/json-tables.sh"
 
 _runtime_type() {
     manifest_get runtime.type 2>/dev/null
@@ -437,7 +438,7 @@ Everyday commands:
   info                 show your connection details
   start | stop         run or pause the database and add-on services
   autostart [on|off]   come back automatically after a restart
-  data-load            load the sample data or your own CSV / Parquet
+  data-load            load the sample data or your own CSV / Parquet / JSON
   mcp-doctor           check the AI (MCP) connection
   logs [target]        installer, database and service logs
   marketplace          optional add-ons (dashboards & more)
