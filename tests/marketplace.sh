@@ -556,6 +556,44 @@ _ui_good="$( (
 ) )"
 has "a working page is confirmed" "Dashboards page answers" "$_ui_good"
 check "and recorded" "true" "$(manifest_get components.dash_server.ui_validated)"
+
+# The stale-process repair: a server started BEFORE the package-data restore
+# serves 500 on templates that are on disk, and re-validating the same process
+# can never heal it. When the broken page is on OUR OWN instance, validation
+# restarts it once; a foreign holder is never touched.
+_ui_heal="$( (
+    dash_server_venv_python() { printf '%s\n' "$EXAKIT_HOME/dash-server-venv/bin/python"; }
+    mkdir -p "$EXAKIT_HOME/dash-server-venv/bin"
+    printf '#!/bin/sh\nexit 0\n' > "$EXAKIT_HOME/dash-server-venv/bin/python"
+    chmod 755 "$EXAKIT_HOME/dash-server-venv/bin/python"
+    _dash_server_resolve_port() { :; }
+    _dash_server_port_foreign_desc() { return 1; }
+    _dash_server_http_answers() { return 0; }
+    _dash_server_ui_answers() { return 1; }
+    _dash_server_port_is_ours() { return 0; }
+    dash_server_stop() { printf 'STOPPED ' >> "$WORK/heal-trace"; }
+    dash_server_start() { printf 'STARTED ' >> "$WORK/heal-trace"; _dash_server_ui_answers() { return 0; }; }
+    _dash_server_print_usage() { :; }
+    : > "$WORK/heal-trace"
+    dash_server_validate >/dev/null 2>&1
+    printf '%sui=%s' "$(cat "$WORK/heal-trace")" "$(manifest_get components.dash_server.ui_validated)"
+) )"
+check "a stale instance of ours is restarted, then judged" "STOPPED STARTED ui=true" "$_ui_heal"
+_ui_foreign="$( (
+    dash_server_venv_python() { printf '%s\n' "$EXAKIT_HOME/dash-server-venv/bin/python"; }
+    _dash_server_resolve_port() { :; }
+    _dash_server_port_foreign_desc() { return 1; }
+    _dash_server_http_answers() { return 0; }
+    _dash_server_ui_answers() { return 1; }
+    _dash_server_port_is_ours() { return 1; }
+    dash_server_stop() { printf 'STOPPED ' >> "$WORK/heal-trace2"; }
+    dash_server_start() { printf 'STARTED ' >> "$WORK/heal-trace2"; }
+    _dash_server_print_usage() { :; }
+    : > "$WORK/heal-trace2"
+    dash_server_validate >/dev/null 2>&1
+    [ -s "$WORK/heal-trace2" ] && printf 'restarted' || printf 'untouched'
+) )"
+check "a foreign holder is never restarted" "untouched" "$_ui_foreign"
 # The restore only fills GAPS: a file the install already placed is never
 # overwritten, so a fixed upstream release makes it a silent no-op.
 check "restoring package data leaves existing files alone" "original" "$( (
