@@ -34,7 +34,7 @@
 # gains the Install/Update/Validate bodies its twin already has - the registry
 # row below and the mirror workflow are already in place.
 
-$script:JsonTablesVersionFallback = if ($env:EXAKIT_JSON_TABLES_VERSION_FALLBACK) { $env:EXAKIT_JSON_TABLES_VERSION_FALLBACK } else { "50d05da0f6da" }
+$script:JsonTablesVersionFallback = if ($env:EXAKIT_JSON_TABLES_VERSION_FALLBACK) { $env:EXAKIT_JSON_TABLES_VERSION_FALLBACK } else { "41ddd51a9a33" }
 $script:JsonTablesVersion = if ($env:EXAKIT_JSON_TABLES_VERSION) { $env:EXAKIT_JSON_TABLES_VERSION } else { "" }
 $script:JsonTablesMirrorTag = if ($env:EXAKIT_JSON_TABLES_MIRROR_TAG) { $env:EXAKIT_JSON_TABLES_MIRROR_TAG } else { "mirror-json-tables" }
 

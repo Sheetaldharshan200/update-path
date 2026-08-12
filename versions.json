@@ -51,7 +51,7 @@
       }
     },
     "json-tables": {
-      "version": "50d05da0f6da",
+      "version": "41ddd51a9a33",
       "severity": "normal",
       "note": "prebuilt by the kit's pkg/json-tables workflow; users need no Rust toolchain"
     }
