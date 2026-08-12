@@ -123,6 +123,7 @@ function Install-DashServer {
         # Belt and braces even on a fresh venv: --seed above should have put
         # pip in place, but a pre-existing venv may lack it.
         if (-not (Confirm-DashServerPip -Uv $uv)) { return $false }
+        Restore-DashServerPackageData
         Ok "dash-server installed: $script:DashServerVenv"
     }
 
@@ -283,6 +284,17 @@ function Test-DashServer {
     # as this check can tell; starting a second instance would fail on the bind.
     if (Test-DashServerHttpAnswers) {
         Ok "dash-server control plane answers on port $($script:DashServerPort)"
+        # An already-running server can predate this very install (autostart
+        # brings one up early), so the restored package data never reached it:
+        # its pages 500 on templates that ARE on disk. On OUR OWN instance one
+        # restart is the repair; a foreign holder is left alone as always.
+        # Twin of the same branch in dash_server_validate.
+        if (-not (Test-DashServerUiAnswers) -and (Test-DashServerPortIsOurs)) {
+            Info "The running dash-server predates this install - restarting it to pick up the restored files"
+            Stop-DashServer | Out-Null
+            Start-DashServer | Out-Null
+        }
+        Invoke-DashServerUiCheck
         Set-ExakitManifestValue "components.dash_server.validated" $true
         Write-DashServerUsagePanel
         return
@@ -324,6 +336,75 @@ function Test-DashServer {
 
 # One bounded probe of the control plane. Any HTTP status counts: /mcp
 # answering 4xx to a bare GET still proves the server is up.
+# Restore-DashServerPackageData - put back data files the release ships in its
+# source tree but does NOT declare as package data, so pip never installs them.
+# UPSTREAM BUG (dash-server 0.1.0): the templates under src/dash_server are
+# missing from every installed copy, so the browser UI answers 500 while the
+# MCP control plane looks healthy. Nothing is overwritten, so a fixed release
+# makes this a no-op. Twin of _dash_server_restore_package_data.
+function Restore-DashServerPackageData {
+    $python = Get-DashServerVenvPython
+    $site = & $python -c 'import dash_server, os; print(os.path.dirname(dash_server.__file__))' 2>$null
+    if (-not $site -or -not (Test-Path $site)) { return }
+
+    $tmp = Join-Path ([IO.Path]::GetTempPath()) ("exakit-ds-data-" + [IO.Path]::GetRandomFileName())
+    New-Item -ItemType Directory -Force -Path $tmp | Out-Null
+    try {
+        $tarball = Join-Path $tmp "src.tar.gz"
+        try {
+            Invoke-WebRequest -Uri (Get-DashServerReleaseUrl -Version $script:DashServerVersion) `
+                -OutFile $tarball -UseBasicParsing -TimeoutSec 120 -ErrorAction Stop
+        } catch { return }
+        & tar -xzf $tarball -C $tmp 2>$null
+        if ($LASTEXITCODE -ne 0) { return }
+        $src = Join-Path $tmp "dash-server-$($script:DashServerVersion)\src\dash_server"
+        if (-not (Test-Path $src)) { return }
+
+        $restored = 0
+        Get-ChildItem -Path $src -Recurse -File | Where-Object { $_.Extension -ne ".py" } | ForEach-Object {
+            $rel = $_.FullName.Substring($src.Length).TrimStart("\", "/")
+            $dest = Join-Path $site $rel
+            if (-not (Test-Path $dest)) {
+                New-Item -ItemType Directory -Force -Path (Split-Path $dest) | Out-Null
+                Copy-Item $_.FullName $dest -ErrorAction SilentlyContinue
+                if (Test-Path $dest) { $restored++ }
+            }
+        }
+        if ($restored -gt 0) {
+            Info "Restored $restored data file(s) the release does not declare as package data (upstream packaging gap; the browser UI needs them)"
+        }
+    } finally {
+        Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
+    }
+}
+
+# Test-DashServerUiAnswers - the page a HUMAN opens, checked separately from
+# /mcp: the control plane can be healthy while the browser UI is broken.
+# Twin of _dash_server_ui_answers.
+function Test-DashServerUiAnswers {
+    try {
+        $response = Invoke-WebRequest -Uri "http://127.0.0.1:$($script:DashServerPort)/" `
+            -UseBasicParsing -TimeoutSec 5 -ErrorAction Stop
+        return ($response.StatusCode -ge 200 -and $response.StatusCode -lt 400)
+    } catch {
+        return $false
+    }
+}
+
+# Invoke-DashServerUiCheck - report the browser page separately. A broken UI
+# does not fail the install, but it must never pass silently.
+# Twin of _dash_server_check_ui.
+function Invoke-DashServerUiCheck {
+    if (Test-DashServerUiAnswers) {
+        Ok "Dashboards page answers: http://127.0.0.1:$($script:DashServerPort)"
+        Set-ExakitManifestValue "components.dash_server.ui_validated" $true
+        return
+    }
+    Warn2 "The control plane is up, but the dashboards page at http://127.0.0.1:$($script:DashServerPort) does not render (see: exakit logs dash-server)."
+    Warn2 "Agents can still drive it over MCP. Retry the repair with: exakit update dash-server"
+    Set-ExakitManifestValue "components.dash_server.ui_validated" $false
+}
+
 function Test-DashServerHttpAnswers {
     try {
         $response = Invoke-WebRequest -Uri "http://127.0.0.1:$($script:DashServerPort)/mcp" `

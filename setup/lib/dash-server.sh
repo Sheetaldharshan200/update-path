@@ -461,6 +461,18 @@ dash_server_validate() {
     # starting a second instance just to probe would fail on the bind.
     if _dash_server_http_answers; then
         ok "dash-server control plane answers on port $EXAKIT_DASH_SERVER_PORT"
+        # A server that was already running can predate this very install:
+        # autostart brings one up early, and the package-data restore above
+        # then lands in site-packages that the stale process never re-reads —
+        # so its pages 500 on templates that ARE on disk. When that happens to
+        # OUR OWN instance, one restart is the repair; warning the user to
+        # re-run the command they just ran would re-probe the same stale
+        # process forever. A foreign holder is left alone as always.
+        if ! _dash_server_ui_answers && _dash_server_port_is_ours; then
+            info "The running dash-server predates this install — restarting it to pick up the restored files"
+            dash_server_stop >/dev/null 2>&1 || true
+            dash_server_start >/dev/null 2>&1 || true
+        fi
         _dash_server_check_ui
         manifest_set components.dash_server.validated true
         _dash_server_print_usage
