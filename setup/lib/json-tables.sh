@@ -33,7 +33,7 @@
 #   - launcher: $EXAKIT_BIN_DIR/exasol-json-tables
 
 EXAKIT_JSON_TABLES_VERSION="${EXAKIT_JSON_TABLES_VERSION:-}"
-EXAKIT_JSON_TABLES_VERSION_FALLBACK="${EXAKIT_JSON_TABLES_VERSION_FALLBACK:-50d05da0f6da}"
+EXAKIT_JSON_TABLES_VERSION_FALLBACK="${EXAKIT_JSON_TABLES_VERSION_FALLBACK:-41ddd51a9a33}"
 EXAKIT_JSON_TABLES_PACKAGE="${EXAKIT_JSON_TABLES_PACKAGE:-exasol-json-tables}"
 # The mirror release lives in the kit's own repository: the same place the kit
 # is fetched from, built by the kit's own workflow.
