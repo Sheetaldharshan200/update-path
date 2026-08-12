@@ -75,6 +75,7 @@ PATH="$WORK/code-bin:$PATH"
 . "$ROOT/setup/lib/common.sh"
 . "$ROOT/setup/lib/dash-server.sh"
 . "$ROOT/setup/lib/exasol-vscode.sh"
+. "$ROOT/setup/lib/json-tables.sh"
 
 # ...and its own port. The default 5100 is where a developer's REAL dash-server
 # listens, and the ownership probe would rightly call that a foreign process
@@ -85,8 +86,17 @@ _EXAKIT_DS_PORT_EXPLICIT=1
 
 manifest_init >/dev/null 2>&1
 
+# cover_every_addon — stub <id>_system_present for EVERY registered add-on, so
+# "the user already has all of these" is expressed once instead of add-on by
+# add-on. Call it inside the subshell whose result depends on nothing pending.
+cover_every_addon() {
+    for _cea_id in $(exakit_marketplace_addons | cut -d'|' -f1); do
+        eval "$(printf '%s' "$_cea_id" | tr '-' '_')_system_present() { return 0; }"
+    done
+}
+
 echo "registry:"
-check "addons list carries both add-ons" "dash-server exasol-vscode" \
+check "addons list carries every registered add-on" "dash-server exasol-vscode json-tables" \
     "$(exakit_marketplace_addons | cut -d'|' -f1 | tr '\n' ' ' | sed 's/ $//')"
 check "addon module is loaded" "yes" "$(exakit_marketplace_addon_available dash-server && echo yes || echo no)"
 check "component block" "components.dash-server" "$(_exakit_component_block dash-server)"
@@ -138,7 +148,7 @@ check "installed-addons list" "dash-server" "$(exakit_marketplace_installed_addo
 # and once every add-on is covered, it does.
 check "another add-on keeps the offer pending" "yes" "$(exakit_marketplace_has_pending && echo yes || echo no)"
 check "nothing pending once ALL are covered" "no" "$( (
-    exasol_vscode_system_present() { return 0; }
+    cover_every_addon
     exakit_marketplace_has_pending && echo yes || echo no
 ) )"
 
@@ -158,13 +168,15 @@ run_menu() ( # run_menu <env-answer> — echoes "installed:<ids>" + menu output
     dash_server_validate() { return 0; }
     exasol_vscode_install() { _CALLED="${_CALLED} exasol-vscode"; return 0; }
     exasol_vscode_validate() { return 0; }
+    json_tables_install() { _CALLED="${_CALLED} json-tables"; return 0; }
+    json_tables_validate() { return 0; }
     EXAKIT_MARKETPLACE_ADDONS="$1"
     exakit_marketplace_menu >/dev/null 2>&1
     printf 'rc=%s called=%s' "$?" "${_CALLED# }"
 )
 check "none installs nothing" "rc=0 called=" "$(run_menu none)"
 check "naming one addon installs only it" "rc=0 called=dash-server" "$(run_menu dash-server)"
-check "all installs every pending addon" "rc=0 called=dash-server exasol-vscode" "$(run_menu all)"
+check "all installs every pending addon" "rc=0 called=dash-server exasol-vscode json-tables" "$(run_menu all)"
 _unknown_out="$( (run_menu not-a-tool) 2>&1 || true)"
 check "an unknown id refuses" "yes" "$( (EXAKIT_MARKETPLACE_ADDONS=not-a-tool exakit_marketplace_menu >/dev/null 2>&1); [ $? -ne 0 ] && echo yes || echo no )"
 # An installer that fails must not report success.
@@ -281,7 +293,7 @@ printf '#!/bin/sh\nexit 0\n' > "$WORK/system-bin/dash-server"
 chmod +x "$WORK/system-bin/dash-server"
 _sys_out="$( (
     PATH="$WORK/system-bin:$PATH"
-    exasol_vscode_system_present() { return 0; }   # cover the other add-on too
+    cover_every_addon                              # cover the other add-ons too
     printf 'present=%s ' "$(_exakit_marketplace_addon_present dash-server && echo yes || echo no)"
     printf 'pending=%s ' "$(exakit_marketplace_has_pending && echo yes || echo no)"
     printf 'kit-managed=%s ' "$(exakit_marketplace_addon_installed dash-server && echo yes || echo no)"
@@ -313,7 +325,7 @@ check "EXAKIT_MARKETPLACE_ADDONS pre-answers the offer" "rc=0 called=dash-server
 # Everything already present: the offer disappears entirely — no hint, no ask.
 check "nothing pending -> the offer is silent" "" "$( (
     PATH="$WORK/system-bin:$PATH"
-    exasol_vscode_system_present() { return 0; }
+    cover_every_addon
     exakit_marketplace_offer 2>&1
 ) )"
 # Soft failures: the hint, never the "done and working" celebration.
@@ -386,7 +398,7 @@ mkdir -p "$EXAKIT_HOME/dash-server-venv/bin"
 printf '#!/bin/sh\necho 0.1.0\n' > "$EXAKIT_HOME/dash-server-venv/bin/python"
 chmod +x "$EXAKIT_HOME/dash-server-venv/bin/python"
 _covered_out="$( (
-    exasol_vscode_system_present() { return 0; }
+    cover_every_addon
     exakit_marketplace_menu 2>&1
 ) )"
 has "no selectable rows -> covered list, no menu" "Everything available is already" "$_covered_out"
@@ -465,7 +477,9 @@ echo "an add-on that needs a host app is only offered when the app is there:"
 # row, no table line, nothing pending, nothing in the discovery line. The kit
 # never advertises something it cannot install here.
 _no_code="$( (
+    cover_every_addon
     exasol_vscode_code_cli() { return 1; }          # no VS Code anywhere
+    exasol_vscode_system_present() { return 1; }    # ...and not present either
     printf 'applicable=%s ' "$(_exakit_addon_applicable exasol-vscode && echo yes || echo no)"
     printf 'offerable=%s ' "$(_exakit_addon_offerable exasol-vscode && echo yes || echo no)"
     printf 'in-menu=%s ' "$(exakit_marketplace_menu 2>&1 | grep -c exasol-vscode)"
@@ -813,8 +827,268 @@ _as_sweep="$( (
 ) )"
 check "uninstall sweeps the boot entries too" "before=some after=0" "$_as_sweep"
 
+echo "json-tables (prebuilt engine, no Rust toolchain):"
+check "the add-on is registered" "json-tables" \
+    "$(exakit_marketplace_addons | cut -d'|' -f1 | grep -x json-tables)"
+has "and its one-liner promises no toolchain" "no Rust toolchain" \
+    "$(exakit_marketplace_addons | grep '^json-tables|')"
+
+# The asset name is the contract between the packaging workflow and the
+# installer: a mismatch means every download 404s. Pin both halves.
+_jt_asset() { ( detect_os() { printf '%s\n' "$1"; }; detect_arch() { printf '%s\n' "$2"; }
+    json_tables_engine_asset 2>/dev/null || printf 'NONE\n' ); }
+check "macOS arm64 asks for the macos-aarch64 engine" "exasol-json-tables-ingest-macos-aarch64" \
+    "$( ( detect_os() { printf 'macos\n'; }; detect_arch() { printf 'arm64\n'; }; json_tables_engine_asset ) )"
+check "Linux x86_64 asks for the linux-x86_64 engine" "exasol-json-tables-ingest-linux-x86_64" \
+    "$( ( detect_os() { printf 'linux\n'; }; detect_arch() { printf 'x86_64\n'; }; json_tables_engine_asset ) )"
+check "Linux arm64 asks for the linux-aarch64 engine" "exasol-json-tables-ingest-linux-aarch64" \
+    "$( ( detect_os() { printf 'linux\n'; }; detect_arch() { printf 'arm64\n'; }; json_tables_engine_asset ) )"
+# An Intel Mac has no published engine and building one needs the toolchain the
+# add-on exists to avoid: it must be HIDDEN, not offered and then failed.
+check "an Intel Mac is not applicable" "hidden" \
+    "$( ( detect_os() { printf 'macos\n'; }; detect_arch() { printf 'x86_64\n'; }
+        json_tables_applicable && printf 'offered\n' || printf 'hidden\n' ) )"
+has "and says why, in terms the user can act on" "no prebuilt ingest engine" \
+    "$( ( detect_os() { printf 'macos\n'; }; detect_arch() { printf 'x86_64\n'; }
+        json_tables_applicable_reason ) )"
+
+# The shim is the whole no-Rust story. Upstream's ONLY engine call is
+#   cargo run --manifest-path <...>/json_tables_ingest/Cargo.toml -- <engine argv>
+# so the shim must hand <engine argv> to the prebuilt binary verbatim: an extra
+# or dropped argument here is a broken ingest for every user.
+_jt_shim="$( (
+    EXAKIT_JSON_TABLES_HOME="$WORK/jt"
+    mkdir -p "$WORK/jt/libexec"
+    printf '#!/bin/sh\nprintf "ARGV"; for a in "$@"; do printf " <%%s>" "$a"; done; printf "\\n"\n' \
+        > "$WORK/jt/libexec/json_to_parquet"
+    chmod 755 "$WORK/jt/libexec/json_to_parquet"
+    json_tables_write_shim >/dev/null 2>&1
+    "$WORK/jt/shim/cargo" run --manifest-path /x/crates/json_tables_ingest/Cargo.toml \
+        -- --input /tmp/a.json --output-dir /tmp/out --schema-sql
+) )"
+check "the shim replays the engine argv exactly" \
+    "ARGV <--input> </tmp/a.json> <--output-dir> </tmp/out> <--schema-sql>" "$_jt_shim"
+# A user with their own cargo must keep it: the shim is only ever on PATH
+# inside our launcher, and even there it must not swallow unrelated commands.
+_jt_passthru="$( (
+    EXAKIT_JSON_TABLES_HOME="$WORK/jt2"
+    mkdir -p "$WORK/jt2/libexec" "$WORK/real-cargo"
+    printf '#!/bin/sh\necho REAL-CARGO "$@"\n' > "$WORK/real-cargo/cargo"
+    chmod 755 "$WORK/real-cargo/cargo"
+    : > "$WORK/jt2/libexec/json_to_parquet"; chmod 755 "$WORK/jt2/libexec/json_to_parquet"
+    json_tables_write_shim >/dev/null 2>&1
+    PATH="$WORK/jt2/shim:$WORK/real-cargo" "$WORK/jt2/shim/cargo" build --release
+) )"
+check "anything else reaches the real cargo untouched" "REAL-CARGO build --release" "$_jt_passthru"
+
+_jt_launcher="$( (
+    EXAKIT_JSON_TABLES_HOME="$WORK/jt3"
+    EXAKIT_JSON_TABLES_VENV="$WORK/jt3-venv"
+    EXAKIT_JSON_TABLES_BIN="$WORK/bin/exasol-json-tables"
+    json_tables_write_launcher >/dev/null 2>&1
+    grep -c "$WORK/jt3/shim" "$WORK/bin/exasol-json-tables"
+    grep -c "$WORK/jt3-venv/bin/exasol-json-tables" "$WORK/bin/exasol-json-tables"
+) )"
+check "the launcher fronts PATH with the shim and runs the venv CLI" "1
+1" "$_jt_launcher"
+
+# Half an install is not an install: a venv whose engine never arrived would
+# pass an import check and then fail at the first ingest.
+_jt_half="$( (
+    EXAKIT_JSON_TABLES_VENV="$WORK/jt-half-venv"
+    EXAKIT_JSON_TABLES_HOME="$WORK/jt-half"
+    mkdir -p "$WORK/jt-half-venv/bin"
+    printf '#!/bin/sh\nexit 0\n' > "$WORK/jt-half-venv/bin/python"; chmod 755 "$WORK/jt-half-venv/bin/python"
+    manifest_set components.json_tables.version 50d05da0f6da >/dev/null 2>&1
+    json_tables_installed_version >/dev/null 2>&1 && printf 'installed\n' || printf 'not installed\n'
+) )"
+check "a venv without the engine does not count as installed" "not installed" "$_jt_half"
+
+# The mirror release is published by our own workflow. Until it exists the
+# add-on must fail SOFT and name the fix, never end the caller's run.
+_jt_missing="$( (
+    EXAKIT_JSON_TABLES_MIRROR_TAG="does-not-exist-$$"
+    _json_tables_mirror_wheel_name() { return 1; }
+    exakit_ensure_uv() { return 0; }
+    EXAKIT_UV_BIN="$WORK/bin/uv"; printf '#!/bin/sh\nexit 0\n' > "$WORK/bin/uv"; chmod 755 "$WORK/bin/uv"
+    detect_os() { printf 'linux\n'; }; detect_arch() { printf 'x86_64\n'; }
+    json_tables_install 2>&1 | tr '\n' ' '
+    printf 'rc=%s' "$?"
+) )"
+has "a missing mirror release names the workflow to run" "pkg / json-tables" "$_jt_missing"
+has "and stays a soft failure" "Everything else in the kit is unaffected" "$_jt_missing"
+
+_jt_uninst="$( (
+    EXAKIT_JSON_TABLES_VENV="$WORK/jt-u-venv"
+    EXAKIT_JSON_TABLES_HOME="$WORK/jt-u"
+    EXAKIT_JSON_TABLES_BIN="$WORK/bin/exasol-json-tables-u"
+    mkdir -p "$EXAKIT_JSON_TABLES_VENV" "$EXAKIT_JSON_TABLES_HOME"
+    : > "$EXAKIT_JSON_TABLES_BIN"
+    manifest_set components.json_tables.version 50d05da0f6da >/dev/null 2>&1
+    json_tables_uninstall 1 >/dev/null 2>&1
+    [ -d "$EXAKIT_JSON_TABLES_VENV" ] && printf 'dry-kept '
+    json_tables_uninstall 0 >/dev/null 2>&1
+    for _p in "$EXAKIT_JSON_TABLES_VENV" "$EXAKIT_JSON_TABLES_HOME" "$EXAKIT_JSON_TABLES_BIN"; do
+        [ -e "$_p" ] && printf 'LEFT ' || printf 'gone '
+    done
+    manifest_get components.json_tables.version >/dev/null 2>&1 && printf 'record' || printf 'cleared'
+) )"
+check "uninstall keeps a dry run, then removes every part" "dry-kept gone gone gone cleared" "$_jt_uninst"
+
+echo "manual installs are never re-offered:"
+# A tool the user installed themselves is "present": the marketplace must not
+# advertise it, and the kit must never manage or remove it. The launcher name
+# often differs from the add-on id, so this is keyed on EXAKIT_<ID>_BIN too --
+# without that, a manual `pip install exasol-json-tables` would still be
+# offered as if it were missing.
+mkdir -p "$WORK/manual-bin"
+printf '#!/bin/sh\nexit 0\n' > "$WORK/manual-bin/exasol-json-tables"
+chmod 755 "$WORK/manual-bin/exasol-json-tables"
+check "a manually installed add-on reads as present" "present" "$( (
+    PATH="$WORK/manual-bin:$PATH"
+    _exakit_marketplace_addon_present json-tables && printf 'present\n' || printf 'missing\n'
+) )"
+check "the menu says so instead of offering an install" "on this system" "$( (
+    PATH="$WORK/manual-bin:$PATH"
+    exakit_marketplace_menu 2>/dev/null | grep '^json-tables' | sed -n 's/^json-tables *\([a-z ]*[a-z]\) .*/\1/p'
+) )"
+check "and it cannot be selected" "not-selectable" "$( (
+    PATH="$WORK/manual-bin:$PATH"
+    EXAKIT_MARKETPLACE_ADDONS="json-tables"
+    exakit_marketplace_menu 2>/dev/null | grep -q '^json-tables$' && printf 'selectable\n' || printf 'not-selectable\n'
+) )"
+check "with it gone, it is offerable again" "offered" "$( (
+    _exakit_addon_offerable json-tables && printf 'offered\n' || printf 'not-offered\n'
+) )"
+# ...but the kit still must not claim to MANAGE it: a manual copy is not a kit
+# install, so update/uninstall leave it alone.
+check "a manual copy is never counted as kit-managed" "not-managed" "$( (
+    PATH="$WORK/manual-bin:$PATH"
+    exakit_marketplace_addon_installed json-tables && printf 'managed\n' || printf 'not-managed\n'
+) )"
+rm -f "$WORK/manual-bin/exasol-json-tables"
+
+echo "nothing is advertised before it is built:"
+# The mirror release is the authority on what can be installed. If the
+# packaging workflow has not built a version yet, the update flow must not
+# offer it -- an offer the user cannot act on is worse than no offer.
+check "the advertised version comes from the mirror, not the manifest" "mirror-2026aa" "$( (
+    _json_tables_mirror_version() { printf 'mirror-2026aa\n'; }
+    exakit_component_latest json-tables
+) )"
+check "an unreachable mirror advertises nothing rather than guessing" "none" "$( (
+    _json_tables_mirror_version() { return 1; }
+    _out="$(exakit_component_latest json-tables 2>/dev/null || true)"
+    [ -n "$_out" ] && printf '%s\n' "$_out" || printf 'none\n'
+) )"
+echo "data-load routes JSON through the add-on:"
+. "$ROOT/setup/lib/exapump.sh"
+check "file kinds are classified from the name" "csv parquet json json json csv unknown" "$(
+    for _f in a.csv b.parquet c.json d.ndjson e.jsonl.gz f.CSV.gz g.xlsx; do
+        printf '%s ' "$(exakit_data_file_kind "$_f")"
+    done | sed 's/ $//')"
+
+# Not installed and the user declines: nothing is loaded, and the run does not
+# die -- data loading is a menu the user came back to, not a one-shot script.
+_jl_declined="$( (
+    EXAKIT_MARKETPLACE_ADDONS="none"
+    json_tables_installed_version() { return 1; }
+    exapump_upload() { printf 'UPLOAD-CALLED\n'; }
+    exakit_load_local_json "$WORK/sample.json" 2>&1
+    printf 'rc=%s' "$?"
+) )"
+has "declining explains, never uploads" "not installing JSON Tables" "$_jl_declined"
+lacks "and nothing reaches the database" "UPLOAD-CALLED" "$_jl_declined"
+has "and it says why JSON needs the add-on" "JSON Tables shreds JSON" "$_jl_declined"
+
+# Not applicable on this platform: the add-on is not even offered, and the
+# reason names the platform rather than leaving the user guessing.
+_jl_unsupported="$( (
+    json_tables_installed_version() { return 1; }
+    json_tables_applicable() { return 1; }
+    exapump_upload() { printf 'UPLOAD-CALLED\n'; }
+    exakit_load_local_json "$WORK/sample.json" 2>&1
+) )"
+has "an unsupported platform says so" "not available on this machine" "$_jl_unsupported"
+has "and points at what does work" "CSV and Parquet load without it" "$_jl_unsupported"
+lacks "and offers no install" "Install it now" "$_jl_unsupported"
+
+# Installed: the file is ingested and the resulting tables are pushed in by
+# data-load itself -- the user hands over one JSON file and gets tables.
+mkdir -p "$WORK/jt-bin"
+cat > "$WORK/jt-bin/exasol-json-tables" <<'JTSTUBEOF'
+#!/bin/sh
+# stub CLI: writes the Parquet files a real ingest would produce
+_out=""
+while [ $# -gt 0 ]; do
+    case "$1" in --output-dir) _out="$2"; shift 2 ;; *) shift ;; esac
+done
+mkdir -p "$_out"
+: > "$_out/orders.parquet"
+[ -n "${JT_STUB_TABLES:-}" ] && : > "$_out/order_items.parquet"
+exit 0
+JTSTUBEOF
+chmod 755 "$WORK/jt-bin/exasol-json-tables"
+printf '[{"id":1}]\n' > "$WORK/sample.json"
+
+_jl_one="$( (
+    EXAKIT_JSON_TABLES_BIN="$WORK/jt-bin/exasol-json-tables"
+    json_tables_installed_version() { printf '50d05da0f6da\n'; }
+    run_logged() { "$@" >/dev/null 2>&1; }
+    prompt_text() { printf 'STARTER_KIT.SAMPLE\n'; }
+    info() { :; }; ok() { :; }
+    exakit_ensure_schema() { printf 'SCHEMA:%s ' "$1"; }
+    exapump_upload() { printf 'UPLOAD:%s->%s ' "${1##*/}" "$2"; }
+    exakit_verify_loaded_table() { printf 'VERIFY:%s' "$1"; }
+    exakit_load_local_json "$WORK/sample.json" 2>/dev/null
+) )"
+check "one table: ingested, then loaded and verified" \
+    "SCHEMA:STARTER_KIT UPLOAD:orders.parquet->STARTER_KIT.SAMPLE VERIFY:STARTER_KIT.SAMPLE" "$_jl_one"
+
+# Nested JSON legitimately produces several tables: all of them must land, not
+# just the first one.
+_jl_many="$( (
+    EXAKIT_JSON_TABLES_BIN="$WORK/jt-bin/exasol-json-tables"
+    JT_STUB_TABLES=1; export JT_STUB_TABLES
+    json_tables_installed_version() { printf '50d05da0f6da\n'; }
+    run_logged() { "$@" >/dev/null 2>&1; }
+    prompt_text() { printf 'JSONDATA\n'; }
+    info() { :; }; ok() { :; }
+    exakit_ensure_schema() { printf 'SCHEMA:%s ' "$1"; }
+    exapump_upload() { printf 'UPLOAD:%s ' "$2"; }
+    exakit_verify_loaded_table() { :; }
+    exakit_load_local_json "$WORK/sample.json" 2>/dev/null
+) )"
+check "every table from a nested document lands" \
+    "SCHEMA:JSONDATA UPLOAD:JSONDATA.ORDER_ITEMS UPLOAD:JSONDATA.ORDERS" \
+    "$(printf '%s' "$_jl_many" | sed 's/ *$//')"
+
+# A failed ingest must leave the database alone and name the log.
+_jl_failed="$( (
+    EXAKIT_JSON_TABLES_BIN="$WORK/jt-bin/exasol-json-tables"
+    json_tables_installed_version() { printf '50d05da0f6da\n'; }
+    run_logged() { return 1; }
+    exapump_upload() { printf 'UPLOAD-CALLED\n'; }
+    exakit_load_local_json "$WORK/sample.json" 2>&1
+    printf 'rc=%s' "$?"
+) )"
+has "a failed ingest names the log" "exakit logs json-tables" "$_jl_failed"
+has "and says the database is unchanged" "database is unchanged" "$_jl_failed"
+lacks "and uploads nothing" "UPLOAD-CALLED" "$_jl_failed"
+
+# The CSV path must be completely untouched by all of this.
+check "a CSV still never mentions the add-on" "csv" "$(exakit_data_file_kind "$WORK/x.csv")"
+
 echo "discovery one-liners:"
-has "update-check discovery line names the addon" "dash-server" "$(exakit_print_marketplace_discovery_line)"
+_disc_line="$(exakit_print_marketplace_discovery_line)"
+has "update-check discovery line advertises the marketplace" "exakit marketplace" "$_disc_line"
+check "and names exactly the add-ons still pending" "$( (
+    exakit_marketplace_addons | cut -d'|' -f1 | while read -r _dl_id; do
+        [ -n "$_dl_id" ] || continue
+        _exakit_addon_offerable "$_dl_id" || continue
+        _exakit_marketplace_addon_present "$_dl_id" || printf '%s\n' "$_dl_id"
+    done | paste -sd, - | sed 's/,/, /g'
+) )" "$(printf '%s' "$_disc_line" | sed -n 's/.*available (\([^)]*\)).*/\1/p')"
 has "connection panel advertises the marketplace" "exakit marketplace" "$(connection_panel 2>/dev/null)"
 
 echo "passed: $PASS, failed: $FAIL"

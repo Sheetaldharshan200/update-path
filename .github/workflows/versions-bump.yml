@@ -335,6 +335,14 @@ jobs:
                   ("setup/lib/exasol-vscode.sh", "bash", "EXAKIT_EXASOL_VSCODE_VERSION_FALLBACK"),
                   ("setup/lib/exasol-vscode.ps1", "pwsh", "ExasolVscodeVersionFallback"),
               ],
+              # json-tables is versioned by the upstream COMMIT its prebuilt
+              # artifacts were built from; the pkg/json-tables workflow moves
+              # that version, so the auto-bump leaves it alone and only the
+              # fallback constants are kept in lockstep by hand.
+              "json-tables": [
+                  ("setup/lib/json-tables.sh", "bash", "EXAKIT_JSON_TABLES_VERSION_FALLBACK"),
+                  ("setup/lib/json-tables.ps1", "pwsh", "JsonTablesVersionFallback"),
+              ],
           }
           touched = set()
 

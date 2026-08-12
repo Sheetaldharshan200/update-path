@@ -654,9 +654,199 @@ exakit_prompt_optional_verification() {
     exakit_verify_loaded_table "$(exakit_upper_table_target "$_target")"
 }
 
+# --- JSON input: routed through the JSON Tables add-on -----------------------
+#
+# exapump loads CSV and Parquet. JSON is a different shape of problem -- one
+# document can be an arbitrarily nested tree, and turning that into relational
+# tables is what the JSON Tables add-on exists for. So `exakit data-load` reads
+# the file's kind first and, for JSON, offers the add-on (prebuilt, no Rust
+# toolchain) and then finishes the load itself: ingest the JSON to Parquet,
+# then push the Parquet in through the same verified exapump path CSV uses.
+# The user hands over one JSON file and ends up with queryable tables.
+
+# exakit_data_file_kind <path> — csv | parquet | json | unknown, from the name.
+# Compressed variants resolve to their payload kind: exapump handles .csv.gz,
+# and the ingest engine reads .json.gz / .ndjson.gz.
+exakit_data_file_kind() {
+    _dfk_name="$(printf '%s' "${1##*/}" | tr '[:upper:]' '[:lower:]')"
+    case "$_dfk_name" in
+        *.gz|*.bz2|*.zst|*.xz) _dfk_name="${_dfk_name%.*}" ;;
+    esac
+    case "$_dfk_name" in
+        *.json|*.ndjson|*.jsonl) printf 'json\n' ;;
+        *.parquet|*.pq)          printf 'parquet\n' ;;
+        *.csv|*.tsv|*.txt)       printf 'csv\n' ;;
+        *)                       printf 'unknown\n' ;;
+    esac
+}
+
+# _exakit_json_tables_ready — is the add-on installed AND usable right now?
+_exakit_json_tables_ready() {
+    command -v json_tables_installed_version >/dev/null 2>&1 || return 1
+    [ -n "$(json_tables_installed_version 2>/dev/null || true)" ] || return 1
+    [ -x "${EXAKIT_JSON_TABLES_BIN:-}" ] || return 1
+    return 0
+}
+
+# _exakit_json_tables_load_module — the module is sourced by the exakit CLI but
+# not by the installer, and the JSON path can be reached from either.
+_exakit_json_tables_load_module() {
+    command -v json_tables_install >/dev/null 2>&1 && return 0
+    command -v _exakit_marketplace_load_modules >/dev/null 2>&1 || return 1
+    _exakit_marketplace_load_modules >/dev/null 2>&1 || true
+    command -v json_tables_install >/dev/null 2>&1
+}
+
+# _exakit_json_tables_offer — the checkbox with the explanation. Returns 0 when
+# the add-on is ready to use (already installed, or installed right here), 2
+# when the user declined, 1 when it cannot be installed on this machine.
+#
+# The install is pre-selected: someone who just typed the path to a JSON file
+# has already said what they want, so Enter alone gets on with it. Declining is
+# an explicit tick, and EXAKIT_MARKETPLACE_ADDONS answers for a scripted run.
+_exakit_json_tables_offer() {
+    _jto_file="$1"
+    _exakit_json_tables_ready && return 0
+
+    _exakit_json_tables_load_module || {
+        warn "This kit copy does not carry the JSON Tables module — update the kit first: exakit update exakit"
+        return 1
+    }
+    # Not installable here (no prebuilt engine for this platform): say so once,
+    # with the reason, instead of offering something that cannot work.
+    if command -v _exakit_addon_applicable >/dev/null 2>&1 && \
+       ! _exakit_addon_applicable json-tables; then
+        _jto_why="$(_exakit_addon_applicable_reason json-tables 2>/dev/null || true)"
+        warn "JSON files need the JSON Tables add-on, which is not available on this machine${_jto_why:+: $_jto_why}"
+        info "CSV and Parquet load without it. Convert the file, or load it from a supported machine."
+        return 1
+    fi
+
+    ui_panel_begin "JSON needs one add-on"
+    ui_panel_line "File            $(ui_tilde "$_jto_file")"
+    ui_panel_line "Why             exapump loads CSV and Parquet; JSON is a nested tree"
+    ui_panel_line "The add-on      JSON Tables shreds JSON into relational tables"
+    ui_panel_line "Cost            a prebuilt download - no Rust toolchain, nothing to compile"
+    ui_panel_line "Then            this load continues automatically, into your database"
+    ui_panel_line "Later           it stays yours: exakit update json-tables / exakit uninstall"
+    ui_panel_end
+    printf '\n'
+
+    # A scripted answer wins, so agents and CI never need a TTY.
+    if [ -n "${EXAKIT_MARKETPLACE_ADDONS:-}" ]; then
+        case ",$(printf '%s' "$EXAKIT_MARKETPLACE_ADDONS" | tr '[:upper:]' '[:lower:]' | tr -d ' ')," in
+            *,none,*) info "EXAKIT_MARKETPLACE_ADDONS=none - not installing JSON Tables."; return 2 ;;
+            *,all,*|*,json-tables,*) info "EXAKIT_MARKETPLACE_ADDONS names json-tables - installing it." ;;
+            *) info "EXAKIT_MARKETPLACE_ADDONS does not name json-tables - not installing it."; return 2 ;;
+        esac
+    else
+        EXAKIT_CHECKBOX_EXCLUSIVE=2
+        ui_checkbox_menu "JSON Tables add-on" "1" \
+            "Install it now and load this file" \
+            "Cancel (load nothing)"
+        case ",$EXAKIT_CHECKBOX_SELECTION," in
+            *",2,"*|,,) info "Not installing JSON Tables. This file was not loaded."; return 2 ;;
+        esac
+    fi
+
+    command -v _exakit_marketplace_install_one >/dev/null 2>&1 || {
+        warn "The marketplace installer is not available in this kit build."
+        return 1
+    }
+    _exakit_marketplace_install_one json-tables || {
+        warn "JSON Tables could not be installed, so this JSON file was not loaded."
+        info "Everything already in the database is untouched. Retry with: exakit update json-tables"
+        return 1
+    }
+    _exakit_json_tables_ready || {
+        warn "JSON Tables installed but its command is not usable yet - retry with: exakit data-load"
+        return 1
+    }
+    return 0
+}
+
+# exakit_load_local_json <path> — ingest a JSON file to Parquet with the add-on,
+# then load every table it produced. Nested JSON legitimately yields SEVERAL
+# tables, so this loads all of them rather than pretending there is only one.
+exakit_load_local_json() {
+    _jl_path="$1"
+    _exakit_json_tables_offer "$_jl_path" || return $?
+
+    _jl_tmp="$(mktemp -d "${TMPDIR:-/tmp}/exakit-json-load.XXXXXX")" || {
+        warn "Could not create a temporary directory for the JSON ingest."
+        return 1
+    }
+    info "Converting JSON to Parquet with JSON Tables"
+    if ! run_logged "$EXAKIT_JSON_TABLES_BIN" ingest \
+            --input "$_jl_path" --output-dir "$_jl_tmp/out"; then
+        rm -rf "$_jl_tmp"
+        warn "The JSON ingest failed - see: exakit logs json-tables"
+        info "Nothing was loaded; the database is unchanged."
+        return 1
+    fi
+
+    _jl_files="$(find "$_jl_tmp/out" -name '*.parquet' 2>/dev/null | sort)"
+    if [ -z "$_jl_files" ]; then
+        rm -rf "$_jl_tmp"
+        warn "The ingest produced no tables from $(ui_tilde "$_jl_path")."
+        info "Check the file is JSON or NDJSON, then retry: exakit data-load"
+        return 1
+    fi
+    _jl_count="$(printf '%s\n' "$_jl_files" | grep -c .)"
+
+    # One table: the same SCHEMA.TABLE prompt a CSV gets, so the two read alike.
+    # Several: pick the schema once and keep the ingest's own table names, which
+    # is the only naming that can describe a nested document.
+    if [ "$_jl_count" -eq 1 ]; then
+        _jl_default="${EXAKIT_SCHEMA:-STARTER_KIT}.$(exakit_table_name_from_path "$_jl_path")"
+        while :; do
+            _jl_target="$(prompt_text "Target table (SCHEMA.TABLE, back to return)" "$_jl_default")"
+            case "$_jl_target" in
+                b|B|back|Back|BACK) rm -rf "$_jl_tmp"; info "Returning to data loading options."; return 2 ;;
+            esac
+            exakit_validate_table_target "$_jl_target" && break
+            warn "Target table must look like SCHEMA.TABLE and use letters, numbers, or underscores."
+        done
+        _jl_target="$(exakit_upper_table_target "$_jl_target")"
+        exakit_ensure_schema "$(exakit_target_schema "$_jl_target")"
+        exapump_upload "$_jl_files" "$_jl_target"
+        exakit_verify_loaded_table "$_jl_target"
+        _jl_loaded="$_jl_target"
+    else
+        info "$_jl_count tables came out of this document"
+        while :; do
+            _jl_schema="$(prompt_text "Target schema for all $_jl_count tables (back to return)" "${EXAKIT_SCHEMA:-STARTER_KIT}")"
+            case "$_jl_schema" in
+                b|B|back|Back|BACK) rm -rf "$_jl_tmp"; info "Returning to data loading options."; return 2 ;;
+            esac
+            exakit_validate_table_target "$_jl_schema.T" && break
+            warn "Schema must use letters, numbers, or underscores."
+        done
+        _jl_schema="$(printf '%s' "$_jl_schema" | tr '[:lower:]' '[:upper:]')"
+        exakit_ensure_schema "$_jl_schema"
+        _jl_loaded=""
+        while IFS= read -r _jl_file; do
+            [ -n "$_jl_file" ] || continue
+            _jl_table="$_jl_schema.$(exakit_table_name_from_path "$_jl_file")"
+            _jl_table="$(exakit_upper_table_target "$_jl_table")"
+            exapump_upload "$_jl_file" "$_jl_table"
+            exakit_verify_loaded_table "$_jl_table"
+            _jl_loaded="${_jl_loaded:+$_jl_loaded, }$_jl_table"
+        done <<EXAKIT_JL_EOF
+$_jl_files
+EXAKIT_JL_EOF
+    fi
+    rm -rf "$_jl_tmp"
+
+    manifest_set data.last_load.type "local_json"
+    manifest_set data.last_load.target "$_jl_loaded"
+    manifest_set data.last_load.source "$_jl_path"
+    ok "Loaded $(ui_tilde "$_jl_path") into $_jl_loaded"
+}
+
 exakit_load_local_file() {
     while :; do
-        _raw_path="$(prompt_text "Local CSV/Parquet file path (type back to return)")"
+        _raw_path="$(prompt_text "Local CSV / Parquet / JSON file path (type back to return)")"
         case "$_raw_path" in
             b|B|back|Back|BACK)
                 info "Returning to data loading options."
@@ -664,13 +854,19 @@ exakit_load_local_file() {
                 ;;
         esac
         if [ -z "$_raw_path" ]; then
-            warn "Please enter a local CSV/Parquet file path, or type back to return."
+            warn "Please enter a local CSV, Parquet or JSON file path, or type back to return."
             continue
         fi
         _path="$(exakit_normalize_path "$_raw_path")"
         [ -s "$_path" ] && break
         warn "File not found or empty: $_path"
     done
+    # JSON is not an exapump input: it goes through the JSON Tables add-on,
+    # which this offers to install and then finishes the load with.
+    if [ "$(exakit_data_file_kind "$_path")" = "json" ]; then
+        exakit_load_local_json "$_path"
+        return $?
+    fi
     _default_table="${EXAKIT_SCHEMA:-STARTER_KIT}.$(exakit_table_name_from_path "$_path")"
     while :; do
         _target="$(prompt_text "Target table (SCHEMA.TABLE, back to return)" "$_default_table")"
@@ -694,7 +890,7 @@ exakit_load_local_file() {
 }
 
 exakit_load_remote_file() {
-    _url="$(prompt_text "Remote CSV/Parquet URL")"
+    _url="$(prompt_text "Remote CSV / Parquet / JSON URL")"
     [ -n "$_url" ] || die "Remote URL is required."
     _name="$(basename "${_url%%\?*}")"
     [ -n "$_name" ] || _name="remote-data.csv"
@@ -702,6 +898,14 @@ exakit_load_remote_file() {
     _tmp_file="$_tmp_dir/$_name"
     info "Downloading remote data file"
     fetch "$_url" "$_tmp_file"
+    # Same JSON routing as a local file, once it is on disk.
+    if [ "$(exakit_data_file_kind "$_tmp_file")" = "json" ]; then
+        exakit_load_local_json "$_tmp_file"
+        _rf_status=$?
+        rm -rf "$_tmp_dir"
+        [ "$_rf_status" -eq 0 ] && manifest_set data.last_load.source "$_url"
+        return "$_rf_status"
+    fi
     _default_table="${EXAKIT_SCHEMA:-STARTER_KIT}.$(exakit_table_name_from_path "$_name")"
     _target="$(prompt_text "Target table (SCHEMA.TABLE)" "$_default_table")"
     exakit_validate_table_target "$_target" || die "Target table must look like SCHEMA.TABLE and use letters, numbers, or underscores."
@@ -959,7 +1163,7 @@ exakit_load_dataset_dir() {
 #   Sample datasets                 <- group header (only when any is pending)
 #     [x] <each dataset not loaded yet, visible upfront and individually
 #          selectable — no extra keypress needed to see what is available>
-#   [ ] A local CSV/Parquet file
+#   [ ] A local CSV / Parquet / JSON file
 #   [ ] <final_label>               <- mutually exclusive opt-out (Cancel/Skip)
 #
 # Already-loaded datasets are not offered; when every bundled dataset is
@@ -1005,7 +1209,7 @@ EXAKIT_DLS_EOF
             _dls_i=$((_dls_i + 1))
         done
     fi
-    _dls_labels+=("A local CSV/Parquet file"); _dls_ids+=("local")
+    _dls_labels+=("A local CSV / Parquet / JSON file"); _dls_ids+=("local")
     _dls_labels+=("$_dls_final_label");        _dls_ids+=("none")
     _dls_final_idx="${#_dls_labels[@]}"
     if [ "$_dls_pending_n" -gt 0 ]; then

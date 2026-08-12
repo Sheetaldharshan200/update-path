@@ -88,6 +88,7 @@ if (Test-Path (Join-Path $scriptDir "lib\exakit-common.ps1")) {
 # the marketplace row unavailable - it must not break every other command.
 if (Test-Path (Join-Path $libDir "dash-server.ps1")) { . (Join-Path $libDir "dash-server.ps1") }
 if (Test-Path (Join-Path $libDir "exasol-vscode.ps1")) { . (Join-Path $libDir "exasol-vscode.ps1") }
+if (Test-Path (Join-Path $libDir "json-tables.ps1")) { . (Join-Path $libDir "json-tables.ps1") }
 
 function Get-RuntimeType { return (Get-ExakitManifestValue "runtime.type") }
 
@@ -508,34 +509,14 @@ function Show-ExakitUninstallMenu {
     [void]$labels.Add("Skip - uninstall nothing")
     [void]$keys.Add("__skip__")
 
-    # Components, only the ones present on this machine.
-    $components = @()
-    $runtimeType = Get-ExakitManifestValue "runtime.type"
-    if ($runtimeType) { $components += ,@("database", "Database + ALL its data (the local Exasol $runtimeType deployment)") }
-    if (Get-ExakitManifestValue "components.mcp_server.configs") {
-        $components += ,@("mcp_configs", "MCP client configs (Claude, Cursor, Codex, ...)")
-    }
-    foreach ($skillRoot in @((Join-Path $HOME ".claude\skills"), (Join-Path $HOME ".agents\skills"))) {
-        if (Test-Path (Join-Path $skillRoot "local-agent-ready-starter")) {
-            $components += ,@("skills", "AI skills (~\.claude\skills, ~\.agents\skills)")
-            break
-        }
-    }
-    if (Test-Path (Join-Path $script:BinDir "exapump.exe")) {
-        $components += ,@("exapump", "exapump (binary + connection profiles)")
-    }
-    if (Test-Path (Join-Path $script:ExakitHome "pyexasol-venv")) {
-        $components += ,@("pyexasol", "pyexasol (the managed Python venv)")
-    }
-    if ($components.Count -gt 0) {
-        [void]$labels.Add("#Components")
-        [void]$keys.Add("__header__")
-        for ($i = 0; $i -lt $components.Count; $i++) {
-            $conn = if ($i -eq $components.Count - 1) { $corner } else { $tee }
-            [void]$labels.Add("$conn $($components[$i][1])")
-            [void]$keys.Add($components[$i][0])
-        }
-    }
+    # The BUILT-IN components are deliberately NOT rows here. Twin of the
+    # comment in exakit_uninstall_menu: the database, its MCP configs, exapump's
+    # profile and the pyexasol venv are one working installation, so removing
+    # one of them leaves a kit that looks installed and does not work. The two
+    # honest choices for the core are keep it (Skip) or remove it (EVERYTHING).
+    # Add-ons are optional by construction and nothing depends on them, so they
+    # are the only individually selectable rows. A single component can still be
+    # removed by name -- exakit uninstall mcp_configs -- as the hint below says.
 
     # Kit-managed add-ons, each removable on its own (registry-driven).
     $addons = @(Get-ExakitMarketplaceInstalledAddons)
@@ -549,9 +530,12 @@ function Show-ExakitUninstallMenu {
         }
     }
 
-    [void]$labels.Add("EVERYTHING - the full kit: all of the above, the kit home, and the exakit command itself")
+    [void]$labels.Add("EVERYTHING - the full kit: database + data, MCP configs, skills, exapump, pyexasol, add-ons, the kit home and the exakit command")
     [void]$keys.Add("everything")
     $everyIdx = $labels.Count
+
+    Write-Host ""
+    Write-Host "    One component on purpose: exakit uninstall <database|mcp_configs|skills|exapump|pyexasol>" -ForegroundColor DarkGray
 
     # EVERYTHING is a MASTER toggle over every row above it: picking it ticks
     # them all, and unticking any single row releases it - so the screen can

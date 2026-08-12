@@ -1643,6 +1643,15 @@ exakit_component_latest() {
             # Marketplace add-ons declare their upstream in versions.json:
             # repo -> a GitHub release, package -> PyPI. No per-add-on arm.
             _exakit_addon_registered "$1" || return 1
+            # An add-on whose "latest" is neither of those answers for itself.
+            # json-tables is the case this exists for: what is installable is
+            # what the kit's packaging workflow has already built and
+            # published, which is a stricter thing than what upstream tagged.
+            _cl_fn="$(_exakit_addon_fn "$1" latest)"
+            if command -v "$_cl_fn" >/dev/null 2>&1; then
+                "$_cl_fn"
+                return $?
+            fi
             _cl_repo="$(exakit_versions_value "components.$1.repo" 2>/dev/null || true)"
             if [ -n "$_cl_repo" ]; then
                 exakit_latest_github_release_version "$_cl_repo"
@@ -2054,6 +2063,7 @@ exakit_component_current() {
 exakit_marketplace_addons() {
     printf '%s\n' "dash-server|dash-server (AI dashboard host)|Agent-built live dashboards on your Exasol data, operated over MCP"
     printf '%s\n' "exasol-vscode|Exasol for VS Code (editor extension)|SQL editing and schema browsing for your Exasol database, inside VS Code"
+    printf '%s\n' "json-tables|JSON Tables (JSON into Exasol)|Ingest, query and reshape JSON-shaped data — the engine ships prebuilt, no Rust toolchain"
 }
 
 # _exakit_addon_fn <id> <suffix> — the module function for an add-on.
@@ -2159,12 +2169,26 @@ _exakit_addon_system_present() {
         "$_sp_fn"
         return $?
     fi
-    _sp_path="$(command -v "$1" 2>/dev/null || true)"
-    [ -n "$_sp_path" ] || return 1
-    # The kit's own launcher on PATH is a kit install, not a system one.
-    [ "$_sp_path" = "$EXAKIT_BIN_DIR/$1" ] && return 1
-    [ "$_sp_path" -ef "$EXAKIT_BIN_DIR/$1" ] 2>/dev/null && return 1
-    return 0
+    # The command to look for: the id, plus whatever the module named its
+    # launcher in EXAKIT_<ID>_BIN. The two differ often enough (json-tables
+    # installs `exasol-json-tables`) that keying on the id alone would miss a
+    # manual install and offer the user a tool they already have.
+    _sp_bin_var="$(_exakit_addon_env_var "$1" BIN)"
+    eval "_sp_bin=\${$_sp_bin_var:-}"
+    _sp_names="$1"
+    if [ -n "$_sp_bin" ]; then
+        _sp_base="${_sp_bin##*/}"
+        [ "$_sp_base" = "$1" ] || _sp_names="$_sp_names $_sp_base"
+    fi
+    for _sp_name in $_sp_names; do
+        _sp_path="$(command -v "$_sp_name" 2>/dev/null || true)"
+        [ -n "$_sp_path" ] || continue
+        # The kit's own launcher on PATH is a kit install, not a system one.
+        [ "$_sp_path" = "$EXAKIT_BIN_DIR/$_sp_name" ] && continue
+        [ "$_sp_path" -ef "$EXAKIT_BIN_DIR/$_sp_name" ] 2>/dev/null && continue
+        return 0
+    done
+    return 1
 }
 
 # _exakit_marketplace_addon_present <id> — installed by the kit OR already on
@@ -6457,39 +6481,23 @@ exakit_uninstall_menu() {
     _um_keys=("__skip__")
     _um_tee="${UI_TEE:-|-}"; _um_corner="${UI_CORNER:-\`-}"
 
-    # Components, only the ones present.
-    _um_rows=""
-    _um_type="$(manifest_get runtime.type 2>/dev/null || true)"
-    [ -n "$_um_type" ] && _um_rows="$_um_rows database|Database + ALL its data (the local Exasol $_um_type deployment)
-"
-    [ -n "$(manifest_get components.mcp_server.configs 2>/dev/null || true)" ] && \
-        _um_rows="${_um_rows}mcp_configs|MCP client configs (Claude, Cursor, Codex, ...)
-"
-    if [ -e "$HOME/.claude/skills/local-agent-ready-starter" ] || [ -e "$HOME/.agents/skills/local-agent-ready-starter" ]; then
-        _um_rows="${_um_rows}skills|AI skills (~/.claude/skills, ~/.agents/skills)
-"
-    fi
-    { [ -x "$EXAKIT_BIN_DIR/exapump" ] || [ -d "$HOME/.exapump" ]; } && \
-        _um_rows="${_um_rows}exapump|exapump (binary + connection profiles)
-"
-    [ -d "${EXAKIT_PYEXASOL_VENV:-$EXAKIT_HOME/pyexasol-venv}" ] && \
-        _um_rows="${_um_rows}pyexasol|pyexasol (the managed Python venv)
-"
-    if [ -n "$_um_rows" ]; then
-        _um_labels+=("#Components")
-        _um_keys+=("__header__")
-        _um_count="$(printf '%s' "$_um_rows" | grep -c '|')"
-        _um_i=0
-        while IFS='|' read -r _um_key _um_label; do
-            [ -n "$_um_key" ] || continue
-            _um_i=$((_um_i + 1))
-            if [ "$_um_i" -eq "$_um_count" ]; then _um_conn="$_um_corner"; else _um_conn="$_um_tee"; fi
-            _um_labels+=("$_um_conn $_um_label")
-            _um_keys+=("$_um_key")
-        done <<EXAKIT_UM_EOF
-$_um_rows
-EXAKIT_UM_EOF
-    fi
+    # The BUILT-IN components are deliberately NOT rows here.
+    #
+    # They are not independent things a user meaningfully picks between: the
+    # database, its MCP configs, the read-only MCP user, exapump's profile and
+    # the pyexasol venv are one working installation, and removing one of them
+    # leaves a kit that looks installed and does not work — a state nobody
+    # asked for and the update flow cannot repair. The two honest choices for
+    # the core are keep it or remove it, which is exactly Skip and EVERYTHING.
+    #
+    # ADD-ONS are the real per-item choice: each is optional by construction,
+    # nothing else depends on it, and removing one leaves everything else
+    # working. So they are the only individually selectable rows.
+    #
+    # A single component can still be removed on purpose, by name, for the rare
+    # case that wants it -- `exakit uninstall mcp_configs` -- and the hint below
+    # the menu says so. That keeps the capability without putting a
+    # half-installed kit one keystroke away.
 
     # Kit-managed add-ons, each removable on its own.
     _um_addons="$(exakit_marketplace_installed_addons 2>/dev/null || true)"
@@ -6506,9 +6514,14 @@ EXAKIT_UM_EOF
         done
     fi
 
-    _um_labels+=("EVERYTHING — the full kit: all of the above, the kit home, and the exakit command itself")
+    _um_labels+=("EVERYTHING — the full kit: database + data, MCP configs, skills, exapump, pyexasol, add-ons, the kit home and the exakit command")
     _um_keys+=("everything")
     _um_every_idx="${#_um_labels[@]}"
+
+    # Named single-component removal stays available; it is just not one
+    # keystroke away in a menu.
+    printf '\n    %sOne component on purpose: exakit uninstall <database|mcp_configs|skills|exapump|pyexasol>%s\n' \
+        "${UI_DIM:-}" "${UI_RESET:-}"
 
     # EVERYTHING is a MASTER toggle over every row above it: picking it ticks
     # them all, and unticking any single row releases it — so the screen can
