@@ -726,10 +726,42 @@ echo "a port held by someone else is never mistaken for dash-server:"
 # The old probe asked "does something answer HTTP here", so ANY web server on
 # the port made the kit report a healthy add-on it never started. Ownership is
 # matched on the venv path, the way the real console script is recognised.
-_foreign_port="$((6100 + $$ % 80))"
-python3 -m http.server "$_foreign_port" --bind 127.0.0.1 >/dev/null 2>&1 &
-_foreign_pid=$!
-sleep 2
+#
+# The foreign listener must PROVABLY be up before anything is asserted about
+# it: a fixed sleep was not enough on GitHub's macOS runners (a cold python
+# can take longer than 2s to serve), and every check below reads as a product
+# failure when the fixture silently is not there. So: try a few candidate
+# ports (the first choice can be genuinely taken on a shared runner), poll
+# until the listener ANSWERS, and if none can be started, skip the section
+# with the reason instead of failing on a fixture.
+_foreign_port=""
+_foreign_pid=""
+for _fp_try in "$((6100 + $$ % 80))" "$((6300 + $$ % 80))" "$((6500 + $$ % 80))"; do
+    python3 -m http.server "$_fp_try" --bind 127.0.0.1 >/dev/null 2>&1 &
+    _fp_pid=$!
+    _fp_up=0
+    _fp_n=0
+    while [ "$_fp_n" -lt 40 ]; do
+        if curl -fsS -o /dev/null --max-time 2 "http://127.0.0.1:$_fp_try/" 2>/dev/null; then
+            _fp_up=1
+            break
+        fi
+        # The process dying (port taken, python unhappy) ends the wait early.
+        kill -0 "$_fp_pid" 2>/dev/null || break
+        sleep 0.5
+        _fp_n=$((_fp_n + 1))
+    done
+    if [ "$_fp_up" -eq 1 ]; then
+        _foreign_port="$_fp_try"
+        _foreign_pid="$_fp_pid"
+        break
+    fi
+    kill "$_fp_pid" 2>/dev/null
+    wait "$_fp_pid" 2>/dev/null || true
+done
+if [ -z "$_foreign_port" ]; then
+    echo "  SKIP  no local test listener could be started on this machine — port-ownership checks not run"
+else
 _port_verdict="$( (
     EXAKIT_DASH_SERVER_PORT="$_foreign_port"
     printf 'status=%s ' "$(dash_server_status | cut -d'(' -f1 | sed 's/ *$//')"
@@ -761,6 +793,7 @@ _explicit="$( (
 has "a named port is refused, never moved behind your back" "is held by another process" "$_explicit"
 kill "$_foreign_pid" 2>/dev/null
 wait "$_foreign_pid" 2>/dev/null || true
+fi
 
 # The service registry: database first, then any installed add-on that serves.
 manifest_set runtime.type personal
