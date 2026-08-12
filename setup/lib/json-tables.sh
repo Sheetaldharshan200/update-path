@@ -59,10 +59,21 @@ json_tables_log_path() {
     printf '%s\n' "$EXAKIT_JSON_TABLES_LOG"
 }
 
-# json_tables_mirror_repo — where the prebuilt artifacts live. The kit repo, so
-# a fork that runs the workflow serves its own users.
+# json_tables_mirror_repo — where the prebuilt artifacts live: the repository
+# THIS KIT WAS INSTALLED FROM, so a fork that runs the packaging workflow
+# serves its own users without any configuration. The manifest records the
+# install source as owner/name@ref; a checkout or local install has no such
+# record and falls back to the canonical kit repo.
 json_tables_mirror_repo() {
-    printf '%s\n' "${EXAKIT_JSON_TABLES_MIRROR_REPO:-$EXAKIT_KIT_REPO}"
+    if [ -n "${EXAKIT_JSON_TABLES_MIRROR_REPO:-}" ]; then
+        printf '%s\n' "$EXAKIT_JSON_TABLES_MIRROR_REPO"
+        return 0
+    fi
+    _jmr_src="$(manifest_get kit.source 2>/dev/null || true)"
+    case "$_jmr_src" in
+        */*@*) printf '%s\n' "${_jmr_src%@*}"; return 0 ;;
+    esac
+    printf '%s\n' "$EXAKIT_KIT_REPO"
 }
 
 # json_tables_engine_asset — the engine built for THIS machine.

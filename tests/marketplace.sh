@@ -885,6 +885,23 @@ has "and says why, in terms the user can act on" "no prebuilt ingest engine" \
     "$( ( detect_os() { printf 'macos\n'; }; detect_arch() { printf 'x86_64\n'; }
         json_tables_applicable_reason ) )"
 
+# The mirror must be looked up where THIS kit came from: a user who installed
+# from a fork gets that fork's mirror release, not the canonical repo's (which
+# may not have one). Explicit override still wins; a checkout falls back.
+check "the mirror follows the recorded install source" "some-fork/update-path" "$( (
+    manifest_set kit.source "some-fork/update-path@main" >/dev/null 2>&1
+    json_tables_mirror_repo
+) )"
+check "an explicit mirror override wins over the source" "elsewhere/mirror" "$( (
+    manifest_set kit.source "some-fork/update-path@main" >/dev/null 2>&1
+    EXAKIT_JSON_TABLES_MIRROR_REPO="elsewhere/mirror"
+    json_tables_mirror_repo
+) )"
+check "a checkout install falls back to the kit repo" "$EXAKIT_KIT_REPO" "$( (
+    manifest_set kit.source "checkout:/tmp/somewhere" >/dev/null 2>&1
+    json_tables_mirror_repo
+) )"
+
 # The shim is the whole no-Rust story. Upstream's ONLY engine call is
 #   cargo run --manifest-path <...>/json_tables_ingest/Cargo.toml -- <engine argv>
 # so the shim must hand <engine argv> to the prebuilt binary verbatim: an extra
