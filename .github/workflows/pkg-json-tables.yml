@@ -218,7 +218,18 @@ jobs:
           git add versions.json setup/lib/json-tables.sh setup/lib/json-tables.ps1
           git commit -m "json-tables: advertise $new (prebuilt artifacts published)"
           git push -u origin "$branch" --force
-          gh pr create --fill --head "$branch" --base "${{ github.event.repository.default_branch }}" \
+          # An existing open PR for this branch just gets the new commit from
+          # the push above; only create one when none is open. Never hide the
+          # error: if creation is refused (most commonly the repository
+          # setting "Allow GitHub Actions to create and approve pull
+          # requests" being off), say exactly that and hand over the one-click
+          # URL instead of failing a job whose artifacts are already published.
+          if [ -n "$(gh pr list --head "$branch" --state open --json number --jq '.[0].number // empty')" ]; then
+            echo "::notice::an open PR for $branch already exists - the push updated it."
+          elif gh pr create --head "$branch" --base "${{ github.event.repository.default_branch }}" \
             --title "json-tables: advertise $new" \
-            --body "The prebuilt ingest engine and wheel for \`$new\` are on the \`mirror-json-tables\` release, so \`exakit update\` can now offer it. Merging this is what makes the new build visible to installed kits." \
-            2>/dev/null || gh pr edit "$branch" --title "json-tables: advertise $new"
+            --body "The prebuilt ingest engine and wheel for \`$new\` are on the \`mirror-json-tables\` release, so \`exakit update\` can now offer it. Merging this is what makes the new build visible to installed kits."; then
+            echo "::notice::advertise PR opened for $new."
+          else
+            echo "::warning::could not open the advertise PR (is 'Allow GitHub Actions to create and approve pull requests' enabled under Settings > Actions > General?). The branch is pushed - open it here: https://github.com/${{ github.repository }}/compare/${{ github.event.repository.default_branch }}...$branch?expand=1"
+          fi
