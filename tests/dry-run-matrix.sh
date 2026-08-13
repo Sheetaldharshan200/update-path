@@ -667,6 +667,29 @@ else
     check "json_tables(prebuilt_chain)" "yes" "no"
 fi
 
+# Agent operability, both sides: the exit-code contract on status
+# (0/3/4), --json on status and mcp-doctor, the runtime probe that makes
+# mcp-doctor diagnose a stopped database instead of a broken MCP user, the
+# allowlist merge skills-install performs, the DB error translator, and the
+# datasets surfaced in status. Each is a machine-facing promise an agent
+# branches on -- a twin that quietly lost one would strand Windows agents.
+if grep -q 'exakit_runtime_is_running()' "$ROOT/setup/lib/common.sh" && \
+   grep -q 'exakit_loaded_datasets()' "$ROOT/setup/lib/common.sh" && \
+   grep -q 'exakit_apply_readonly_allowlist()' "$ROOT/setup/lib/common.sh" && \
+   grep -q 'exakit_explain_db_error()' "$ROOT/setup/lib/common.sh" && \
+   grep -q 'exit 3' "$ROOT/setup/exakit" && \
+   grep -q 'exit 4' "$ROOT/setup/exakit" && \
+   grep -q 'function Get-ExakitLoadedDatasets' "$ROOT/setup/exakit.ps1" && \
+   grep -q 'function Set-ExakitReadonlyAllowlist' "$ROOT/setup/lib/exakit-common.ps1" && \
+   grep -q 'exit 3' "$ROOT/setup/exakit.ps1" && \
+   grep -q 'exit 4' "$ROOT/setup/exakit.ps1" && \
+   grep -q 'EXAKIT_MCP_RESULT_JSON' "$ROOT/setup/lib/common.sh" && \
+   grep -q 'EXAKIT_MCP_RESULT_JSON' "$ROOT/setup/lib/mcp.ps1"; then
+    check "agent_operability(twins)" "yes" "yes"
+else
+    check "agent_operability(twins)" "yes" "no"
+fi
+
 # Release notes, both sides: the command, the print after a self-update, and the
 # file travelling into the kit copy (without that last part `exakit whats-new`
 # works from a checkout and then dies with it).

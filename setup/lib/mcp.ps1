@@ -957,6 +957,23 @@ function Invoke-McpOperation {
     param([Parameter(Mandatory)][string]$Operation, [string[]]$InputArgs = @())
     $clients = Get-McpClientsFromArgs $InputArgs
     if (-not $clients) { Warn2 "Please choose valid MCP clients: claude_desktop, cursor, codex, or all."; return $false }
+    # JSON mode (EXAKIT_MCP_RESULT_JSON=1): the operation result is already the
+    # machine-readable truth the summary renders - print it verbatim and keep
+    # every human line off stdout. Twin of the same branch in
+    # exakit_mcp_operation (common.sh).
+    if ($env:EXAKIT_MCP_RESULT_JSON -eq "1") {
+        $resultJson = Invoke-McpOperationCli -Operation $Operation -Clients $clients 6>$null
+        if ($resultJson) {
+            Write-Output $resultJson
+        } else {
+            Write-Output "{`"error`": `"the MCP $Operation operation produced no result (see log)`"}"
+        }
+        $ok = [bool]$resultJson
+        if ($Operation -in @("doctor", "validate")) {
+            if (-not (Confirm-McpReadonlyPosture 6>$null)) { $ok = $false }
+        }
+        return $ok
+    }
     Info "Running MCP $Operation"
     $resultJson = Invoke-McpOperationCli -Operation $Operation -Clients $clients
     if ($resultJson) { Show-McpOperationSummary $resultJson }

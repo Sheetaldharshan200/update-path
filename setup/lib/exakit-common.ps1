@@ -2372,6 +2372,53 @@ function Get-ExakitRepoRoot {
 # Mirrors exakit_install_skills in setup/lib/common.sh.
 #   $HOME\.claude\skills\<name>\   - Claude Code
 #   $HOME\.agents\skills\<name>\   - Codex, Cursor, other open-standard agents
+# Set-ExakitReadonlyAllowlist - make the documented friction-reduction real.
+# Merges the read-only allowlist from skills/reducing-agent-prompts.md into
+# ~/.claude/settings.json: strictly additive, idempotent, never removes
+# anything, and a malformed file is left alone. Twin of
+# exakit_apply_readonly_allowlist in common.sh.
+function Set-ExakitReadonlyAllowlist {
+    $allow = @(
+        "Bash(exakit status:*)",
+        "Bash(exakit info:*)",
+        "Bash(exakit version:*)",
+        "Bash(exakit mcp-doctor:*)",
+        "Bash(exakit logs:*)",
+        "mcp__exasol"
+    )
+    $deny = @("Bash(exakit uninstall:*)")
+    $dir = Join-Path $HOME ".claude"
+    $path = Join-Path $dir "settings.json"
+    New-Item -ItemType Directory -Force -Path $dir | Out-Null
+    $doc = $null
+    if (Test-Path $path) {
+        try { $doc = Get-Content -Raw $path | ConvertFrom-Json } catch { return "SKIP unreadable" }
+        if ($null -eq $doc) { return "SKIP unreadable" }
+    } else {
+        $doc = [pscustomobject]@{}
+    }
+    if (-not $doc.PSObject.Properties["permissions"]) {
+        $doc | Add-Member -NotePropertyName permissions -NotePropertyValue ([pscustomobject]@{})
+    }
+    $permissions = $doc.permissions
+    $added = 0
+    foreach ($pair in @(@("allow", $allow), @("deny", $deny))) {
+        $key = $pair[0]; $wanted = $pair[1]
+        if (-not $permissions.PSObject.Properties[$key]) {
+            $permissions | Add-Member -NotePropertyName $key -NotePropertyValue @()
+        }
+        $existing = @($permissions.$key)
+        foreach ($entry in $wanted) {
+            if ($existing -notcontains $entry) { $existing += $entry; $added++ }
+        }
+        $permissions.$key = $existing
+    }
+    if ($added -gt 0) {
+        $doc | ConvertTo-Json -Depth 8 | Set-Content -Path $path -Encoding UTF8
+    }
+    return "ADDED $added"
+}
+
 function Install-ExakitSkills {
     $repoRoot = Get-ExakitRepoRoot
     if (-not $repoRoot) { Warn2 "Could not locate the kit to find its skills\ directory."; return $false }
@@ -2393,6 +2440,15 @@ function Install-ExakitSkills {
     }
     if ($installed -eq 0) { Warn2 "No SKILL.md files found under $skillsSrc - nothing to install."; return $false }
     Info "Skills installed for Claude Code (~\.claude\skills) and open-standard agents (~\.agents\skills)."
+    # The read-only allowlist the skill documents, applied for real.
+    $applied = Set-ExakitReadonlyAllowlist
+    if ($applied -eq "ADDED 0") {
+        Info "Read-only command allowlist already present in ~\.claude\settings.json."
+    } elseif ($applied -like "ADDED *") {
+        Ok "Read-only exakit commands allowlisted in ~\.claude\settings.json (status, info, version, mcp-doctor, logs; uninstall stays gated)."
+    } else {
+        Warn2 "~\.claude\settings.json could not be merged safely ($applied) - the allowlist in skills/reducing-agent-prompts.md shows what to add by hand."
+    }
     Info "Restart or reload your AI client to pick them up."
     return $true
 }

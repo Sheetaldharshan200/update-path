@@ -114,7 +114,7 @@ EXAKIT_MARKETPLACE_ADDONS=dash-server exakit marketplace   # ids csv, or all / n
 
 ## Where things live
 
-- State, credentials, logs: `~/.exasol-starter-kit/` (logs under `logs/`; every error message names its remedy, check there before improvising)
+- State, credentials, logs: `~/.exasol-starter-kit/` (logs under `logs/`). Installer and `exakit` messages name their remedy — check there before improvising. Raw database/driver errors (through MCP tools or `exapump` directly) do NOT; translate the common ones with the table below.
 - Kit source copy (read any script): `~/.exasol-starter-kit/kit/`
 - CLI binaries: `~/.local/bin/` (`exakit`, `exapump`, `exasol` on macOS, and `dash-server` once that add-on is installed)
 - Never print or log the password files under `~/.exasol-starter-kit/credentials/`
@@ -127,7 +127,24 @@ Install the agent skill so future sessions can drive the full ask, inspect SQL, 
 exakit skills-install
 ```
 
-Then see `skills/local-agent-ready-starter/SKILL.md` for the query-loop discipline (read-only MCP user, show SQL before running it).
+Then see `skills/local-agent-ready-starter/SKILL.md` for the full query-loop discipline. **If your harness loads this file but not filesystem skills, these are the rules that must not drop out:**
+
+### Guardrails (also in SKILL.md — inlined here so they survive a skill-less harness)
+
+- **The loop is ASK → INSPECT → RUN → VALIDATE → RERUN.** Show the user the SQL *before* running it; validate results independently (a second query, a count, a spot check) before presenting conclusions.
+- **Two connections, two trust levels.** The MCP tools run as a dedicated **read-only** database user — reads everywhere, writes rejected *by the database*. `exapump -p starter-kit` connects as the **admin** user and is **not sandboxed**: it can create, drop and delete. Never treat an exapump success as proof something is safe for the MCP path, and never reach for exapump to "work around" an MCP rejection.
+- **Prove the boundary, don't assert it:** `SELECT PRIVILEGE FROM SYS.EXA_USER_SYS_PRIVS` as the MCP user returns exactly `CREATE SESSION`, `SELECT ANY TABLE`, `USE ANY SCHEMA`.
+- **Never print or log** the password files under `~/.exasol-starter-kit/credentials/`.
+
+### Common database errors → remedy (raw engine messages carry none)
+
+| You see | It means | Do |
+|---|---|---|
+| `Connection refused` (MCP: `[Errno 61/111]`; exapump: `Failed to connect to 127.0.0.1:8563`) | The database is not running | `exakit start`, then confirm with `exakit status` (exit 0 = running, 3 = stopped) |
+| `syntax error, unexpected FETCH_` (or `TOP_`) | Exasol does not page with `FETCH FIRST` / `TOP` | Rewrite with `LIMIT <n>` (optionally `OFFSET`) |
+| `object <NAME> not found` | Wrong name or missing schema qualifier | `describe_exasol_table_or_view` (MCP) or `DESCRIBE <schema>.<table>`, then fix the query |
+
+For scripted state checks: `exakit status --json` (fields: `running`, `datasets_loaded`, `services`, `steps_completed`), `exakit info --json` (the install record), `exakit mcp-doctor --json` (per-client MCP state). Exit codes on `status` and `mcp-doctor`: `0` healthy/running, `3` database not running, `4` not installed. Discover every command with `exakit catalog` (searchable: `exakit catalog logs`).
 
 ## Uninstall
 

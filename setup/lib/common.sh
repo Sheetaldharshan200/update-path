@@ -567,6 +567,35 @@ die() {
 # step — this is the single hook that animates every silent, long-running
 # operation. run_logged never reads stdin, so the spinner is always safe;
 # interactive prompts use a separate /dev/tty path and are untouched.
+# exakit_explain_db_error <text> — the error-translation layer for the three
+# database faults every agent and every new user hits first. The engine's own
+# messages are precise but remedy-free ("Connection refused", "syntax error,
+# unexpected FETCH_", "object X not found"); each match here appends the one
+# line that names the fix. Callers pass whatever output they captured; unknown
+# errors print nothing extra, so this can never make a message worse.
+exakit_explain_db_error() {
+    case "$1" in
+        *"onnection refused"*|*"Errno 61"*|*"Errno 111"*|*"could not connect"*|*"Could not connect"*)
+            warn "That is the database not answering — it is stopped or unreachable. Start it with: exakit start (then check: exakit status)"
+            ;;
+    esac
+    case "$1" in
+        *"unexpected FETCH_"*|*"unexpected TOP_"*|*"FETCH FIRST"*)
+            warn "Exasol pages result sets with LIMIT <n> (optionally OFFSET) — not FETCH FIRST or TOP. Rewrite the query with LIMIT."
+            ;;
+    esac
+    case "$1" in
+        *"not found"*)
+            case "$1" in
+                *object*|*table*|*column*|*schema*|*view*)
+                    warn "A named object does not exist as written. Check the spelling and the schema qualifier — describe it first (MCP: describe_exasol_table_or_view; SQL: DESCRIBE <schema>.<table>)."
+                    ;;
+            esac
+            ;;
+    esac
+    return 0
+}
+
 run_logged() {
     _exakit_log_file "CMD   $*"
     if [ -n "${EXAKIT_LOG_FILE:-}" ]; then
@@ -1395,6 +1424,47 @@ exakit_installed_personal_version() {
 
 exakit_installation_runtime_type() {
     manifest_get runtime.type 2>/dev/null
+}
+
+# exakit_runtime_is_running — one question, no side effects: is the installed
+# database runtime up right now? The pure check that `exakit status` branches
+# its exit code on and `exakit mcp-doctor` consults BEFORE any operation that
+# needs a live database — so a stopped database is diagnosed as exactly that,
+# never as whatever downstream step happened to fail first.
+exakit_runtime_is_running() {
+    case "$(exakit_installation_runtime_type 2>/dev/null || true)" in
+        nano)
+            command -v nano_status >/dev/null 2>&1 || return 1
+            [ "$(nano_status 2>/dev/null)" = "running" ]
+            ;;
+        personal)
+            command -v personal_deployment_running >/dev/null 2>&1 || return 1
+            personal_deployment_running 2>/dev/null
+            ;;
+        *) return 1 ;;
+    esac
+}
+
+# exakit_loaded_datasets — the bundled datasets recorded as loaded, one id per
+# line. The manifest is the record (data.datasets.<id>.loaded); surfacing it
+# here is what lets `exakit status` answer "what data is in there?" without
+# anyone parsing an undocumented JSON file.
+exakit_loaded_datasets() {
+    [ -f "$EXAKIT_MANIFEST" ] || return 0
+    exakit_can_run_python || return 0
+    run_python - "$EXAKIT_MANIFEST" <<'EXAKIT_LD_PY' 2>/dev/null
+import json, sys
+try:
+    with open(sys.argv[1]) as handle:
+        doc = json.load(handle)
+except Exception:
+    sys.exit(0)
+datasets = ((doc.get("data") or {}).get("datasets")) or {}
+for name in sorted(datasets):
+    if isinstance(datasets[name], dict) and datasets[name].get("loaded"):
+        print(name)
+EXAKIT_LD_PY
+    return 0
 }
 
 exakit_installation_runtime_version() {
@@ -4012,11 +4082,88 @@ exakit_install_skills() {
         return 1
     fi
     info "Skills installed for Claude Code (~/.claude/skills) and open-standard agents (~/.agents/skills)."
+
+    # The read-only allowlist the skill documents, applied for real (Claude
+    # Code reads ~/.claude/settings.json). Other agents keep the doc: their
+    # settings formats differ and hand-editing them would be presumptuous.
+    _skills_applied="$(exakit_apply_readonly_allowlist 2>/dev/null || true)"
+    case "$_skills_applied" in
+        ADDED\ 0) info "Read-only command allowlist already present in ~/.claude/settings.json." ;;
+        ADDED\ *) ok "Read-only exakit commands allowlisted in ~/.claude/settings.json (status, info, version, mcp-doctor, logs; uninstall stays gated)." ;;
+        SKIP*)    warn "~/.claude/settings.json could not be merged safely ($_skills_applied) — the allowlist in skills/reducing-agent-prompts.md shows what to add by hand." ;;
+    esac
     info "Restart or reload your AI client to pick them up."
     return 0
 }
 
-# exakit_maybe_offer_skills_install — after setup, place the skills where CLI
+# exakit_apply_readonly_allowlist — make the documented friction-reduction
+# real. skills/reducing-agent-prompts.md tells Claude Code users which
+# read-only exakit commands are safe to allow without a prompt; copying a doc
+# nobody hand-applies eliminates zero prompts, so skills-install merges that
+# same allowlist into ~/.claude/settings.json itself.
+#
+# The merge is strictly ADDITIVE and idempotent: existing settings are kept
+# byte for byte, entries already present are not duplicated, nothing is ever
+# removed, and a malformed or unreadable settings file is left alone (warn,
+# not clobber). The list deliberately covers only read-only commands — exapump
+# and SQL execution keep prompting, exactly as the doc explains — plus a deny
+# for uninstall so an agent can never remove the kit unprompted.
+exakit_apply_readonly_allowlist() {
+    exakit_can_run_python || return 0
+    _ral_file="$HOME/.claude/settings.json"
+    mkdir -p "$HOME/.claude" 2>/dev/null || return 0
+    run_python - "$_ral_file" <<'EXAKIT_RAL_PY'
+import json, os, sys
+
+path = sys.argv[1]
+ALLOW = [
+    "Bash(exakit status:*)",
+    "Bash(exakit info:*)",
+    "Bash(exakit version:*)",
+    "Bash(exakit mcp-doctor:*)",
+    "Bash(exakit logs:*)",
+    "mcp__exasol",
+]
+DENY = [
+    "Bash(exakit uninstall:*)",
+]
+
+doc = {}
+if os.path.exists(path):
+    try:
+        with open(path) as handle:
+            doc = json.load(handle)
+    except (ValueError, OSError):
+        print("SKIP unreadable")
+        sys.exit(0)
+    if not isinstance(doc, dict):
+        print("SKIP not-an-object")
+        sys.exit(0)
+
+permissions = doc.setdefault("permissions", {})
+if not isinstance(permissions, dict):
+    print("SKIP permissions-not-an-object")
+    sys.exit(0)
+added = 0
+for key, wanted in (("allow", ALLOW), ("deny", DENY)):
+    existing = permissions.setdefault(key, [])
+    if not isinstance(existing, list):
+        continue
+    for entry in wanted:
+        if entry not in existing:
+            existing.append(entry)
+            added += 1
+if added:
+    tmp = path + ".exakit-tmp"
+    with open(tmp, "w") as handle:
+        json.dump(doc, handle, indent=2)
+        handle.write("\n")
+    os.replace(tmp, path)
+print("ADDED %d" % added)
+EXAKIT_RAL_PY
+}
+
+# exakit_maybe_offer_skills_install — after setup, place the skills where CLI# exakit_maybe_offer_skills_install — after setup, place the skills where CLI
 # agents can find them. Always installs — no prompt — so the skills are
 # present without requiring interactive confirmation. Non-fatal and
 # idempotent.
@@ -5104,6 +5251,27 @@ exakit_mcp_operation() {
     }
     _result_file="$(mktemp "${TMPDIR:-/tmp}/exakit-mcp-operation.XXXXXX")"
     _operation_status=0
+    # JSON mode (EXAKIT_MCP_RESULT_JSON=1): the operation's own result file is
+    # already the machine-readable truth the summary is rendered from — print
+    # it verbatim and keep every human line off stdout.
+    if [ "${EXAKIT_MCP_RESULT_JSON:-0}" = "1" ]; then
+        if ( exakit_run_mcp_operation_cli "$_operation" "$_clients_csv" "$_result_file" ) >/dev/null 2>&1; then
+            :
+        else
+            _operation_status=$?
+        fi
+        if [ -s "$_result_file" ]; then
+            cat "$_result_file"
+        else
+            printf '{"error": "the MCP %s operation produced no result (see log)"}\n' "$_operation"
+            [ "$_operation_status" -eq 0 ] && _operation_status=1
+        fi
+        rm -f "$_result_file"
+        case "$_operation" in
+            doctor|validate) _exakit_reassert_mcp_readonly_posture >/dev/null 2>&1 || _operation_status=1 ;;
+        esac
+        return "$_operation_status"
+    fi
     info "Running MCP $_operation"
     if exakit_run_mcp_operation_cli "$_operation" "$_clients_csv" "$_result_file"; then
         :

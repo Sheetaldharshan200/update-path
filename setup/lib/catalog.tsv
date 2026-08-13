@@ -1,6 +1,6 @@
 tool	command	options	description
 exakit	preflight		Check this machine's requirements (runtime, RAM, ports); install nothing.
-exakit	status		Show what is installed and whether each component is healthy.
+exakit	status	[--json | -j]	Show what is installed, whether each component is healthy, and which datasets are loaded. Exit codes: 0 running, 3 database stopped, 4 not installed. --json prints one machine-readable object.
 exakit	version		Show kit source, install date, and component versions.
 exakit	update-check	[all|runtime|exakit|exapump|mcp|pyexasol|<add-on>|nano|personal]	Compare installed versions against the versions the maintainers advertise, and print the exact update command for each.
 exakit	update	[all|runtime|exakit|exapump|mcp|pyexasol|<add-on>|nano|personal]	Apply the advertised versions of the quick components (kit, exapump, MCP server, pyexasol, installed add-ons); a runtime change is announced but left for you to run explicitly. Database data is preserved.
@@ -18,7 +18,7 @@ exakit	mcp-setup		Permanently configure MCP in supported AI clients.
 exakit	mcp-status	[clients]	Show managed MCP state for all supported AI clients.
 exakit	mcp-validate	[clients]	Validate managed MCP configs and test connectivity.
 exakit	mcp-repair	[clients]	Repair managed MCP config drift back to the known-good state.
-exakit	mcp-doctor	[clients]	Run MCP diagnostics and report problems.
+exakit	mcp-doctor	[clients] [--json]	Run MCP diagnostics and report problems. Checks the database is running first (exit 3 + 'exakit start' when it is not). --json prints the raw per-client result.
 exakit	mcp-remove	[clients]	Remove the managed MCP config from the supported clients.
 exakit	mcp-restore	[snapshot]	Restore the latest (or a chosen) MCP config snapshot.
 exakit	skills-install		Install the kit's AI skills into ~/.claude/skills and ~/.agents/skills for CLI agents (Claude Code, Codex).
@@ -26,7 +26,7 @@ exakit	marketplace		Browse optional add-ons (dash-server, Exasol for VS Code, JS
 exakit	uninstall	[--yes | --dry-run]	Pick what to remove (Skip, each add-on, or EVERYTHING) with a confirmation summary and a typed gate; single components by name (exakit uninstall mcp_configs). --dry-run previews the full plan; --yes is the scripted full uninstall.
 exakit	logs	[target] [-f] [--lines N] [--path]	Every log the kit can show: the installer run, the database container, each add-on service, and what the boot entries wrote at login. No target lists them with size and last-updated; -f follows one live; --path prints its path.
 exakit	catalog	[search]	Browse or search every exakit, exapump, and exasol command (this screen).
-exakit	help		Show the exakit usage text.
+exakit	help	[--all]	Show the exakit usage text (--all: every command). Any subcommand also answers --help with its catalog entry.
 exapump	sql	-p <profile> "<SQL>"	Run a single SQL statement through a saved connection profile.
 exapump	sql	-p <profile> < file.sql	Run a SQL script file (via stdin) through a profile.
 exapump	upload	<file> --table <schema.table>	Bulk-load a CSV or Parquet file into a table.

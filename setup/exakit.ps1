@@ -97,36 +97,90 @@ function Assert-ExakitInstalled {
     if (-not (Get-RuntimeType)) { Fail "No runtime recorded in the manifest yet." }
 }
 
+# Get-ExakitLoadedDatasets - the bundled datasets recorded as loaded. Twin of
+# exakit_loaded_datasets: the manifest is the record; status surfaces it so
+# nobody has to know where the file lives.
+function Get-ExakitLoadedDatasets {
+    $datasets = Get-ExakitManifestValue "data.datasets"
+    if (-not $datasets) { return @() }
+    $loaded = @()
+    foreach ($property in $datasets.PSObject.Properties) {
+        if ($property.Value -and $property.Value.loaded) { $loaded += $property.Name }
+    }
+    return ($loaded | Sort-Object)
+}
+
+# Invoke-CmdStatus [-Json] - what is installed and whether it is up. Twin of
+# cmd_status, including THE EXIT CODE CONTRACT (agents branch on it, not on
+# prose): 0 running, 3 installed but not running, 4 not installed.
 function Invoke-CmdStatus {
+    param([switch]$Json)
     if (-not (Test-Path $script:ManifestPath)) {
-        Write-Host "Not installed (no manifest at $script:ManifestPath)"
-        return
+        if ($Json) {
+            @{ installed = $false; manifest = $script:ManifestPath } | ConvertTo-Json
+        } else {
+            Write-Host "Not installed (no manifest at $script:ManifestPath)"
+        }
+        exit 4
     }
     $type = Get-RuntimeType
-    Write-Host "Kit level:  $(Get-ExakitManifestValue 'kit_level')"
-    Write-Host "Runtime:    $(if ($type) { $type } else { 'none' })"
     $status = switch ($type) { "nano" { Get-NanoStatus } default { "unknown" } }
-    Write-Host "Status:     $status"
+    $running = "$status".StartsWith("running")
     $steps = @(Get-ExakitManifestValue "steps_completed")
+    $datasets = @(Get-ExakitLoadedDatasets)
+    $pyexasol = Get-ExakitComponentCurrent "pyexasol"
+    $services = @{}
     foreach ($svcId in (Get-ExakitServiceIds)) {
         if ($svcId -eq "database") { continue }
-        Write-Host ("{0,-11} {1}" -f "${svcId}:", (Get-ExakitServiceStatus -Id $svcId))
+        $services[$svcId] = (Get-ExakitServiceStatus -Id $svcId)
+    }
+
+    if ($Json) {
+        [ordered]@{
+            installed       = $true
+            kit_level       = "$(Get-ExakitManifestValue 'kit_level')"
+            runtime         = [ordered]@{ type = $type; status = $status }
+            running         = $running
+            services        = $services
+            autostart       = ((Get-ExakitManifestValue "autostart.enabled") -eq $true)
+            datasets_loaded = $datasets
+            steps_completed = $steps
+            pyexasol        = $(if ($pyexasol) { "$pyexasol" } else { $null })
+            manifest        = $script:ManifestPath
+        } | ConvertTo-Json -Depth 4
+        if ($running) { exit 0 } else { exit 3 }
+    }
+
+    Write-Host "Kit level:  $(Get-ExakitManifestValue 'kit_level')"
+    Write-Host "Runtime:    $(if ($type) { $type } else { 'none' })"
+    Write-Host "Status:     $status"
+    foreach ($svcId in $services.Keys) {
+        Write-Host ("{0,-11} {1}" -f "${svcId}:", $services[$svcId])
     }
     if ((Get-ExakitManifestValue "autostart.enabled") -eq $true) {
         Write-Host "Autostart:  on (everything comes back after a restart)"
     } else {
         Write-Host "Autostart:  off - turn it on with: exakit autostart on"
     }
+    if ($datasets.Count -gt 0) {
+        Write-Host "Datasets:   $($datasets -join ' ')"
+    } else {
+        Write-Host "Datasets:   none loaded - load some with: exakit data-load"
+    }
     Write-Host "Steps done: $($steps -join ', ')"
     # pyexasol installs soft: when it is missing, say so here with the one command
     # that fixes it, instead of leaving a silent gap in the install.
-    $pyexasol = Get-ExakitComponentCurrent "pyexasol"
     if ($pyexasol) {
         Write-Host "pyexasol:   $pyexasol"
     } elseif ($null -ne (Get-ExakitManifestValue "components.pyexasol.validated")) {
         Write-Host "pyexasol:   not installed - repair: exakit update pyexasol"
     }
     Write-Host "Manifest:   $script:ManifestPath"
+    if (-not $running) {
+        Write-Host "Start it:   exakit start"
+        exit 3
+    }
+    exit 0
 }
 
 # ---------------------------------------------------------------------------
@@ -285,6 +339,9 @@ function Invoke-CmdAutostart {
 
 function Invoke-CmdStart {
     Assert-ExakitInstalled
+    # Logging first: launcher output belongs in the logfile, not interleaved
+    # with the [ok] lines on stdout. Twin of the same fix in cmd_start.
+    Initialize-ExakitLogging
     # Everything the kit runs, database first: self-heal semantics for the
     # runtime (a stopped one is started, a missing one created - `exakit start`
     # promises a running database), then every add-on service.
@@ -301,6 +358,7 @@ function Invoke-CmdStart {
 
 function Invoke-CmdStop {
     Assert-ExakitInstalled
+    Initialize-ExakitLogging
     # Add-on services first: they talk to the database, so they should be down
     # before it goes.
     foreach ($id in (Get-ExakitServiceIds)) {
@@ -2015,10 +2073,38 @@ function Show-ExakitUsage {
     ) | ForEach-Object { Write-Host $_ }
 }
 
+# `exakit <command> --help` answers from the catalog - the same single source
+# of truth `exakit catalog` renders. Twin of the bash pre-dispatch block.
+if ($Command -and ($RestArgs -contains "--help" -or $RestArgs -contains "-h")) {
+    $helpCatalog = Join-Path $libDir "catalog.tsv"
+    $helpFound = $false
+    if (Test-Path $helpCatalog) {
+        foreach ($row in (Import-Csv -Path $helpCatalog -Delimiter "`t")) {
+            if ($row.tool -eq "exakit" -and ($row.command -eq $Command -or $row.command.StartsWith("$Command "))) {
+                Write-Host ("  exakit {0,-14} {1}" -f $row.command, $row.options)
+                Write-Host ("      {0}" -f $row.description)
+                $helpFound = $true
+            }
+        }
+    }
+    if ($helpFound) {
+        Write-Host ""
+        Write-Host "Full catalog: exakit catalog $Command"
+    } else {
+        Write-Host "No catalog entry for $Command - browse everything with: exakit catalog"
+    }
+    exit 0
+}
+
 try {
     switch ($Command) {
         "preflight"    { Test-NanoRequirements }
-        "status"       { Invoke-CmdStatus }
+        "status"       {
+            $statusJson = ($RestArgs -contains "--json" -or $RestArgs -contains "-j")
+            $statusUnknown = @($RestArgs | Where-Object { $_ -notin @("--json", "-j") })
+            if ($statusUnknown.Count -gt 0) { Fail "Unknown option '$($statusUnknown[0])' for status (supported: --json)." }
+            Invoke-CmdStatus -Json:$statusJson
+        }
         "version"      { Invoke-CmdVersion }
         "--version"    { Invoke-CmdVersion }
         "-v"           { Invoke-CmdVersion }
@@ -2045,7 +2131,27 @@ try {
         "data-load"    { Invoke-CmdDataLoad -ForceFlag ($RestArgs | Select-Object -First 1) }
         "mcp-setup"    { Invoke-CmdMcpSetup }
         "mcp-repair"   { Invoke-CmdMcpOperation -Operation "repair" -OpArgs $RestArgs }
-        "mcp-doctor"   { Invoke-CmdMcpOperation -Operation "doctor" -OpArgs $RestArgs }
+        "mcp-doctor"   {
+            # Diagnosis order: a stopped database is diagnosed as exactly that
+            # (exit 3, remedy named) before anything that needs it runs - the
+            # first downstream failure used to headline as a broken MCP user.
+            Assert-ExakitInstalled
+            $doctorJson = ($RestArgs -contains "--json" -or $RestArgs -contains "-j")
+            $doctorArgs = @($RestArgs | Where-Object { $_ -notin @("--json", "-j") })
+            $doctorType = Get-RuntimeType
+            $doctorUp = ($doctorType -eq "nano" -and "$(Get-NanoStatus)".StartsWith("running"))
+            if (-not $doctorUp) {
+                if ($doctorJson) {
+                    @{ database = "not running"; remedy = "exakit start" } | ConvertTo-Json
+                } else {
+                    Warn2 "The database is not running - fix that first: exakit start"
+                    Info "MCP diagnostics need a live database (the read-only user and its grants are checked against it)."
+                }
+                exit 3
+            }
+            if ($doctorJson) { $env:EXAKIT_MCP_RESULT_JSON = "1" }
+            Invoke-CmdMcpOperation -Operation "doctor" -OpArgs $doctorArgs
+        }
         "mcp-status"   { Invoke-CmdMcpOperation -Operation "status" -OpArgs $RestArgs }
         "mcp-validate" { Invoke-CmdMcpOperation -Operation "validate" -OpArgs $RestArgs }
         "mcp-remove"   { Invoke-CmdMcpOperation -Operation "uninstall" -OpArgs $RestArgs }
