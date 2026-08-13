@@ -496,6 +496,16 @@ dash_server_validate() {
         sleep 2
         _dsv_waited=$((_dsv_waited + 2))
     done
+    # The browser page is probed HERE, while the probe server is still up.
+    # Checking it after the kill below asked a dead port whether it renders,
+    # so a perfectly good install was reported as "the dashboards page does
+    # not render" on every fresh install — the page then worked the moment
+    # the user opened it, because by then the real service had started.
+    _dsv_ui=0
+    if [ "$_dsv_ok" -eq 1 ] && _dash_server_ui_answers; then
+        _dsv_ui=1
+    fi
+
     # The launcher execs the real server, so the recorded pid IS the server;
     # the child sweep covers any worker it spawned. Bounded, mirrors mcp.sh.
     pkill -P "$_dsv_pid" 2>/dev/null
@@ -507,7 +517,7 @@ dash_server_validate() {
 
     if [ "$_dsv_ok" -eq 1 ]; then
         ok "dash-server control plane answers on port $EXAKIT_DASH_SERVER_PORT"
-        _dash_server_check_ui
+        _dash_server_report_ui "$_dsv_ui"
         manifest_set components.dash_server.validated true
         _dash_server_print_usage
     else
@@ -539,6 +549,18 @@ _dash_server_ui_answers() {
 # user while the kit said "ready".
 _dash_server_check_ui() {
     if _dash_server_ui_answers; then
+        _dash_server_report_ui 1
+    else
+        _dash_server_report_ui 0
+    fi
+    return 0
+}
+
+# _dash_server_report_ui <1|0> — say what the UI probe found and record it.
+# Separate from the probe so the fresh-start path can probe while its server
+# is alive and report after killing it.
+_dash_server_report_ui() {
+    if [ "${1:-0}" = "1" ]; then
         ok "Dashboards page answers: http://127.0.0.1:$EXAKIT_DASH_SERVER_PORT"
         manifest_set components.dash_server.ui_validated true
         return 0

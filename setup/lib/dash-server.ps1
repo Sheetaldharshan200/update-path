@@ -318,6 +318,13 @@ function Test-DashServer {
         Start-Sleep -Seconds 2
         $waited += 2
     }
+    # The browser page is probed HERE, while the probe server is still up:
+    # asking a dead port whether it renders reported every fresh install as
+    # "the dashboards page does not render". Twin of the same ordering fix in
+    # dash_server_validate.
+    $uiOk = $false
+    if ($answered) { $uiOk = Test-DashServerUiAnswers }
+
     # The launcher is a cmd wrapper: stop the whole tree, or the python server
     # it spawned keeps the port. Bounded and best-effort.
     try {
@@ -326,6 +333,7 @@ function Test-DashServer {
 
     if ($answered) {
         Ok "dash-server control plane answers on port $($script:DashServerPort)"
+        Write-DashServerUiResult $uiOk
         Set-ExakitManifestValue "components.dash_server.validated" $true
         Write-DashServerUsagePanel
     } else {
@@ -395,7 +403,15 @@ function Test-DashServerUiAnswers {
 # does not fail the install, but it must never pass silently.
 # Twin of _dash_server_check_ui.
 function Invoke-DashServerUiCheck {
-    if (Test-DashServerUiAnswers) {
+    Write-DashServerUiResult (Test-DashServerUiAnswers)
+}
+
+# Write-DashServerUiResult <bool> - say what the UI probe found and record it.
+# Separate from the probe so the fresh-start path can probe while its server is
+# alive and report after killing it. Twin of _dash_server_report_ui.
+function Write-DashServerUiResult {
+    param([bool]$Ok)
+    if ($Ok) {
         Ok "Dashboards page answers: http://127.0.0.1:$($script:DashServerPort)"
         Set-ExakitManifestValue "components.dash_server.ui_validated" $true
         return
