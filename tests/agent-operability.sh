@@ -114,6 +114,25 @@ check "an empty row still occupies one" "1" "$(_ui_wrapped_lines 0 120)"
 check "the redraw moves by what was drawn, not by row count" "yes" \
     "$(grep -q 'printf .\\033\[%dA\\033\[0J. "\$_cb_drawn"' "$ROOT/setup/lib/common.sh" && echo yes || echo no)"
 
+# Rows are truncated so they CANNOT wrap: the redraw height is then exact by
+# construction instead of trusting width detection, locales and terminal wrap
+# rules to agree. And the width itself must come from /dev/tty — `tput cols`
+# inside command substitution has a pipe for stdout, cannot ioctl the
+# terminal, and silently answers 80, which made the menu climb over the lines
+# above it on any terminal that was not 80 columns wide.
+check "a short row is untouched" "hello" "$(_ui_fit_row "hello" 10 80)"
+_fit_out="$(_ui_fit_row "$(printf 'x%.0s' $(seq 1 200))" 10 80)"
+_fit_tail="plain"
+case "$_fit_out" in *…) _fit_tail="ends-with-ellipsis" ;; esac
+_fit_kept="${_fit_out%…}"
+check "a long row is cut to one line with an ellipsis" "69 ends-with-ellipsis" "${#_fit_kept} $_fit_tail"
+check "a row exactly at the width is untouched" "70" \
+    "$(_ui_fit_row "$(printf 'x%.0s' $(seq 1 70))" 10 80 | awk '{print length($0)}')"
+check "the checkbox rows go through the fit" "yes" \
+    "$(grep -q '_ui_fit_row "\$_cb_label"' "$ROOT/setup/lib/common.sh" && echo yes || echo no)"
+check "the width is read from /dev/tty, not tput-in-a-pipe" "yes" \
+    "$(grep -q 'stty size < /dev/tty' "$ROOT/setup/lib/common.sh" && echo yes || echo no)"
+
 # ...and the labels themselves stay inside a normal terminal, so nothing wraps
 # in the first place. 100 columns is the bar: narrower than the 120 most
 # terminals default to, wide enough for a descriptive label.

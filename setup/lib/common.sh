@@ -146,13 +146,41 @@ ui_menu_option() { printf '      %s%s.%s %s\n' "${UI_ACCENT:-}" "$1" "${UI_RESET
 ui_menu_hint()   { printf '      %s%s%s\n' "${UI_DIM:-}" "$1" "${UI_RESET:-}"; }
 
 # _ui_term_cols — the terminal's width, or a sane default. COLUMNS is not
-# exported to scripts, so ask the terminal itself and fall back to 80.
+# exported to scripts, and `tput cols` is a TRAP inside command substitution:
+# its stdout is a pipe there, so it cannot ioctl the terminal and silently
+# answers 80 — which made the menu miscount wrapped rows on any terminal that
+# was not 80 columns and climb over the lines above it. `stty size` reads the
+# terminal through stdin instead, which /dev/tty provides regardless of where
+# stdout points.
 _ui_term_cols() {
     _utc="${COLUMNS:-}"
+    if [ -z "$_utc" ]; then
+        set -- $(stty size < /dev/tty 2>/dev/null || true)
+        _utc="${2:-}"
+    fi
     [ -n "$_utc" ] || _utc="$(tput cols 2>/dev/null || true)"
     case "$_utc" in ''|*[!0-9]*) _utc=80 ;; esac
     [ "$_utc" -ge 20 ] || _utc=80
     printf '%s\n' "$_utc"
+}
+
+# _ui_fit_row <text> <chrome-cols> <terminal-cols> — the text, truncated so
+# chrome + text CANNOT exceed one terminal line. The redraw arithmetic is only
+# exact when every row is exactly one line: truncation makes that true by
+# construction, instead of trusting width detection, locales and wrap rules to
+# all agree. (bash counts characters here; in a non-UTF-8 locale it counts
+# bytes, which only ever truncates EARLIER — still one line, never two.)
+_ui_fit_row() {
+    _ufr_text="$1"; _ufr_chrome="$2"; _ufr_cols="$3"
+    if [ $(( ${#_ufr_text} + _ufr_chrome )) -gt "$_ufr_cols" ]; then
+        _ufr_keep=$(( _ufr_cols - _ufr_chrome - 1 ))
+        [ "$_ufr_keep" -gt 0 ] || _ufr_keep=1
+        # bash substring, not `cut -c`: BSD cut counts bytes and can split a
+        # multibyte character in half at the boundary.
+        printf '%s…\n' "${_ufr_text:0:$_ufr_keep}"
+        return 0
+    fi
+    printf '%s\n' "$_ufr_text"
 }
 
 # _ui_wrapped_lines <visible-columns> <terminal-columns> — how many terminal
@@ -425,14 +453,14 @@ ui_checkbox_menu() {
         _cb_i=1
         for _cb_label in "$@"; do
             if _cb_is_header "$_cb_i"; then
-                _cb_text="${_cb_label#\#}"
+                _cb_text="$(_ui_fit_row "${_cb_label#\#}" 4 "$_cb_cols")"
                 printf '    %s%s%s\n' "${UI_ACCENT:-}" "$_cb_text" "${UI_RESET:-}"
                 _cb_drawn=$((_cb_drawn + $(_ui_wrapped_lines $((4 + ${#_cb_text})) "$_cb_cols")))
                 _cb_i=$((_cb_i + 1))
                 continue
             fi
             if _cb_is_disabled "$_cb_i"; then
-                _cb_text="${_cb_label#\!}"
+                _cb_text="$(_ui_fit_row "${_cb_label#\!}" 10 "$_cb_cols")"
                 printf '      %s[ ] %s%s\n' "${UI_DIM:-}" "$_cb_text" "${UI_RESET:-}"
                 _cb_drawn=$((_cb_drawn + $(_ui_wrapped_lines $((10 + ${#_cb_text})) "$_cb_cols")))
                 _cb_i=$((_cb_i + 1))
@@ -443,20 +471,28 @@ ui_checkbox_menu() {
             else
                 _cb_ptr=" "
             fi
+            # Chrome: four leading spaces, the pointer, a space, and the
+            # checkbox. The CHECKED box is "[<mark>] " whose mark is a palette
+            # glyph of ANY width ("✓" is one column, the plain "[ok]" is four),
+            # so the chrome is computed from the mark, not assumed — a row is
+            # truncated against the wider of its two states, or toggling it
+            # would change how many lines it occupies.
+            _cb_chrome=$((9 + ${#_cb_mark}))
+            [ "$_cb_chrome" -lt 10 ] && _cb_chrome=10
+            _cb_text="$(_ui_fit_row "$_cb_label" "$_cb_chrome" "$_cb_cols")"
             case ",$_cb_sel," in
                 *",$_cb_i,"*)
                     printf '    %s %s[%s]%s %s\n' \
-                        "$_cb_ptr" "${UI_OK:-}" "$_cb_mark" "${UI_RESET:-}" "$_cb_label"
+                        "$_cb_ptr" "${UI_OK:-}" "$_cb_mark" "${UI_RESET:-}" "$_cb_text"
                     ;;
                 *)
-                    printf '    %s [ ] %s\n' "$_cb_ptr" "$_cb_label"
+                    printf '    %s [ ] %s\n' "$_cb_ptr" "$_cb_text"
                     ;;
             esac
-            # 10 = the four leading spaces, the pointer, and the "[x] " box.
-            _cb_drawn=$((_cb_drawn + $(_ui_wrapped_lines $((10 + ${#_cb_label})) "$_cb_cols")))
+            _cb_drawn=$((_cb_drawn + $(_ui_wrapped_lines $((_cb_chrome + ${#_cb_text})) "$_cb_cols")))
             _cb_i=$((_cb_i + 1))
         done
-        _cb_hint="↑/↓ to move · Space to toggle · Enter to confirm"
+        _cb_hint="$(_ui_fit_row "↑/↓ to move · Space to toggle · Enter to confirm" 6 "$_cb_cols")"
         ui_menu_hint "$_cb_hint"
         _cb_drawn=$((_cb_drawn + $(_ui_wrapped_lines $((6 + ${#_cb_hint})) "$_cb_cols")))
         # One raw keypress, no echo. Enter arrives as an empty read; IFS= keeps
