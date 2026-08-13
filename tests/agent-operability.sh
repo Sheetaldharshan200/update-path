@@ -100,5 +100,36 @@ print("all-covered" if not missing else " ".join(missing[:5]))
 PYEOF
 )"
 
+echo "menu rows never leave stale lines behind:"
+# A row wider than the terminal wraps onto a second line. The redraw used to
+# move up one line PER ROW, so every wrapped row left its overflow on screen
+# and each keypress stacked another stale copy (an over-long EVERYTHING label
+# turned the uninstall menu into a wall of repeated first rows). The menu now
+# counts the lines it actually drew.
+check "a row narrower than the terminal is one line" "1" "$(_ui_wrapped_lines 40 120)"
+check "a row exactly the terminal width is one line" "1" "$(_ui_wrapped_lines 120 120)"
+check "one column wider is two lines" "2" "$(_ui_wrapped_lines 121 120)"
+check "a very long row counts every line" "3" "$(_ui_wrapped_lines 300 120)"
+check "an empty row still occupies one" "1" "$(_ui_wrapped_lines 0 120)"
+check "the redraw moves by what was drawn, not by row count" "yes" \
+    "$(grep -q 'printf .\\033\[%dA\\033\[0J. "\$_cb_drawn"' "$ROOT/setup/lib/common.sh" && echo yes || echo no)"
+
+# ...and the labels themselves stay inside a normal terminal, so nothing wraps
+# in the first place. 100 columns is the bar: narrower than the 120 most
+# terminals default to, wide enough for a descriptive label.
+check "every menu label fits a normal terminal" "all-fit" "$(python3 - "$ROOT" <<'PYEOF'
+import re, sys
+root = sys.argv[1]
+too_long = []
+for path in ("setup/lib/common.sh",):
+    for label in re.findall(r'_um_labels\+=\("([^"]+)"\)|_mm_menu_labels\+=\("([^"]+)"\)', open(root + "/" + path).read()):
+        text = (label[0] or label[1]).lstrip("#!")
+        # 10 columns of chrome: four leading spaces, the pointer, and "[x] ".
+        if len(text) + 10 > 100:
+            too_long.append("%d cols: %s" % (len(text) + 10, text[:50]))
+print("all-fit" if not too_long else " | ".join(too_long))
+PYEOF
+)"
+
 echo "passed: $PASS, failed: $FAIL"
 [ "$FAIL" -eq 0 ]
