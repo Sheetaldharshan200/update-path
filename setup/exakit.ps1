@@ -588,7 +588,7 @@ function Show-ExakitUninstallMenu {
         }
     }
 
-    [void]$labels.Add("EVERYTHING - the full kit: database + data, MCP configs, skills, exapump, pyexasol, add-ons, the kit home and the exakit command")
+    [void]$labels.Add("EVERYTHING - the full kit, including the database and all its data")
     [void]$keys.Add("everything")
     $everyIdx = $labels.Count
 

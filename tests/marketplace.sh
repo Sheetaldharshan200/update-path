@@ -557,6 +557,36 @@ _ui_good="$( (
 has "a working page is confirmed" "Dashboards page answers" "$_ui_good"
 check "and recorded" "true" "$(manifest_get components.dash_server.ui_validated)"
 
+# The fresh-install path starts its own probe server, and the browser page must
+# be probed WHILE that server is alive. Probing after the kill asked a DEAD
+# port whether it renders, so every fresh install warned "the dashboards page
+# does not render" about a page that worked the moment the user opened it.
+# The fake server below drops its marker when killed, so a probe that happens
+# after the kill genuinely sees nothing — which is what makes this discriminate.
+_ui_order="$( (
+    dash_server_venv_python() { printf '%s\n' "$EXAKIT_HOME/dash-server-venv/bin/python"; }
+    mkdir -p "$EXAKIT_HOME/dash-server-venv/bin"
+    printf '#!/bin/sh\nexit 0\n' > "$EXAKIT_HOME/dash-server-venv/bin/python"
+    chmod 755 "$EXAKIT_HOME/dash-server-venv/bin/python"
+    _dash_server_resolve_port() { :; }
+    _dash_server_port_foreign_desc() { return 1; }
+    _dash_server_http_answers() { [ -f "$WORK/probe-up" ]; }
+    _dash_server_ui_answers() { [ -f "$WORK/probe-up" ]; }
+    EXAKIT_DASH_SERVER_BIN="$WORK/fake-dash-server"
+    cat > "$WORK/fake-dash-server" <<FAKEEOF
+#!/bin/sh
+trap 'rm -f "$WORK/probe-up"; exit 0' TERM INT
+touch "$WORK/probe-up"
+while :; do sleep 1; done
+FAKEEOF
+    chmod 755 "$WORK/fake-dash-server"
+    _dash_server_print_usage() { :; }
+    rm -f "$WORK/probe-up"
+    dash_server_validate >/dev/null 2>&1
+    printf 'ui=%s' "$(manifest_get components.dash_server.ui_validated)"
+) )"
+check "the UI is probed while the probe server is alive" "ui=true" "$_ui_order"
+
 # The stale-process repair: a server started BEFORE the package-data restore
 # serves 500 on templates that are on disk, and re-validating the same process
 # can never heal it. When the broken page is on OUR OWN instance, validation

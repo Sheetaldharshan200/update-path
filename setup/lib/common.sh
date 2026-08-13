@@ -145,6 +145,27 @@ error(){ printf '      %s%s%s %s\n' "${UI_ERR:-}"  "${UI_CROSS:-[x]}" "${UI_RESE
 ui_menu_option() { printf '      %s%s.%s %s\n' "${UI_ACCENT:-}" "$1" "${UI_RESET:-}" "$2"; }
 ui_menu_hint()   { printf '      %s%s%s\n' "${UI_DIM:-}" "$1" "${UI_RESET:-}"; }
 
+# _ui_term_cols — the terminal's width, or a sane default. COLUMNS is not
+# exported to scripts, so ask the terminal itself and fall back to 80.
+_ui_term_cols() {
+    _utc="${COLUMNS:-}"
+    [ -n "$_utc" ] || _utc="$(tput cols 2>/dev/null || true)"
+    case "$_utc" in ''|*[!0-9]*) _utc=80 ;; esac
+    [ "$_utc" -ge 20 ] || _utc=80
+    printf '%s\n' "$_utc"
+}
+
+# _ui_wrapped_lines <visible-columns> <terminal-columns> — how many terminal
+# LINES a row of that width occupies. A row wider than the terminal wraps, and
+# a redraw that assumed one line per row would leave the overflow on screen
+# forever (every keypress stacking another stale copy). Menus therefore count
+# what they actually drew instead of counting their rows.
+_ui_wrapped_lines() {
+    _uwl_w="$1"; _uwl_cols="$2"
+    [ "$_uwl_w" -gt 0 ] 2>/dev/null || { printf '1\n'; return 0; }
+    printf '%s\n' "$(( (_uwl_w + _uwl_cols - 1) / _uwl_cols ))"
+}
+
 # --- checkbox multi-select ---------------------------------------------------
 # _ui_checkbox_toggle <selected_csv> <count> <input> — pure selection logic.
 # Toggles the 1-based indices named in <input> (numbers separated by spaces or
@@ -389,20 +410,31 @@ ui_checkbox_menu() {
     # plain-palette tick is the multi-char "[ok]", which would double-bracket).
     if [ "${UI_FANCY:-0}" = 1 ]; then _cb_mark="${UI_TICK:-x}"; else _cb_mark="x"; fi
     _cb_first=1
+    _cb_drawn=0
     while :; do
         if [ "$_cb_first" -ne 1 ] && [ "$UI_FANCY" = 1 ]; then
-            printf '\033[%dA\033[0J' "$((_cb_n + 1))"    # redraw the block in place
+            # Up by the lines the LAST frame really occupied, not by the row
+            # count: a label wider than the terminal wraps onto a second line,
+            # and moving up one-per-row would leave every frame's overflow
+            # behind (the stale rows stack with each keypress).
+            printf '\033[%dA\033[0J' "$_cb_drawn"
         fi
         _cb_first=0
+        _cb_cols="$(_ui_term_cols)"
+        _cb_drawn=0
         _cb_i=1
         for _cb_label in "$@"; do
             if _cb_is_header "$_cb_i"; then
-                printf '    %s%s%s\n' "${UI_ACCENT:-}" "${_cb_label#\#}" "${UI_RESET:-}"
+                _cb_text="${_cb_label#\#}"
+                printf '    %s%s%s\n' "${UI_ACCENT:-}" "$_cb_text" "${UI_RESET:-}"
+                _cb_drawn=$((_cb_drawn + $(_ui_wrapped_lines $((4 + ${#_cb_text})) "$_cb_cols")))
                 _cb_i=$((_cb_i + 1))
                 continue
             fi
             if _cb_is_disabled "$_cb_i"; then
-                printf '      %s[ ] %s%s\n' "${UI_DIM:-}" "${_cb_label#\!}" "${UI_RESET:-}"
+                _cb_text="${_cb_label#\!}"
+                printf '      %s[ ] %s%s\n' "${UI_DIM:-}" "$_cb_text" "${UI_RESET:-}"
+                _cb_drawn=$((_cb_drawn + $(_ui_wrapped_lines $((10 + ${#_cb_text})) "$_cb_cols")))
                 _cb_i=$((_cb_i + 1))
                 continue
             fi
@@ -420,9 +452,13 @@ ui_checkbox_menu() {
                     printf '    %s [ ] %s\n' "$_cb_ptr" "$_cb_label"
                     ;;
             esac
+            # 10 = the four leading spaces, the pointer, and the "[x] " box.
+            _cb_drawn=$((_cb_drawn + $(_ui_wrapped_lines $((10 + ${#_cb_label})) "$_cb_cols")))
             _cb_i=$((_cb_i + 1))
         done
-        ui_menu_hint "↑/↓ to move · Space to toggle · Enter to confirm"
+        _cb_hint="↑/↓ to move · Space to toggle · Enter to confirm"
+        ui_menu_hint "$_cb_hint"
+        _cb_drawn=$((_cb_drawn + $(_ui_wrapped_lines $((6 + ${#_cb_hint})) "$_cb_cols")))
         # One raw keypress, no echo. Enter arrives as an empty read; IFS= keeps
         # a Space keypress from being stripped to an empty string.
         if [ "$_cb_tty" = "/dev/tty" ]; then
@@ -6682,7 +6718,7 @@ exakit_uninstall_menu() {
         done
     fi
 
-    _um_labels+=("EVERYTHING — the full kit: database + data, MCP configs, skills, exapump, pyexasol, add-ons, the kit home and the exakit command")
+    _um_labels+=("EVERYTHING — the full kit, including the database and all its data")
     _um_keys+=("everything")
     _um_every_idx="${#_um_labels[@]}"
 
