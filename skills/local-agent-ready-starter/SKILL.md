@@ -188,6 +188,20 @@ Follow these on every interaction, no exceptions:
   - **MCP tools** run as the dedicated read-only user — it can read every schema
     (`USE ANY SCHEMA` + `SELECT ANY TABLE`) but the database *enforces* read-only, so a
     mutation is rejected outright. This is the safe default path for querying.
+
+    Two DISTINCT layers stop a write here, and you can observe each: the MCP **tool gate**
+    rejects a non-SELECT before it ever reaches the database (`The query is invalid or not a
+    SELECT statement` — that message is the tool, not the engine), and beneath it the
+    **privilege gate** holds even if a statement got through. Prove the privilege gate any
+    time with one query as the MCP user:
+
+    ```sql
+    SELECT PRIVILEGE FROM SYS.EXA_USER_SYS_PRIVS
+    ```
+
+    It returns exactly `CREATE SESSION`, `SELECT ANY TABLE`, `USE ANY SCHEMA` — no write
+    privilege exists to misuse. (That system table is the one to use: the natural guess
+    `EXA_SESSION_PRIVILEGES` does not exist and errors.)
   - **`exapump -p starter-kit`** connects as the **admin** user and is *not* restricted — the
     only thing stopping a destructive statement there is you. Use it solely for the approved
     `SELECT` in Step 5.4. Never route a write through it, and never use it to "work around"

@@ -457,8 +457,10 @@ exapump_validate_connection() {
 exapump_run_sql_file() {
     [ -s "$1" ] || { warn "SQL file missing or empty: $1"; return 1; }
     info "Running ${2:-$(basename "$1")}"
-    run_logged "$(exapump_cli)" sql -p "$EXAKIT_EXAPUMP_PROFILE" < "$1" || \
+    if ! run_logged "$(exapump_cli)" sql -p "$EXAKIT_EXAPUMP_PROFILE" < "$1"; then
+        [ -n "${EXAKIT_LOG_FILE:-}" ] && exakit_explain_db_error "$(tail -8 "$EXAKIT_LOG_FILE" 2>/dev/null)"
         die "SQL file failed: $1 (see log)"
+    fi
     ok "${2:-$(basename "$1")} done"
 }
 
@@ -466,8 +468,13 @@ exapump_run_sql_file() {
 exapump_upload() {
     [ -s "$1" ] || { warn "Data file missing or empty: $1"; return 1; }
     info "Loading $(basename "$1") into $2"
-    run_logged "$(exapump_cli)" upload "$1" --table "$2" -p "$EXAKIT_EXAPUMP_PROFILE" || \
+    if ! run_logged "$(exapump_cli)" upload "$1" --table "$2" -p "$EXAKIT_EXAPUMP_PROFILE"; then
+        # The engine's message is in the log; translate the common faults into
+        # their remedy before dying, so "Connection refused" arrives WITH
+        # "exakit start" instead of leaving the user to map one to the other.
+        [ -n "${EXAKIT_LOG_FILE:-}" ] && exakit_explain_db_error "$(tail -8 "$EXAKIT_LOG_FILE" 2>/dev/null)"
         die "Upload failed: $1 -> $2 (see log)"
+    fi
     ok "$(basename "$1") loaded"
 }
 

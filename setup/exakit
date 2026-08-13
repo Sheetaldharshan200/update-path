@@ -94,44 +94,124 @@ _require_install() {
     [ -n "$(_runtime_type)" ] || die "No runtime recorded in the manifest yet."
 }
 
+# cmd_status [--json] — what is installed and whether it is up.
+#
+# THE EXIT CODE IS PART OF THE ANSWER. An unattended agent branches on $?, not
+# on prose, so this command distinguishes its states the way `git diff --quiet`
+# or `systemctl is-active` do:
+#     0  installed and the database is running
+#     3  installed but the database is NOT running (start it: exakit start)
+#     4  not installed at all
+# `--json` prints one machine-readable object built from the same fields the
+# prose shows (same exit codes; nothing else on stdout). Loaded datasets are
+# included in both forms: the manifest records them, and reconstructing state
+# after a context reset must not require knowing where that file lives.
 cmd_status() {
+    _cs_json=0
+    for _cs_arg in "$@"; do
+        case "$_cs_arg" in
+            --json|-j) _cs_json=1 ;;
+            *) die "Unknown option '$_cs_arg' for status (supported: --json)." ;;
+        esac
+    done
     if [ ! -f "$EXAKIT_MANIFEST" ]; then
-        echo "Not installed (no manifest at $EXAKIT_MANIFEST)"
-        exit 0
+        if [ "$_cs_json" -eq 1 ]; then
+            printf '{"installed": false, "manifest": "%s"}\n' "$EXAKIT_MANIFEST"
+        else
+            echo "Not installed (no manifest at $EXAKIT_MANIFEST)"
+        fi
+        exit 4
     fi
     _type="$(_runtime_type)"
+    case "$_type" in
+        nano)     _cs_db="$(nano_status)" ;;
+        personal) _cs_db="$(personal_status)" ;;
+        *)        _cs_db="unknown" ;;
+    esac
+    _cs_running=0
+    case "$_cs_db" in running*) _cs_running=1 ;; esac
+    _cs_autostart="$(manifest_get autostart.enabled 2>/dev/null || true)"
+    _cs_datasets="$(exakit_loaded_datasets 2>/dev/null | tr '\n' ' ' | sed 's/ $//')"
+    _cs_pyx="$(exakit_component_current pyexasol 2>/dev/null || true)"
+
+    if [ "$_cs_json" -eq 1 ]; then
+        # Composed in Python so every value is escaped properly; the service
+        # map is passed pre-joined because the registry drives it.
+        _cs_services=""
+        for _st_id in $(exakit_service_ids 2>/dev/null); do
+            [ "$_st_id" = "database" ] && continue
+            _cs_services="${_cs_services}${_st_id}=$(exakit_service_status "$_st_id")
+"
+        done
+        run_python - "$(manifest_get kit_level 2>/dev/null)" "${_type:-}" "$_cs_db"             "${_cs_autostart:-false}" "$_cs_datasets" "${_cs_pyx:-}" "$EXAKIT_MANIFEST"             "$(manifest_get steps_completed 2>/dev/null)" "$_cs_services" <<'EXAKIT_SJ_PY'
+import json, sys
+kit, rtype, db, autostart, datasets, pyx, manifest, steps, services = sys.argv[1:10]
+try:
+    steps_list = json.loads(steps) if steps else []
+except ValueError:
+    steps_list = []
+smap = {}
+for line in services.splitlines():
+    if "=" in line:
+        key, value = line.split("=", 1)
+        smap[key] = value
+print(json.dumps({
+    "installed": True,
+    "kit_level": kit or None,
+    "runtime": {"type": rtype or None, "status": db},
+    "running": db.startswith("running"),
+    "services": smap,
+    "autostart": autostart == "true",
+    "datasets_loaded": datasets.split() if datasets else [],
+    "steps_completed": steps_list,
+    "pyexasol": pyx or None,
+    "manifest": manifest,
+}, indent=2))
+EXAKIT_SJ_PY
+        [ "$_cs_running" -eq 1 ] && exit 0 || exit 3
+    fi
+
     printf 'Kit level:  %s\n' "$(manifest_get kit_level 2>/dev/null)"
     printf 'Runtime:    %s\n' "${_type:-none}"
-    case "$_type" in
-        nano)     printf 'Status:     %s\n' "$(nano_status)" ;;
-        personal) printf 'Status:     %s\n' "$(personal_status)" ;;
-        *)        printf 'Status:     unknown\n' ;;
-    esac
+    printf 'Status:     %s\n' "$_cs_db"
     # Every add-on that runs as a service, with the state it is actually in —
     # registry-driven, so a new add-on appears here on its own.
     for _st_id in $(exakit_service_ids 2>/dev/null); do
         [ "$_st_id" = "database" ] && continue
         printf '%-11s %s\n' "$_st_id:" "$(exakit_service_status "$_st_id")"
     done
-    if [ "$(manifest_get autostart.enabled 2>/dev/null || true)" = "true" ]; then
+    if [ "$_cs_autostart" = "true" ]; then
         printf 'Autostart:  on (everything comes back after a restart)\n'
     else
         printf 'Autostart:  off — turn it on with: exakit autostart on\n'
     fi
+    if [ -n "$_cs_datasets" ]; then
+        printf 'Datasets:   %s\n' "$_cs_datasets"
+    else
+        printf 'Datasets:   none loaded — load some with: exakit data-load\n'
+    fi
     printf 'Steps done: %s\n' "$(manifest_get steps_completed 2>/dev/null)"
     # pyexasol installs soft: when it is missing, say so here with the one command
     # that fixes it, instead of leaving a silent gap in the install.
-    _pyx_version="$(exakit_component_current pyexasol 2>/dev/null || true)"
-    if [ -n "$_pyx_version" ]; then
-        printf 'pyexasol:   %s\n' "$_pyx_version"
+    if [ -n "$_cs_pyx" ]; then
+        printf 'pyexasol:   %s\n' "$_cs_pyx"
     elif manifest_get components.pyexasol.validated >/dev/null 2>&1; then
         printf 'pyexasol:   not installed — repair: exakit update pyexasol\n'
     fi
     printf 'Manifest:   %s\n' "$EXAKIT_MANIFEST"
+    if [ "$_cs_running" -ne 1 ]; then
+        printf 'Start it:   exakit start\n'
+        exit 3
+    fi
+    exit 0
 }
 
 cmd_start() {
     _require_install
+    # Logging FIRST: run_logged only routes the launcher's raw JSON stream to
+    # the logfile when one exists — without this, `exakit start` interleaved
+    # multi-line launcher logs with its own [ok] lines on stdout.
+    exakit_init_logging 2>/dev/null || true
     # Everything the kit runs, database first: self-heal semantics for the
     # runtime (a stopped one is started, a missing one deployed — `exakit
     # start` promises a running database), then every add-on service.
@@ -148,6 +228,7 @@ cmd_start() {
 
 cmd_stop() {
     _require_install
+    exakit_init_logging 2>/dev/null || true
     # Add-on services first: they talk to the database, so they should be down
     # before it goes.
     for _stop_id in $(exakit_service_ids); do
@@ -375,10 +456,38 @@ cmd_mcp_repair() {
     exakit_mcp_operation repair "$@" || die "Could not repair MCP state"
 }
 
+# cmd_mcp_doctor [--json] [clients] — diagnostics, with the DIAGNOSIS ORDER a
+# diagnostician uses: is the database even running, before anything that needs
+# it? Without that check the first downstream failure (creating the read-only
+# user against a dead port) used to headline as "MCP user is broken" and send
+# people to mcp-repair — the wrong subsystem entirely. Exit 3 mirrors `exakit
+# status`, so agents branch the same way on both.
 cmd_mcp_doctor() {
     _require_install
+    _cmd_json=0
+    _cmd_rest=""
+    for _cmd_arg in "$@"; do
+        case "$_cmd_arg" in
+            --json|-j) _cmd_json=1 ;;
+            *) _cmd_rest="${_cmd_rest:+$_cmd_rest }$_cmd_arg" ;;
+        esac
+    done
     exakit_init_logging
-    exakit_mcp_operation doctor "$@" || die "Could not run MCP diagnostics"
+    if ! exakit_runtime_is_running; then
+        if [ "$_cmd_json" -eq 1 ]; then
+            printf '{"database": "not running", "remedy": "exakit start"}\n'
+        else
+            warn "The database is not running — fix that first: exakit start"
+            info "MCP diagnostics need a live database (the read-only user and its grants are checked against it)."
+        fi
+        exit 3
+    fi
+    if [ "$_cmd_json" -eq 1 ]; then
+        EXAKIT_MCP_RESULT_JSON=1
+        export EXAKIT_MCP_RESULT_JSON
+    fi
+    # shellcheck disable=SC2086 — client names are single tokens by contract
+    exakit_mcp_operation doctor $_cmd_rest || die "Could not run MCP diagnostics"
 }
 
 cmd_mcp_status() {
@@ -571,9 +680,35 @@ _with_notice() {
     return $_wn_rc
 }
 
+# `exakit <command> --help` answers from the catalog — the same single source
+# of truth `exakit catalog` renders — so every subcommand supports the flag
+# without each one growing its own help text. Placed before the dispatch:
+# the answer must not depend on which command it is.
+if [ $# -ge 2 ]; then
+    for _help_arg in "$@"; do
+        case "$_help_arg" in
+            --help|-h)
+                _help_cmd="$1"
+                _help_catalog="$_lib_dir/catalog.tsv"
+                if [ -f "$_help_catalog" ] && \
+                   awk -F'\t' -v c="$_help_cmd" '$1=="exakit" && ($2==c || index($2, c" ")==1) {found=1; printf "  exakit %-14s %s\n      %s\n", $2, $3, $4} END {exit !found}' "$_help_catalog"; then
+                    printf '\nFull catalog: exakit catalog %s\n' "$_help_cmd"
+                else
+                    printf 'No catalog entry for %s — browse everything with: exakit catalog\n' "$_help_cmd"
+                fi
+                exit 0
+                ;;
+        esac
+    done
+fi
+
 case "${1:-help}" in
     preflight) _with_notice preflight_report ;;
-    status)   _with_notice cmd_status ;;
+    status)   shift
+              case "${1:-}" in
+                  --json|-j) cmd_status --json ;;
+                  *) _with_notice cmd_status "$@" ;;
+              esac ;;
     version|--version|-v)  cmd_version ;;
     update-check) shift; cmd_update_check "${1:-all}" ;;
     update) shift; cmd_update "$@" ;;
