@@ -602,7 +602,11 @@ exakit_failure_note_file() {
 exakit_note_failure() {
     _nf_file="$(exakit_failure_note_file)"
     [ -d "$(dirname "$_nf_file")" ] || return 0
-    { printf '%s\n' "$*" > "$_nf_file"; } 2>/dev/null || true
+    # Line 1 stays the reason, byte for byte: every existing reader takes
+    # `head -n 1`. Line 2 is when it happened, because a note with no date
+    # cannot be told from a current one -- and an undated note that outlived its
+    # cause is exactly how a healthy machine came to look broken.
+    { printf '%s\n%s\n' "$*" "$(_exakit_ts)" > "$_nf_file"; } 2>/dev/null || true
     return 0
 }
 
@@ -3354,6 +3358,18 @@ exakit_update_self() {
     # kit on every run.
     manifest_set kit.version "$_staged_version"
     ok "exakit updated to $_staged_version. Database data, credentials, and MCP state were not changed."
+    # Refresh the AI skills from the copy that just landed. The update replaces
+    # the whole kit directory, so a release that adds or rewords a skill leaves
+    # the agents' discovery folders holding the PREVIOUS text with nothing to say
+    # so. `exakit skills` can now report that drift, but detecting it and never
+    # resolving it just moves the work to the user; the skills ship with the kit,
+    # so they travel with a kit update. Best-effort: a stale skill must not fail
+    # an otherwise complete update.
+    if ls "$_kit_dir"/skills/*/SKILL.md >/dev/null 2>&1; then
+        exakit_install_skills >/dev/null 2>&1 \
+            && ok "AI skills refreshed from the new kit copy." \
+            || warn "The AI skills could not be refreshed — run: exakit skills-install"
+    fi
     # The kit that just landed describes itself: read the section out of the NEW
     # copy, which is already in place at this point.
     exakit_print_whats_new "$_staged_version" "What's new in $_staged_version" || true
@@ -4314,6 +4330,18 @@ EXAKIT_SKL_EOF
     ui_panel_end
     printf '\n'
     return 0
+}
+
+# exakit_stray_launchers — superseded launcher copies the kit set aside during an
+# upgrade (exasol.backup-<epoch>). Each is a full ~130 MB binary and nothing
+# reported them, so they accumulated invisibly and no command reclaimed the disk.
+# Prints one absolute path per line; silent when there are none.
+exakit_stray_launchers() {
+    [ -d "${EXAKIT_BIN_DIR:-}" ] || return 0
+    for _sl in "$EXAKIT_BIN_DIR"/exasol.backup-*; do
+        [ -f "$_sl" ] || continue
+        printf '%s\n' "$_sl"
+    done
 }
 
 # exakit_install_skills — copy the kit's AI skills into the per-user discovery

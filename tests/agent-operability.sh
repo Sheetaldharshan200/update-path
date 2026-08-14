@@ -228,5 +228,48 @@ has "staging copies skills/" 'skills" "$EXAKIT_HOME/kit/"' "$_stage"
 _mo="$(sed -n '/^exakit_maybe_offer_skills_install()/,/^}/p' "$ROOT/setup/lib/common.sh")"
 has "a missing skills/ is a recorded failure, not a silent success" "exakit_note_failure" "$_mo"
 
+
+# ---------------------------------------------------------------------------
+echo
+echo "round-2 audit regressions:"
+# ---------------------------------------------------------------------------
+# A failure note with no date cannot be told from a current one, and an undated
+# note that outlived its cause is how a healthy machine came to look broken.
+_nf="$(sed -n '/^exakit_note_failure()/,/^}/p' "$ROOT/setup/lib/common.sh")"
+has "the failure note records when it happened" '_exakit_ts' "$_nf"
+_sj2="$(EXAKIT_HOME="$WORK/stopped" bash "$ROOT/setup/exakit" status --json 2>/dev/null)"
+has "status --json exposes last_failure_at" '"last_failure_at"' "$_sj2"
+
+# A kit update replaces the whole kit copy, so a release that adds or rewords a
+# skill leaves the discovery folders holding the previous text. Detecting that
+# and never resolving it just moves the work to the user.
+_us="$(sed -n '/^exakit_update_self()/,/^}/p' "$ROOT/setup/lib/common.sh")"
+has "a kit self-update refreshes the installed skills" "exakit_install_skills" "$_us"
+
+# The library-not-found message named the default path even when EXAKIT_HOME
+# pointed somewhere else, sending the reader to a directory the code never read.
+has "the lib-not-found error names the path actually searched" \
+    'kit/setup/lib)' "$(sed -n '1,80p' "$ROOT/setup/exakit")"
+
+# doctor's findings carry remedies; returning next_actions=[] beside a non-empty
+# findings list reads as "nothing to do" on a machine with problems.
+has "doctor derives next_actions from its findings" "next_actions=next_actions" \
+    "$(sed -n '/def _doctor/,/def _uninstall/p' "$ROOT/mcp/service.py")"
+has "and NextAction is imported so it cannot NameError" "    NextAction," \
+    "$(sed -n '1,40p' "$ROOT/mcp/service.py")"
+
+# detect_container_runtime falls back to podman, so a docker-hang fixture that
+# masks only docker lets a real podman answer -- and "podman" is then correct,
+# which the assertion scored as a failure. Intermittent on Linux CI by nature.
+has "the docker-hang fixture masks podman too" "for _hang_engine in docker podman" \
+    "$(cat "$ROOT/tests/versions-manifest.sh")"
+
+# common.sh derives EXAKIT_HOME from the environment, so a helper that forgets to
+# isolate it writes into the developer's live installation.
+_pld="$(sed -n '/^_pld_run()/,/^}/p' "$ROOT/tests/dry-run-matrix.sh")"
+has "the downgrade-guard fixture isolates EXAKIT_HOME" 'EXAKIT_HOME="$_pld_dir/home"' "$_pld"
+has "and the suite asserts it left the real home clean" "no failure note in the real kit home" \
+    "$(cat "$ROOT/tests/dry-run-matrix.sh")"
+
 echo "passed: $PASS, failed: $FAIL"
 [ "$FAIL" -eq 0 ]

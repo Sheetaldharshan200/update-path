@@ -419,3 +419,6 @@ jobs:
       - run: bash tests/uninstall.sh
       - run: bash tests/skills.sh
       - run: bash tests/agent-operability.sh
+      # The MCP subsystem's own tests were never wired in, so nothing in CI
+      # exercised mcp/ at all -- a NameError in that package would have shipped.
+      - run: python3 -m unittest discover -s mcp/tests -t .
