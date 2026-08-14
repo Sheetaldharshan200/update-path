@@ -1651,8 +1651,15 @@ echo "a hanging container engine cannot stall a version lookup:"
 # return while Docker Desktop is starting, and an unbounded probe left
 # `exakit version` printing nothing for as long as that took.
 mkdir -p "$WORK/hang-bin"
-printf '#!/bin/sh\nsleep 300\n' > "$WORK/hang-bin/docker"
-chmod +x "$WORK/hang-bin/docker"
+# BOTH engines must hang. detect_container_runtime falls back to podman, so
+# masking only docker let a real, working podman on the host answer the probe --
+# and "podman" is then the CORRECT return, which this test scored as a failure.
+# That is why it passed locally and on macOS (neither engine present) and failed
+# intermittently on Linux CI, where podman is installed.
+for _hang_engine in docker podman; do
+    printf '#!/bin/sh\nsleep 300\n' > "$WORK/hang-bin/$_hang_engine"
+    chmod +x "$WORK/hang-bin/$_hang_engine"
+done
 hang_start="$(date +%s)"
 hang="$( PATH="$WORK/hang-bin:$PATH"
     EXAKIT_ENGINE_PROBE_TIMEOUT=2

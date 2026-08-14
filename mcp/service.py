@@ -14,6 +14,7 @@ from mcp.core.models import (
     ChangeRecord,
     DiscoveredClient,
     Finding,
+    NextAction,
     OperationName,
     OperationRequest,
     OperationResult,
@@ -531,12 +532,27 @@ class MCPAccessSubsystem:
             active_artifacts,
         )
         findings = discover_result.findings + validation.findings
+        # Findings already carry their own remedy; doctor was throwing it away
+        # and returning next_actions=[] alongside a non-empty findings list. That
+        # is the field an unattended caller branches on, so an empty one reads as
+        # "nothing to do" on a machine with problems. Blocking findings first,
+        # then the rest, de-duplicated while preserving order.
+        _seen_actions: set[str] = set()
+        next_actions: list[NextAction] = []
+        for _finding in sorted(findings, key=lambda f: not f.blocking):
+            _action = (_finding.recommended_action or "").strip()
+            if not _action or _action in _seen_actions:
+                continue
+            _seen_actions.add(_action)
+            next_actions.append(NextAction(kind=_finding.code, message=_action))
+
         return OperationResult(
             request_id=request.request_id,
             operation=request.operation,
             status=self._combine_status(discover_result.findings, validation.findings),
             summary=f"Doctor completed with {summarize_findings(findings)}",
             findings=findings,
+            next_actions=next_actions,
             verification_evidence=validation.verification_evidence,
             artifacts=active_artifacts,
             details=discover_result.details,

@@ -67,7 +67,11 @@ if [ -f "$_script_dir/lib/common.sh" ]; then
 elif [ -f "${EXAKIT_HOME:-$HOME/.exasol-starter-kit}/kit/setup/lib/common.sh" ]; then
     _lib_dir="${EXAKIT_HOME:-$HOME/.exasol-starter-kit}/kit/setup/lib"
 else
-    echo "exakit: cannot find the kit library (looked in $_script_dir/lib and ~/.exasol-starter-kit/kit)" >&2
+    # Name the path actually searched, not the default. With EXAKIT_HOME set this
+    # message used to send the reader to ~/.exasol-starter-kit/kit while the code
+    # had looked somewhere else entirely.
+    echo "exakit: cannot find the kit library (looked in $_script_dir/lib and ${EXAKIT_HOME:-$HOME/.exasol-starter-kit}/kit/setup/lib)" >&2
+    echo "exakit: if EXAKIT_HOME is set, it must point at an install that has kit/setup/lib; otherwise re-run the installer." >&2
     exit 1
 fi
 
@@ -167,11 +171,16 @@ cmd_status() {
         # pyexasol"; the JSON carried only `"pyexasol": null`, so the agent's
         # own channel was the one missing the actionable half.
         _cs_note=""
-        [ -f "$EXAKIT_HOME/.last-failure" ] && \
-            _cs_note="$(head -n 1 "$EXAKIT_HOME/.last-failure" 2>/dev/null || true)"
-        run_python - "$(manifest_get kit_level 2>/dev/null)" "${_type:-}" "$_cs_db"             "${_cs_autostart:-false}" "$_cs_datasets" "${_cs_pyx:-}" "$EXAKIT_MANIFEST"             "$(manifest_get steps_completed 2>/dev/null)" "$_cs_services" "$_cs_note" <<'EXAKIT_SJ_PY'
+        _cs_note_at=""
+        if [ -f "$EXAKIT_HOME/.last-failure" ]; then
+            _cs_note="$(sed -n '1p' "$EXAKIT_HOME/.last-failure" 2>/dev/null || true)"
+            # Line 2 is the timestamp. Reporting a reason without a date invites
+            # an agent to act on a note whose cause was fixed long ago.
+            _cs_note_at="$(sed -n '2p' "$EXAKIT_HOME/.last-failure" 2>/dev/null || true)"
+        fi
+        run_python - "$(manifest_get kit_level 2>/dev/null)" "${_type:-}" "$_cs_db"             "${_cs_autostart:-false}" "$_cs_datasets" "${_cs_pyx:-}" "$EXAKIT_MANIFEST"             "$(manifest_get steps_completed 2>/dev/null)" "$_cs_services" "$_cs_note" "$_cs_note_at" <<'EXAKIT_SJ_PY'
 import json, sys
-kit, rtype, db, autostart, datasets, pyx, manifest, steps, services, note = sys.argv[1:11]
+kit, rtype, db, autostart, datasets, pyx, manifest, steps, services, note, note_at = sys.argv[1:12]
 try:
     steps_list = json.loads(steps) if steps else []
 except ValueError:
@@ -201,6 +210,7 @@ payload = {
     "pyexasol": pyx or None,
     "remedies": remedies,
     "last_failure": note or None,
+    "last_failure_at": note_at or None,
     "manifest": manifest,
 }
 print(json.dumps(payload, indent=2))
@@ -236,6 +246,15 @@ EXAKIT_SJ_PY
         printf 'pyexasol:   not installed — repair: exakit update pyexasol\n'
     fi
     printf 'Manifest:   %s\n' "$EXAKIT_MANIFEST"
+    # Superseded launchers the kit set aside during an upgrade. Each is a full
+    # ~130 MB binary, and nothing reported them, so they accumulated silently
+    # and no command would ever reclaim the space.
+    _cs_strays="$(exakit_stray_launchers 2>/dev/null || true)"
+    if [ -n "$_cs_strays" ]; then
+        printf 'Stray:      %s superseded launcher(s) in %s — safe to delete: %s\n' \
+            "$(printf '%s\n' "$_cs_strays" | wc -l | tr -d ' ')" \
+            "$EXAKIT_BIN_DIR" "rm $(printf '%s ' $_cs_strays)"
+    fi
     if [ "$_cs_running" -ne 1 ]; then
         printf 'Start it:   exakit start\n'
         exit 3

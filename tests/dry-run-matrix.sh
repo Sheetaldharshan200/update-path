@@ -1185,7 +1185,15 @@ _pld_run() { # _pld_run <advertised> [deployed-version]
         mkdir -p "$_pld_dir/deploy"
         printf '%s' "$2" > "$_pld_dir/deploy/.exasolLauncher.version"
     fi
-    PATH="$_SV_CLEAN_PATH" bash -c "
+    # EXAKIT_HOME must be exported BEFORE common.sh is sourced: the guard under
+    # test ends in `die`, die records a failure note, and the note goes to
+    # $EXAKIT_HOME/.last-failure. Without this the suite wrote "Refusing to
+    # install launcher 2.0.0 over a newer 2.1.0 deployment" into the developer's
+    # REAL installation -- a bogus record that outlives the test run and, now
+    # that `exakit status --json` surfaces last_failure, actively misleads an
+    # agent about a machine that is perfectly healthy.
+    PATH="$_SV_CLEAN_PATH" EXAKIT_HOME="$_pld_dir/home" bash -c "
+mkdir -p '$_pld_dir/home'
 . '$ROOT/setup/lib/common.sh'
 . '$ROOT/setup/lib/detect.sh'
 . '$ROOT/setup/lib/runtime-personal.sh'
@@ -1440,5 +1448,22 @@ else
 fi
 
 echo
+
+# ---------------------------------------------------------------------------
+# No test may write into a real installation.
+# ---------------------------------------------------------------------------
+# This suite sources common.sh repeatedly, and common.sh derives EXAKIT_HOME
+# from the environment -- defaulting to the developer's live ~/.exasol-starter-kit.
+# Any helper that forgets to isolate it silently mutates a real install: the
+# downgrade-guard case used to leave a bogus .last-failure behind, which took an
+# agent-operability audit to notice. Assert the live home is untouched.
+_real_home="${HOME}/.exasol-starter-kit"
+if [ -e "$_real_home/.last-failure" ]; then
+    check "the suite left no failure note in the real kit home" "clean" \
+        "POLLUTED: $(head -n 1 "$_real_home/.last-failure" 2>/dev/null)"
+else
+    check "the suite left no failure note in the real kit home" "clean" "clean"
+fi
+
 echo "passed: $PASS, failed: $FAIL"
 [ "$FAIL" -eq 0 ]
