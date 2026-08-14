@@ -665,6 +665,43 @@ exakit_explain_db_error() {
             esac
             ;;
     esac
+    # A write refused for lack of privilege is the read-only guardrail doing its
+    # job, and the tempting next move — re-run it through `exapump -p
+    # starter-kit`, which connects as admin — is the one thing that breaks the
+    # trust model. Say so where the error appears, not only in the docs.
+    case "$1" in
+        *"insufficient privileges"*|*"42500"*)
+            warn "That write was refused by the DATABASE: the MCP user is read-only by design, and this is the guardrail working as intended."
+            warn "Do NOT re-run it through 'exapump -p starter-kit' — that profile is the ADMIN user and is not sandboxed. If a write is genuinely wanted, say so and let the user decide."
+            ;;
+    esac
+    return 0
+}
+
+# exakit_explain_uv_python_error <text> — the managed-Python fault that makes a
+# component install fail for a reason no component can fix. uv caches its own
+# CPython builds; a truncated or partially-written cache entry answers every
+# `uv venv --python <ver>` with an unparseable response, so the component's own
+# remedy ("retry this command") loops forever while the actual repair — one uv
+# command — is never named. The cause is always in the log; this puts the fix
+# next to it.
+exakit_explain_last_log_error() {
+    # run_logged sends command output to the logfile, not to a variable, so the
+    # only place a failed step's real cause exists is the tail of that file.
+    [ -n "${EXAKIT_LOG_FILE:-}" ] && [ -r "${EXAKIT_LOG_FILE:-}" ] || return 0
+    _elle_tail="$(tail -n 25 "$EXAKIT_LOG_FILE" 2>/dev/null || true)"
+    [ -n "$_elle_tail" ] || return 0
+    exakit_explain_uv_python_error "$_elle_tail"
+    return 0
+}
+
+exakit_explain_uv_python_error() {
+    case "$1" in
+        *"returned an invalid response"*|*"EOF while parsing"*|*"Querying Python at"*)
+            warn "That is uv's managed Python installation being corrupt, not a fault in this component — retrying the same command will fail identically."
+            warn "Repair it first:  uv python install ${EXAKIT_MANAGED_PYTHON_VERSION:-3.12} --reinstall"
+            ;;
+    esac
     return 0
 }
 
@@ -4334,16 +4371,25 @@ exakit_install_skills() {
         manifest_set components.skills.installed "[$_installed_json]"
     fi
 
-    # The read-only allowlist the skill documents, applied for real (Claude
-    # Code reads ~/.claude/settings.json). Other agents keep the doc: their
-    # settings formats differ and hand-editing them would be presumptuous.
+    exakit_report_readonly_allowlist
+    info "Restart or reload your AI client to pick them up."
+    return 0
+}
+
+# exakit_report_readonly_allowlist — apply the allowlist and say what happened.
+# Split out of exakit_install_skills so the friction fix does not depend on the
+# skills copy succeeding: when a staging fault meant no skill was ever placed,
+# this never ran either, and every prompt the doc promises to remove kept being
+# asked. The two are independent remedies and now fail independently.
+exakit_report_readonly_allowlist() {
+    # Claude Code reads ~/.claude/settings.json. Other agents keep the doc:
+    # their settings formats differ and hand-editing them would be presumptuous.
     _skills_applied="$(exakit_apply_readonly_allowlist 2>/dev/null || true)"
     case "$_skills_applied" in
         ADDED\ 0) info "Read-only command allowlist already present in ~/.claude/settings.json." ;;
-        ADDED\ *) ok "Read-only exakit commands allowlisted in ~/.claude/settings.json (status, info, version, mcp-doctor, logs; uninstall stays gated)." ;;
+        ADDED\ *) ok "Read-only exakit commands allowlisted in ~/.claude/settings.json (status, info, version, mcp-doctor, logs, catalog, preflight, update-check, guide, mcp-status, mcp-validate, skills; uninstall stays gated)." ;;
         SKIP*)    warn "~/.claude/settings.json could not be merged safely ($_skills_applied) — the allowlist in skills/reducing-agent-prompts.md shows what to add by hand." ;;
     esac
-    info "Restart or reload your AI client to pick them up."
     return 0
 }
 
@@ -4373,6 +4419,25 @@ ALLOW = [
     "Bash(exakit version:*)",
     "Bash(exakit mcp-doctor:*)",
     "Bash(exakit logs:*)",
+    # The rest of the kit's read-only surface. Leaving these out is what kept
+    # the friction real: an agent following AGENTS.md is told to discover
+    # commands with `exakit catalog` and to check its footing with
+    # `update-check` / `mcp-status`, and every one of those asked for approval
+    # while changing nothing. `exapump sql` and every mutating command stay
+    # absent on purpose — that gate is the trust model.
+    "Bash(exakit catalog:*)",
+    "Bash(exakit preflight:*)",
+    "Bash(exakit update-check:*)",
+    "Bash(exakit guide:*)",
+    "Bash(exakit mcp-status:*)",
+    "Bash(exakit mcp-validate:*)",
+    "Bash(exakit help:*)",
+    # Exact forms, deliberately NOT "exakit skills:*": that prefix would also
+    # match `exakit skills-install`, which writes this very settings file. An
+    # allowlisted command that can add allowlist entries is an escalation path,
+    # so the listing is allowed and the install still asks.
+    "Bash(exakit skills)",
+    "Bash(exakit skills --json)",
     "mcp__exasol",
 ]
 DENY = [
@@ -4419,8 +4484,20 @@ EXAKIT_RAL_PY
 # present without requiring interactive confirmation. Non-fatal and
 # idempotent.
 exakit_maybe_offer_skills_install() {
-    _repo_root="$(exakit_repo_root)" || return 0
-    ls "$_repo_root"/skills/*/SKILL.md >/dev/null 2>&1 || return 0
+    _repo_root="$(exakit_repo_root)" || {
+        exakit_note_failure "the kit copy could not be located, so no skills were installed"
+        return 1
+    }
+    # A missing skills/ directory used to return SUCCESS here, which is how a
+    # staging bug that shipped zero skills to every install stayed invisible:
+    # the closing summary had nothing to report and AGENTS.md's first
+    # post-install instruction failed on a machine the installer called done.
+    # It is a real failure now, and it books itself in the summary.
+    if ! ls "$_repo_root"/skills/*/SKILL.md >/dev/null 2>&1; then
+        warn "No skills/ directory in this kit copy ($_repo_root) — no AI skills were installed."
+        exakit_note_failure "this kit copy carries no skills/ directory (expected $_repo_root/skills)"
+        return 1
+    fi
     if ! exakit_install_skills; then
         warn "Skills install did not finish cleanly. Retry any time with: exakit skills-install"
         exakit_note_failure "the AI skills could not be copied into place (see the log)"
@@ -6162,6 +6239,13 @@ kit_shared_steps() {
             [ -d "$_kit_root/mcp" ] && cp -R "$_kit_root/mcp" "$EXAKIT_HOME/kit/"
             [ -d "$_kit_root/sql" ] && cp -R "$_kit_root/sql" "$EXAKIT_HOME/kit/"
             [ -d "$_kit_root/data" ] && cp -R "$_kit_root/data" "$EXAKIT_HOME/kit/"
+            # skills/ is not optional decoration: `exakit skills`, `exakit
+            # skills-install` and the post-install skills step all resolve
+            # through exakit_repo_root, which PREFERS this staged copy once
+            # kit/mcp exists. Omitting it here does not fall back to the
+            # checkout — it shadows it, so every one of those commands reports
+            # "no skills/ directory in this kit build" on a working install.
+            [ -d "$_kit_root/skills" ] && cp -R "$_kit_root/skills" "$EXAKIT_HOME/kit/"
             [ -f "$_script_dir/load-data.sh" ] && cp "$_script_dir/load-data.sh" "$EXAKIT_HOME/kit/setup/"
         fi
         ensure_path_hint "$EXAKIT_BIN_DIR"

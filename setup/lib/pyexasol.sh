@@ -34,6 +34,10 @@ pyexasol_installed_version() {
 # leaves the step unmarked so a re-run retries it.
 _pyexasol_not_installed() {
     warn "pyexasol was not installed: $1"
+    # Explain the underlying fault BEFORE offering the retry. A corrupt uv
+    # managed-Python cache makes `exakit update pyexasol` fail identically
+    # forever, so "retry with" on its own is a loop, not a remedy.
+    command -v exakit_explain_last_log_error >/dev/null 2>&1 && exakit_explain_last_log_error
     warn "Everything else in the kit is unaffected. Retry with: exakit update pyexasol"
     # The reason has to outlive this subshell so the closing summary can print it
     # instead of a generic "did not finish" (see exakit_note_failure in common.sh).

@@ -35,7 +35,7 @@ Branch on the result — **do not blindly reinstall**:
 
 | What you see | Go to |
 |---|---|
-| `exakit: command not found` | Step 1 (install) |
+| `exakit: command not found` | **Check `~/.local/bin/exakit` first** — the kit installs there, and that directory is absent from a bare non-interactive `PATH`, so a clean subprocess reports this on a working machine. If the file exists, use it by absolute path (or export `PATH="$HOME/.local/bin:$PATH"`). Only if it is genuinely missing: Step 1 (install) |
 | installed, runtime **not** running | Step 2 (start + verify) |
 | running, no MCP client configured | Step 3 (connect MCP) |
 | running + MCP configured, no data | Step 4 (load data) |

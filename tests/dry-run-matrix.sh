@@ -809,7 +809,10 @@ fi
 # output would be free to disagree with the file), and anything printing alongside
 # it. The update notice is the standing risk there, which is why the json branch
 # stays outside `_with_notice` and sets $script:JsonOutput on the PowerShell side.
-# Missing record: a non-zero exit and an empty stdout, never a half-document.
+# Missing record: exit 4 and a MACHINE-READABLE object naming the remedy. An
+# empty stdout was the old behaviour and it broke the contract exactly where it
+# matters -- a caller piping --json into a parser got "Expecting value: line 1
+# column 1" instead of an answer it could branch on.
 _ij="$(mktemp -d)"
 mkdir -p "$_ij/have" "$_ij/none"
 printf '{\n  "kit": {\n    "version": "0.2.0"\n  }\n}\n' > "$_ij/have/manifest.json"
@@ -819,7 +822,9 @@ _ij_none="$(EXAKIT_HOME="$_ij/none" bash "$ROOT/setup/exakit" info --json 2>/dev
 if [ "$_ij_out" = "$(cat "$_ij/have/manifest.json")" ] && \
    [ "$_ij_alias" = "$_ij_out" ] && \
    [ ! -s "$_ij/err" ] && \
-   [ -z "$_ij_none" ] && [ "$_ij_rc" != 0 ] && \
+   printf '%s' "$_ij_none" | python3 -m json.tool >/dev/null 2>&1 && \
+   case "$_ij_none" in *'"remedy"'*) true ;; *) false ;; esac && \
+   [ "$_ij_rc" = 4 ] && \
    grep -q 'cmd_info_json' "$ROOT/setup/exakit" && \
    ! grep -q '_with_notice cmd_info_json' "$ROOT/setup/exakit" && \
    grep -q 'Invoke-CmdInfoJson' "$ROOT/setup/exakit.ps1" && \

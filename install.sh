@@ -74,7 +74,19 @@ main() {
         *)              _say_glyph='*' ;;
     esac
     say() { printf '  \033[1;34m%s\033[0m %s\n' "$_say_glyph" "$*"; }
-    fail() { printf '\033[1;31m  ✗\033[0m %s\n' "$*" >&2; exit 1; }
+    # Record the reason before exiting. This runs before the kit's own logging
+    # exists, so a failure here used to leave NOTHING behind: no log, no note.
+    # An agent whose `curl | sh` died at platform detection had no artifact to
+    # read in the next session and no way to tell "never ran" from "ran and
+    # refused". Best-effort: a note is a nicety and must not mask the real error.
+    fail() {
+        printf '\033[1;31m  ✗\033[0m %s\n' "$*" >&2
+        _fail_home="${EXAKIT_HOME:-$HOME/.exasol-starter-kit}"
+        if mkdir -p "$_fail_home" 2>/dev/null; then
+            printf '%s\n' "$*" > "$_fail_home/.last-failure" 2>/dev/null || true
+        fi
+        exit 1
+    }
 
     # Banner + plan: reuse the kit's shared visual layer (setup/lib/ui.sh) so
     # the EXASOL wordmark and palette match the rest of the install exactly.

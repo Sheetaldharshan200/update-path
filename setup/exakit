@@ -92,8 +92,30 @@ _runtime_type() {
 }
 
 _require_install() {
+    # Logging FIRST. Every caller used to run this check and only then call
+    # exakit_init_logging, so a failure here wrote .last-failure and produced
+    # no log at all — leaving `exakit logs`, the diagnostic AGENTS.md points at,
+    # with nothing to show for the failure that just happened.
+    exakit_init_logging 2>/dev/null || true
     [ -f "$EXAKIT_MANIFEST" ] || die "No installation found. Run the installer first."
     [ -n "$(_runtime_type)" ] || die "No runtime recorded in the manifest yet."
+}
+
+# _not_installed_answer <json:0|1> — the not-installed answer for a STATE QUERY.
+#
+# A bare `die` here fails an agent twice over: it exits 1 where the documented
+# contract says 4, and it leaves stdout empty, so a caller piping --json into a
+# parser gets "Expecting value: line 1 column 1" on precisely the path where
+# structured signal matters most. `status --json` always answered with an
+# object; the other state queries did not, and the three disagreed.
+_not_installed_answer() {
+    if [ "${1:-0}" -eq 1 ]; then
+        printf '{"installed": false, "manifest": "%s", "reason": "no install record", "remedy": "run the installer"}\n' \
+            "$EXAKIT_MANIFEST"
+    else
+        printf 'Not installed (no manifest at %s). Run the installer first.\n' "$EXAKIT_MANIFEST" >&2
+    fi
+    exit 4
 }
 
 # cmd_status [--json] — what is installed and whether it is up.
@@ -116,14 +138,9 @@ cmd_status() {
             *) die "Unknown option '$_cs_arg' for status (supported: --json)." ;;
         esac
     done
-    if [ ! -f "$EXAKIT_MANIFEST" ]; then
-        if [ "$_cs_json" -eq 1 ]; then
-            printf '{"installed": false, "manifest": "%s"}\n' "$EXAKIT_MANIFEST"
-        else
-            echo "Not installed (no manifest at $EXAKIT_MANIFEST)"
-        fi
-        exit 4
-    fi
+    # One helper for all three state queries, so status/info/mcp-doctor cannot
+    # drift apart again on the shape or the exit code of this answer.
+    [ -f "$EXAKIT_MANIFEST" ] || _not_installed_answer "$_cs_json"
     _type="$(_runtime_type)"
     case "$_type" in
         nano)     _cs_db="$(nano_status)" ;;
@@ -145,9 +162,16 @@ cmd_status() {
             _cs_services="${_cs_services}${_st_id}=$(exakit_service_status "$_st_id")
 "
         done
-        run_python - "$(manifest_get kit_level 2>/dev/null)" "${_type:-}" "$_cs_db"             "${_cs_autostart:-false}" "$_cs_datasets" "${_cs_pyx:-}" "$EXAKIT_MANIFEST"             "$(manifest_get steps_completed 2>/dev/null)" "$_cs_services" <<'EXAKIT_SJ_PY'
+        # The last recorded failure, if one is still pending. The human screen
+        # already prints "pyexasol: not installed — repair: exakit update
+        # pyexasol"; the JSON carried only `"pyexasol": null`, so the agent's
+        # own channel was the one missing the actionable half.
+        _cs_note=""
+        [ -f "$EXAKIT_HOME/.last-failure" ] && \
+            _cs_note="$(head -n 1 "$EXAKIT_HOME/.last-failure" 2>/dev/null || true)"
+        run_python - "$(manifest_get kit_level 2>/dev/null)" "${_type:-}" "$_cs_db"             "${_cs_autostart:-false}" "$_cs_datasets" "${_cs_pyx:-}" "$EXAKIT_MANIFEST"             "$(manifest_get steps_completed 2>/dev/null)" "$_cs_services" "$_cs_note" <<'EXAKIT_SJ_PY'
 import json, sys
-kit, rtype, db, autostart, datasets, pyx, manifest, steps, services = sys.argv[1:10]
+kit, rtype, db, autostart, datasets, pyx, manifest, steps, services, note = sys.argv[1:11]
 try:
     steps_list = json.loads(steps) if steps else []
 except ValueError:
@@ -157,18 +181,29 @@ for line in services.splitlines():
     if "=" in line:
         key, value = line.split("=", 1)
         smap[key] = value
-print(json.dumps({
+running = db.startswith("running")
+# Remedies are additive: an agent should never have to infer the fix from a
+# null, and should never have to parse the human screen to find one.
+remedies = {}
+if not pyx:
+    remedies["pyexasol"] = "exakit update pyexasol"
+if not running:
+    remedies["database"] = "exakit start"
+payload = {
     "installed": True,
     "kit_level": kit or None,
     "runtime": {"type": rtype or None, "status": db},
-    "running": db.startswith("running"),
+    "running": running,
     "services": smap,
     "autostart": autostart == "true",
     "datasets_loaded": datasets.split() if datasets else [],
     "steps_completed": steps_list,
     "pyexasol": pyx or None,
+    "remedies": remedies,
+    "last_failure": note or None,
     "manifest": manifest,
-}, indent=2))
+}
+print(json.dumps(payload, indent=2))
 EXAKIT_SJ_PY
         [ "$_cs_running" -eq 1 ] && exit 0 || exit 3
     fi
@@ -335,7 +370,9 @@ _version_cell() {
 # `exakit update-check` alone; when something newer is waiting, this command says
 # so in two lines instead of making three API calls on every run.
 cmd_version() {
-    [ -f "$EXAKIT_MANIFEST" ] || { echo "Not installed (no manifest at $EXAKIT_MANIFEST)"; exit 0; }
+    # Exit 4, not 0: an agent using `version` as a cheap liveness probe read a
+    # success code off a machine with nothing installed.
+    [ -f "$EXAKIT_MANIFEST" ] || { echo "Not installed (no manifest at $EXAKIT_MANIFEST)"; exit 4; }
     printf 'Kit version:    %s\n' "$(exakit_component_current exakit 2>/dev/null || printf 'unknown')"
     printf 'Kit level:      %s\n' "$(manifest_get kit_level 2>/dev/null)"
     printf 'Kit source:     %s\n' "$(manifest_get kit.source 2>/dev/null)"
@@ -375,7 +412,7 @@ cmd_version() {
 }
 
 cmd_update_check() {
-    [ -f "$EXAKIT_MANIFEST" ] || { echo "Not installed (no manifest at $EXAKIT_MANIFEST)"; exit 0; }
+    [ -f "$EXAKIT_MANIFEST" ] || { echo "Not installed (no manifest at $EXAKIT_MANIFEST)"; exit 4; }
     exakit_print_update_check "${1:-all}"
 }
 
@@ -465,7 +502,9 @@ cmd_mcp_repair() {
 # people to mcp-repair — the wrong subsystem entirely. Exit 3 mirrors `exakit
 # status`, so agents branch the same way on both.
 cmd_mcp_doctor() {
-    _require_install
+    # Parse BEFORE the install check: the check's own answer has to honour
+    # --json, and it has to exit 4 rather than 1. Reversing these two lines is
+    # what made `mcp-doctor --json` print nothing on a machine with no install.
     _cmd_json=0
     _cmd_rest=""
     for _cmd_arg in "$@"; do
@@ -474,6 +513,9 @@ cmd_mcp_doctor() {
             *) _cmd_rest="${_cmd_rest:+$_cmd_rest }$_cmd_arg" ;;
         esac
     done
+    if [ ! -f "$EXAKIT_MANIFEST" ] || [ -z "$(_runtime_type)" ]; then
+        _not_installed_answer "$_cmd_json"
+    fi
     exakit_init_logging
     if ! exakit_runtime_is_running; then
         if [ "$_cmd_json" -eq 1 ]; then
@@ -584,7 +626,7 @@ EOF
 # (runtime.password_file, components.mcp_server.connection.password_file), never a
 # password. Keep it that way.
 cmd_info_json() {
-    [ -s "$EXAKIT_MANIFEST" ] || die "No install record to print ($EXAKIT_MANIFEST). Install the kit first."
+    [ -s "$EXAKIT_MANIFEST" ] || _not_installed_answer 1
     cat "$EXAKIT_MANIFEST"
 }
 
