@@ -2384,6 +2384,23 @@ function Set-ExakitReadonlyAllowlist {
         "Bash(exakit version:*)",
         "Bash(exakit mcp-doctor:*)",
         "Bash(exakit logs:*)",
+        # The rest of the kit's read-only surface. Leaving these out is what
+        # kept the friction real: AGENTS.md tells an agent to discover commands
+        # with `exakit catalog` and to check its footing with update-check /
+        # mcp-status, and every one of those asked for approval while changing
+        # nothing. exapump sql and every mutating command stay absent on
+        # purpose - that gate is the trust model. The two skills entries are
+        # exact forms, NOT "exakit skills:*", because that prefix would also
+        # match `exakit skills-install`, which writes this very settings file.
+        "Bash(exakit catalog:*)",
+        "Bash(exakit preflight:*)",
+        "Bash(exakit update-check:*)",
+        "Bash(exakit guide:*)",
+        "Bash(exakit mcp-status:*)",
+        "Bash(exakit mcp-validate:*)",
+        "Bash(exakit help:*)",
+        "Bash(exakit skills)",
+        "Bash(exakit skills --json)",
         "mcp__exasol"
     )
     $deny = @("Bash(exakit uninstall:*)")

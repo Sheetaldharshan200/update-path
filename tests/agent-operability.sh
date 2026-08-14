@@ -50,7 +50,12 @@ echo "the read-only allowlist merge:"
 . "$ROOT/setup/lib/common.sh" >/dev/null 2>&1
 _alh="$WORK/allow-home"
 mkdir -p "$_alh"
-check "fresh file gets the full list" "ADDED 7" "$(HOME="$_alh" exakit_apply_readonly_allowlist)"
+# Counted from the source, not hardcoded: this assertion is about "a fresh file
+# gets EVERY entry", and a literal number turns each new allowlist entry into a
+# spurious test failure that says nothing about the behaviour.
+_alw_n=$(sed -n '/^ALLOW = \[/,/^\]/p' "$ROOT/setup/lib/common.sh" | grep -c '^[[:space:]]*"')
+_dny_n=$(sed -n '/^DENY = \[/,/^\]/p' "$ROOT/setup/lib/common.sh" | grep -c '^[[:space:]]*"')
+check "fresh file gets the full list" "ADDED $((_alw_n + _dny_n))" "$(HOME="$_alh" exakit_apply_readonly_allowlist)"
 check "second run adds nothing" "ADDED 0" "$(HOME="$_alh" exakit_apply_readonly_allowlist)"
 printf '{"model": "opus", "permissions": {"allow": ["Bash(ls:*)"]}}' > "$_alh/.claude/settings.json"
 HOME="$_alh" exakit_apply_readonly_allowlist >/dev/null
@@ -149,6 +154,79 @@ for path in ("setup/lib/common.sh",):
 print("all-fit" if not too_long else " | ".join(too_long))
 PYEOF
 )"
+
+
+# ---------------------------------------------------------------------------
+echo
+echo "every state query answers machine-readably in BOTH states (audit regressions):"
+# ---------------------------------------------------------------------------
+# These four used to exit 1 with EMPTY stdout when nothing was installed, so an
+# agent piping --json into a parser got "Expecting value: line 1 column 1" on
+# exactly the path where structured signal decides the next action.
+for _q in "info --json" "mcp-doctor --json"; do
+    _out="$(EXAKIT_HOME="$WORK/none" bash "$ROOT/setup/exakit" $_q 2>/dev/null)"
+    _rc="$(EXAKIT_HOME="$WORK/none" bash "$ROOT/setup/exakit" $_q >/dev/null 2>&1; echo $?)"
+    check "$_q exits 4 when not installed" "4" "$_rc"
+    check "$_q is parseable JSON when not installed" "yes" \
+        "$(printf '%s' "$_out" | python3 -m json.tool >/dev/null 2>&1 && echo yes || echo no)"
+    has  "$_q names a remedy" '"remedy"' "$_out"
+done
+check "mcp-doctor (human) exits 4 when not installed" "4" \
+    "$(EXAKIT_HOME="$WORK/none" bash "$ROOT/setup/exakit" mcp-doctor >/dev/null 2>&1; echo $?)"
+check "version exits 4 when not installed" "4" \
+    "$(EXAKIT_HOME="$WORK/none" bash "$ROOT/setup/exakit" version >/dev/null 2>&1; echo $?)"
+check "update-check exits 4 when not installed" "4" \
+    "$(EXAKIT_HOME="$WORK/none" bash "$ROOT/setup/exakit" update-check >/dev/null 2>&1; echo $?)"
+
+echo
+echo "the JSON carries the remedy the prose already had:"
+_rj="$(EXAKIT_HOME="$WORK/stopped" bash "$ROOT/setup/exakit" status --json 2>/dev/null)"
+has "status --json has a remedies map" '"remedies"' "$_rj"
+has "a stopped database names exakit start" 'exakit start' "$_rj"
+has "a missing pyexasol names its repair" 'exakit update pyexasol' "$_rj"
+has "status --json exposes last_failure" '"last_failure"' "$_rj"
+
+echo
+echo "the read-only allowlist covers the read-only surface it documents:"
+# The doc's principle is "allow what changes nothing". Every read-only command
+# the catalog declares must be in ALLOW, or the friction it promises to remove
+# is still being asked for.
+# Entries only: the block's own comments mention the patterns it deliberately
+# does NOT grant, so grepping them would assert the opposite of the truth.
+_allow="$(sed -n '/^ALLOW = \[/,/^\]/p' "$ROOT/setup/lib/common.sh" | grep -v '^[[:space:]]*#')"
+for _cmd in status info version mcp-doctor logs catalog preflight update-check guide mcp-status mcp-validate; do
+    has "allowlist covers exakit $_cmd" "exakit $_cmd" "$_allow"
+done
+# ...and must NOT auto-allow anything that writes, including the command that
+# writes this very settings file.
+_deny="$(sed -n '/^DENY = \[/,/^\]/p' "$ROOT/setup/lib/common.sh" | grep -v '^[[:space:]]*#')"
+case "$_allow" in
+    *"exakit skills:*"*) check "allowlist does not prefix-match skills-install" "safe" "PREFIX-MATCHES-INSTALL" ;;
+    *) check "allowlist does not prefix-match skills-install" "safe" "safe" ;;
+esac
+case "$_allow" in
+    *"exapump"*) check "exapump sql still prompts" "gated" "ALLOWLISTED" ;;
+    *) check "exapump sql still prompts" "gated" "gated" ;;
+esac
+has "uninstall stays denied" "exakit uninstall" "$_deny"
+
+echo
+echo "the error translator covers the faults that would otherwise loop:"
+_xl="$(sed -n '/^exakit_explain_db_error()/,/^}/p' "$ROOT/setup/lib/common.sh")"
+has "privilege denial is translated" "insufficient privileges" "$_xl"
+has "and forbids escalating via exapump" "not sandboxed" "$_xl"
+_ux="$(sed -n '/^exakit_explain_uv_python_error()/,/^}/p' "$ROOT/setup/lib/common.sh")"
+has "corrupt uv Python is translated" "uv python install" "$_ux"
+
+echo
+echo "the kit copy staged for an installed machine carries skills/:"
+# Omitting skills/ here does not fall back to the checkout -- exakit_repo_root
+# PREFERS the staged copy, so it shadows it and every skills command reports
+# "no skills/ directory in this kit build" on a working install.
+_stage="$(grep -n 'cp -R "$_kit_root/' "$ROOT/setup/lib/common.sh")"
+has "staging copies skills/" 'skills" "$EXAKIT_HOME/kit/"' "$_stage"
+_mo="$(sed -n '/^exakit_maybe_offer_skills_install()/,/^}/p' "$ROOT/setup/lib/common.sh")"
+has "a missing skills/ is a recorded failure, not a silent success" "exakit_note_failure" "$_mo"
 
 echo "passed: $PASS, failed: $FAIL"
 [ "$FAIL" -eq 0 ]

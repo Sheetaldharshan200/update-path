@@ -113,15 +113,31 @@ function Get-ExakitLoadedDatasets {
 # Invoke-CmdStatus [-Json] - what is installed and whether it is up. Twin of
 # cmd_status, including THE EXIT CODE CONTRACT (agents branch on it, not on
 # prose): 0 running, 3 installed but not running, 4 not installed.
+
+# Write-ExakitNotInstalledAnswer [-Json] - the not-installed answer for a STATE
+# QUERY, and it exits 4. Twin of _not_installed_answer. A bare Fail here fails
+# an agent twice over: it exits 1 where the documented contract says 4, and it
+# leaves stdout empty, so a caller piping -Json into a parser gets a decode
+# error on precisely the path where structured signal decides the next action.
+function Write-ExakitNotInstalledAnswer {
+    param([switch]$Json)
+    if ($Json) {
+        Write-Output ([pscustomobject]@{
+            installed = $false
+            manifest  = $script:ManifestPath
+            reason    = "no install record"
+            remedy    = "run the installer"
+        } | ConvertTo-Json -Compress)
+    } else {
+        Write-Host "Not installed (no manifest at $script:ManifestPath). Run the installer first."
+    }
+    exit 4
+}
+
 function Invoke-CmdStatus {
     param([switch]$Json)
     if (-not (Test-Path $script:ManifestPath)) {
-        if ($Json) {
-            @{ installed = $false; manifest = $script:ManifestPath } | ConvertTo-Json
-        } else {
-            Write-Host "Not installed (no manifest at $script:ManifestPath)"
-        }
-        exit 4
+        Write-ExakitNotInstalledAnswer -Json:$Json
     }
     $type = Get-RuntimeType
     $status = switch ($type) { "nano" { Get-NanoStatus } default { "unknown" } }
@@ -717,7 +733,7 @@ function Get-ExakitVersionCell {
 # belongs to `exakit update-check` alone; when something newer is waiting, this
 # command says so in two lines instead of calling three APIs on every run.
 function Invoke-CmdVersion {
-    if (-not (Test-Path $script:ManifestPath)) { Write-Host "Not installed (no manifest at $script:ManifestPath)"; return }
+    if (-not (Test-Path $script:ManifestPath)) { Write-Host "Not installed (no manifest at $script:ManifestPath)"; exit 4 }
     Write-Host "Kit version:    $(Get-ExakitComponentCurrent 'exakit')"
     Write-Host "Kit level:      $(Get-ExakitManifestValue 'kit_level')"
     Write-Host "Kit source:     $(Get-ExakitManifestValue 'kit.source')"
@@ -1288,7 +1304,7 @@ function Test-ExakitUpdatesPending {
 # Twin of exakit_print_update_check in setup/lib/common.sh.
 function Invoke-CmdUpdateCheck {
     param([string]$Target = "all")
-    if (-not (Test-Path $script:ManifestPath)) { Write-Host "Not installed (no manifest at $script:ManifestPath)"; return }
+    if (-not (Test-Path $script:ManifestPath)) { Write-Host "Not installed (no manifest at $script:ManifestPath)"; exit 4 }
     if (-not $Target) { $Target = "all" }
     $targets = Get-ExakitUpdateTargets -Target $Target
     if ($script:VersionPolicy -eq "manifest") {
@@ -2019,11 +2035,11 @@ function Invoke-CmdSkills {
 # password. Keep it that way.
 function Invoke-CmdInfoJson {
     if (-not (Test-Path $script:ManifestPath)) {
-        Fail "No install record to print ($($script:ManifestPath)). Install the kit first."
+        Write-ExakitNotInstalledAnswer -Json
     }
     $raw = Get-Content -Raw -Encoding UTF8 -Path $script:ManifestPath
     if ([string]::IsNullOrWhiteSpace($raw)) {
-        Fail "No install record to print ($($script:ManifestPath)). Install the kit first."
+        Write-ExakitNotInstalledAnswer -Json
     }
     Write-Output $raw.TrimEnd("`r", "`n")
 }
@@ -2131,8 +2147,13 @@ try {
             # Diagnosis order: a stopped database is diagnosed as exactly that
             # (exit 3, remedy named) before anything that needs it runs - the
             # first downstream failure used to headline as a broken MCP user.
-            Assert-ExakitInstalled
+            # Parse BEFORE asserting: the assertion's own answer has to honour
+            # --json and exit 4 rather than 1. Reversing these two lines is what
+            # made `mcp-doctor --json` print nothing on an uninstalled machine.
             $doctorJson = ($RestArgs -contains "--json" -or $RestArgs -contains "-j")
+            if (-not (Test-Path $script:ManifestPath) -or -not (Get-RuntimeType)) {
+                Write-ExakitNotInstalledAnswer -Json:$doctorJson
+            }
             $doctorArgs = @($RestArgs | Where-Object { $_ -notin @("--json", "-j") })
             $doctorType = Get-RuntimeType
             $doctorUp = ($doctorType -eq "nano" -and "$(Get-NanoStatus)".StartsWith("running"))

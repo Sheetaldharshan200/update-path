@@ -159,7 +159,12 @@ try {
         New-Item -ItemType Directory -Force -Path $kitSetupDir | Out-Null
         Copy-ExakitAsset -Source $LibDir -Destination (Join-Path $kitSetupDir "lib")
         Copy-ExakitAsset -Source (Join-Path $ScriptDir "exakit.ps1") -Destination (Join-Path $kitSetupDir "exakit.ps1")
-        foreach ($dir in @("mcp", "sql", "data")) {
+        # skills/ is not optional decoration: exakit skills, exakit
+        # skills-install and the post-install skills step all resolve through
+        # the repo-root lookup, which PREFERS this staged copy. Omitting it does
+        # not fall back to the checkout - it shadows it, so every one of those
+        # commands reports "no skills/ directory in this kit build".
+        foreach ($dir in @("mcp", "sql", "data", "skills")) {
             Copy-ExakitAsset -Source (Join-Path $KitRoot $dir) -Destination (Join-Path $script:ExakitHome "kit\$dir")
         }
         # The versions manifest travels with the copy: it is the offline tier of

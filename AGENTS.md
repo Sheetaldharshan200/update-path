@@ -18,7 +18,7 @@ irm https://raw.githubusercontent.com/krishna-exasol/update-path/main/install.ps
 
 The installer is **fully unattended-safe**. With no TTY attached (the normal case for an agent shell) every question takes a safe default: all bundled datasets are loaded, and every AI client that is installed on the machine but not yet connected gets an MCP config. Nothing ever hangs waiting for input.
 
-One caveat when driving a **WSL** install from the Windows side (`wsl.exe -- bash -c "curl ... | sh"`): wsl.exe can attach a console that looks interactive but never delivers keypresses, so menus render and block. Either run the command detached (`setsid sh -c '...' < /dev/null`) or pre-answer everything with the env vars below.
+One caveat when driving a **WSL** install from the Windows side (`wsl.exe -- bash -c "curl ... | sh"`): wsl.exe can attach a console that looks interactive but never delivers keypresses, so menus render and block. Either run the command detached (`setsid sh -c '...' < /dev/null` on Linux/WSL; `setsid` does **not** exist on macOS, where `nohup sh -c '...' </dev/null &` is the equivalent) or pre-answer everything with the env vars below.
 
 ## Answer the install's choices via environment variables
 
@@ -117,7 +117,7 @@ EXAKIT_MARKETPLACE_ADDONS=dash-server exakit marketplace   # ids csv, or all / n
 
 - State, credentials, logs: `~/.exasol-starter-kit/` (logs under `logs/`). Installer and `exakit` messages name their remedy — check there before improvising. Raw database/driver errors (through MCP tools or `exapump` directly) do NOT; translate the common ones with the table below.
 - Kit source copy (read any script): `~/.exasol-starter-kit/kit/`
-- CLI binaries: `~/.local/bin/` (`exakit`, `exapump`, `exasol` on macOS, and `dash-server` once that add-on is installed)
+- CLI binaries: `~/.local/bin/` (`exakit`, `exapump`, `exasol` on macOS, and `dash-server` once that add-on is installed). **That directory is not on a bare non-interactive `PATH`** (a clean `sh -c` sees roughly `/usr/local/bin:/bin:/usr/bin`), so `exakit: command not found` does **not** mean "not installed" — test `~/.local/bin/exakit` before concluding anything, and either call it by absolute path or `export PATH="$HOME/.local/bin:$PATH"` first.
 - Never print or log the password files under `~/.exasol-starter-kit/credentials/`
 
 ## After the install
@@ -148,7 +148,7 @@ Then see `skills/local-agent-ready-starter/SKILL.md` for the full query-loop dis
 | `syntax error, unexpected FETCH_` (or `TOP_`) | Exasol does not page with `FETCH FIRST` / `TOP` | Rewrite with `LIMIT <n>` (optionally `OFFSET`) |
 | `object <NAME> not found` | Wrong name or missing schema qualifier | `describe_exasol_table_or_view` (MCP) or `DESCRIBE <schema>.<table>`, then fix the query |
 
-For scripted state checks: `exakit status --json` (fields: `running`, `datasets_loaded`, `services`, `steps_completed`), `exakit info --json` (the install record), `exakit mcp-doctor --json` (per-client MCP state). Exit codes on `status` and `mcp-doctor`: `0` healthy/running, `3` database not running, `4` not installed. Discover every command with `exakit catalog` (searchable: `exakit catalog logs`).
+For scripted state checks: `exakit status --json` (fields: `running`, `datasets_loaded`, `services`, `steps_completed`, plus `remedies` — a map of component to the exact repair command — and `last_failure`, the most recent recorded reason still pending), `exakit info --json` (the install record), `exakit mcp-doctor --json` (per-client MCP state). Exit codes on `status`, `version`, `update-check`, `info --json` and `mcp-doctor`: `0` healthy/running, `3` database not running, `4` not installed. Every one of those answers `--json` with an object in **both** the healthy and the not-installed state, so a parser never gets empty stdout. Introspecting the data without MCP: table and column comments ship with every bundled dataset and are readable from `SYS.EXA_ALL_TABLES` (`TABLE_COMMENT`) and `SYS.EXA_ALL_COLUMNS` (`COLUMN_COMMENT`, filtered by `COLUMN_SCHEMA` / `COLUMN_TABLE`) — a sub-100ms query that returns units, value domains and FK targets, not just types. Discover every command with `exakit catalog` (searchable: `exakit catalog logs`).
 
 ## Uninstall
 
