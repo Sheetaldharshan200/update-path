@@ -36,6 +36,11 @@
       "package": "pyexasol",
       "severity": "normal"
     },
+    "skills": {
+      "version": "1.0.0",
+      "severity": "normal",
+      "note": "the AI skills shipped in this repo's skills/ directory; bump when a skill is added or its guidance changes"
+    },
     "dash-server": {
       "version": "0.1.0",
       "repo": "exasol-labs/dash-server",

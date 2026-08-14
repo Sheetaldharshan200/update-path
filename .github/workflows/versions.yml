@@ -86,8 +86,8 @@ jobs:
           if not re.match(r"^\d{4}-\d{2}-\d{2}$", str(doc.get("updated", ""))):
               problems.append("updated must be an ISO date (YYYY-MM-DD)")
 
-          expected = {"personal", "nano", "exapump", "mcp", "pyexasol", "dash-server",
-                      "exasol-vscode", "json-tables"}
+          expected = {"personal", "nano", "exapump", "mcp", "pyexasol", "skills",
+                      "dash-server", "exasol-vscode", "json-tables"}
           components = doc.get("components") or {}
           if set(components) != expected:
               problems.append("components must be exactly %s, found %s"

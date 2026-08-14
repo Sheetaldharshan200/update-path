@@ -109,15 +109,16 @@ The installer runs this step for you automatically. `exakit mcp-setup` re-runs i
 
 Health check any time: `exakit mcp-doctor`.
 
-## Let an AI assistant drive the kit (the skill)
+## Let an AI assistant drive the kit (the skills)
 
-The kit ships an **AI skill**, a `SKILL.md` recipe that teaches an agent (Claude Code, Codex, Cursor, or any tool that reads the open skill standard) to run the whole flow for you: check status, connect MCP, load data, and hold the inspect-before-run query loop.
+The kit ships **AI skills** — `SKILL.md` recipes that teach an agent (Claude Code, Codex, Cursor, or any tool that reads the open skill standard) how to operate it. There is one per thing the agent has to drive, so only the relevant one loads: the starter flow, then the database runtime, exapump, MCP, pyexasol, and each marketplace add-on.
 
 ```bash
-exakit skills-install
+exakit skills-install     # place them where agents look
+exakit skills             # what this kit carries, and what is installed
 ```
 
-This copies the skill into each agent's discovery folder (`~/.claude/skills/`, `~/.agents/skills/`). In a **fresh** agent session, say **"setup starter kit"** and it takes over. See [`skills/README.md`](skills/README.md) for how it works, and [`skills/reducing-agent-prompts.md`](skills/reducing-agent-prompts.md) if the agent asks for approval too often.
+This copies the skills into each agent's discovery folder (`~/.claude/skills/`, `~/.agents/skills/`). In a **fresh** agent session, say **"setup starter kit"** and it takes over — or ask for anything else the kit does ("load this JSON file", "build me a dashboard", "query Exasol from Python") and the matching skill fires on its own. See [`skills/README.md`](skills/README.md) for the full index, and [`skills/reducing-agent-prompts.md`](skills/reducing-agent-prompts.md) if the agent asks for approval too often.
 
 ## The workflow this kit teaches
 
