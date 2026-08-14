@@ -2419,6 +2419,178 @@ function Set-ExakitReadonlyAllowlist {
     return "ADDED $added"
 }
 
+# ---------------------------------------------------------------------------
+# Skills registry
+# ---------------------------------------------------------------------------
+# Twin of the skills block in common.sh. The registry is the FILESYSTEM, not a
+# hardcoded list: every directory under skills\ carrying a SKILL.md is a skill,
+# and its identity comes from that file's own frontmatter. Adding a skill stays
+# a one-folder change with no code edit on either side.
+
+# Get-ExakitSkillRoots - the per-user discovery folders CLI agents read.
+function Get-ExakitSkillRoots {
+    return @((Join-Path $HOME ".claude\skills"), (Join-Path $HOME ".agents\skills"))
+}
+
+function Get-ExakitSkillsDir {
+    $repoRoot = Get-ExakitRepoRoot
+    if (-not $repoRoot) { return $null }
+    $dir = Join-Path $repoRoot "skills"
+    if (-not (Test-Path $dir)) { return $null }
+    return $dir
+}
+
+# Get-ExakitSkillField - one value out of the YAML frontmatter. Deliberately
+# tiny: the frontmatter this reads is the two flat keys the SKILL.md standard
+# defines (name, description), so a real YAML parser would be a dependency
+# bought for nothing.
+function Get-ExakitSkillField {
+    param([string]$Path, [string]$Field)
+    if (-not (Test-Path $Path)) { return "" }
+    # UTF-8 explicitly: 5.1 would otherwise decode these bytes as the system
+    # ANSI codepage and corrupt the em dashes every description carries.
+    $lines = @(Get-Content -LiteralPath $Path -Encoding UTF8 -ErrorAction SilentlyContinue)
+    if ($lines.Count -eq 0) { return "" }
+    if ($lines[0].Trim() -ne "---") { return "" }
+    $key = $Field + ": "
+    for ($i = 1; $i -lt $lines.Count; $i++) {
+        if ($lines[$i].Trim() -eq "---") { break }
+        if ($lines[$i].StartsWith($key)) { return $lines[$i].Substring($key.Length) }
+    }
+    return ""
+}
+
+# Get-ExakitSkillSummary - the one-line gist for a list row. The full
+# description is written for an AGENT to match on (long, trigger-laden); a
+# human scanning a table wants the first sentence, so cut the trigger list and
+# then the first sentence, and truncate on a word boundary.
+function Get-ExakitSkillSummary {
+    param([string]$Description)
+    $text = $Description
+    if (-not $text) { return "" }
+    $idx = $text.IndexOf("Triggers")
+    if ($idx -ge 0) { $text = $text.Substring(0, $idx) }
+    $idx = $text.IndexOf(". ")
+    if ($idx -ge 0) { $text = $text.Substring(0, $idx) }
+    # A dangling connector reads as a truncation bug rather than an ellipsis.
+    $trailing = '[\s\u2014,:-]+$'
+    $text = ($text.Trim() -replace $trailing, '')
+    if ($text.Length -le 64) { return $text }
+    $out = ""
+    foreach ($word in ($text -split ' ')) {
+        if (($out.Length + $word.Length + 1) -gt 61) { break }
+        if ($out -eq "") { $out = $word } else { $out = $out + " " + $word }
+    }
+    return (($out -replace $trailing, '') + "...")
+}
+
+# Get-ExakitSkillsRegistry - one row per skill. Skills whose frontmatter does
+# not parse are skipped here, so they are skipped everywhere (list AND install
+# read this one function).
+function Get-ExakitSkillsRegistry {
+    $dir = Get-ExakitSkillsDir
+    if (-not $dir) { return @() }
+    $rows = @()
+    foreach ($skillDir in (Get-ChildItem -Path $dir -Directory -ErrorAction SilentlyContinue | Sort-Object Name)) {
+        $md = Join-Path $skillDir.FullName "SKILL.md"
+        if (-not (Test-Path $md)) { continue }
+        $name = Get-ExakitSkillField -Path $md -Field "name"
+        if (-not $name) { continue }
+        $desc = Get-ExakitSkillField -Path $md -Field "description"
+        $rows += [pscustomobject]@{
+            Id      = $skillDir.Name
+            Name    = $name
+            Summary = (Get-ExakitSkillSummary -Description $desc)
+        }
+    }
+    return $rows
+}
+
+# Get-ExakitSkillState - installed (in every discovery root), partial (in
+# some), or available (in none). "partial" is worth its own word: it is what a
+# half-finished install or a hand-deleted copy looks like, and the remedy
+# differs from a clean "never installed".
+function Get-ExakitSkillState {
+    param([string]$Id)
+    $roots = @(Get-ExakitSkillRoots)
+    $have = 0
+    foreach ($root in $roots) {
+        if (Test-Path (Join-Path (Join-Path $root $Id) "SKILL.md")) { $have++ }
+    }
+    if ($have -eq 0) { return "available" }
+    if ($have -eq $roots.Count) { return "installed" }
+    return "partial"
+}
+
+# Get-ExakitKitSkillNames - which skill directories are OURS to remove. The
+# live kit list first; once the kit copy is gone (uninstall order, or a
+# hand-deleted checkout), what the install recorded. Enumerating the discovery
+# folders is never an option - they also hold skills the user installed
+# themselves, and the kit removes only what it placed. A hardcoded name list
+# was the old answer here and it aged badly: it named a skill that never
+# shipped and knew nothing of the ones added since.
+function Get-ExakitKitSkillNames {
+    $names = @()
+    try {
+        $dir = Get-ExakitSkillsDir
+        if ($dir) {
+            $names = @(Get-ChildItem -Directory $dir -ErrorAction SilentlyContinue |
+                Where-Object { Test-Path (Join-Path $_.FullName "SKILL.md") } |
+                ForEach-Object { $_.Name })
+        }
+    } catch { $names = @() }
+    if ($names.Count -eq 0) {
+        try {
+            $recorded = @(Get-ExakitManifestValue "components.skills.installed")
+            $names = @($recorded | ForEach-Object { "$_".Trim() } | Where-Object { $_ })
+        } catch { $names = @() }
+    }
+    return $names
+}
+
+# Show-ExakitSkills - what skills this kit carries and whether each one has
+# reached the agents' discovery folders.
+function Show-ExakitSkills {
+    param([switch]$Json)
+    if (-not (Get-ExakitSkillsDir)) {
+        Warn2 "No skills\ directory in this kit build - nothing to list."
+        return $false
+    }
+    $rows = @(Get-ExakitSkillsRegistry)
+    if ($rows.Count -eq 0) {
+        Warn2 "No SKILL.md files found in this kit copy - nothing to list."
+        return $false
+    }
+
+    $entries = @()
+    $pending = 0
+    foreach ($row in $rows) {
+        $state = Get-ExakitSkillState -Id $row.Id
+        if ($state -ne "installed") { $pending++ }
+        $entries += [pscustomobject]@{ name = $row.Id; state = $state; summary = $row.Summary }
+    }
+
+    if ($Json) {
+        Write-Output ([pscustomobject]@{ skills = $entries } | ConvertTo-Json -Depth 4 -Compress)
+        return $true
+    }
+
+    Write-Host ""
+    Start-ExakitPanel "AI skills in this kit"
+    foreach ($entry in $entries) {
+        Write-ExakitPanelLine ("{0,-26} {1,-10} {2}" -f $entry.name, $entry.state, $entry.summary)
+    }
+    if ($pending -gt 0) {
+        Write-ExakitPanelLine "Install or refresh every skill:  exakit skills-install"
+    } else {
+        Write-ExakitPanelLine "All installed. Refresh after a kit update:  exakit skills-install"
+    }
+    Write-ExakitPanelLine "Agents load a skill only when its triggers match your request."
+    Complete-ExakitPanel
+    Write-Host ""
+    return $true
+}
+
 function Install-ExakitSkills {
     $repoRoot = Get-ExakitRepoRoot
     if (-not $repoRoot) { Warn2 "Could not locate the kit to find its skills\ directory."; return $false }
@@ -2428,6 +2600,13 @@ function Install-ExakitSkills {
     $installed = 0
     foreach ($skillDir in (Get-ChildItem -Path $skillsSrc -Directory -ErrorAction SilentlyContinue)) {
         if (-not (Test-Path (Join-Path $skillDir.FullName "SKILL.md"))) { continue }
+        # Frontmatter that does not parse is skipped HERE as well as in the
+        # listing: a skill an agent cannot identify is not one worth copying,
+        # and installing what `exakit skills` refuses to show would be a lie.
+        if (-not (Get-ExakitSkillField -Path (Join-Path $skillDir.FullName "SKILL.md") -Field "name")) {
+            Warn2 "Skipping $($skillDir.Name): its SKILL.md has no readable name in the frontmatter."
+            continue
+        }
         $name = $skillDir.Name
         foreach ($destRoot in @((Join-Path $HOME ".claude\skills"), (Join-Path $HOME ".agents\skills"))) {
             $dest = Join-Path $destRoot $name

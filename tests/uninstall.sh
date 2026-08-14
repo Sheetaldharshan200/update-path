@@ -36,8 +36,16 @@ export EXAKIT_HOME EXAKIT_BIN_DIR
 
 # --- stub the externals the engine calls ---------------------------------
 info(){ :; }; warn(){ :; }; ok(){ :; }; die(){ echo "die: $*" >&2; exit 1; }
-manifest_get(){ [ "$1" = "runtime.type" ] && echo personal || echo ""; }
-exakit_repo_root(){ return 1; }   # force the fallback skill-name list
+manifest_get(){
+    case "$1" in
+        runtime.type) echo personal ;;
+        # What the install recorded — the only skills the kit may remove. Shaped
+        # exactly as manifest_get renders a JSON list (json.dumps spacing).
+        components.skills.installed) echo '["local-agent-ready-starter", "exasol-runtime"]' ;;
+        *) echo "" ;;
+    esac
+}
+exakit_repo_root(){ return 1; }   # kit copy gone: force the manifest fallback
 nano_teardown(){ echo "$SANDBOX/called_nano_teardown $*" > "$SANDBOX/marker_nano"; }
 personal_teardown(){ printf '%s\n' "$*" > "$SANDBOX/marker_personal"; }
 exakit_mcp_operation(){ printf '%s\n' "$*" > "$SANDBOX/marker_mcp"; }
@@ -59,8 +67,9 @@ seed() { # (re)create the fake install artifacts
     rm -rf "$SANDBOX/home"
     mkdir -p "$SANDBOX/home/.local/bin" \
              "$SANDBOX/home/.claude/skills/local-agent-ready-starter" \
-             "$SANDBOX/home/.claude/skills/trusted-ai-workflow" \
+             "$SANDBOX/home/.claude/skills/exasol-runtime" \
              "$SANDBOX/home/.agents/skills/local-agent-ready-starter" \
+             "$SANDBOX/home/.claude/skills/somebody-elses-skill" \
              "$SANDBOX/home/.exapump" \
              "$SANDBOX/home/.exasol-starter-kit/pyexasol-venv/bin" \
              "$SANDBOX/home/.exasol-starter-kit/dash-server-venv/bin" \
@@ -105,7 +114,10 @@ check "real: dash-server venv gone" no "$(exists "$H/.exasol-starter-kit/dash-se
 check "real: dash-server state gone" no "$(exists "$H/.exasol-starter-kit/dash-server")"
 check "real: dash-server bin gone" no "$(exists "$H/.local/bin/dash-server")"
 check "real: skill A gone"        no  "$(exists "$H/.claude/skills/local-agent-ready-starter")"
-check "real: skill B gone"        no  "$(exists "$H/.claude/skills/trusted-ai-workflow")"
+check "real: skill B gone"        no  "$(exists "$H/.claude/skills/exasol-runtime")"
+# The discovery folders also hold skills the user installed themselves. The kit
+# removes only what its own install recorded — never the whole folder.
+check "real: foreign skill kept"  yes "$(exists "$H/.claude/skills/somebody-elses-skill")"
 check "real: bystander kept"      yes "$(exists "$H/.local/bin/some-other-tool")"
 
 # --- idempotent: a second real run on the now-empty tree must not error ----

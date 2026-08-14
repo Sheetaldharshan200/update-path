@@ -424,21 +424,12 @@ function Invoke-ExakitUninstallRun {
         }
     }
 
-    # 3) Installed AI skills. Prefer the live list from the kit's skills dir;
-    #    fall back to the known names when the checkout is already gone.
-    $skillNames = @()
-    try {
-        $repoRoot = Get-ExakitRepoRoot
-        if ($repoRoot -and (Test-Path (Join-Path $repoRoot "skills"))) {
-            $skillNames = Get-ChildItem -Directory (Join-Path $repoRoot "skills") -ErrorAction SilentlyContinue |
-                Where-Object { Test-Path (Join-Path $_.FullName "SKILL.md") } |
-                ForEach-Object { $_.Name }
-        }
-    } catch { $skillNames = @() }
-    if (-not $skillNames -or $skillNames.Count -eq 0) {
-        $skillNames = @("local-agent-ready-starter", "trusted-ai-workflow")
-    }
-    foreach ($root in @((Join-Path $HOME ".claude\skills"), (Join-Path $HOME ".agents\skills"))) {
+    # 3) Installed AI skills: the live kit list, or what the install recorded
+    #    once the checkout is gone. One helper, shared with the selectable
+    #    uninstall below, so the two paths can never disagree about which
+    #    skills belong to the kit.
+    $skillNames = @(Get-ExakitKitSkillNames)
+    foreach ($root in (Get-ExakitSkillRoots)) {
         foreach ($name in $skillNames) {
             $p = Join-Path $root $name
             if (Test-Path $p) {
@@ -664,8 +655,8 @@ function Invoke-ExakitUninstallComponent {
             catch { Warn2 "Removing the managed MCP client config reported issues" }
         }
         "skills" {
-            foreach ($root in @((Join-Path $HOME ".claude\skills"), (Join-Path $HOME ".agents\skills"))) {
-                foreach ($name in @("local-agent-ready-starter", "trusted-ai-workflow")) {
+            foreach ($root in (Get-ExakitSkillRoots)) {
+                foreach ($name in (Get-ExakitKitSkillNames)) {
                     $p = Join-Path $root $name
                     if (Test-Path $p) {
                         Info "AI skill $p"
@@ -2002,6 +1993,11 @@ function Invoke-CmdSkillsInstall {
     if (-not (Install-ExakitSkills)) { Fail "Could not install the kit's AI skills" }
 }
 
+function Invoke-CmdSkills {
+    param([switch]$Json)
+    if ($Json) { [void](Show-ExakitSkills -Json) } else { [void](Show-ExakitSkills) }
+}
+
 # Invoke-CmdInfoJson - the install record, verbatim, on stdout. Mirrors cmd_info_json.
 #
 # manifest.json is what every other command reads: which runtime, which versions,
@@ -2156,6 +2152,16 @@ try {
         "mcp-validate" { Invoke-CmdMcpOperation -Operation "validate" -OpArgs $RestArgs }
         "mcp-remove"   { Invoke-CmdMcpOperation -Operation "uninstall" -OpArgs $RestArgs }
         "mcp-restore"  { Invoke-CmdMcpRestore -SnapshotId ($RestArgs | Select-Object -First 1) }
+        "skills"       {
+            if ($RestArgs -contains "--json" -or $RestArgs -contains "-j") {
+                # Same reason as `info --json`: a trailing update notice would
+                # stop the output being parseable JSON.
+                $script:JsonOutput = $true
+                Invoke-CmdSkills -Json
+            } else {
+                Invoke-CmdSkills
+            }
+        }
         "skills-install" { Invoke-CmdSkillsInstall }
         "marketplace"  { Invoke-CmdMarketplace }
         "upgrade-kit2"  { Write-ExakitKit2NotAvailable -Command "exakit upgrade-kit2" }
@@ -2179,7 +2185,7 @@ try {
     # where a notice on stdout would stop the output being parseable JSON.
     if (-not $script:JsonOutput -and
         @("status", "info", "guide", "start", "stop", "data-load", "preflight",
-          "skills-install", "marketplace", "autostart", "logs", "mcp-setup", "mcp-doctor", "mcp-status",
+          "skills", "skills-install", "marketplace", "autostart", "logs", "mcp-setup", "mcp-doctor", "mcp-status",
           "mcp-repair", "mcp-validate", "mcp-restore", "mcp-remove") -contains $Command) {
         Show-ExakitUpdateNotice
     }

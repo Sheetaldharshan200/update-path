@@ -4120,6 +4120,165 @@ exakit_repo_root() {
     return 1
 }
 
+# ---------------------------------------------------------------------------
+# Skills registry
+# ---------------------------------------------------------------------------
+# The registry is the FILESYSTEM, not a hardcoded list: every directory under
+# skills/ carrying a SKILL.md is a skill, and its identity comes from that
+# file's own frontmatter. Adding a skill therefore stays a one-folder change
+# with no code edit anywhere — the property skills/README.md promises. A
+# hardcoded list here would quietly take that away, so tests/skills.sh asserts
+# no skill name is ever hardcoded in this file.
+
+EXAKIT_SKILL_ROOTS="${EXAKIT_SKILL_ROOTS:-$HOME/.claude/skills $HOME/.agents/skills}"
+
+# exakit_skills_dir — the kit's skills/ source directory.
+exakit_skills_dir() {
+    _sd_root="$(exakit_repo_root)" || return 1
+    [ -d "$_sd_root/skills" ] || return 1
+    printf '%s\n' "$_sd_root/skills"
+}
+
+# exakit_skill_field <skill-md> <field> — one value out of the YAML
+# frontmatter. Deliberately tiny: the frontmatter this reads is the two flat
+# keys the SKILL.md standard defines (name, description), so a real YAML parser
+# would be a dependency bought for nothing.
+exakit_skill_field() {
+    awk -v want="$2" '
+        NR == 1 { if ($0 != "---") exit; next }
+        $0 == "---" { exit }
+        {
+            key = want ": "
+            if (index($0, key) == 1) { print substr($0, length(key) + 1); exit }
+        }
+    ' "$1" 2>/dev/null
+}
+
+# exakit_skill_summary <description> — the one-line gist for a list row. The
+# full description is written for an AGENT to match on (long, trigger-laden);
+# a human scanning a table wants the first sentence, so cut the trigger list
+# and then the first sentence, and truncate on a word boundary.
+exakit_skill_summary() {
+    _ss_text="$1"
+    case "$_ss_text" in *"Triggers"*) _ss_text="${_ss_text%%Triggers*}" ;; esac
+    case "$_ss_text" in *". "*) _ss_text="${_ss_text%%". "*}" ;; esac
+    # Trim trailing separators and whitespace left by either cut above.
+    _ss_text="$(printf '%s' "$_ss_text" | sed 's/[[:space:]]*[—-]*[[:space:]]*$//')"
+    printf '%s' "$_ss_text" | awk '{
+        if (length($0) <= 64) { print; exit }
+        out = ""
+        n = split($0, words, " ")
+        for (i = 1; i <= n; i++) {
+            if (length(out) + length(words[i]) + 1 > 61) break
+            out = (out == "" ? words[i] : out " " words[i])
+        }
+        # A dangling connector reads as a truncation bug rather than an
+        # ellipsis, so drop one if the cut landed on it.
+        sub(/[[:space:]]*(—|-|,|:)$/, "", out)
+        print out "..."
+    }'
+}
+
+# exakit_skills_registry — one line per skill: id|summary. Skills whose
+# frontmatter does not parse are skipped here, so they are skipped everywhere
+# (list AND install read this one function).
+exakit_skills_registry() {
+    _sr_dir="$(exakit_skills_dir)" || return 1
+    for _sr_path in "$_sr_dir"/*/; do
+        [ -f "$_sr_path/SKILL.md" ] || continue
+        _sr_name="$(exakit_skill_field "$_sr_path/SKILL.md" name)"
+        [ -n "$_sr_name" ] || continue
+        _sr_desc="$(exakit_skill_field "$_sr_path/SKILL.md" description)"
+        printf '%s|%s\n' "$_sr_name" "$(exakit_skill_summary "$_sr_desc")"
+    done
+}
+
+# exakit_skill_state <id> — installed (in every discovery root), partial (in
+# some), or available (in none). "partial" is worth its own word: it is what a
+# half-finished install or a hand-deleted copy looks like, and the remedy
+# differs from a clean "never installed".
+exakit_skill_state() {
+    _sks_have=0
+    _sks_total=0
+    for _sks_root in $EXAKIT_SKILL_ROOTS; do
+        _sks_total=$((_sks_total + 1))
+        [ -f "$_sks_root/$1/SKILL.md" ] && _sks_have=$((_sks_have + 1))
+    done
+    if [ "$_sks_have" -eq 0 ]; then
+        printf 'available\n'
+    elif [ "$_sks_have" -eq "$_sks_total" ]; then
+        printf 'installed\n'
+    else
+        printf 'partial\n'
+    fi
+}
+
+# exakit_skills_list [--json] — what skills this kit carries and whether each
+# one has reached the agents' discovery folders.
+exakit_skills_list() {
+    if ! exakit_skills_dir >/dev/null 2>&1; then
+        warn "No skills/ directory in this kit build — nothing to list."
+        return 1
+    fi
+
+    if [ "${1:-}" = "--json" ] || [ "${1:-}" = "-j" ]; then
+        _skl_first=1
+        printf '{"skills":['
+        while IFS='|' read -r _skl_id _skl_sum; do
+            [ -n "$_skl_id" ] || continue
+            [ "$_skl_first" -eq 1 ] || printf ','
+            _skl_first=0
+            printf '{"name":"%s","state":"%s","summary":"%s"}' \
+                "$_skl_id" "$(exakit_skill_state "$_skl_id")" \
+                "$(printf '%s' "$_skl_sum" | sed 's/\\/\\\\/g; s/"/\\"/g')"
+        done <<EXAKIT_SKL_EOF
+$(exakit_skills_registry)
+EXAKIT_SKL_EOF
+        printf ']}\n'
+        return 0
+    fi
+
+    _skl_count=0
+    _skl_pending=0
+    printf '\n'
+    ui_panel_begin "AI skills in this kit"
+    while IFS='|' read -r _skl_id _skl_sum; do
+        [ -n "$_skl_id" ] || continue
+        _skl_state="$(exakit_skill_state "$_skl_id")"
+        [ "$_skl_state" = "installed" ] || _skl_pending=$((_skl_pending + 1))
+        ui_panel_line "$(printf '%-26s %-10s %s' "$_skl_id" "$_skl_state" "$_skl_sum")"
+        _skl_count=$((_skl_count + 1))
+    done <<EXAKIT_SKL_EOF
+$(exakit_skills_registry)
+EXAKIT_SKL_EOF
+
+    if [ "$_skl_count" -eq 0 ]; then
+        ui_panel_line "No SKILL.md files found in this kit copy."
+        ui_panel_end
+        printf '\n'
+        return 1
+    fi
+
+    ui_panel_line ""
+    # Stale beats pending in the advice: copies that exist but predate a kit
+    # update are the case a user cannot see for themselves, and the remedy is
+    # the same command either way.
+    _skl_have="$(manifest_get components.skills.version 2>/dev/null || true)"
+    _skl_want="$(exakit_versions_value components.skills.version 2>/dev/null || true)"
+    if [ -n "$_skl_have" ] && [ -n "$_skl_want" ] && [ "$_skl_have" != "$_skl_want" ]; then
+        ui_panel_line "Installed from skill set $_skl_have; this kit carries $_skl_want."
+        ui_panel_line "Refresh them:  exakit skills-install"
+    elif [ "$_skl_pending" -gt 0 ]; then
+        ui_panel_line "Install or refresh every skill:  exakit skills-install"
+    else
+        ui_panel_line "All installed. Refresh after a kit update:  exakit skills-install"
+    fi
+    ui_panel_line "Agents load a skill only when its triggers match your request."
+    ui_panel_end
+    printf '\n'
+    return 0
+}
+
 # exakit_install_skills — copy the kit's AI skills into the per-user discovery
 # folders so CLI agents auto-load them. Idempotent: each run replaces the
 # managed copy of every skill, so edits and deletions propagate cleanly.
@@ -4137,16 +4296,25 @@ exakit_install_skills() {
     fi
 
     _installed=0
+    _installed_json=""
     for _skill_dir in "$_skills_src"/*/; do
         [ -f "$_skill_dir/SKILL.md" ] || continue
+        # Frontmatter that does not parse is skipped HERE as well as in the
+        # listing: a skill an agent cannot identify is not one worth copying,
+        # and installing what `exakit skills` refuses to show would be a lie.
+        [ -n "$(exakit_skill_field "$_skill_dir/SKILL.md" name)" ] || {
+            warn "Skipping $(basename "$_skill_dir"): its SKILL.md has no readable name in the frontmatter."
+            continue
+        }
         _name="$(basename "$_skill_dir")"
-        for _dest_root in "$HOME/.claude/skills" "$HOME/.agents/skills"; do
+        for _dest_root in $EXAKIT_SKILL_ROOTS; do
             rm -rf "$_dest_root/$_name"
             mkdir -p "$_dest_root/$_name"
             cp -R "$_skill_dir". "$_dest_root/$_name/"
         done
         ok "Installed skill: $_name"
         _installed=$((_installed + 1))
+        _installed_json="${_installed_json:+$_installed_json,}\"$_name\""
     done
 
     if [ "$_installed" -eq 0 ]; then
@@ -4154,6 +4322,17 @@ exakit_install_skills() {
         return 1
     fi
     info "Skills installed for Claude Code (~/.claude/skills) and open-standard agents (~/.agents/skills)."
+
+    # Record what was placed and which skill-set version it came from. This is
+    # the only honest source for two later questions: which skill directories
+    # are OURS to remove at uninstall time (the discovery folders also hold
+    # skills the user installed themselves, which the kit must never touch),
+    # and whether the installed copies have gone stale behind a kit update.
+    if [ -f "$EXAKIT_MANIFEST" ]; then
+        manifest_set components.skills.version \
+            "$(exakit_versions_value components.skills.version 2>/dev/null || printf 'unknown')"
+        manifest_set components.skills.installed "[$_installed_json]"
+    fi
 
     # The read-only allowlist the skill documents, applied for real (Claude
     # Code reads ~/.claude/settings.json). Other agents keep the doc: their
@@ -4235,7 +4414,7 @@ print("ADDED %d" % added)
 EXAKIT_RAL_PY
 }
 
-# exakit_maybe_offer_skills_install — after setup, place the skills where CLI# exakit_maybe_offer_skills_install — after setup, place the skills where CLI
+# exakit_maybe_offer_skills_install — after setup, place the skills where CLI
 # agents can find them. Always installs — no prompt — so the skills are
 # present without requiring interactive confirmation. Non-fatal and
 # idempotent.
@@ -6221,7 +6400,16 @@ _exakit_remove_installed_skills() {
             _skill_names="$_skill_names $(basename "$_sd")"
         done
     fi
-    [ -n "$_skill_names" ] || _skill_names="local-agent-ready-starter trusted-ai-workflow"
+    # The kit copy is gone (uninstall order, or a hand-deleted checkout), so
+    # fall back to what the install actually recorded. A hardcoded name list
+    # was the old fallback and it aged badly: it named a skill that never
+    # shipped and knew nothing of the ones added since. Enumerating the
+    # discovery folders instead is not an option — they also hold skills the
+    # user installed themselves, and the kit removes only what it placed.
+    if [ -z "$_skill_names" ]; then
+        _skill_names="$(manifest_get components.skills.installed 2>/dev/null |
+            tr -d '[]"' | tr ',' ' ')"
+    fi
     for _root in "$HOME/.claude/skills" "$HOME/.agents/skills"; do
         for _name in $_skill_names; do
             if [ -e "$_root/$_name" ]; then

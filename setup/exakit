@@ -30,6 +30,8 @@
 #   mcp-repair          repair managed MCP config drift
 #   mcp-remove          remove managed MCP config from the supported clients
 #   mcp-restore         restore the latest (or a chosen) MCP snapshot
+#   skills [--json]     list the kit's AI skills and whether each one has
+#                       reached the agents' discovery folders
 #   skills-install      install the kit's AI skills for CLI agents
 #                       (~/.claude/skills, ~/.agents/skills)
 #   marketplace         browse optional add-ons (dash-server, ...) and install
@@ -519,6 +521,10 @@ cmd_skills_install() {
     exakit_install_skills || die "Could not install the kit's AI skills"
 }
 
+cmd_skills() {
+    exakit_skills_list "${1:-}"
+}
+
 cmd_marketplace() {
     [ -f "$EXAKIT_MANIFEST" ] || die "No installation found. Run the installer first."
     exakit_init_logging
@@ -729,6 +735,11 @@ case "${1:-help}" in
     mcp-validate) shift; _with_notice cmd_mcp_validate "$@" ;;
     mcp-remove) shift; _with_notice cmd_mcp_remove "$@" ;;
     mcp-restore) shift; _with_notice cmd_mcp_restore "$@" ;;
+    skills)   shift
+              case "${1:-}" in
+                  --json|-j) cmd_skills --json ;;
+                  *) _with_notice cmd_skills ;;
+              esac ;;
     skills-install) _with_notice cmd_skills_install ;;
     marketplace) shift; _with_notice cmd_marketplace "$@" ;;
     upgrade-kit2)  cmd_kit2_script upgrade-kit2.sh ;;
