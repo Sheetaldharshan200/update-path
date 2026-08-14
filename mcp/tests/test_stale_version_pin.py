@@ -289,7 +289,22 @@ class StaleVersionPinCLITests(unittest.TestCase):
             ],
             "1.10.1",
         )
-        self.assertIn(setup["status"], {"success", "success_with_warnings"})
+        # Include the payload in the failure: a bare status mismatch here says
+        # nothing about WHY, and this ran green for as long as nobody ran these
+        # tests on Linux. The findings are the diagnosis.
+        self.assertIn(
+            setup["status"],
+            {"success", "success_with_warnings"},
+            "setup did not succeed; status=%s findings=%s summary=%s"
+            % (
+                setup.get("status"),
+                [
+                    (f.get("severity"), f.get("code"), f.get("message"))
+                    for f in setup.get("findings", [])
+                ],
+                setup.get("summary"),
+            ),
+        )
         self.assertEqual(self._pin(), "exasol-mcp-server@1.10.1")
 
         doctor = self._operation("doctor", "2.0.0")
