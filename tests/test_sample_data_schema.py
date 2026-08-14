@@ -229,10 +229,17 @@ class LoadWiringTests(unittest.TestCase):
         # Standalone menus delegate to the shared selector with a plain Cancel.
         self.assertIn('exakit_data_load_select "Cancel (load nothing)"', bash)
         self.assertIn('Select-ExakitDataLoad -FinalLabel "Cancel (load nothing)"', ps1)
-        # The selector offers the local-file source on both platforms.
+        # The selector offers the local-file source on both platforms, but the
+        # LABEL legitimately differs: bash routes .json through the JSON Tables
+        # add-on, and that add-on is deliberately unavailable on Windows
+        # (Test-JsonTablesApplicable returns $false unconditionally). Asserting
+        # one wording against both files is what made this test stale -- and it
+        # went unnoticed because nothing in CI ran this file. Do NOT "fix" the
+        # PowerShell label to mention JSON; it would offer what it cannot do.
+        self.assertIn("A local CSV / Parquet / JSON file", bash)
+        self.assertIn("A local CSV/Parquet file", ps1)
         for text, name in ((bash, "exapump.sh"), (ps1, "exapump.ps1")):
             with self.subTest(menu=name):
-                self.assertIn("A local CSV/Parquet file", text)
                 for removed_option in (
                     "Remote CSV/Text File",
                     "Import from Another Database",
@@ -303,7 +310,13 @@ class LoadWiringTests(unittest.TestCase):
         for menu_name, local_file_flow in local_file_blocks:
             with self.subTest(menu=menu_name):
                 self.assertIn("type back to return", local_file_flow)
-                self.assertIn("Please enter a local CSV/Parquet file path", local_file_flow)
+                # Same platform split as the menu label above: bash names JSON,
+                # PowerShell does not because the add-on that handles it is not
+                # available there.
+                if menu_name == EXAPUMP_PS1.name:
+                    self.assertIn("Please enter a local CSV/Parquet file path", local_file_flow)
+                else:
+                    self.assertIn("Please enter a local CSV, Parquet or JSON file path", local_file_flow)
                 self.assertIn("back to return", local_file_flow)
                 self.assertIn("Returning to data loading options.", local_file_flow)
 

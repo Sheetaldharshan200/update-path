@@ -422,3 +422,11 @@ jobs:
       # The MCP subsystem's own tests were never wired in, so nothing in CI
       # exercised mcp/ at all -- a NameError in that package would have shipped.
       - run: python3 -m unittest discover -s mcp/tests -t .
+      # Three more suites existed and were never run by CI either. This one had
+      # rotted: it asserted a data-load prompt wording that the JSON support
+      # changed on the bash side, and nothing noticed. (Not discoverable via
+      # `unittest discover` -- tests/ is not an importable package.)
+      - run: python3 tests/test_sample_data_schema.py
+      - run: bash tests/reap-orphan-daemon.sh
+      # Dry run only without EXAKIT_SMOKE_FULL=1: no install, no database.
+      - run: bash tests/smoke-test.sh

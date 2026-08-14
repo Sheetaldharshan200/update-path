@@ -286,5 +286,69 @@ has "the CLI stale-pin test binds its own listener" "socket.socket(socket.AF_INE
 # The manifest must carry the port the test itself bound, not a fixed one.
 has "and writes that port into its manifest" '_write_manifest(self.dsn)' "$_cli_t"
 
+
+# ---------------------------------------------------------------------------
+echo
+echo "no test writes through a symlink into a shared interpreter:"
+# ---------------------------------------------------------------------------
+# A uv-created venv's bin/python is a SYMLINK to the shared managed CPython, and
+# `>` follows symlinks. Writing a stub through one replaced the developer's real
+# 18 MB interpreter with 17 bytes and broke uv for every later component install
+# -- which then surfaced as an unrelated-looking "the virtual environment could
+# not be created". Every such write must rm -f the path first.
+_sym_unguarded=0
+for _sym_file in "$ROOT"/tests/*.sh; do
+    # Skip this file: the patterns below are themselves quoted globs that would
+    # match, so the linter would only ever report itself.
+    case "$_sym_file" in *agent-operability.sh) continue ;; esac
+    _sym_prev=""
+    while IFS= read -r _sym_line; do
+        case "$_sym_line" in
+            *'> "'*'/bin/python"'*|*'> "'*'venv/bin/python"'*)
+                case "$_sym_line" in *"rm -f"*) ;; *)
+                    case "$_sym_prev" in
+                        *"rm -f"*) ;;
+                        *) _sym_unguarded=$((_sym_unguarded + 1))
+                           printf '       unguarded: %s: %s\n' "$(basename "$_sym_file")" \
+                               "$(printf '%s' "$_sym_line" | sed 's/^[[:space:]]*//' | cut -c1-58)" ;;
+                    esac ;;
+                esac ;;
+        esac
+        _sym_prev="$_sym_line"
+    done < "$_sym_file"
+done
+check "every stub-python write rm -f's the path first" "0" "$_sym_unguarded"
+
+
+# A module that says "Retry with: <command>" without first explaining the
+# underlying fault turns a corrupt uv managed-Python into an infinite loop: the
+# retry fails identically and advises itself. pyexasol had the explanation and
+# dash-server and json-tables did not, so the same fault looped for two of three.
+for _rt_mod in pyexasol dash-server json-tables; do
+    _rt_file="$ROOT/setup/lib/$_rt_mod.sh"
+    [ -f "$_rt_file" ] || continue
+    if grep -q "Retry with:" "$_rt_file" 2>/dev/null; then
+        has "$_rt_mod explains the fault before offering a retry" \
+            "exakit_explain_last_log_error" "$(cat "$_rt_file")"
+    fi
+done
+
+
+# ---------------------------------------------------------------------------
+echo
+echo "every hermetic suite is actually wired into CI:"
+# ---------------------------------------------------------------------------
+# A suite CI never runs rots silently. That is how the MCP tests came to depend
+# on the developer's own database, and how the data-load schema test came to
+# assert a prompt wording the JSON support had changed. The two exclusions below
+# are deliberate and need a live database or a full install to mean anything.
+_wf="$ROOT/.github/workflows/versions.yml"
+for _suite in agent-operability dry-run-matrix marketplace noninteractive-answers \
+              ps-encoding-guard skills uninstall versions-manifest reap-orphan-daemon smoke-test; do
+    has "CI runs tests/$_suite.sh" "tests/$_suite.sh" "$(cat "$_wf")"
+done
+has "CI runs the MCP python tests" "unittest discover -s mcp/tests" "$(cat "$_wf")"
+has "CI runs the sample-data schema test" "tests/test_sample_data_schema.py" "$(cat "$_wf")"
+
 echo "passed: $PASS, failed: $FAIL"
 [ "$FAIL" -eq 0 ]

@@ -917,6 +917,11 @@ LIVE="$WORK/live-home"
 mkdir -p "$LIVE/bin" "$LIVE/venv/bin" "$LIVE/kit/mcp" "$LIVE/cache"
 cp "$REAL" "$LIVE/kit/versions.json"
 printf '#!/bin/sh\necho "exapump 0.13.0"\n' > "$LIVE/bin/exapump"
+# rm -f first: a uv-created venv's bin/python is a SYMLINK to the shared
+# managed interpreter, and `>` follows symlinks -- writing through it
+# replaced the developer's real 18 MB CPython with this 17-byte stub and
+# broke uv for every later component install.
+rm -f "$LIVE/venv/bin/python"
 printf '#!/bin/sh\necho 2.9.9\n' > "$LIVE/venv/bin/python"
 chmod +x "$LIVE/bin/exapump" "$LIVE/venv/bin/python"
 cat > "$LIVE/manifest.json" <<EOF
@@ -967,6 +972,7 @@ has "version agrees that a deleted exapump is gone" "exapump:        not install
 has "version agrees that a deleted venv is gone" "pyexasol:       not installed" "$absent_version"
 # Put them back for anything that follows.
 printf '#!/bin/sh\necho "exapump 0.13.0"\n' > "$LIVE/bin/exapump"
+rm -f "$LIVE/venv/bin/python"
 printf '#!/bin/sh\necho 2.9.9\n' > "$LIVE/venv/bin/python"
 chmod +x "$LIVE/bin/exapump" "$LIVE/venv/bin/python"
 
@@ -1248,6 +1254,7 @@ DR="$WORK/drift-home"
 mkdir -p "$DR/bin" "$DR/venv/bin" "$DR/kit/mcp"
 cp "$REAL" "$DR/kit/versions.json"
 printf '#!/bin/sh\necho "exapump 0.13.0"\n' > "$DR/bin/exapump"
+rm -f "$DR/venv/bin/python"
 printf '#!/bin/sh\necho 2.9.9\n' > "$DR/venv/bin/python"
 chmod +x "$DR/bin/exapump" "$DR/venv/bin/python"
 drift_manifest() {

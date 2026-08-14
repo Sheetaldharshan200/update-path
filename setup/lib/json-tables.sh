@@ -161,6 +161,10 @@ json_tables_installed_version() {
 
 _json_tables_not_installed() {
     warn "JSON Tables was not installed: $1"
+    # Explain the underlying fault BEFORE offering the retry. A corrupt uv
+    # managed-Python cache makes the retry fail identically forever, so
+    # "retry with" on its own is a loop, not a remedy.
+    command -v exakit_explain_last_log_error >/dev/null 2>&1 && exakit_explain_last_log_error
     warn "Everything else in the kit is unaffected. Retry with: exakit update json-tables"
     command -v exakit_note_failure >/dev/null 2>&1 && exakit_note_failure "$1"
     manifest_set components.json_tables.validated false

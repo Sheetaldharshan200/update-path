@@ -131,6 +131,11 @@ check "pending detection sees the gap" "yes" "$(exakit_marketplace_has_pending &
 # A fake installed venv: exakit_component_current probes this python stub, so
 # from here on the add-on counts as installed.
 mkdir -p "$EXAKIT_HOME/dash-server-venv/bin"
+# rm -f first: a uv-created venv's bin/python is a SYMLINK to the shared
+# managed interpreter, and `>` follows symlinks -- writing through it
+# replaced the developer's real 18 MB CPython with this 17-byte stub and
+# broke uv for every later component install.
+rm -f "$EXAKIT_HOME/dash-server-venv/bin/python"
 cat > "$EXAKIT_HOME/dash-server-venv/bin/python" <<'EOF'
 #!/bin/sh
 echo "0.1.0"
@@ -226,6 +231,7 @@ echo "pip self-repair (dash-server app builds shell out to python -m pip):"
 # case close-paren inside $( ... ).
 _pv="$WORK/pipless-venv"
 mkdir -p "$_pv/bin"
+rm -f "$_pv/bin/python"
 cat > "$_pv/bin/python" <<'PYEOF'
 #!/bin/sh
 case "$*" in
@@ -382,6 +388,7 @@ has "and it returns failure" "rc=1" "$_noversion_out"
 
 echo "validation shortcut when the port already answers:"
 mkdir -p "$WORK/live-venv/bin"
+rm -f "$WORK/live-venv/bin/python"
 printf '#!/bin/sh\nexit 0\n' > "$WORK/live-venv/bin/python"
 chmod +x "$WORK/live-venv/bin/python"
 _live_out="$( (
@@ -395,6 +402,7 @@ check "and records validated=true" "true" "$(manifest_get components.dash_server
 
 echo "everything covered — the menu becomes a status screen:"
 mkdir -p "$EXAKIT_HOME/dash-server-venv/bin"
+rm -f "$EXAKIT_HOME/dash-server-venv/bin/python"
 printf '#!/bin/sh\necho 0.1.0\n' > "$EXAKIT_HOME/dash-server-venv/bin/python"
 chmod +x "$EXAKIT_HOME/dash-server-venv/bin/python"
 _covered_out="$( (
@@ -566,6 +574,7 @@ check "and recorded" "true" "$(manifest_get components.dash_server.ui_validated)
 _ui_order="$( (
     dash_server_venv_python() { printf '%s\n' "$EXAKIT_HOME/dash-server-venv/bin/python"; }
     mkdir -p "$EXAKIT_HOME/dash-server-venv/bin"
+    rm -f "$EXAKIT_HOME/dash-server-venv/bin/python"
     printf '#!/bin/sh\nexit 0\n' > "$EXAKIT_HOME/dash-server-venv/bin/python"
     chmod 755 "$EXAKIT_HOME/dash-server-venv/bin/python"
     _dash_server_resolve_port() { :; }
@@ -594,6 +603,7 @@ check "the UI is probed while the probe server is alive" "ui=true" "$_ui_order"
 _ui_heal="$( (
     dash_server_venv_python() { printf '%s\n' "$EXAKIT_HOME/dash-server-venv/bin/python"; }
     mkdir -p "$EXAKIT_HOME/dash-server-venv/bin"
+    rm -f "$EXAKIT_HOME/dash-server-venv/bin/python"
     printf '#!/bin/sh\nexit 0\n' > "$EXAKIT_HOME/dash-server-venv/bin/python"
     chmod 755 "$EXAKIT_HOME/dash-server-venv/bin/python"
     _dash_server_resolve_port() { :; }
@@ -733,6 +743,7 @@ check "the setup log is a target" "setup" "$(exakit_log_targets | cut -d'|' -f1 
 # registry-driven contract the other hooks use.
 printf 'dash line\n' > "$EXAKIT_HOME/logs/dash-server.log"
 mkdir -p "$EXAKIT_HOME/dash-server-venv/bin"
+rm -f "$EXAKIT_HOME/dash-server-venv/bin/python"
 printf '#!/bin/sh\necho 0.1.0\n' > "$EXAKIT_HOME/dash-server-venv/bin/python"
 chmod +x "$EXAKIT_HOME/dash-server-venv/bin/python"
 manifest_set components.dash_server.python "$EXAKIT_HOME/dash-server-venv/bin/python"
@@ -866,6 +877,7 @@ fi
 # The service registry: database first, then any installed add-on that serves.
 manifest_set runtime.type personal
 mkdir -p "$EXAKIT_HOME/dash-server-venv/bin"
+rm -f "$EXAKIT_HOME/dash-server-venv/bin/python"
 printf '#!/bin/sh\necho 0.1.0\n' > "$EXAKIT_HOME/dash-server-venv/bin/python"
 chmod +x "$EXAKIT_HOME/dash-server-venv/bin/python"
 manifest_set components.dash_server.python "$EXAKIT_HOME/dash-server-venv/bin/python"
@@ -1016,6 +1028,7 @@ _jt_half="$( (
     EXAKIT_JSON_TABLES_VENV="$WORK/jt-half-venv"
     EXAKIT_JSON_TABLES_HOME="$WORK/jt-half"
     mkdir -p "$WORK/jt-half-venv/bin"
+    rm -f "$WORK/jt-half-venv/bin/python"
     printf '#!/bin/sh\nexit 0\n' > "$WORK/jt-half-venv/bin/python"; chmod 755 "$WORK/jt-half-venv/bin/python"
     manifest_set components.json_tables.version 50d05da0f6da >/dev/null 2>&1
     json_tables_installed_version >/dev/null 2>&1 && printf 'installed\n' || printf 'not installed\n'
