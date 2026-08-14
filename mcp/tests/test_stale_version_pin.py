@@ -14,6 +14,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
@@ -233,9 +234,26 @@ class StaleVersionPinCLITests(unittest.TestCase):
         self.manifest_path = self.runtime_root / "manifest.json"
         self.cursor_path = self._temp_dir / "cursor" / "mcp.json"
         self.cursor_path.parent.mkdir(parents=True, exist_ok=True)
-        self._write_manifest("127.0.0.1:8563")
+        # These cases drive the real CLI in a SUBPROCESS, so unlike their
+        # in-process siblings they cannot mock socket.create_connection -- and
+        # setup validates connectivity after applying. Hardcoding 127.0.0.1:8563
+        # therefore made the outcome depend on whether the developer happened to
+        # have the starter kit running: success_with_warnings on that machine,
+        # failed_recoverable (error connectivity_failed) on a clean one or any CI
+        # runner. Own the endpoint instead: a listening socket on an ephemeral
+        # port answers the TCP probe and needs nothing installed.
+        self._listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self._listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self._listener.bind(("127.0.0.1", 0))
+        self._listener.listen(8)
+        self.dsn = "127.0.0.1:%d" % self._listener.getsockname()[1]
+        self._write_manifest(self.dsn)
 
     def tearDown(self) -> None:
+        try:
+            self._listener.close()
+        except OSError:
+            pass
         shutil.rmtree(self._temp_dir, ignore_errors=True)
 
     def _env(self, version: str) -> dict:
@@ -289,7 +307,22 @@ class StaleVersionPinCLITests(unittest.TestCase):
             ],
             "1.10.1",
         )
-        self.assertIn(setup["status"], {"success", "success_with_warnings"})
+        # Include the payload in the failure: a bare status mismatch here says
+        # nothing about WHY, and this ran green for as long as nobody ran these
+        # tests on Linux. The findings are the diagnosis.
+        self.assertIn(
+            setup["status"],
+            {"success", "success_with_warnings"},
+            "setup did not succeed; status=%s findings=%s summary=%s"
+            % (
+                setup.get("status"),
+                [
+                    (f.get("severity"), f.get("code"), f.get("message"))
+                    for f in setup.get("findings", [])
+                ],
+                setup.get("summary"),
+            ),
+        )
         self.assertEqual(self._pin(), "exasol-mcp-server@1.10.1")
 
         doctor = self._operation("doctor", "2.0.0")
