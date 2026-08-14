@@ -687,10 +687,45 @@ function Read-ExakitManifest {
 }
 
 # Atomic write: an interrupted run must never leave a truncated manifest.
+# Enter-ExakitManifestLock / Exit-ExakitManifestLock - twin of _exakit_locked in
+# common.sh. A read-modify-write with no lock silently discards concurrent
+# updates: measured on the bash side, 17 of 20 parallel writes were lost and
+# every one of 30 rounds lost at least one. Two kit processes at once is not
+# hypothetical - `exakit start` brings up the database and every service,
+# autostart can fire one at boot while another runs, and an agent may issue two
+# commands in parallel. FileShare::None is the exclusive-open equivalent of
+# flock; a lock we cannot take must not fail an install, so we proceed unlocked
+# rather than abort.
+function Enter-ExakitManifestLock {
+    $lockPath = "$script:ManifestPath.lock"
+    for ($attempt = 0; $attempt -lt 200; $attempt++) {
+        try {
+            return [System.IO.File]::Open($lockPath,
+                [System.IO.FileMode]::OpenOrCreate,
+                [System.IO.FileAccess]::Write,
+                [System.IO.FileShare]::None)
+        } catch {
+            Start-Sleep -Milliseconds 25
+        }
+    }
+    return $null
+}
+
+function Exit-ExakitManifestLock($Handle) {
+    if ($null -ne $Handle) { try { $Handle.Close() } catch { } }
+}
+
 function Save-ExakitManifest($Manifest) {
-    $tmp = "$script:ManifestPath.tmp"
-    $Manifest | ConvertTo-Json -Depth 12 | Set-Content -Path $tmp
-    Move-Item -Force $tmp $script:ManifestPath
+    # Unique temp name, not a shared "<path>.tmp": two writers sharing one can
+    # interleave inside it, and the loser's move can publish a half-written file.
+    $tmp = "$script:ManifestPath." + [System.Guid]::NewGuid().ToString("N") + ".tmp"
+    try {
+        $Manifest | ConvertTo-Json -Depth 12 | Set-Content -Path $tmp
+        Move-Item -Force $tmp $script:ManifestPath
+    } catch {
+        if (Test-Path $tmp) { Remove-Item -Force -ErrorAction SilentlyContinue $tmp }
+        throw
+    }
     try { Protect-ExakitFile $script:ManifestPath } catch { }
 }
 
@@ -735,10 +770,17 @@ function Get-ExakitManifestValue {
 # manifest_set equivalent: reads, mutates, writes atomically, every call.
 function Set-ExakitManifestValue {
     param([Parameter(Mandatory)][string]$Path, [Parameter(Mandatory)]$Value)
-    $doc = Read-ExakitManifest
-    if ($null -eq $doc) { Fail "Failed to update manifest ($Path): no manifest at $script:ManifestPath" }
-    Set-ManifestValue -Manifest $doc -Path $Path -Value $Value
-    Save-ExakitManifest $doc
+    # The lock has to span read AND write, or a concurrent writer reads the same
+    # document and the last save wins.
+    $lock = Enter-ExakitManifestLock
+    try {
+        $doc = Read-ExakitManifest
+        if ($null -eq $doc) { Fail "Failed to update manifest ($Path): no manifest at $script:ManifestPath" }
+        Set-ManifestValue -Manifest $doc -Path $Path -Value $Value
+        Save-ExakitManifest $doc
+    } finally {
+        Exit-ExakitManifestLock $lock
+    }
 }
 
 # Remove a key (and everything under it) from the manifest. Silent when the

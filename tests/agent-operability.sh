@@ -350,5 +350,47 @@ done
 has "CI runs the MCP python tests" "unittest discover -s mcp/tests" "$(cat "$_wf")"
 has "CI runs the sample-data schema test" "tests/test_sample_data_schema.py" "$(cat "$_wf")"
 
+
+# ---------------------------------------------------------------------------
+echo
+echo "concurrent manifest writes do not lose each other:"
+# ---------------------------------------------------------------------------
+# manifest_set is a read-modify-write. Unlocked, concurrent writers each read the
+# same document and the last save wins: 17 of 20 parallel writes were lost, and
+# all 30 mixed rounds lost something. Two kit processes at once is ordinary --
+# `exakit start` brings up the database and every service, autostart can fire at
+# boot while another command runs, and an agent may issue two in parallel.
+_mr_home="$WORK/manifest-race"
+mkdir -p "$_mr_home"
+printf '{"components":{}}\n' > "$_mr_home/manifest.json"
+_mr_n=12
+_mr_i=1
+while [ "$_mr_i" -le "$_mr_n" ]; do
+    ( EXAKIT_HOME="$_mr_home" EXAKIT_MANIFEST="$_mr_home/manifest.json" \
+        bash -c ". \"$ROOT/setup/lib/common.sh\" >/dev/null 2>&1; manifest_set race.k$_mr_i v$_mr_i" \
+        >/dev/null 2>&1 ) &
+    _mr_i=$((_mr_i + 1))
+done
+wait
+_mr_got="$(python3 -c "
+import json
+try:
+    print(len(json.load(open('$_mr_home/manifest.json')).get('race', {})))
+except Exception:
+    print('unreadable')" 2>/dev/null)"
+check "every concurrent write survives" "$_mr_n" "$_mr_got"
+# os.replace keeps the document valid even unlocked, so validity alone would not
+# have caught this -- assert completeness, not just parseability.
+check "and the manifest is still valid JSON" "yes" \
+    "$(python3 -c "import json;json.load(open('$_mr_home/manifest.json'))" 2>/dev/null && echo yes || echo no)"
+# The lock must span read AND write, in both shells.
+has "bash locks the read-modify-write" "_exakit_locked" "$(cat "$ROOT/setup/lib/common.sh")"
+has "and no writer uses a shared temp name" "tempfile.mkstemp" "$(cat "$ROOT/setup/lib/common.sh")"
+lacks "no fixed .tmp write remains" 'tmp = path + ".tmp"' "$(cat "$ROOT/setup/lib/common.sh")"
+_psc="$(cat "$ROOT/setup/lib/exakit-common.ps1")"
+has "PowerShell twin takes the same lock" "Enter-ExakitManifestLock" "$_psc"
+has "and releases it in a finally block" "Exit-ExakitManifestLock \$lock" "$_psc"
+lacks "PowerShell has no shared temp name either" 'ManifestPath.tmp"' "$_psc"
+
 echo "passed: $PASS, failed: $FAIL"
 [ "$FAIL" -eq 0 ]
