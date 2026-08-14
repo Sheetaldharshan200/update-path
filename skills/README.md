@@ -96,6 +96,12 @@ marketplace wrapper is additive and can be layered on later.
 
 ## Adding or editing a skill
 
+Verify with:
+
+```bash
+bash tests/skills.sh    # frontmatter, registry, install/state, uninstall scope
+```
+
 1. Add or edit a folder under `skills/<skill-name>/SKILL.md`.
 2. Keep the `name` / `description` (with `Triggers —`) accurate — that's how the
    agent decides when to fire it.

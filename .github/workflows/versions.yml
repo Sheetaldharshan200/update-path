@@ -417,4 +417,5 @@ jobs:
       - run: bash tests/noninteractive-answers.sh
       - run: bash tests/marketplace.sh
       - run: bash tests/uninstall.sh
+      - run: bash tests/skills.sh
       - run: bash tests/agent-operability.sh
