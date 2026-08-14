@@ -14,6 +14,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
@@ -233,9 +234,26 @@ class StaleVersionPinCLITests(unittest.TestCase):
         self.manifest_path = self.runtime_root / "manifest.json"
         self.cursor_path = self._temp_dir / "cursor" / "mcp.json"
         self.cursor_path.parent.mkdir(parents=True, exist_ok=True)
-        self._write_manifest("127.0.0.1:8563")
+        # These cases drive the real CLI in a SUBPROCESS, so unlike their
+        # in-process siblings they cannot mock socket.create_connection -- and
+        # setup validates connectivity after applying. Hardcoding 127.0.0.1:8563
+        # therefore made the outcome depend on whether the developer happened to
+        # have the starter kit running: success_with_warnings on that machine,
+        # failed_recoverable (error connectivity_failed) on a clean one or any CI
+        # runner. Own the endpoint instead: a listening socket on an ephemeral
+        # port answers the TCP probe and needs nothing installed.
+        self._listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self._listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self._listener.bind(("127.0.0.1", 0))
+        self._listener.listen(8)
+        self.dsn = "127.0.0.1:%d" % self._listener.getsockname()[1]
+        self._write_manifest(self.dsn)
 
     def tearDown(self) -> None:
+        try:
+            self._listener.close()
+        except OSError:
+            pass
         shutil.rmtree(self._temp_dir, ignore_errors=True)
 
     def _env(self, version: str) -> dict:

@@ -12,6 +12,12 @@ PASS=0; FAIL=0
 check() { if [ "$2" = "$3" ]; then PASS=$((PASS+1)); printf '  ok   %s = %s\n' "$1" "$3"; else FAIL=$((FAIL+1)); printf '  FAIL %s: expected %s, got %s\n' "$1" "$2" "$3"; fi; }
 has() { case "$3" in *"$2"*) check "$1" present present ;; *) check "$1" present MISSING ;; esac; }
 
+# `lacks` exists because its ABSENCE was a footgun: calling it printed "command
+# not found" to stderr and left the counters untouched, so a skipped assertion
+# read as a pass. (A command_not_found_handle would be the general guard, but
+# that is bash 4.0+ and this repo must run on the 3.2 macOS ships.)
+lacks() { case "$3" in *"$2"*) check "$1" absent PRESENT ;; *) check "$1" absent absent ;; esac; }
+
 WORK="$(mktemp -d)"; trap 'rm -rf "$WORK"' EXIT
 
 echo "status exit codes are the answer:"
@@ -270,6 +276,15 @@ _pld="$(sed -n '/^_pld_run()/,/^}/p' "$ROOT/tests/dry-run-matrix.sh")"
 has "the downgrade-guard fixture isolates EXAKIT_HOME" 'EXAKIT_HOME="$_pld_dir/home"' "$_pld"
 has "and the suite asserts it left the real home clean" "no failure note in the real kit home" \
     "$(cat "$ROOT/tests/dry-run-matrix.sh")"
+
+
+# A subprocess-driven test cannot mock connectivity, so a hardcoded 127.0.0.1:8563
+# made the result depend on whether the developer had the kit running: green for
+# them, red on every clean machine and CI runner. The test must own its endpoint.
+_cli_t="$(sed -n '/class StaleVersionPinCLITests/,$p' "$ROOT/mcp/tests/test_stale_version_pin.py")"
+has "the CLI stale-pin test binds its own listener" "socket.socket(socket.AF_INET" "$_cli_t"
+# The manifest must carry the port the test itself bound, not a fixed one.
+has "and writes that port into its manifest" '_write_manifest(self.dsn)' "$_cli_t"
 
 echo "passed: $PASS, failed: $FAIL"
 [ "$FAIL" -eq 0 ]
