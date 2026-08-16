@@ -1197,171 +1197,122 @@ function Invoke-ExakitBounded {
     }
 }
 
-# Get-ExakitWhatsNewSection / Write-ExakitWhatsNew - the twins of
-# exakit_whats_new_section and exakit_print_whats_new. Silence when there is no
-# section is deliberate on both sides: a kit meeting a copy of the file that does
-# not mention its version is not an error worth a word on screen.
-function Get-ExakitWhatsNewSection {
-    param([Parameter(Mandatory)][string]$KitRoot, [Parameter(Mandatory)][string]$Version)
-    $file = Join-Path $KitRoot "WHATS-NEW.md"
-    if (-not (Test-Path $file)) { return $null }
-    $want = "## $Version"
-    $inside = $false
-    $lines = @()
-    foreach ($line in (Get-Content -Path $file)) {
-        if ($line -eq $want) { $inside = $true; continue }
-        if ($inside -and $line.StartsWith("## ")) { break }
-        if ($inside) { $lines += $line }
-    }
-    if (($lines -join "").Trim() -eq "") { return $null }
-    return ($lines -join [Environment]::NewLine)
-}
-
-function Write-ExakitWhatsNew {
-    param([Parameter(Mandatory)][string]$Version, [string]$Heading = "")
-    $root = Get-ExakitRepoRoot
-    if (-not $root) { return $false }
-    $body = Get-ExakitWhatsNewSection -KitRoot $root -Version $Version
-    if (-not $body) { return $false }
-    Write-Host ""
-    if ($Heading) { Write-Host "  $Heading"; Write-Host "" }
-    Write-Host $body
-    Write-Host ""
-    return $true
-}
-
-# --- the post-install "What's new" box --------------------------------------
-# Twins of exakit_whats_new_versions / _points / _lines, exakit_note_kit_upgrade
-# and exakit_print_whats_new_box in setup/lib/common.sh. The section reader above
-# answers "what does version X say"; these answer "what did this run move the user
-# across", which an upgrading installer has to show in ONE box covering every hop.
+# What's new - twins of the exakit_whats_new_* block in common.sh.
 #
-# All of it is cosmetic and none of it may fail an install: every reader returns
-# nothing rather than throwing, and the box is skipped when there is nothing to
-# say.
+# ONE source: setup/whats-new.json, a version -> array-of-lines map. The cards the
+# installer draws after an upgrade and the text `exakit whats-new` prints are the
+# same lines. Silence when a version has no card is deliberate on both sides: a
+# kit meeting a file that does not mention its version is not an error worth a
+# word on screen.
 $script:WhatsNewPointWidth = 68
 $script:WhatsNewPointsPerVersion = 6
 
-# Compare-ExakitDottedVersion - -1, 0 or 1, field by field. Test-ExakitVersionNewer
-# lives in setup/exakit.ps1, which setup does NOT dot-source, so the comparison the
-# box needs has to exist here.
-function Compare-ExakitDottedVersion {
-    param([string]$A, [string]$B)
-    $pa = @("$A" -split '\.')
-    $pb = @("$B" -split '\.')
-    $max = $pa.Count
-    if ($pb.Count -gt $max) { $max = $pb.Count }
+# Get-ExakitWhatsNewFile - the card source, or $null when this kit copy has none.
+function Get-ExakitWhatsNewFile {
+    param([string]$KitRoot = "")
+    if (-not $KitRoot) { return $null }
+    $file = Join-Path (Join-Path $KitRoot "setup") "whats-new.json"
+    if (-not (Test-Path $file)) { return $null }
+    return $file
+}
+
+# Get-ExakitWhatsNewDoc - the parsed file, or $null. Never throws: a hand-edited
+# file with a stray comma must not end an upgrade that already succeeded.
+function Get-ExakitWhatsNewDoc {
+    param([string]$KitRoot = "")
+    $file = Get-ExakitWhatsNewFile -KitRoot $KitRoot
+    if (-not $file) { return $null }
+    try { return (Get-Content -Raw -Path $file | ConvertFrom-Json) } catch { return $null }
+}
+
+# ConvertTo-ExakitVersionKey - a dotted number as a comparable array, or $null for
+# anything else (a "_comment" key, a decorated heading). Skipped, never guessed at.
+function ConvertTo-ExakitVersionKey {
+    param([string]$Version)
+    if ($Version -notmatch '^[0-9]+(\.[0-9]+)*$') { return $null }
+    return @($Version -split '\.' | ForEach-Object { [int]$_ })
+}
+
+# Compare-ExakitVersionKey - -1, 0 or 1, field by field, shorter treated as zeros.
+function Compare-ExakitVersionKey {
+    param($A, $B)
+    $max = [Math]::Max($A.Count, $B.Count)
     for ($i = 0; $i -lt $max; $i++) {
-        $x = 0
-        $y = 0
-        if ($i -lt $pa.Count) { [void][int]::TryParse($pa[$i], [ref]$x) }
-        if ($i -lt $pb.Count) { [void][int]::TryParse($pb[$i], [ref]$y) }
+        $x = 0; $y = 0
+        if ($i -lt $A.Count) { $x = $A[$i] }
+        if ($i -lt $B.Count) { $y = $B[$i] }
         if ($x -lt $y) { return -1 }
         if ($x -gt $y) { return 1 }
     }
     return 0
 }
 
-# Get-ExakitWhatsNewVersions - the documented versions inside (From, To], oldest
-# first. A heading that is not a plain dotted number is skipped rather than guessed
-# at, and a To older than From - the downgrade case - selects nothing.
+# Get-ExakitWhatsNewVersions - the versions with cards inside (From, To], oldest
+# first. A To older than From (a downgrade) selects nothing.
 function Get-ExakitWhatsNewVersions {
     param([Parameter(Mandatory)][string]$KitRoot, [string]$From = "", [string]$To = "")
-    $file = Join-Path $KitRoot "WHATS-NEW.md"
-    if (-not (Test-Path $file)) { return @() }
+    $doc = Get-ExakitWhatsNewDoc -KitRoot $KitRoot
+    if (-not $doc) { return @() }
+    $lo = if ($From) { ConvertTo-ExakitVersionKey $From } else { $null }
+    $hi = if ($To) { ConvertTo-ExakitVersionKey $To } else { $null }
     $found = @()
-    foreach ($line in @(Get-Content -Path $file)) {
-        if (-not $line) { continue }
-        if (-not $line.StartsWith("## ")) { continue }
-        $v = $line.Substring(3).Trim()
-        if ($v -notmatch '^[0-9]+(\.[0-9]+)*$') { continue }
-        if ($found -contains $v) { continue }
-        if ($From -and (Compare-ExakitDottedVersion -A $v -B $From) -le 0) { continue }
-        if ($To -and (Compare-ExakitDottedVersion -A $v -B $To) -gt 0) { continue }
-        $found += $v
+    foreach ($prop in $doc.PSObject.Properties) {
+        if ($prop.Name.StartsWith("_")) { continue }
+        $key = ConvertTo-ExakitVersionKey $prop.Name
+        if (-not $key) { continue }
+        if ($lo -and (Compare-ExakitVersionKey $key $lo) -le 0) { continue }
+        if ($hi -and (Compare-ExakitVersionKey $key $hi) -gt 0) { continue }
+        $found += ,@{ Key = $key; Name = $prop.Name }
     }
-    if ($found.Count -lt 2) { return $found }
-    # Insertion sort, ascending: Sort-Object would order 0.10.0 before 0.9.0.
-    $out = @()
-    foreach ($v in $found) {
-        $at = $out.Count
-        for ($i = 0; $i -lt $out.Count; $i++) {
-            if ((Compare-ExakitDottedVersion -A $out[$i] -B $v) -gt 0) { $at = $i; break }
+    $sorted = $found | Sort-Object -Property @{ Expression = { ($_.Key -join ".") } }
+    # Sorting on the joined string would put 0.10.0 before 0.2.0, so order by the
+    # numeric fields explicitly.
+    $sorted = @($found)
+    for ($i = 1; $i -lt $sorted.Count; $i++) {
+        $j = $i
+        while ($j -gt 0 -and (Compare-ExakitVersionKey $sorted[$j - 1].Key $sorted[$j].Key) -gt 0) {
+            $tmp = $sorted[$j - 1]; $sorted[$j - 1] = $sorted[$j]; $sorted[$j] = $tmp
+            $j--
         }
-        $head = @()
-        $tail = @()
-        if ($at -gt 0) { $head = $out[0..($at - 1)] }
-        if ($at -lt $out.Count) { $tail = $out[$at..($out.Count - 1)] }
-        $out = @($head) + @($v) + @($tail)
     }
-    return $out
+    return @($sorted | ForEach-Object { $_.Name })
 }
 
-# Get-ExakitWhatsNewPoints - one "  - text" line per headline point of a version.
-# Only list items survive: a Markdown table or a paragraph inside a drawn box reads
-# worse than not being there, and the full section is one command away. A wrapped
-# item is joined back into one line, `code` and **bold** markers are dropped, and
-# the result is cut to a width the panel can hold.
+# Get-ExakitWhatsNewPoints - one "  - text" line per highlight of a version.
 function Get-ExakitWhatsNewPoints {
     param([Parameter(Mandatory)][string]$KitRoot, [Parameter(Mandatory)][string]$Version)
-    $body = Get-ExakitWhatsNewSection -KitRoot $KitRoot -Version $Version
-    if (-not $body) { return @() }
-    $points = @()
-    $item = ""
-    # An empty return from the formatter must be TESTED, not appended: PowerShell
-    # turns "+= (a function that output nothing)" into a $null array element, and
-    # that would print as a blank line inside the box.
-    foreach ($line in @($body -split "`r?`n")) {
-        if ($line -match '^[ \t]*[-*][ \t]') {
-            $done = Format-ExakitWhatsNewPoint -Item $item -Shown $points.Count
-            if ($done) { $points += $done }
-            $item = ($line -replace '^[ \t]*[-*][ \t]+', '')
-            continue
+    $doc = Get-ExakitWhatsNewDoc -KitRoot $KitRoot
+    if (-not $doc) { return @() }
+    $prop = $doc.PSObject.Properties[$Version]
+    if (-not $prop) { return @() }
+    $out = @()
+    foreach ($line in @($prop.Value)) {
+        if ($out.Count -ge $script:WhatsNewPointsPerVersion) { break }
+        if ($line -isnot [string]) { continue }
+        $t = ($line -replace '\s+', ' ').Trim()
+        if (-not $t) { continue }
+        # Authoring is guarded by tests/whats-new.sh; this is the last resort so
+        # an over-long line cannot break the card's borders.
+        if ($t.Length -gt $script:WhatsNewPointWidth) {
+            $t = $t.Substring(0, $script:WhatsNewPointWidth - 3).TrimEnd() + "..."
         }
-        if ($item -and $line -match '^[ \t]+[^ \t]') {
-            $item = "$item $line"
-            continue
-        }
-        $done = Format-ExakitWhatsNewPoint -Item $item -Shown $points.Count
-        if ($done) { $points += $done }
-        $item = ""
+        $out += "  - $t"
     }
-    $done = Format-ExakitWhatsNewPoint -Item $item -Shown $points.Count
-    if ($done) { $points += $done }
-    return @($points)
+    return @($out)
 }
 
-# Format-ExakitWhatsNewPoint - the point cleanup, or an empty string (an empty
-# item, or one past the per-version cap the box footer covers).
-function Format-ExakitWhatsNewPoint {
-    param([string]$Item = "", [int]$Shown = 0)
-    if (-not $Item) { return "" }
-    if ($Shown -ge $script:WhatsNewPointsPerVersion) { return "" }
-    $t = $Item -replace '`', ''
-    $t = $t -replace '\*\*', ''
-    $t = ($t -replace '[ \t]+', ' ').Trim()
-    if (-not $t) { return "" }
-    if ($t.Length -gt $script:WhatsNewPointWidth) {
-        $t = $t.Substring(0, $script:WhatsNewPointWidth - 3)
-        $t = ($t -replace ' +$', '') + "..."
-    }
-    return "  - $t"
-}
-
-# Get-ExakitWhatsNewLines - the body of the box: every version in range, oldest
-# first, each headed by "In <version>:" and followed by its points. Empty when
-# there is nothing to show, which is what keeps an empty box off the screen.
-function Get-ExakitWhatsNewLines {
-    param([Parameter(Mandatory)][string]$KitRoot, [string]$From = "", [string]$To = "")
-    $lines = @()
-    # @(...) around the call: foreach over a bare $null runs its body once.
-    foreach ($v in @(Get-ExakitWhatsNewVersions -KitRoot $KitRoot -From $From -To $To)) {
-        $points = @(Get-ExakitWhatsNewPoints -KitRoot $KitRoot -Version $v)
-        if ($points.Count -eq 0) { continue }
-        $lines += "In ${v}:"
-        $lines += $points
-    }
-    return @($lines)
+# Write-ExakitWhatsNew - what `exakit whats-new` shows. False when there is no card.
+function Write-ExakitWhatsNew {
+    param([Parameter(Mandatory)][string]$Version, [string]$Heading = "")
+    $root = Get-ExakitRepoRoot
+    if (-not $root) { return $false }
+    $points = @(Get-ExakitWhatsNewPoints -KitRoot $root -Version $Version)
+    if ($points.Count -eq 0) { return $false }
+    Write-Host ""
+    if ($Heading) { Write-Host "  $Heading"; Write-Host "" }
+    foreach ($p in $points) { Write-Host $p }
+    Write-Host ""
+    return $true
 }
 
 # Set-ExakitKitUpgradeNote - record the kit version installed BEFORE this run, for
@@ -1401,12 +1352,13 @@ function Clear-ExakitKitUpgradeNote {
     } catch { }
 }
 
-# Write-ExakitWhatsNewBox - the box itself, after the connection panel. Prints only
-# when the kit version moved during this run.
+# Write-ExakitWhatsNewBox - one card per version crossed, after the connection
+# panel. Prints only when the kit version moved during this run.
 #
 # No record means nothing is printed, which is the whole reason a first install and
 # an idempotent re-run stay silent: the installer is documented as safe to re-run,
-# and a box on every no-op run teaches people to ignore it.
+# and a card on every no-op run teaches people to ignore it.
+# Mirrors exakit_print_whats_new_box in common.sh.
 function Write-ExakitWhatsNewBox {
     param([string]$KitRoot = "")
     # Declared out here so the finally block can tell "no record, nothing to do"
@@ -1421,18 +1373,40 @@ function Write-ExakitWhatsNewBox {
         $to = ""
         if ($root) { $to = Get-ExakitKitVersionAt -KitRoot $root }
         if (-not $to) { $to = Get-ExakitManifestValue "kit.version" }
-        $lines = @()
-        if ($root -and $to) { $lines = @(Get-ExakitWhatsNewLines -KitRoot $root -From $from -To $to) }
-        if ($lines.Count -gt 0) {
+        $versions = @()
+        if ($root -and $to) { $versions = @(Get-ExakitWhatsNewVersions -KitRoot $root -From $from -To $to) }
+        if ($versions.Count -eq 0) { return }
+
+        # ONE width for every card. Complete-ExakitPanel sizes a panel to its own
+        # longest line, so a three-version jump drew three boxes of three widths
+        # and read as a staircase rather than one announcement.
+        $width = 0
+        $byVersion = @{}
+        foreach ($v in $versions) {
+            $pts = @(Get-ExakitWhatsNewPoints -KitRoot $root -Version $v)
+            $byVersion[$v] = $pts
+            foreach ($p in $pts) { if ($p.Length -gt $width) { $width = $p.Length } }
+        }
+        $last = $versions[$versions.Count - 1]
+        # One lead-in above the cards. The titles say which versions arrived;
+        # only this says where the reader started.
+        Write-Host ""
+        Write-Host "  Your kit moved from $from to $to."
+        foreach ($v in $versions) {
+            $pts = @($byVersion[$v])
+            if ($pts.Count -eq 0) { continue }
             Write-Host ""
-            Start-ExakitPanel "What's new"
-            Write-ExakitPanelLine "Your kit moved from $from to $to."
-            foreach ($line in $lines) { Write-ExakitPanelLine $line }
-            Write-ExakitPanelLine "Full notes: exakit whats-new $to"
+            Start-ExakitPanel "What's new in $v"
+            foreach ($p in $pts) { Write-ExakitPanelLine $p.PadRight($width) }
+            # Only on the last card: repeating it per version turns a pointer
+            # into noise, and the newest version is the one to read in full.
+            if ($v -eq $last) {
+                Write-ExakitPanelLine ("  Full notes: exakit whats-new $to").PadRight($width)
+            }
             Complete-ExakitPanel
         }
     } catch {
-        Write-ExakitLog "WARN" "The what's-new box could not be built: $_"
+        Write-ExakitLog "WARN" "The what's-new cards could not be built: $_"
     } finally {
         # Announced, or found nothing worth announcing: either way this move is
         # dealt with, and the record goes so the next re-run does not repeat it.

@@ -691,17 +691,18 @@ else
 fi
 
 # Release notes, both sides: the command, the print after a self-update, and the
-# file travelling into the kit copy (without that last part `exakit whats-new`
-# works from a checkout and then dies with it).
+# card file travelling into the kit copy (without that last part `exakit whats-new`
+# works from a checkout and then dies with it). setup/whats-new.json lives under
+# setup/, and only setup/lib is staged, so the copy has to name it explicitly.
 if grep -q 'cmd_whats_new' "$ROOT/setup/exakit" && \
-   grep -q 'exakit_whats_new_section' "$ROOT/setup/lib/common.sh" && \
+   grep -q 'exakit_whats_new_file' "$ROOT/setup/lib/common.sh" && \
    grep -q 'exakit_print_whats_new "$_staged_version"' "$ROOT/setup/lib/common.sh" && \
-   grep -q 'WHATS-NEW.md" "$EXAKIT_HOME/kit/' "$ROOT/setup/lib/common.sh" && \
+   grep -q 'setup/whats-new.json" "$EXAKIT_HOME/kit/setup/' "$ROOT/setup/lib/common.sh" && \
    grep -q 'Invoke-CmdWhatsNew' "$ROOT/setup/exakit.ps1" && \
-   grep -q 'Get-ExakitWhatsNewSection' "$ROOT/setup/lib/exakit-common.ps1" && \
+   grep -q 'Get-ExakitWhatsNewFile' "$ROOT/setup/lib/exakit-common.ps1" && \
    grep -q 'Write-ExakitWhatsNew -Version $stagedVersion' "$ROOT/setup/lib/exakit-common.ps1" && \
-   grep -q 'WHATS-NEW.md' "$ROOT/setup/setup-windows-docker.ps1" && \
-   [ -f "$ROOT/WHATS-NEW.md" ]; then
+   grep -q 'whats-new.json' "$ROOT/setup/setup-windows-docker.ps1" && \
+   [ -f "$ROOT/setup/whats-new.json" ]; then
     check "whats_new(both_sides)" "yes" "yes"
 else
     check "whats_new(both_sides)" "yes" "no"

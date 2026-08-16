@@ -6264,175 +6264,125 @@ _exakit_install_pyexasol() {
     pyexasol_validate || true
 }
 
-# exakit_whats_new_section <kit-root> <version> — the WHATS-NEW.md section for one
-# version, or nothing.
+# --- What's new -------------------------------------------------------------
 #
-# Nothing is the important half. An older kit updating to a newer one runs the NEW
-# file, but a newer kit could just as easily meet an old copy with no section for
-# it, and neither case is an error worth a word on screen. awk rather than Python:
-# this runs at the end of an update, where a missing interpreter must not turn a
-# successful upgrade into a failure.
-exakit_whats_new_section() {
-    _wn_root="$1"
-    _wn_version="$2"
-    [ -n "$_wn_version" ] || return 1
-    _wn_file="$_wn_root/WHATS-NEW.md"
-    [ -f "$_wn_file" ] || return 1
-    _wn_body="$(awk -v want="## $_wn_version" '
-        $0 == want { inside = 1; next }
-        inside && /^## / { exit }
-        inside { print }
-    ' "$_wn_file" 2>/dev/null)"
-    # Strip to nothing if the section held only blank lines.
-    [ -n "$(printf '%s' "$_wn_body" | tr -d '[:space:]')" ] || return 1
-    printf '%s\n' "$_wn_body"
+# ONE source: setup/whats-new.json, a version -> array-of-lines map. The card the
+# installer draws after an upgrade and the text `exakit whats-new` prints are the
+# same lines, so there is nothing to keep in step.
+#
+# This block used to parse WHATS-NEW.md with awk, deliberately, so that a missing
+# interpreter could not turn a successful upgrade into a failure. JSON needs a
+# real parser, so that property is gone: on a machine without python3 the cards
+# simply do not appear. That is survivable where the old design's concern was
+# not — the box is best-effort already, and manifest_get requires python3 for
+# every other thing the kit does, so a box that cannot run it has no working kit
+# to upgrade in the first place. Every function here stays quiet on failure.
+EXAKIT_WHATS_NEW_POINT_WIDTH=68
+EXAKIT_WHATS_NEW_POINTS_PER_VERSION=6
+
+# exakit_whats_new_file <kit-root> — the card source, or non-zero when this kit
+# copy does not carry one (an older kit, or a partial download).
+exakit_whats_new_file() {
+    _wnf_root="${1:-}"
+    [ -n "$_wnf_root" ] || return 1
+    [ -f "$_wnf_root/setup/whats-new.json" ] || return 1
+    printf '%s\n' "$_wnf_root/setup/whats-new.json"
 }
 
-# exakit_print_whats_new <version> [heading] — show what changed, if we can.
+# _exakit_whats_new_py <file> <mode> [from] [to] — the one parser.
+#   mode "versions": every version in (from, to], oldest first
+#   mode "points":   the lines of the single version passed as <from>
+# Keys starting with "_" are comments in the file and are never versions.
+_exakit_whats_new_py() {
+    exakit_can_run_python 2>/dev/null || return 1
+    run_python - "$1" "$2" "${3:-}" "${4:-}" "$EXAKIT_WHATS_NEW_POINT_WIDTH" \
+        "$EXAKIT_WHATS_NEW_POINTS_PER_VERSION" <<'PY' 2>/dev/null
+import json, sys
+path, mode, a, b, width, maxpoints = sys.argv[1:7]
+width, maxpoints = int(width), int(maxpoints)
+try:
+    with open(path) as f:
+        doc = json.load(f)
+except Exception:
+    sys.exit(1)
+if not isinstance(doc, dict):
+    sys.exit(1)
+
+def key(v):
+    # Dotted numbers only, so a jump sorts the way a human reads it. Anything
+    # else is skipped rather than guessed at.
+    return tuple(int(p) for p in v.split("."))
+
+versions = []
+for k in doc:
+    if k.startswith("_") or not isinstance(doc[k], list):
+        continue
+    try:
+        versions.append((key(k), k))
+    except ValueError:
+        continue
+versions.sort()
+
+if mode == "versions":
+    lo = key(a) if a else None
+    hi = key(b) if b else None
+    for kk, name in versions:
+        if lo is not None and kk <= lo:
+            continue
+        if hi is not None and kk > hi:
+            continue
+        print(name)
+    sys.exit(0)
+
+if mode == "points":
+    for line in doc.get(a, [])[:maxpoints]:
+        if not isinstance(line, str):
+            continue
+        line = " ".join(line.split())
+        if not line:
+            continue
+        # Authoring is guarded by tests/whats-new.sh; this is the last resort so
+        # an over-long line cannot break the box's borders.
+        if len(line) > width:
+            line = line[: width - 3].rstrip() + "..."
+        print("  - " + line)
+    sys.exit(0)
+sys.exit(1)
+PY
+}
+
+# exakit_whats_new_versions <kit-root> <from> <to> — the versions with cards that
+# lie in (from, to], oldest first. A `to` older than `from` (a downgrade) selects
+# nothing, which is what keeps the box off the screen.
+exakit_whats_new_versions() {
+    _wnv_file="$(exakit_whats_new_file "$1")" || return 1
+    _exakit_whats_new_py "$_wnv_file" versions "${2:-}" "${3:-}"
+}
+
+# exakit_whats_new_points <kit-root> <version> — one line per highlight, as
+# "  - text". Non-zero when that version has no card.
+exakit_whats_new_points() {
+    _wnp_file="$(exakit_whats_new_file "$1")" || return 1
+    _wnp_out="$(_exakit_whats_new_py "$_wnp_file" points "${2:-}")" || return 1
+    [ -n "$_wnp_out" ] || return 1
+    printf '%s\n' "$_wnp_out"
+}
+
+# exakit_print_whats_new <version> [heading] — what `exakit whats-new` shows.
 exakit_print_whats_new() {
     _pwn_version="$1"
     _pwn_heading="${2:-}"
     _pwn_root="$(exakit_repo_root 2>/dev/null || true)"
     [ -n "$_pwn_root" ] || return 1
-    _pwn_body="$(exakit_whats_new_section "$_pwn_root" "$_pwn_version")" || return 1
+    _pwn_body="$(exakit_whats_new_points "$_pwn_root" "$_pwn_version")" || return 1
     printf '\n'
     if [ -n "$_pwn_heading" ]; then
         printf '  %s%s%s\n\n' "${UI_BOLD:-}" "$_pwn_heading" "${UI_RESET:-}"
     fi
-    printf '%s\n' "$_pwn_body"
-    printf '\n'
+    printf '%s\n\n' "$_pwn_body"
     return 0
 }
 
-# --- the post-install "What's new" box --------------------------------------
-# The section reader above answers "what does version X say"; the helpers below
-# answer "what did this run move the user across", which is the question an
-# upgrading installer has to answer in ONE box covering every hop.
-#
-# Everything here is cosmetic and is written to be unable to fail an install: no
-# reader dies on a missing file or a mangled heading, the whole box is skipped
-# when there is nothing to say, and the callers invoke it after exakit_finish has
-# already recorded the run as complete.
-
-# The point text is truncated so a wrapped bullet cannot stretch the panel across
-# the terminal, and each version shows only its first few points — the footer
-# names the command that prints the rest.
-EXAKIT_WHATS_NEW_POINT_WIDTH=68
-EXAKIT_WHATS_NEW_POINTS_PER_VERSION=6
-
-# exakit_whats_new_versions <kit-root> <from> <to> — the versions documented in
-# WHATS-NEW.md that lie in (from, to], oldest first.
-#
-# One awk pass: it selects and orders in the same place, so the caller never has
-# to sort (no `sort -V`, which is GNU-only). A heading that is not a plain dotted
-# number is skipped rather than guessed at, and a `to` older than `from` — the
-# downgrade case — selects nothing and therefore prints nothing.
-exakit_whats_new_versions() {
-    _wnv_file="$1/WHATS-NEW.md"
-    [ -f "$_wnv_file" ] || return 1
-    awk -v from="${2:-}" -v to="${3:-}" '
-        # Dotted-number compare, field by field: -1, 0 or 1. The trailing
-        # arguments are the only way awk lets you declare locals.
-        function vcmp(a, b,   na, nb, pa, pb, i, m, x, y) {
-            na = split(a, pa, "."); nb = split(b, pb, ".")
-            m = na; if (nb > m) m = nb
-            for (i = 1; i <= m; i++) {
-                x = 0; y = 0
-                if (i <= na) x = pa[i] + 0
-                if (i <= nb) y = pb[i] + 0
-                if (x < y) return -1
-                if (x > y) return 1
-            }
-            return 0
-        }
-        /^## / {
-            v = substr($0, 4)
-            sub(/^[ \t]+/, "", v); sub(/[ \t\r]+$/, "", v)
-            if (v !~ /^[0-9]+(\.[0-9]+)*$/) next
-            if (v in seen) next
-            seen[v] = 1
-            if (from != "" && vcmp(v, from) <= 0) next
-            if (to != "" && vcmp(v, to) > 0) next
-            n++
-            for (i = n - 1; i >= 1 && vcmp(out[i], v) > 0; i--) out[i + 1] = out[i]
-            out[i + 1] = v
-        }
-        END { for (i = 1; i <= n; i++) print out[i] }
-    ' "$_wnv_file" 2>/dev/null
-}
-
-# exakit_whats_new_points <kit-root> <version> — one line per headline point of a
-# version, as "  - text".
-#
-# Reads the same section the `exakit whats-new` command prints and keeps only its
-# list items: a Markdown table or a paragraph inside a drawn box reads worse than
-# not being there, and the full section is one command away. A wrapped item is
-# joined back into one line, `code` and **bold** markers are dropped, and the
-# result is cut to a width the panel can hold.
-exakit_whats_new_points() {
-    _wnp_body="$(exakit_whats_new_section "$1" "$2" 2>/dev/null)" || return 1
-    printf '%s\n' "$_wnp_body" | awk \
-        -v maxlen="$EXAKIT_WHATS_NEW_POINT_WIDTH" \
-        -v maxpoints="$EXAKIT_WHATS_NEW_POINTS_PER_VERSION" '
-        function flush(   t) {
-            if (item == "") return
-            t = item; item = ""
-            if (shown >= maxpoints) return
-            gsub(/`/, "", t)
-            gsub(/\*\*/, "", t)
-            gsub(/[ \t]+/, " ", t)
-            sub(/^ /, "", t); sub(/ $/, "", t)
-            if (t == "") return
-            if (length(t) > maxlen) {
-                t = substr(t, 1, maxlen - 3)
-                # awk may be counting bytes, so the cut can land inside a
-                # multibyte character (this file has em dashes in it). Drop any
-                # trailing non-ASCII run rather than leave half of one behind.
-                sub(/[^ -~]+$/, "", t)
-                sub(/ +$/, "", t)
-                t = t "..."
-            }
-            shown++
-            print "  - " t
-        }
-        /^[ \t]*[-*][ \t]/ {
-            flush()
-            item = $0
-            sub(/^[ \t]*[-*][ \t]+/, "", item)
-            next
-        }
-        # An indented, non-empty line continues the item above it; anything else
-        # (a blank line, a heading, a table row) ends it.
-        item != "" && /^[ \t]+[^ \t]/ { item = item " " $0; next }
-        { flush() }
-        END { flush() }
-    ' 2>/dev/null
-}
-
-# exakit_whats_new_lines <kit-root> <from> <to> — the body of the box: every
-# version in range, oldest first, each headed by "In <version>:" and followed by
-# its points. Non-zero when there is nothing to show, which is what keeps an empty
-# box off the screen.
-#
-# The lines are the finished display text and carry no blank spacers: ui_panel_end
-# splits its buffer on newlines, so an empty line never survives to the screen and
-# a separator that cannot render has no business being in the buffer.
-exakit_whats_new_lines() {
-    _wnl_root="$1"
-    _wnl_out=""
-    for _wnl_v in $(exakit_whats_new_versions "$_wnl_root" "${2:-}" "${3:-}" 2>/dev/null); do
-        _wnl_points="$(exakit_whats_new_points "$_wnl_root" "$_wnl_v" 2>/dev/null || true)"
-        [ -n "$_wnl_points" ] || continue
-        if [ -n "$_wnl_out" ]; then
-            _wnl_out="$_wnl_out
-"
-        fi
-        _wnl_out="${_wnl_out}In $_wnl_v:
-$_wnl_points"
-    done
-    [ -n "$_wnl_out" ] || return 1
-    printf '%s\n' "$_wnl_out"
-}
 
 # exakit_note_kit_upgrade <kit-root> — record the kit version installed BEFORE
 # this run, for the box at the end to read. Call it while the manifest still holds
@@ -6471,26 +6421,55 @@ exakit_print_whats_new_box() {
     [ -n "$_pwb_from" ] || return 0
     _pwb_to="$(exakit_kit_version_at "$_pwb_root" 2>/dev/null || true)"
     [ -n "$_pwb_to" ] || _pwb_to="$(manifest_get kit.version 2>/dev/null || true)"
-    _pwb_body=""
+
+    _pwb_versions=""
     if [ -n "$_pwb_root" ] && [ -n "$_pwb_to" ]; then
-        _pwb_body="$(exakit_whats_new_lines "$_pwb_root" "$_pwb_from" "$_pwb_to" 2>/dev/null || true)"
+        _pwb_versions="$(exakit_whats_new_versions "$_pwb_root" "$_pwb_from" "$_pwb_to" 2>/dev/null || true)"
     fi
-    if [ -n "$_pwb_body" ]; then
-        printf '\n'
-        ui_panel_begin "What's new"
-        ui_panel_line "Your kit moved from $_pwb_from to $_pwb_to."
-        # Fed by a here-document, not a pipe: ui_panel_line buffers into a
-        # variable, and a pipeline would build that buffer in a subshell.
-        while IFS= read -r _pwb_line; do
-            ui_panel_line "$_pwb_line"
-        done <<WHATS_NEW_BODY
-$_pwb_body
-WHATS_NEW_BODY
-        ui_panel_line "Full notes: exakit whats-new $_pwb_to"
-        ui_panel_end
+    if [ -n "$_pwb_versions" ]; then
+        # ONE width for every card. ui_panel_end sizes a panel to its own longest
+        # line, so a three-version jump drew three boxes of three widths and read
+        # as a staircase rather than one announcement.
+        _pwb_w=0
+        for _pwb_v in $_pwb_versions; do
+            _pwb_pts="$(exakit_whats_new_points "$_pwb_root" "$_pwb_v" 2>/dev/null || true)"
+            while IFS= read -r _pwb_l; do
+                [ -n "$_pwb_l" ] || continue
+                [ "${#_pwb_l}" -gt "$_pwb_w" ] && _pwb_w="${#_pwb_l}"
+            done <<PWB_WIDTH
+$_pwb_pts
+PWB_WIDTH
+        done
+        _pwb_last=""
+        for _pwb_v in $_pwb_versions; do _pwb_last="$_pwb_v"; done
+        # One lead-in above the cards. The titles say which versions arrived;
+        # only this says where the reader started, and repeating it on every
+        # card would be noise.
+        printf '\n  %sYour kit moved from %s to %s.%s\n' \
+            "${UI_BOLD:-}" "$_pwb_from" "$_pwb_to" "${UI_RESET:-}"
+
+        for _pwb_v in $_pwb_versions; do
+            _pwb_pts="$(exakit_whats_new_points "$_pwb_root" "$_pwb_v" 2>/dev/null || true)"
+            [ -n "$_pwb_pts" ] || continue
+            printf '\n'
+            ui_panel_begin "What's new in $_pwb_v"
+            # Fed by a here-document, not a pipe: ui_panel_line buffers into a
+            # variable, and a pipeline would build that buffer in a subshell.
+            while IFS= read -r _pwb_l; do
+                [ -n "$_pwb_l" ] || continue
+                ui_panel_line "$(printf '%-*s' "$_pwb_w" "$_pwb_l")"
+            done <<PWB_BODY
+$_pwb_pts
+PWB_BODY
+            # Only on the last card: repeating it per version turns a pointer
+            # into noise, and the newest version is the one to read in full.
+            [ "$_pwb_v" = "$_pwb_last" ] && \
+                ui_panel_line "$(printf '%-*s' "$_pwb_w" "  Full notes: exakit whats-new $_pwb_to")"
+            ui_panel_end
+        done
     fi
     # Announced, or found nothing worth announcing: either way this move is dealt
-    # with, and the record goes so the next re-run does not repeat the box.
+    # with, and the record goes so the next re-run does not repeat the cards.
     ( manifest_set kit.whats_new_from "" ) >/dev/null 2>&1 || true
     return 0
 }
@@ -6606,7 +6585,10 @@ kit_shared_steps() {
             # manifest (the offline tier of version resolution, and the record of
             # which kit version this is).
             [ -f "$_kit_root/versions.json" ] && cp "$_kit_root/versions.json" "$EXAKIT_HOME/kit/"
-            [ -f "$_kit_root/WHATS-NEW.md" ] && cp "$_kit_root/WHATS-NEW.md" "$EXAKIT_HOME/kit/"
+            # whats-new.json lives under setup/, and only setup/lib is copied
+            # above, so it needs naming or `exakit whats-new` finds nothing once
+            # the checkout is gone.
+            [ -f "$_kit_root/setup/whats-new.json" ] && cp "$_kit_root/setup/whats-new.json" "$EXAKIT_HOME/kit/setup/"
             [ -d "$_kit_root/mcp" ] && cp -R "$_kit_root/mcp" "$EXAKIT_HOME/kit/"
             [ -d "$_kit_root/sql" ] && cp -R "$_kit_root/sql" "$EXAKIT_HOME/kit/"
             [ -d "$_kit_root/data" ] && cp -R "$_kit_root/data" "$EXAKIT_HOME/kit/"
