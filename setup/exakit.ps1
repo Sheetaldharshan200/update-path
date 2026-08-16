@@ -788,10 +788,6 @@ function Get-ExakitVersionCell {
 # command says so in two lines instead of calling three APIs on every run.
 function Invoke-CmdVersion {
     if (-not (Test-Path $script:ManifestPath)) { Write-Host "Not installed (no manifest at $script:ManifestPath)"; exit 4 }
-    Write-Host "Kit version:    $(Get-ExakitComponentCurrent 'exakit')"
-    Write-Host "Kit level:      $(Get-ExakitManifestValue 'kit_level')"
-    Write-Host "Kit source:     $(Get-ExakitManifestValue 'kit.source')"
-    Write-Host "Installed at:   $(Format-ExakitLocalTime (Get-ExakitManifestValue 'installed_at'))"
     # runtime.image is a full reference (docker.io/exasol/nano:TAG) while the live
     # probe reports the tag alone. Compare tag with tag, or every Nano install would
     # claim a difference that is not there.
@@ -802,15 +798,56 @@ function Invoke-CmdVersion {
             $runtimeRecorded = ($runtimeRecorded -split ":")[-1]
         }
     }
-    Write-Host "Runtime:        $(Get-RuntimeType) $(Get-ExakitVersionCell 'runtime' $runtimeRecorded)"
-    Write-Host "exapump:        $(Get-ExakitVersionCell 'exapump' (Get-ExakitManifestValue 'components.exapump.version'))"
-    Write-Host "MCP server:     $(Get-ExakitManifestValue 'components.mcp_server.package') $(Get-ExakitVersionCell 'mcp' (Get-ExakitManifestValue 'components.mcp_server.version'))"
-    Write-Host "pyexasol:       $(Get-ExakitVersionCell 'pyexasol' (Get-ExakitManifestValue 'components.pyexasol.version'))"
-    # Marketplace add-ons appear only once installed: this screen reports what
-    # is on the machine, and the marketplace command is the catalog.
-    foreach ($addonId in (Get-ExakitMarketplaceInstalledAddons)) {
-        $recordKey = "components." + ($addonId -replace "-", "_") + ".version"
-        Write-Host ("{0,-15} {1}" -f "${addonId}:", (Get-ExakitVersionCell $addonId (Get-ExakitManifestValue $recordKey)))
+
+    # Collected first, because the three panels are padded to ONE width. Sizing
+    # each panel to its own longest line (what Complete-ExakitPanel does alone)
+    # staggers them into a staircase, and three boxes of three widths read as
+    # broken rather than as one screen. Mirrors cmd_version in setup/exakit.
+    $rows = New-Object System.Collections.Generic.List[object]
+    $rows.Add(@{ S = "Kit"; L = "Version";   V = "$(Get-ExakitComponentCurrent 'exakit')" })
+    $rows.Add(@{ S = "Kit"; L = "Level";     V = "$(Get-ExakitManifestValue 'kit_level')" })
+    $rows.Add(@{ S = "Kit"; L = "Source";    V = "$(Get-ExakitManifestValue 'kit.source')" })
+    $rows.Add(@{ S = "Kit"; L = "Installed"; V = "$(Format-ExakitLocalTime (Get-ExakitManifestValue 'installed_at'))" })
+    $rows.Add(@{ S = "Components"; L = "Runtime";    V = "$(Get-RuntimeType) $(Get-ExakitVersionCell 'runtime' $runtimeRecorded)" })
+    $rows.Add(@{ S = "Components"; L = "exapump";    V = "$(Get-ExakitVersionCell 'exapump' (Get-ExakitManifestValue 'components.exapump.version'))" })
+    $rows.Add(@{ S = "Components"; L = "MCP server"; V = "$(Get-ExakitManifestValue 'components.mcp_server.package') $(Get-ExakitVersionCell 'mcp' (Get-ExakitManifestValue 'components.mcp_server.version'))" })
+    $rows.Add(@{ S = "Components"; L = "pyexasol";   V = "$(Get-ExakitVersionCell 'pyexasol' (Get-ExakitManifestValue 'components.pyexasol.version'))" })
+
+    # Add-ons: every one that is installed OR installable here, so a row saying
+    # "not installed" is always one `exakit marketplace` can actually fix. An
+    # add-on this machine cannot run is left out entirely rather than dangling an
+    # install that would be refused - the same filter, and so the same list, as
+    # the marketplace screen itself.
+    $addonPending = $false
+    $addonCount = 0
+    foreach ($addon in (Get-ExakitMarketplaceAddons)) {
+        if (-not (Test-ExakitAddonOfferable $addon.Id)) { continue }
+        $recordKey = "components." + ($addon.Id -replace "-", "_") + ".version"
+        $cell = "$(Get-ExakitVersionCell $addon.Id (Get-ExakitManifestValue $recordKey))"
+        # Only offer the marketplace when something is actually left to install.
+        if ($cell -like "not installed*") { $addonPending = $true }
+        $rows.Add(@{ S = "Add-ons"; L = $addon.Id; V = $cell })
+        $addonCount += 1
+    }
+
+    # One width for every panel: the widest label+value on the whole screen.
+    $w = 0
+    foreach ($r in $rows) { $n = 15 + $r.V.Length; if ($n -gt $w) { $w = $n } }
+
+    $first = $true
+    foreach ($sec in @("Kit", "Components", "Add-ons")) {
+        if ($sec -eq "Add-ons" -and $addonCount -eq 0) { continue }
+        if (-not $first) { Write-Host "" }
+        $first = $false
+        Start-ExakitPanel $sec
+        foreach ($r in $rows) {
+            if ($r.S -ne $sec) { continue }
+            Write-ExakitPanelLine ("{0,-14} {1}" -f $r.L, $r.V.PadRight($w - 15))
+        }
+        Complete-ExakitPanel
+        if ($sec -eq "Add-ons" -and $addonPending) {
+            Write-Host "  Install more with: exakit marketplace"
+        }
     }
     if (Test-ExakitUpdatesPending) {
         # The same framed panel the connection details use, rather than three loose

@@ -484,10 +484,6 @@ cmd_version() {
     # Exit 4, not 0: an agent using `version` as a cheap liveness probe read a
     # success code off a machine with nothing installed.
     [ -f "$EXAKIT_MANIFEST" ] || { echo "Not installed (no manifest at $EXAKIT_MANIFEST)"; exit 4; }
-    printf 'Kit version:    %s\n' "$(exakit_component_current exakit 2>/dev/null || printf 'unknown')"
-    printf 'Kit level:      %s\n' "$(manifest_get kit_level 2>/dev/null)"
-    printf 'Kit source:     %s\n' "$(manifest_get kit.source 2>/dev/null)"
-    printf 'Installed at:   %s\n' "$(exakit_format_local_time "$(manifest_get installed_at 2>/dev/null)")"
     # runtime.image is a full reference (docker.io/exasol/nano:TAG) while the live
     # probe reports the tag alone. Compare tag with tag, or every Nano install would
     # claim a difference that is not there.
@@ -496,19 +492,72 @@ cmd_version() {
         _ver_runtime="$(manifest_get runtime.image 2>/dev/null || true)"
         case "$_ver_runtime" in *:*) _ver_runtime="${_ver_runtime##*:}" ;; esac
     fi
-    printf 'Runtime:        %s %s\n' "$(manifest_get runtime.type 2>/dev/null)" \
-        "$(_version_cell runtime "$_ver_runtime")"
-    printf 'exapump:        %s\n' \
-        "$(_version_cell exapump "$(manifest_get components.exapump.version 2>/dev/null || true)")"
-    printf 'MCP server:     %s %s\n' "$(manifest_get components.mcp_server.package 2>/dev/null)" \
-        "$(_version_cell mcp "$(manifest_get components.mcp_server.version 2>/dev/null || true)")"
-    printf 'pyexasol:       %s\n' \
-        "$(_version_cell pyexasol "$(manifest_get components.pyexasol.version 2>/dev/null || true)")"
-    # Marketplace add-ons appear only once installed: this screen reports what
-    # is on the machine, and the marketplace command is the catalog.
-    for _ver_addon in $(exakit_marketplace_installed_addons 2>/dev/null); do
-        printf '%-15s %s\n' "$_ver_addon:" \
-            "$(_version_cell "$_ver_addon" "$(manifest_get "components.$(printf '%s' "$_ver_addon" | tr '-' '_').version" 2>/dev/null || true)")"
+
+    # Collected as "section|label|value" first, because the three panels are
+    # padded to ONE width. Sizing each panel to its own longest line (what
+    # ui_panel_end does alone) staggers them into a staircase, and three boxes
+    # of three widths read as broken rather than as one screen.
+    _ver_rows="Kit|Version|$(exakit_component_current exakit 2>/dev/null || printf 'unknown')
+Kit|Level|$(manifest_get kit_level 2>/dev/null)
+Kit|Source|$(manifest_get kit.source 2>/dev/null)
+Kit|Installed|$(exakit_format_local_time "$(manifest_get installed_at 2>/dev/null)")
+Components|Runtime|$(manifest_get runtime.type 2>/dev/null) $(_version_cell runtime "$_ver_runtime")
+Components|exapump|$(_version_cell exapump "$(manifest_get components.exapump.version 2>/dev/null || true)")
+Components|MCP server|$(manifest_get components.mcp_server.package 2>/dev/null) $(_version_cell mcp "$(manifest_get components.mcp_server.version 2>/dev/null || true)")
+Components|pyexasol|$(_version_cell pyexasol "$(manifest_get components.pyexasol.version 2>/dev/null || true)")"
+
+    # Add-ons: every one that is installed OR installable here, so a row saying
+    # "not installed" is always one `exakit marketplace` can actually fix. An
+    # add-on this machine cannot run (no VS Code, or JSON Tables on Windows) is
+    # left out entirely rather than dangling an install that would be refused —
+    # the same filter, and so the same list, as the marketplace screen itself.
+    _ver_addon_n=0
+    _ver_pending=0
+    for _ver_addon in $(exakit_marketplace_addons 2>/dev/null | cut -d'|' -f1); do
+        [ -n "$_ver_addon" ] || continue
+        _exakit_addon_offerable "$_ver_addon" || continue
+        _ver_addon_n=$((_ver_addon_n + 1))
+        _ver_cell="$(_version_cell "$_ver_addon" "$(manifest_get "components.$(printf '%s' "$_ver_addon" | tr '-' '_').version" 2>/dev/null || true)")"
+        # Only offer the marketplace when something is actually left to install.
+        # Printing it under a fully installed list advertises an action that
+        # would show the user an empty catalogue.
+        case "$_ver_cell" in "not installed"*) _ver_pending=1 ;; esac
+        _ver_rows="$_ver_rows
+Add-ons|$_ver_addon|$_ver_cell"
+    done
+
+    # One width for every panel: the widest label+value on the whole screen.
+    _ver_w=0
+    _ver_oifs=$IFS; IFS='
+'
+    for _ver_line in $_ver_rows; do
+        _ver_v="${_ver_line#*|}"; _ver_v="${_ver_v#*|}"
+        _ver_n=$((15 + ${#_ver_v}))
+        [ "$_ver_n" -gt "$_ver_w" ] && _ver_w=$_ver_n
+    done
+    IFS=$_ver_oifs
+
+    for _ver_sec in Kit Components Add-ons; do
+        [ "$_ver_sec" != "Add-ons" ] || [ "$_ver_addon_n" -gt 0 ] || continue
+        [ "$_ver_sec" = "Kit" ] || printf '\n'
+        ui_panel_begin "$_ver_sec"
+        _ver_oifs=$IFS; IFS='
+'
+        for _ver_line in $_ver_rows; do
+            _ver_s="${_ver_line%%|*}"
+            [ "$_ver_s" = "$_ver_sec" ] || continue
+            _ver_l="${_ver_line#*|}"; _ver_l="${_ver_l%%|*}"
+            _ver_v="${_ver_line#*|}"; _ver_v="${_ver_v#*|}"
+            IFS=$_ver_oifs
+            ui_panel_line "$(printf '%-14s %-*s' "$_ver_l" $((_ver_w - 15)) "$_ver_v")"
+            _ver_oifs=$IFS; IFS='
+'
+        done
+        IFS=$_ver_oifs
+        ui_panel_end
+        if [ "$_ver_sec" = "Add-ons" ] && [ "$_ver_pending" = 1 ]; then
+            printf '  %sInstall more with: exakit marketplace%s\n' "${UI_DIM:-}" "${UI_RESET:-}"
+        fi
     done
     if exakit_updates_pending; then
         # The same framed panel the connection details use, rather than three loose
