@@ -6431,8 +6431,15 @@ exakit_print_whats_new_box() {
         # line, so a three-version jump drew three boxes of three widths and read
         # as a staircase rather than one announcement.
         _pwb_w=0
+        _pwb_any=0
+        _pwb_last=""
         for _pwb_v in $_pwb_versions; do
             _pwb_pts="$(exakit_whats_new_points "$_pwb_root" "$_pwb_v" 2>/dev/null || true)"
+            # A version in range can still have nothing to say (an empty list).
+            # It draws no card, so it must not make the run look announced.
+            [ -n "$_pwb_pts" ] || continue
+            _pwb_any=1
+            _pwb_last="$_pwb_v"
             while IFS= read -r _pwb_l; do
                 [ -n "$_pwb_l" ] || continue
                 [ "${#_pwb_l}" -gt "$_pwb_w" ] && _pwb_w="${#_pwb_l}"
@@ -6440,11 +6447,12 @@ exakit_print_whats_new_box() {
 $_pwb_pts
 PWB_WIDTH
         done
-        _pwb_last=""
-        for _pwb_v in $_pwb_versions; do _pwb_last="$_pwb_v"; done
+    fi
+    if [ "${_pwb_any:-0}" = 1 ]; then
         # One lead-in above the cards. The titles say which versions arrived;
         # only this says where the reader started, and repeating it on every
-        # card would be noise.
+        # card would be noise. Printed only once a card is certain: an empty
+        # box is worse than no box, and so is a lead-in with nothing under it.
         printf '\n  %sYour kit moved from %s to %s.%s\n' \
             "${UI_BOLD:-}" "$_pwb_from" "$_pwb_to" "${UI_RESET:-}"
 

@@ -1382,19 +1382,25 @@ function Write-ExakitWhatsNewBox {
         # and read as a staircase rather than one announcement.
         $width = 0
         $byVersion = @{}
+        $drawn = @()
         foreach ($v in $versions) {
             $pts = @(Get-ExakitWhatsNewPoints -KitRoot $root -Version $v)
+            # A version in range can still have nothing to say (an empty list).
+            # It draws no card, so it must not make the run look announced.
+            if ($pts.Count -eq 0) { continue }
             $byVersion[$v] = $pts
+            $drawn += $v
             foreach ($p in $pts) { if ($p.Length -gt $width) { $width = $p.Length } }
         }
-        $last = $versions[$versions.Count - 1]
+        if ($drawn.Count -eq 0) { return }
+        $last = $drawn[$drawn.Count - 1]
         # One lead-in above the cards. The titles say which versions arrived;
-        # only this says where the reader started.
+        # only this says where the reader started. Printed only once a card is
+        # certain: a lead-in with nothing under it is worse than silence.
         Write-Host ""
         Write-Host "  Your kit moved from $from to $to."
-        foreach ($v in $versions) {
+        foreach ($v in $drawn) {
             $pts = @($byVersion[$v])
-            if ($pts.Count -eq 0) { continue }
             Write-Host ""
             Start-ExakitPanel "What's new in $v"
             foreach ($p in $pts) { Write-ExakitPanelLine $p.PadRight($width) }
