@@ -509,7 +509,7 @@ json_tables_validate() {
             --input "$_jtv_tmp/sample.json" --output-dir "$_jtv_tmp/out" && : ) \
             >>"${EXAKIT_LOG_FILE:-/dev/null}" 2>&1 && \
        [ -n "$(find "$_jtv_tmp/out" -name '*.parquet' 2>/dev/null | head -1)" ]; then
-        ok "Ingest works: JSON in, Parquet out, no Rust toolchain involved"
+        ok "Ingest works: JSON in, Parquet out"
         manifest_set components.json_tables.validated true
         rm -rf "$_jtv_tmp"
         _json_tables_print_usage
@@ -525,7 +525,7 @@ _json_tables_print_usage() {
     ui_panel_begin "JSON Tables"
     ui_panel_line "Run it          exasol-json-tables --help"
     ui_panel_line "Ingest JSON     exasol-json-tables ingest --input <file.json>"
-    ui_panel_line "Engine          $(ui_tilde "$(json_tables_engine_path)") (prebuilt, no Rust needed)"
+    ui_panel_line "Engine          $(ui_tilde "$(json_tables_engine_path)")"
     ui_panel_line "Update          exakit update json-tables"
     ui_panel_end
 }
