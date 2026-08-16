@@ -638,6 +638,38 @@ class MCPAccessSubsystem:
                 )
             )
         latest_snapshot = manifest_repository.latest_snapshot_id()
+        # One row per SUPPORTED client, not per recorded artifact. The reader of
+        # `exakit mcp-status` is asking "is my Claude set up?", and a count of
+        # artifacts cannot answer that: it says how many rows exist, never which
+        # clients they belong to or which of yours are missing.
+        #
+        # Three states, because "no config" has two different causes and only one
+        # of them has an action:
+        #   configured    - the kit manages this client's config (path shown)
+        #   not_set_up    - the client is on this machine, but not configured
+        #   not_installed - the client is not here at all, so there is nothing to do
+        by_client = {artifact.client: artifact for artifact in active_artifacts}
+        clients: list[dict[str, str | None]] = []
+        for adapter in self._registry.all():
+            adapter_id = adapter.adapter_id()
+            artifact = by_client.get(adapter_id)
+            if artifact is not None:
+                clients.append({"client": adapter_id, "state": "configured", "path": artifact.path})
+                continue
+            # Detection touches the filesystem and belongs to the adapter, so a
+            # client whose probe raises must not take the whole status screen
+            # down with it. Unknown means "not here", which prints no action.
+            try:
+                detected = adapter.detect(self._environment).detected
+            except Exception:  # noqa: BLE001 - a read-only screen never fails here
+                detected = False
+            clients.append(
+                {
+                    "client": adapter_id,
+                    "state": "not_set_up" if detected else "not_installed",
+                    "path": None,
+                }
+            )
         return OperationResult(
             request_id=request.request_id,
             operation=request.operation,
@@ -646,6 +678,7 @@ class MCPAccessSubsystem:
             findings=findings,
             artifacts=active_artifacts,
             backup_reference=latest_snapshot,
+            details={"clients": clients},
         )
 
     @staticmethod

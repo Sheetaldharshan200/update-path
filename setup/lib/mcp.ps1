@@ -746,6 +746,69 @@ function Show-McpReadyPanel {
 function Show-McpOperationSummary {
     param([Parameter(Mandatory)][string]$ResultJson)
     $doc = $ResultJson | ConvertFrom-Json
+
+    # `mcp-status` is a STATE QUERY, and the operation summary answers a
+    # different question: it listed every client the kit SUPPORTS and reduced the
+    # per-client records to a count. A reader asking "is my Claude set up?" got
+    # the kit's capabilities. Mirrors exakit_print_mcp_operation_summary.
+    $statusClients = @()
+    if ($doc.details -and $doc.details.clients) { $statusClients = @($doc.details.clients) }
+    if ($doc.operation -eq "status" -and $statusClients.Count -gt 0) {
+        $stateLabels = @{ "configured" = "configured"; "not_set_up" = "not set up"; "not_installed" = "not installed" }
+        $rows = @()
+        foreach ($entry in $statusClients) {
+            $name = if ($script:McpClientLabels.ContainsKey($entry.client)) { $script:McpClientLabels[$entry.client] } else { $entry.client }
+            $state = if ($stateLabels.ContainsKey($entry.state)) { $stateLabels[$entry.state] } else { $entry.state }
+            $note = ""
+            if ($entry.state -eq "configured") {
+                $note = "$($entry.path)"
+                if ($note.StartsWith($HOME)) { $note = "~" + $note.Substring($HOME.Length) }
+            } elseif ($entry.state -eq "not_set_up") {
+                $note = "run: exakit mcp-setup"
+            }
+            $rows += ,@{ Name = $name; State = $state; Note = $note }
+        }
+        $width = 0; $stateW = 0
+        foreach ($r in $rows) {
+            if ($r.Name.Length -gt $width) { $width = $r.Name.Length }
+            if ($r.State.Length -gt $stateW) { $stateW = $r.State.Length }
+        }
+        # Keep the row inside 80 columns: a real config path is long enough on
+        # its own to push the table past any terminal, and a wrapped row loses
+        # the alignment that makes it readable. The file name identifies it, so
+        # the middle goes rather than the end.
+        $budget = 80 - (2 + $width + 2 + $stateW + 2)
+        foreach ($r in $rows) {
+            if ($r.Note.Length -gt $budget -and $r.Note.Contains("/")) {
+                $parts = $r.Note -split "/"
+                $keep = 1
+                while ($keep -lt $parts.Count) {
+                    $candidate = $parts[0] + "/.../" + (($parts[-($keep + 1)..-1]) -join "/")
+                    if ($candidate.Length -gt $budget) { break }
+                    $keep += 1
+                }
+                $short = $parts[0] + "/.../" + (($parts[-$keep..-1]) -join "/")
+                if ($short.Length -gt $budget) { $short = ".../" + $parts[-1] }
+                $r.Note = $short
+            }
+        }
+        Write-Host ""
+        Write-Host "  MCP clients"
+        Write-Host ("  " + ("-" * 74))
+        Write-Host ("  " + "Client".PadRight($width) + "  " + "State".PadRight($stateW) + "  Config")
+        foreach ($r in $rows) {
+            Write-Host (("  " + $r.Name.PadRight($width) + "  " + $r.State.PadRight($stateW) + "  " + $r.Note).TrimEnd())
+        }
+        Write-Host ""
+        $configured = @($statusClients | Where-Object { $_.state -eq "configured" }).Count
+        if ($configured -gt 0) {
+            Write-Host "  Not working? Check it end to end with: exakit mcp-doctor"
+        } else {
+            Write-Host "  Nothing configured yet. Connect a client with: exakit mcp-setup"
+        }
+        return
+    }
+
     $clients = @($doc.selected_clients) | ForEach-Object { if ($script:McpClientLabels.ContainsKey($_)) { $script:McpClientLabels[$_] } else { $_ } }
     Write-Host ""
     Write-Host "  MCP operation summary"
