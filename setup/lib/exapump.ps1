@@ -1070,7 +1070,7 @@ function Select-ExakitDataLoad {
         $defaults = @(1..($pending.Count + 1))   # group row + every dataset
         $selection = Read-ExakitCheckboxMenu -Title "Select data to load" -Options $labels.ToArray() `
             -Defaults $defaults -ExclusiveIndex $finalIdx `
-            -GroupParent 1 -GroupFirst 2 -GroupLast ($pending.Count + 1)
+            -GroupParent 1 -GroupFirst 2 -GroupLast ($pending.Count + 1) -GroupMode "all"
     } else {
         Info "Every bundled dataset is already loaded (reload with: exakit data-load -Force)."
         $selection = Read-ExakitCheckboxMenu -Title "Select data to load" -Options $labels.ToArray() `
