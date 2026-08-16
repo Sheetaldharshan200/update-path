@@ -26,7 +26,6 @@
 #   mcp-doctor [clients]  check MCP config, connectivity, and managed state
 #   mcp-status [clients]  show managed MCP state for the supported AI clients
 #   mcp-validate [clients] validate managed MCP configs and test connectivity
-#   mcp-repair [clients]  repair managed MCP config drift
 #   mcp-remove [clients]  remove managed MCP config from the supported clients
 #   mcp-restore [snapshot] restore the latest (or a chosen) MCP snapshot
 #   skills-install        install the kit's AI skills for CLI agents
@@ -1003,7 +1002,7 @@ function Get-ExakitProbedVersion {
 # operation rather than a second copy of that knowledge. When clients disagree the
 # oldest pin is the answer here; the per-client picture belongs to mcp-doctor, which
 # names each client whose managed entry is no longer the one the kit would write, and
-# mcp-repair re-writes those entries from the current definition.
+# mcp-doctor re-writes those entries from the current definition.
 # Twin of exakit_installed_mcp_version in setup/lib/common.sh.
 function Get-ExakitInstalledMcpVersion {
     if (-not (Get-Command Invoke-McpOperationCli -ErrorAction SilentlyContinue)) { return "" }
@@ -2423,7 +2422,6 @@ try {
         "autostart"    { Invoke-CmdAutostart -Action (($RestArgs | Select-Object -First 1)) }
         "data-load"    { Invoke-CmdDataLoad -ForceFlag ($RestArgs | Select-Object -First 1) }
         "mcp-setup"    { Invoke-CmdMcpSetup }
-        "mcp-repair"   { Invoke-CmdMcpOperation -Operation "repair" -OpArgs $RestArgs }
         "mcp-doctor"   {
             # Diagnosis order: a stopped database is diagnosed as exactly that
             # (exit 3, remedy named) before anything that needs it runs - the
@@ -2492,7 +2490,7 @@ try {
     if (-not $script:JsonOutput -and
         @("status", "info", "guide", "start", "stop", "data-load", "preflight",
           "skills", "skills-install", "marketplace", "autostart", "logs", "mcp-setup", "mcp-doctor", "mcp-status",
-          "mcp-repair", "mcp-validate", "mcp-restore", "mcp-remove") -contains $Command) {
+          "mcp-validate", "mcp-restore", "mcp-remove") -contains $Command) {
         Show-ExakitUpdateNotice
     }
 } catch [ExakitFailException] {

@@ -2284,7 +2284,7 @@ _exakit_probe_pyexasol_version() {
 # clients disagree — one set up before an update and never refreshed — the oldest pin
 # is the answer here, and the per-client picture belongs to `exakit mcp-doctor`: it
 # names each client whose managed entry is no longer the one the kit would write, and
-# `exakit mcp-repair` re-writes those entries from the current definition.
+# `exakit mcp-doctor` re-writes those entries from the current definition.
 exakit_installed_mcp_version() {
     command -v exakit_run_mcp_operation_cli >/dev/null 2>&1 || return 1
     exakit_can_run_python || return 1
@@ -3021,9 +3021,9 @@ exakit_print_versions_source_line() {
             ;;
     esac
     case "$(exakit_versions_source)" in
-        fetched) _vsl_text="the published versions manifest, fetched just now" ;;
-        cache)   _vsl_text="the cached copy of the versions manifest" ;;
-        baked)   _vsl_text="the versions manifest that shipped with this kit (no network)" ;;
+        fetched) _vsl_text="published manifest, fetched just now" ;;
+        cache)   _vsl_text="cached manifest copy" ;;
+        baked)   _vsl_text="manifest shipped with this kit, no network" ;;
         # Nothing readable anywhere: the rows say "unknown" rather than inventing
         # a number, so say that plainly instead of crediting a source.
         *)       info "The versions manifest could not be read, so the available versions are unknown"
@@ -3034,9 +3034,11 @@ exakit_print_versions_source_line() {
     _vsl_updated="$(exakit_versions_value updated 2>/dev/null || true)"
     if [ -n "$_vsl_updated" ]; then
         _vsl_updated="$(exakit_format_manifest_date "$_vsl_updated")"
-        _vsl_text="$_vsl_text, updated $_vsl_updated"
+        _vsl_text="$_vsl_text (updated $_vsl_updated)"
     fi
-    info "Available versions from $_vsl_text"
+    # Kept inside 80 columns: this sits directly under the update-check card,
+    # and a line that wraps there undoes the alignment the card just bought.
+    info "Versions: $_vsl_text"
     if exakit_versions_schema_ahead; then
         info "This kit is older than the published manifest — update it first: exakit update exakit"
     fi
@@ -3434,9 +3436,20 @@ exakit_print_update_check() {
         exakit_versions_update_cache force >/dev/null 2>&1 || true
         exakit_versions_resolve_doc >/dev/null 2>&1 || true
     fi
-    printf '\n  Component update check\n'
-    printf '  ----------------------\n'
-    printf '%-10s %-17s %-17s %-11s %s\n' "Component" "Installed" "Tagged" "Severity" "Action"
+    printf '\n'
+    # Column width measured, not guessed. The old %-10s fitted the built-in
+    # component names and nothing else: dash-server (11), json-tables (11) and
+    # exasol-vscode (13) each overflow it, and an overflowing cell pushes every
+    # column after it right ON THAT ROW ONLY - so the table lost its alignment
+    # exactly when a user had add-ons installed, and only for their rows.
+    # Rows are collected before anything is drawn, so every column is measured
+    # from what it actually holds. The old fixed widths were wrong twice over:
+    # %-10s clipped nothing but pushed later columns right for dash-server (11),
+    # json-tables (11) and exasol-vscode (13) - the table broke exactly when a
+    # user had add-ons - while %-17s reserved 17 for values no longer than 13.
+    # Measuring wins back the room that kept the card inside 80 columns.
+    _uc_rows=()
+    _uc_cw=9; _uc_iw=9; _uc_tw=6
     _updates=0
     _heavy_pending=0
     for _component in $_targets; do
@@ -3496,12 +3509,46 @@ exakit_print_update_check() {
                 fi
             fi
         fi
-        printf '%-10s %-17s %-17s %s %s\n' "$_row_component" "$_row_installed" "$_row_display" \
-            "$(_exakit_severity_cell "$(exakit_component_severity "$_row_component")")" "$_action"
-        [ -n "$_row_note" ] && printf '    %s%s%s\n' "${UI_DIM:-}" "$_row_note" "${UI_RESET:-}"
+        [ "${#_row_component}" -gt "$_uc_cw" ] && _uc_cw="${#_row_component}"
+        [ "${#_row_installed}" -gt "$_uc_iw" ] && _uc_iw="${#_row_installed}"
+        [ "${#_row_display}"   -gt "$_uc_tw" ] && _uc_tw="${#_row_display}"
         _row_maint_note="$(exakit_component_note "$_row_component" 2>/dev/null || true)"
-        [ -n "$_row_maint_note" ] && printf '    %s%s%s\n' "${UI_DIM:-}" "$_row_maint_note" "${UI_RESET:-}"
+        # Tab-separated so the draw pass can split it back apart; none of these
+        # fields can contain a tab.
+        _uc_rows+=("$_row_component	$_row_installed	$_row_display	$(_exakit_severity_cell "$(exakit_component_severity "$_row_component")")	$_action	$_row_note	$_row_maint_note")
     done
+
+    # A card, like every other framed answer the kit gives. ui_panel_end measures
+    # with _ui_visible_len, so the coloured severity cell does not throw the
+    # border off the way a byte count would.
+    ui_panel_begin "Component update check"
+    ui_panel_line "$(printf '%-*s %-*s %-*s %-11s %s' "$_uc_cw" "Component" "$_uc_iw" "Installed" "$_uc_tw" "Tagged" "Severity" "Action")"
+    for _uc_row in "${_uc_rows[@]}"; do
+        _old_ifs="$IFS"; IFS='	'
+        set -- $_uc_row
+        IFS="$_old_ifs"
+        ui_panel_line "$(printf '%-*s %-*s %-*s %s %s' "$_uc_cw" "${1:-}" "$_uc_iw" "${2:-}" "$_uc_tw" "${3:-}" "${4:-}" "${5:-}")"
+        # Notes hang under their row, indented, inside the same card. Wrapped:
+        # a maintainer note is free text and one long enough to blow the card
+        # past 80 columns would wrap in the terminal instead, taking the border
+        # with it.
+        for _uc_note in "${6:-}" "${7:-}"; do
+            [ -n "$_uc_note" ] || continue
+            _uc_line=""
+            for _uc_word in $_uc_note; do
+                if [ -z "$_uc_line" ]; then
+                    _uc_line="$_uc_word"
+                elif [ "$(( ${#_uc_line} + 1 + ${#_uc_word} ))" -le 68 ]; then
+                    _uc_line="$_uc_line $_uc_word"
+                else
+                    ui_panel_line "  ${UI_DIM:-}$_uc_line${UI_RESET:-}"
+                    _uc_line="$_uc_word"
+                fi
+            done
+            [ -n "$_uc_line" ] && ui_panel_line "  ${UI_DIM:-}$_uc_line${UI_RESET:-}"
+        done
+    done
+    ui_panel_end
     printf '\n'
     # This command just worked out the truth the long way. Retire the cached plan so
     # the next notice cannot repeat something the table above has just contradicted.
@@ -5057,7 +5104,7 @@ PY
         return 0
     fi
     rm -f "$_temp_config"
-    warn "MCP read-only grant posture has drifted from the expected read-only set (see log). Run 'exakit mcp-repair' or review grants manually."
+    warn "MCP read-only grant posture has drifted from the expected read-only set (see log). Run 'exakit mcp-doctor' or review grants manually."
     return 1
 }
 
@@ -5314,6 +5361,26 @@ exakit_configure_mcp_readonly_access() {
     return 0
 }
 
+# _exakit_mcp_reported <result_file> — did the operation produce a real report?
+#
+# True when the file parses as a result document carrying an operation and a
+# status. That is the difference between "the runtime ran and is telling you
+# something" and "the runtime never got far enough to say anything", which the
+# exit code alone cannot express.
+_exakit_mcp_reported() {
+    [ -s "${1:-}" ] || return 1
+    exakit_can_run_python 2>/dev/null || return 1
+    run_python - "$1" <<'PY' >/dev/null 2>&1
+import json, sys
+try:
+    with open(sys.argv[1], encoding="utf-8") as handle:
+        doc = json.load(handle)
+except Exception:
+    raise SystemExit(1)
+raise SystemExit(0 if isinstance(doc, dict) and doc.get("operation") and doc.get("status") else 1)
+PY
+}
+
 # _exakit_log_mcp_result_failure <result_file> — copy the CLI's structured
 # diagnosis (status + findings) into the log so "see log" is honest. A crash
 # already lands in the log via the runners' stderr redirect; this covers the
@@ -5400,6 +5467,7 @@ exakit_run_mcp_operation_cli() {
                     --clients "$@"
         ) > "$_output_file" 2>> "${EXAKIT_LOG_FILE:-/dev/null}"; then
             _exakit_log_mcp_result_failure "$_output_file"
+            _exakit_mcp_reported "$_output_file" && return 2
             warn "MCP $_operation failed (see log)."
             return 1
         fi
@@ -5414,6 +5482,14 @@ exakit_run_mcp_operation_cli() {
                 --clients "$@"
     ) > "$_output_file" 2>> "${EXAKIT_LOG_FILE:-/dev/null}"; then
         _exakit_log_mcp_result_failure "$_output_file"
+        # A diagnosis that FOUND something is not a diagnosis that failed to run.
+        # The runtime exits non-zero for both, so the two were reported the same
+        # way: doctor printed a complete report naming the exact fault, and then
+        # said "MCP doctor failed" and "Could not run MCP diagnostics" - telling
+        # the reader the tool broke, when the tool had just done its job.
+        # Return 2 so the caller can keep a non-zero exit for scripts without
+        # contradicting the report it just printed.
+        _exakit_mcp_reported "$_output_file" && return 2
         warn "MCP $_operation failed (see log)."
         return 1
     fi
@@ -6446,11 +6522,29 @@ exakit_print_whats_new() {
     _pwn_root="$(exakit_repo_root 2>/dev/null || true)"
     [ -n "$_pwn_root" ] || return 1
     _pwn_body="$(exakit_whats_new_points "$_pwn_root" "$_pwn_version")" || return 1
+    # The same card the installer draws. `exakit whats-new` is the command the
+    # card itself points at ("Full notes: exakit whats-new 0.2.0"), so printing
+    # loose lines there made the follow-up look like a lesser version of the
+    # thing that sent you.
     printf '\n'
-    if [ -n "$_pwn_heading" ]; then
-        printf '  %s%s%s\n\n' "${UI_BOLD:-}" "$_pwn_heading" "${UI_RESET:-}"
-    fi
-    printf '%s\n\n' "$_pwn_body"
+    # Built in two steps, not "${_pwn_heading:-What's new in ...}": inside a
+    # ${:-} default bash treats the apostrophe as an opening quote, so the
+    # string ran on to the next apostrophe ANYWHERE in the file and swallowed
+    # 300 lines of function bodies with it. `bash -n` accepts that happily -
+    # it is valid syntax, just not the program anyone wrote.
+    _pwn_title="$_pwn_heading"
+    [ -n "$_pwn_title" ] || _pwn_title="What's new in $_pwn_version"
+    ui_panel_begin "$_pwn_title"
+    # Fed by a here-document, not a pipe: ui_panel_line buffers into a variable,
+    # and a pipeline would build that buffer in a subshell.
+    while IFS= read -r _pwn_line; do
+        [ -n "$_pwn_line" ] || continue
+        ui_panel_line "$_pwn_line"
+    done <<PWN_BODY
+$_pwn_body
+PWN_BODY
+    ui_panel_end
+    printf '\n'
     return 0
 }
 
@@ -6468,13 +6562,46 @@ exakit_note_kit_upgrade() {
     _nku_pending="$(manifest_get kit.whats_new_from 2>/dev/null || true)"
     [ -z "$_nku_pending" ] || return 0
     _nku_now="$(exakit_kit_version_at "${1:-}" 2>/dev/null || true)"
+    [ -n "$_nku_now" ] || return 0
     _nku_was="$(manifest_get kit.version 2>/dev/null || true)"
-    # A first-ever install has no previous version, and nothing to announce.
-    [ -n "$_nku_was" ] && [ -n "$_nku_now" ] || return 0
-    [ "$_nku_was" != "$_nku_now" ] || return 0
-    # Only forward. A downgrade has no notes to read out anyway, and recording one
-    # would leave a pending marker no later run could resolve.
-    exakit_version_newer "$_nku_now" "$_nku_was" || return 0
+
+    # kit.version did not exist before 0.2.0, so an install made by an older kit
+    # records no version at all. Treating "no version" as "no previous install"
+    # silenced the cards for the ONLY upgrade anyone can currently make: every
+    # existing user is on a kit that predates the field, so the feature stayed
+    # quiet for exactly the people it exists for.
+    #
+    # A prior install still leaves proof - it was installed at a time, and it
+    # completed steps - so an unversioned manifest with either is an upgrade
+    # from something older than we can name, not a first install.
+    if [ -z "$_nku_was" ]; then
+        # Proof of a PRIOR install, and manifest_init is why this has to be
+        # careful: a brand-new manifest already carries installed_at and
+        # "steps_completed": [], so either of those alone marks a first-ever
+        # install as an upgrade and shows cards to someone who has just met the
+        # kit. A COMPLETED step is the thing only a previous run can leave.
+        _nku_steps="$(manifest_get steps_completed 2>/dev/null || true)"
+        case "$_nku_steps" in
+            ''|'[]') _nku_prior=0 ;;
+            *)       _nku_prior=1 ;;
+        esac
+        if [ "$_nku_prior" = 1 ]; then
+            # The sentinel is not a version: it means "no lower bound", so every
+            # card up to the new version is shown, and the box words itself
+            # without claiming a number the manifest never held.
+            _nku_was="__unversioned__"
+        else
+            # A genuine first-ever install: nothing to announce.
+            return 0
+        fi
+    fi
+
+    if [ "$_nku_was" != "__unversioned__" ]; then
+        [ "$_nku_was" != "$_nku_now" ] || return 0
+        # Only forward. A downgrade has no notes to read out anyway, and recording
+        # one would leave a pending marker no later run could resolve.
+        exakit_version_newer "$_nku_now" "$_nku_was" || return 0
+    fi
     ( manifest_set kit.whats_new_from "$_nku_was" ) >/dev/null 2>&1 || true
     return 0
 }
@@ -6493,9 +6620,13 @@ exakit_print_whats_new_box() {
     _pwb_to="$(exakit_kit_version_at "$_pwb_root" 2>/dev/null || true)"
     [ -n "$_pwb_to" ] || _pwb_to="$(manifest_get kit.version 2>/dev/null || true)"
 
+    # The sentinel from an unversioned predecessor: no lower bound, so every card
+    # up to this version is shown.
+    _pwb_lower="$_pwb_from"
+    [ "$_pwb_lower" = "__unversioned__" ] && _pwb_lower=""
     _pwb_versions=""
     if [ -n "$_pwb_root" ] && [ -n "$_pwb_to" ]; then
-        _pwb_versions="$(exakit_whats_new_versions "$_pwb_root" "$_pwb_from" "$_pwb_to" 2>/dev/null || true)"
+        _pwb_versions="$(exakit_whats_new_versions "$_pwb_root" "$_pwb_lower" "$_pwb_to" 2>/dev/null || true)"
     fi
     if [ -n "$_pwb_versions" ]; then
         # ONE width for every card. ui_panel_end sizes a panel to its own longest
@@ -6524,8 +6655,14 @@ PWB_WIDTH
         # only this says where the reader started, and repeating it on every
         # card would be noise. Printed only once a card is certain: an empty
         # box is worse than no box, and so is a lead-in with nothing under it.
-        printf '\n  %sYour kit moved from %s to %s.%s\n' \
-            "${UI_BOLD:-}" "$_pwb_from" "$_pwb_to" "${UI_RESET:-}"
+        if [ "$_pwb_from" = "__unversioned__" ]; then
+            # The old kit recorded no version, so there is no number to name.
+            printf '\n  %sYour kit is now %s.%s\n' \
+                "${UI_BOLD:-}" "$_pwb_to" "${UI_RESET:-}"
+        else
+            printf '\n  %sYour kit moved from %s to %s.%s\n' \
+                "${UI_BOLD:-}" "$_pwb_from" "$_pwb_to" "${UI_RESET:-}"
+        fi
 
         for _pwb_v in $_pwb_versions; do
             _pwb_pts="$(exakit_whats_new_points "$_pwb_root" "$_pwb_v" 2>/dev/null || true)"
@@ -7468,18 +7605,23 @@ exakit_autostart_disable() {
 
 # exakit_autostart_print — the state of every boot entry.
 exakit_autostart_print() {
-    printf '\n  Automatic start after a restart\n'
-    printf '  -------------------------------\n'
-    # Indented to the title: the header and rows were flush left under a title
-    # two columns in, so the table read as if it belonged to something else.
-    printf '  %-14s %s\n' "Service" "Status"
+    # A card, like every other framed answer the kit gives. The service ids come
+    # from the registry, so the name column is measured rather than assumed.
+    _ap_w=7
+    for _ap_id in $(exakit_service_ids); do
+        [ "${#_ap_id}" -gt "$_ap_w" ] && _ap_w="${#_ap_id}"
+    done
+    printf '\n'
+    ui_panel_begin "Automatic start after a restart"
+    ui_panel_line "$(printf '%-*s  %s' "$_ap_w" "Service" "Status")"
     for _ap_id in $(exakit_service_ids); do
         if _exakit_autostart_registered "$_ap_id"; then
-            printf '  %-14s %s\n' "$_ap_id" "yes"
+            ui_panel_line "$(printf '%-*s  %s' "$_ap_w" "$_ap_id" "yes")"
         else
-            printf '  %-14s %s\n' "$_ap_id" "no"
+            ui_panel_line "$(printf '%-*s  %s' "$_ap_w" "$_ap_id" "no")"
         fi
     done
+    ui_panel_end
     printf '\n'
     info "Turn it on with: exakit autostart on   ·   off with: exakit autostart off"
     return 0

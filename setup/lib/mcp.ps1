@@ -542,7 +542,7 @@ function Confirm-McpReadonlyPosture {
         Ok "MCP read-only grant posture is still correct"
         return $true
     } catch {
-        Warn2 "MCP read-only grant posture has drifted from the expected read-only set (see log). Run 'exakit mcp-repair' or review grants manually."
+        Warn2 "MCP read-only grant posture has drifted from the expected read-only set (see log). Run 'exakit mcp-doctor' or review grants manually."
         return $false
     } finally {
         Remove-Item -Force $tempConfig -ErrorAction SilentlyContinue

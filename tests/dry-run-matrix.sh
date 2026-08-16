@@ -204,7 +204,7 @@ exakit_component_available() {
   esac
 }
 exakit_print_update_check all
-" | grep -c '^[a-z].*exakit update')"
+" | grep -c '^  |.*exakit update [a-z]')"
 check "update_check(commands)" "5" "$update_action"
 
 # The runtime is the only heavy target, and a routine `exakit update` must
