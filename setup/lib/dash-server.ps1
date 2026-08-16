@@ -98,7 +98,7 @@ function Install-DashServer {
         # from before the venv was seeded) - repair it in place.
         if (-not (Confirm-DashServerPip -Uv $uv)) { return $false }
     } else {
-        Info "Installing dash-server $($script:DashServerVersion) (AI dashboard host)"
+        Info "Installing dash-server $($script:DashServerVersion)"
         if (-not (Test-Path $python)) {
             # --seed matters: dash-server installs each app's dependencies by
             # shelling out to `python -m pip`, and a bare uv venv has no pip -
