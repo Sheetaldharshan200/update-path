@@ -259,12 +259,14 @@ EXAKIT_SJ_PY
         printf '%-11s %s\n' "$_st_id:" "$(exakit_service_status "$_st_id")"
     done
     if [ "$_cs_autostart" = "true" ]; then
-        printf 'Autostart:  on (everything comes back after a restart)\n'
+        printf 'Autostart:  on\n'
     else
         printf 'Autostart:  off — turn it on with: exakit autostart on\n'
     fi
     if [ -n "$_cs_datasets" ]; then
-        printf 'Datasets:   %s\n' "$_cs_datasets"
+        # Comma-separated: the ids are space-separated in the manifest, and
+        # printing them raw ran the names together as one string.
+        printf 'Datasets:   %s\n' "$(printf '%s' "$_cs_datasets" | tr -s ' ' | sed 's/^ //; s/ $//; s/ /, /g')"
     else
         printf 'Datasets:   none loaded — load some with: exakit data-load\n'
     fi

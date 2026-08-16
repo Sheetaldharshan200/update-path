@@ -186,12 +186,12 @@ function Invoke-CmdStatus {
         Write-Host ("{0,-11} {1}" -f "${svcId}:", $services[$svcId])
     }
     if ((Get-ExakitManifestValue "autostart.enabled") -eq $true) {
-        Write-Host "Autostart:  on (everything comes back after a restart)"
+        Write-Host "Autostart:  on"
     } else {
         Write-Host "Autostart:  off - turn it on with: exakit autostart on"
     }
     if ($datasets.Count -gt 0) {
-        Write-Host "Datasets:   $($datasets -join ' ')"
+        Write-Host "Datasets:   $($datasets -join ', ')"
     } else {
         Write-Host "Datasets:   none loaded - load some with: exakit data-load"
     }

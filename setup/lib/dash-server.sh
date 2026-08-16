@@ -181,7 +181,7 @@ dash_server_install() {
         # leaving every app build broken until the next version bump.
         _dash_server_ensure_pip "$_ds_uv" || return 1
     else
-        info "Installing dash-server $EXAKIT_DASH_SERVER_VERSION (AI dashboard host)"
+        info "Installing dash-server $EXAKIT_DASH_SERVER_VERSION"
         if [ ! -x "$(dash_server_venv_python)" ]; then
             # --seed matters: dash-server installs each app's dependencies by
             # shelling out to `python -m pip`, and a bare uv venv has no pip —

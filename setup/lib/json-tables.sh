@@ -332,7 +332,7 @@ json_tables_install() {
         return 1
     fi
 
-    info "Installing JSON Tables $EXAKIT_JSON_TABLES_VERSION (prebuilt — no Rust toolchain needed)"
+    info "Installing JSON Tables $EXAKIT_JSON_TABLES_VERSION (prebuilt)"
     if [ ! -x "$(json_tables_venv_python)" ]; then
         if ! run_logged "$_jti_uv" venv --seed --python "$EXAKIT_MANAGED_PYTHON_VERSION" "$EXAKIT_JSON_TABLES_VENV"; then
             _json_tables_not_installed "the virtual environment at $EXAKIT_JSON_TABLES_VENV could not be created (see log)"
