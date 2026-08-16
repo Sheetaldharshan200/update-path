@@ -604,8 +604,14 @@ EOF
 # removed and runs of spaces squeezed to one, so a whole row can be compared
 # exactly. The Severity cell is coloured when the suite is run on a terminal
 # (UI_FANCY), and an exact comparison must hold either way.
+# row <table> <first-cell> — one row, squeezed, with the card border removed.
+# The update-check table is drawn as a panel now, so every row arrives as
+# "  | exakit  0.2.0  ... |"; matching "^exakit " found nothing at all.
 row() {
-    printf '%s\n' "$1" | grep -m1 "^$2 " | sed "s/$(printf '\033')\[[0-9;]*m//g" | tr -s ' '
+    printf '%s\n' "$1" \
+        | sed "s/$(printf '\033')\[[0-9;]*m//g" \
+        | sed 's/^ *[|│] //; s/ *[|│] *$//' \
+        | grep -m1 "^$2 " | tr -s ' ' | sed 's/ *$//'
 }
 
 # has <label> <needle> <haystack>
@@ -636,14 +642,14 @@ check "the column is Tagged, not Available or Latest" \
     "Component Installed Tagged Severity Action" "$(row "$uc_table" Component)"
 lacks "the old Latest header is gone" "Latest" "$uc_table"
 has "there is a Severity column" "Severity" "$uc_table"
-has "the kit row compares its own version" "exakit     0.2.0" "$uc_table"
+has "the kit row compares its own version" "exakit 0.2.0" "$(row "$uc_table" exakit)"
 # The Installed column must keep showing what is installed. Asking
 # exakit_version_newer about a possible rollback passes the versions in reverse,
 # and bash has no function-local variables here: a callee that reused the name
 # _current would silently overwrite the row's installed version.
-has "installed stays installed (exapump)" "exapump    0.13.0" "$uc_table"
-has "installed stays installed (nano)" "nano       2026.2.0-nano.2" "$uc_table"
-has "installed stays installed (mcp)" "mcp        1.10.1" "$uc_table"
+has "installed stays installed (exapump)" "exapump 0.13.0" "$(row "$uc_table" exapump)"
+has "installed stays installed (nano)" "nano 2026.2.0-nano.2" "$(row "$uc_table" nano)"
+has "installed stays installed (mcp)" "mcp 1.10.1" "$(row "$uc_table" mcp)"
 lacks "no row is stuck on inspect" "inspect" "$uc_table"
 has "a runtime change is marked heavy" "exakit update runtime (heavy)" "$uc_table"
 # The whole ahead row, squeezed: the tagged version is shown bare (the column
@@ -660,8 +666,8 @@ has "a critical severity is shown" "critical" "$uc_table"
 has "a recommended severity is shown" "recommended" "$uc_table"
 has "the maintainer note is printed" "0.13.0 mis-detects CSV headers" "$uc_table"
 has "a missing component offers the repair" "exakit update pyexasol" "$uc_table"
-has "normal severities stay quiet" "-          " "$uc_table"
-has "the source of the answers is stated" "Available versions from" "$uc_table"
+has "normal severities stay quiet" "- current" "$(row "$uc_table" exakit)"
+has "the source of the answers is stated" "Versions:" "$uc_table"
 
 min_kit_table="$( EXAKIT_HOME="$UC"
     EXAKIT_MANIFEST="$UC/manifest.json"
@@ -1309,7 +1315,7 @@ unsupported_row="$( EXAKIT_HOME="$UC"
     _EXAKIT_VERSIONS_DOC=""; _EXAKIT_VERSIONS_SOURCE=""
     detect_arch() { printf unsupported; }
     exakit_print_update_check exapump 2>&1 )"
-has "the row says not available" "exapump    not available" "$unsupported_row"
+has "the row says not available" "exapump not available" "$(row "$unsupported_row" exapump)"
 has "and explains why once" "no exapump build exists for this platform" "$unsupported_row"
 lacks "and offers no command" "exakit update exapump" "$unsupported_row"
 unsupported_apply="$( EXAKIT_HOME="$UC"
@@ -1356,7 +1362,7 @@ personal_row="$( EXAKIT_HOME="$UC"
     EXAKIT_VERSIONS_URL="http://offline.invalid/versions.json"
     _EXAKIT_VERSIONS_DOC=""; _EXAKIT_VERSIONS_SOURCE=""
     exakit_print_update_check personal 2>&1 )"
-has "a runtime this machine does not run is listed" "personal   not installed" "$personal_row"
+has "a runtime this machine does not run is listed" "personal not installed" "$(row "$personal_row" personal)"
 lacks "but never offered for installation" "exakit update personal" "$personal_row"
 
 echo "the Tagged column matches the policy in force:"

@@ -16,7 +16,7 @@ exakit mcp-setup              # configure MCP in supported clients (the main one
 exakit mcp-doctor             # diagnose problems; --json for raw per-client results
 exakit mcp-status [clients]   # managed MCP state for every supported client
 exakit mcp-validate [clients] # validate configs and test connectivity
-exakit mcp-repair [clients]   # repair config drift back to the known-good state
+exakit mcp-doctor [clients]   # check the configured clients and repair what drifted
 exakit mcp-remove [clients]   # remove the managed config
 exakit mcp-restore [snapshot] # restore the latest (or a chosen) config snapshot
 ```
@@ -112,7 +112,7 @@ In this order:
    client. This is the single most common cause — and if *you* ran the setup, it
    applies to you: your own MCP tools appear only after your process restarts.
    Use `exakit sql` in the meantime.
-4. **Has the config drifted?** `exakit mcp-repair` puts it back to the
+4. **Has the config drifted?** `exakit mcp-doctor` puts it back to the
    known-good state. `exakit mcp-restore` recovers from a snapshot if a repair
    is not enough.
 5. Still stuck → `exakit logs`, then re-run the installer (safe and resumable).
@@ -138,7 +138,7 @@ exakit update mcp
 - **Read-only means read-only.** Never try to satisfy a write request through
   the MCP path, and never fall back to `exapump -p starter-kit` (which connects
   as **admin** and is *not* sandboxed) to get around an MCP rejection.
-- **Do not hand-edit client config files.** `mcp-setup` and `mcp-repair` own
+- **Do not hand-edit client config files.** `mcp-setup` and `mcp-doctor` own
   them and keep backups; a hand edit is what `mcp-doctor` will later report as
   drift.
 - **Never print or log** the password files under

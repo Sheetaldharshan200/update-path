@@ -269,7 +269,7 @@ class ValidatorService:
                     severity=Severity.ERROR,
                     blocking=True,
                     message=f"The configured MCP server command does not exist: {command[0]}",
-                    recommended_action="Run 'exakit mcp-repair' to rewrite the entry from the current definition.",
+                    recommended_action="Run 'exakit mcp-doctor' to rewrite the entry from the current definition.",
                 )
             )
             return StageResult("server_launch", "fail_recoverable", findings, evidence)
@@ -281,7 +281,7 @@ class ValidatorService:
                     blocking=True,
                     message=f"The MCP server did not complete an MCP handshake ({printable}): {exc}",
                     recommended_action=(
-                        "Run the command by hand to see the failure, then 'exakit mcp-repair' "
+                        "Run the command by hand to see the failure; 'exakit mcp-doctor' rewrites "
                         "to rewrite the entry."
                     ),
                 )
@@ -557,7 +557,7 @@ class ValidatorService:
                 f"installed={inspection.managed_hash}",
                 f"expected={rendered.managed_hash}",
             ],
-            recommended_action="Run 'exakit mcp-repair' to re-write the entry from the current definition.",
+            recommended_action="Run 'exakit mcp-doctor' to re-write the entry from the current definition.",
         )
 
     def run(

@@ -236,7 +236,7 @@ Follow these on every interaction, no exceptions:
   The remedy is `exakit repair-runtime`, which **rebuilds the deployment and destroys its
   data** (bundled datasets are reloaded; the user's own uploads are not). Ask first.
 - `exakit logs` — every log the kit can show (`--json` for the target list and paths).
-- `exakit mcp-doctor` / `exakit mcp-repair` — MCP connectivity.
+- `exakit mcp-doctor` — MCP connectivity (it repairs what it finds).
 - Assistant can't see the database → confirm the runtime is running and the client was
   restarted after the MCP config change.
 - Fuller guidance: `~/.exasol-starter-kit/kit/QUICKSTART.md` and the README troubleshooting

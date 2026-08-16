@@ -35,7 +35,7 @@ exakit mcp-setup
 exakit mcp-status
 exakit mcp-validate
 exakit mcp-doctor
-exakit mcp-repair
+exakit mcp-doctor
 exakit mcp-remove
 exakit mcp-restore
 ```

@@ -24,7 +24,7 @@ Keep prompting (do **not** auto-allow):
   use — but that gate is a seatbelt, not a sandbox.) Auto-allowing either would
   defeat the kit's inspect-before-run trust model. Every query should be seen first.
 - **Mutating / lifecycle commands** — `exakit uninstall`, installs, upgrades,
-  anything under `mcp-repair`/`mcp-remove`.
+  anything under `mcp-remove`.
 
 That split kills the noise (all the harmless status checks) without weakening
 the guardrail that makes the kit trustworthy.

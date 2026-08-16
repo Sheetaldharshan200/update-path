@@ -16,11 +16,10 @@ exakit	repair-runtime	[--yes]	Rebuild a database that cannot be started (the lau
 exakit	autostart	[on|off]	Whether the database and add-on services come back automatically after a restart (launchd on macOS, systemd --user on Linux, the container restart policy for Nano). No argument shows the current state.
 exakit	data-load	[--force | -Force]	Open the focused data-loading menu: bundled sample data or a local CSV/Parquet/JSON file (JSON is shredded into tables by the JSON Tables add-on, offered on the spot). --force reloads instead of skipping what is already there. Non-interactively, EXAKIT_DATASETS=tpch,energy,weather names exactly which bundled datasets to load, and it composes with --force.
 exakit	sql	'<statement>' [--write]	Run one SQL statement against the local database and translate a failure into the remedy (connection refused -> exakit start; FETCH FIRST/TOP -> LIMIT; object not found -> describe it first). Reads only unless --write. It connects with the starter-kit profile, which is the ADMIN user and is NOT sandboxed - the read-only boundary is the MCP user, not this command.
-exakit	mcp-setup		Permanently configure MCP in supported AI clients.
+exakit	mcp-setup		Connect MCP to more AI clients (mcp-doctor checks and fixes the ones already connected).
 exakit	mcp-status	[clients]	Show managed MCP state for all supported AI clients.
 exakit	mcp-validate	[clients]	Validate managed MCP configs and test connectivity.
-exakit	mcp-repair	[clients]	Repair managed MCP config drift back to the known-good state.
-exakit	mcp-doctor	[clients] [--json]	Run MCP diagnostics and report problems. Checks the database is running first (exit 3 + 'exakit start' when it is not). --json prints the raw per-client result.
+exakit	mcp-doctor	[clients] [--json]	Check the configured MCP clients and repair what has drifted, then re-check. Checks the database is running first (exit 3 + 'exakit start' when it is not). --json reports the diagnosis without repairing.
 exakit	mcp-remove	[clients]	Remove the managed MCP config from the supported clients.
 exakit	mcp-restore	[snapshot]	Restore the latest (or a chosen) MCP config snapshot.
 exakit	skills	[--json | -j]	List the AI skills this kit carries — one per component and add-on — with a one-line summary and whether each has reached the agents' discovery folders. --json prints one machine-readable object.

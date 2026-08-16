@@ -105,7 +105,7 @@ class StaleVersionPinTests(unittest.TestCase):
         outdated = next(f for f in validate.findings if f.code == "managed_entry_outdated")
         self.assertEqual(outdated.severity, Severity.WARNING)
         self.assertEqual(outdated.scope["client"], "claude_desktop")
-        self.assertIn("mcp-repair", outdated.recommended_action or "")
+        self.assertIn("mcp-doctor", outdated.recommended_action or "")
         # Never the env block in the evidence: it carries the DB password.
         self.assertNotIn("EXA_PASSWORD", " ".join(outdated.evidence))
 
