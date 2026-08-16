@@ -179,31 +179,62 @@ function Invoke-CmdStatus {
         if ($running) { exit 0 } else { exit 3 }
     }
 
-    Write-Host "Kit level:  $(Get-ExakitManifestValue 'kit_level')"
-    Write-Host "Runtime:    $(if ($type) { $type } else { 'none' })"
-    Write-Host "Status:     $status"
+    # One label column for the whole screen. The pad was a hardcoded 11, but
+    # "dash-server:" is 12, so every service row sat a column out of line - and
+    # the registry can add longer ids than that. Measure instead of guessing.
+    $lw = 12
     foreach ($svcId in $services.Keys) {
-        Write-Host ("{0,-11} {1}" -f "${svcId}:", $services[$svcId])
+        if ($svcId -eq "database") { continue }
+        if (($svcId.Length + 1) -gt $lw) { $lw = $svcId.Length + 1 }
+    }
+    function Write-StatusRow([string]$Label, [string]$Value) {
+        Write-Host ($Label.PadRight($script:statusLabelWidth) + " " + $Value)
+    }
+    $script:statusLabelWidth = $lw
+
+    Write-StatusRow "Kit level:" "$(Get-ExakitManifestValue 'kit_level')"
+    if ($type) { Write-StatusRow "Runtime:" $type } else { Write-StatusRow "Runtime:" "none" }
+    Write-StatusRow "Status:" $status
+    foreach ($svcId in $services.Keys) {
+        Write-StatusRow "${svcId}:" $services[$svcId]
     }
     if ((Get-ExakitManifestValue "autostart.enabled") -eq $true) {
-        Write-Host "Autostart:  on"
+        Write-StatusRow "Autostart:" "on"
     } else {
-        Write-Host "Autostart:  off - turn it on with: exakit autostart on"
+        Write-StatusRow "Autostart:" "off - turn it on with: exakit autostart on"
     }
     if ($datasets.Count -gt 0) {
-        Write-Host "Datasets:   $($datasets -join ', ')"
+        Write-StatusRow "Datasets:" ($datasets -join ', ')
     } else {
-        Write-Host "Datasets:   none loaded - load some with: exakit data-load"
+        Write-StatusRow "Datasets:" "none loaded - load some with: exakit data-load"
     }
-    Write-Host "Steps done: $($steps -join ', ')"
-    # pyexasol installs soft: when it is missing, say so here with the one command
-    # that fixes it, instead of leaving a silent gap in the install.
-    if ($pyexasol) {
-        Write-Host "pyexasol:   $pyexasol"
-    } elseif ($null -ne (Get-ExakitManifestValue "components.pyexasol.validated")) {
-        Write-Host "pyexasol:   not installed - repair: exakit update pyexasol"
+
+    # Every SOFT component, not just one. exapump, the MCP server and pyexasol
+    # all install through the soft-step path, so ANY of them can be missing from
+    # an install that finished, and the install-time report is long gone by the
+    # time anyone types `exakit status`. This screen used to give pyexasol a
+    # dedicated line and say nothing about the other two.
+    #
+    # steps_completed is gone from the human screen: raw data that reported
+    # trouble only by omission. `status --json` still carries it untouched.
+    # Mirrors cmd_status in setup/exakit.
+    $softRows = @()
+    foreach ($soft in @(
+        @{ Id = "exapump";  Key = "components.exapump.validated";    Fix = "exakit update exapump" },
+        @{ Id = "mcp";      Key = "components.mcp_server.validated"; Fix = "exakit update mcp" },
+        @{ Id = "pyexasol"; Key = "components.pyexasol.validated";   Fix = "exakit update pyexasol" }
+    )) {
+        # A manifest record is what says "this install attempted the component".
+        if ($null -eq (Get-ExakitManifestValue $soft.Key)) { continue }
+        if (Get-ExakitComponentCurrent $soft.Id) { continue }
+        $softRows += ($soft.Id.PadRight(9) + " repair: " + $soft.Fix)
     }
-    Write-Host "Manifest:   $script:ManifestPath"
+    $softLabel = "Missing:"
+    foreach ($row in $softRows) {
+        Write-StatusRow $softLabel $row
+        $softLabel = ""
+    }
+    Write-StatusRow "Manifest:" $script:ManifestPath
     if (-not $running) {
         Write-Host "Start it:   exakit start"
         exit 3
@@ -2354,6 +2385,12 @@ try {
                 Invoke-CmdInfoJson
             } else {
                 Show-ExakitConnectionPanel
+                # The --json form was reachable only from `exakit help`. The hint
+                # lives here rather than in Show-ExakitConnectionPanel because the
+                # install ends with that same panel, and someone finishing an
+                # install is not looking for a JSON dump.
+                Write-Host "  Machine-readable: exakit info --json"
+                Write-Host ""
             }
         }
         "guide"        { Show-ExakitGuide }

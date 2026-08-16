@@ -2906,7 +2906,13 @@ function Test-ExakitAddonApplicable {
     if (-not $addon) { return $true }
     if (-not $addon.PSObject.Properties["ApplicableFn"]) { return $true }
     if (-not (Get-Command $addon.ApplicableFn -ErrorAction SilentlyContinue)) { return $true }
-    return [bool](& $addon.ApplicableFn)
+    # The probe belongs to the add-on module and can throw: it shells out to a
+    # code CLI, inspects a platform, reads a path. A read-only screen asking
+    # "could this be installed here?" must not die because one module's probe
+    # blew up - `exakit version` listed only installed add-ons before, so no
+    # caller ever exercised this path for an add-on that was absent. Treat an
+    # exploding probe as "cannot tell, so do not offer it".
+    try { return [bool](& $addon.ApplicableFn) } catch { return $false }
 }
 
 function Get-ExakitAddonApplicableReason {
