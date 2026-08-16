@@ -3140,10 +3140,12 @@ function Request-ExakitMarketplaceOffer {
     # Yes opens the marketplace selection itself (where the available add-ons
     # come pre-selected, so Enter installs them and Cancel still backs out).
     Write-Host ""
-    Ok "Your Starter Kit installation is done and working."
-    Info "The marketplace has more useful tools for it."
-    $gate = Read-ExakitCheckboxMenu -Title "Do you want to add optional tools?" `
-        -Options @("Yes - show the marketplace", "No - maybe later") `
+    Ok "Your starter kit is ready to use."
+    Info ("The marketplace has add-ons that extend what you can do with Exasol:`n" +
+          "      dashboards, editor integration, extra data formats, with more added`n" +
+          "      over time.")
+    $gate = Read-ExakitCheckboxMenu -Title "Browse it now?" `
+        -Options @("Yes, open the marketplace", "No, maybe later") `
         -Defaults @(1) -ExclusiveIndex 2
     if ($gate -contains 1) {
         try { Show-ExakitMarketplaceMenu } catch { Warn2 "The marketplace did not finish cleanly: $_" }
