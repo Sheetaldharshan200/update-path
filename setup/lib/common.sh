@@ -2829,12 +2829,14 @@ exakit_marketplace_offer() {
     # Yes opens the marketplace selection itself (where the available add-ons
     # come pre-selected, so Enter installs them and Cancel still backs out).
     printf '\n'
-    ok "Your Starter Kit installation is done and working."
-    info "The marketplace has more useful tools for it."
+    ok "Your starter kit is ready to use."
+    info "The marketplace has add-ons that extend what you can do with Exasol:
+      dashboards, editor integration, extra data formats, with more added
+      over time."
     EXAKIT_CHECKBOX_EXCLUSIVE=2
-    ui_checkbox_menu "Do you want to add optional tools?" "1" \
-        "Yes — show the marketplace" \
-        "No — maybe later"
+    ui_checkbox_menu "Browse it now?" "1" \
+        "Yes, open the marketplace" \
+        "No, maybe later"
     case ",$EXAKIT_CHECKBOX_SELECTION," in
         *",1,"*)
             exakit_marketplace_menu || true
