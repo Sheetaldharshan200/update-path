@@ -3240,7 +3240,17 @@ function Show-ExakitConnectionPanel {
     }
     Write-ExakitPanelLine "Manifest:     $(Get-ExakitTilde $script:ManifestPath)"
     Write-ExakitPanelLine "Logs:         $(Get-ExakitTilde $script:LogDir)"
-    Write-ExakitPanelLine "SQL client:   DBeaver or DbVisualizer"
+    # The two downloads are always true: anyone can fetch them. The VS Code
+    # extension is a marketplace add-on, so it is named only when it is actually
+    # on this machine - otherwise the row would advertise a SQL client the reader
+    # may not have, and on a machine without VS Code cannot get. It has to be
+    # named somewhere, though: the "Add-ons:" row prints only while something is
+    # still pending. Mirrors connection_panel in common.sh.
+    if (Test-ExakitMarketplaceAddonInstalled "exasol-vscode") {
+        Write-ExakitPanelLine "SQL client:   VS Code (Exasol extension), DBeaver or DbVisualizer"
+    } else {
+        Write-ExakitPanelLine "SQL client:   DBeaver or DbVisualizer"
+    }
     # One line, only while something is still on offer: the marketplace is the
     # optional layer on top of a finished install, so this is where it is
     # discovered - never during the install itself. Mirrors connection_panel.

@@ -6688,14 +6688,25 @@ connection_panel() {
 
     ui_panel_line "Manifest:     $(ui_tilde "$EXAKIT_MANIFEST")"
     ui_panel_line "Logs:         $(ui_tilde "$EXAKIT_LOG_DIR")"
-    ui_panel_line "Saved SQL:    $(ui_tilde "$EXAKIT_WORKFLOWS_DIR")"
-    ui_panel_line "SQL client:   $(ui_link https://dbeaver.io/download/ "DBeaver") or $(ui_link https://www.dbvis.com/download/ "DbVisualizer")"
+    # The two download links are always true: anyone can fetch them. The VS Code
+    # extension is a marketplace add-on, so it is named only when it is actually
+    # on this machine — otherwise the row would advertise a SQL client the reader
+    # may not have, and on a machine without VS Code cannot get.
+    #
+    # It has to be named SOMEWHERE, though: the "Add-ons:" row below prints only
+    # while something is still pending, so on a fully equipped machine an
+    # installed extension went unmentioned by the whole panel.
+    if exakit_marketplace_addon_installed exasol-vscode 2>/dev/null; then
+        ui_panel_line "SQL client:   VS Code (Exasol extension), $(ui_link https://dbeaver.io/download/ "DBeaver") or $(ui_link https://www.dbvis.com/download/ "DbVisualizer")"
+    else
+        ui_panel_line "SQL client:   $(ui_link https://dbeaver.io/download/ "DBeaver") or $(ui_link https://www.dbvis.com/download/ "DbVisualizer")"
+    fi
     ui_panel_line "How to connect: exakit guide"
     # One line, only while something is still on offer: the marketplace is the
     # optional layer on top of a finished install, so this is where it is
     # discovered — never during the install itself.
     if exakit_marketplace_has_pending 2>/dev/null; then
-        ui_panel_line "Add-ons:      optional tools (dashboards & more): exakit marketplace"
+        ui_panel_line "Add-ons:      exakit marketplace (dashboards, editor tools and more)"
     fi
     ui_panel_end
     printf '\n'
