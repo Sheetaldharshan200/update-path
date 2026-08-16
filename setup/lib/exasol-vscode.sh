@@ -285,7 +285,6 @@ exasol_vscode_validate() {
     ui_panel_line "Open VS Code    the Exasol view appears in the activity bar"
     ui_panel_line "Connect it      DSN and credentials: exakit info"
     ui_panel_line "Update          exakit update exasol-vscode"
-    ui_panel_line "Remove          exakit uninstall (pick Exasol for VS Code)"
     ui_panel_end
     return 0
 }

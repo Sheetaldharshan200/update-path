@@ -238,7 +238,6 @@ function Test-ExasolVscode {
     Write-ExakitPanelLine "Open VS Code    the Exasol view appears in the activity bar"
     Write-ExakitPanelLine "Connect it      DSN and credentials: exakit info"
     Write-ExakitPanelLine "Update          exakit update exasol-vscode"
-    Write-ExakitPanelLine "Remove          exakit uninstall (pick Exasol for VS Code)"
     Complete-ExakitPanel
 }
 
