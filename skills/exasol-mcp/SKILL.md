@@ -74,13 +74,17 @@ not by trust or by prompt wording.
 
 ### Prove the boundary rather than asserting it
 
-Two distinct layers stop a write, and you can observe each:
+Two layers stop a write, and only one of them is load-bearing:
 
-1. The **MCP tool gate** rejects a non-SELECT before it ever reaches the
-   database. The message `The query is invalid or not a SELECT statement` comes
-   from the tool, not the engine.
-2. Beneath it, the **privilege gate** holds even if a statement got through.
-   Run this as the MCP user any time:
+1. The **MCP tool gate** rejects a statement that does not *begin* with SELECT,
+   before it reaches the database. The message `The query is invalid or not a
+   SELECT statement` comes from the tool, not the engine. It is a keyword check,
+   not a parser: `SELECT 1; DROP TABLE T` passes it and reaches the engine, which
+   refuses it for its own reasons. Treat this as a typo-catcher, never as the
+   boundary.
+2. Beneath it, the **privilege gate** — enforced by the database, and the layer
+   that actually holds no matter what got through. Run this as the MCP user any
+   time:
 
 ```sql
 SELECT PRIVILEGE FROM SYS.EXA_USER_SYS_PRIVS
@@ -96,10 +100,18 @@ write privilege exists to misuse.
 
 In this order:
 
-1. **Is the database up?** `exakit status` (exit `3` = stopped → `exakit start`).
-2. **Is MCP configured?** `exakit mcp-doctor` — it names the problem per client.
+1. **Is the database up?** `exakit status` (exit `3` = not running). The remedy is
+   `exakit start` for `stopped` — but for `interrupted` it is `exakit repair-runtime`,
+   because a start cannot succeed in that state. `status --json` puts the right one in
+   `remedies.database`; use that rather than assuming.
+2. **Is MCP configured, and does the server actually run?** `exakit mcp-doctor` — it names
+   the problem per client, and it starts the configured server and completes an MCP
+   handshake, so it catches a missing `uvx` or a package that will not resolve instead of
+   reporting a well-formed config entry as `connected`.
 3. **Was the client restarted?** A config change does not reach a running
-   client. This is the single most common cause.
+   client. This is the single most common cause — and if *you* ran the setup, it
+   applies to you: your own MCP tools appear only after your process restarts.
+   Use `exakit sql` in the meantime.
 4. **Has the config drifted?** `exakit mcp-repair` puts it back to the
    known-good state. `exakit mcp-restore` recovers from a snapshot if a repair
    is not enough.

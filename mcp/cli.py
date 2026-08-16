@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 import sys
 
 from mcp.adapters import AdapterRegistry
 from mcp.core.errors import MCPSubsystemError
 from mcp.core.models import (
+    OperationRequest,
     OperationStatus,
     utc_now,
 )
@@ -251,8 +253,62 @@ def _record_client_setup(
             "skipped_clients": [
                 item.get("client") for item in details.get("skipped_clients", [])
             ],
+            # WHY the status is "success_with_warnings", not just that it is.
+            # The record carried the qualified status and nothing else, so the
+            # install log scrolled away and the manifest kept a permanent
+            # "with warnings" that named no warning — unanswerable after the
+            # fact, from the one file that is supposed to be the install record.
+            "findings": _setup_findings(payload),
         }
     )
+
+
+def _setup_findings(payload: dict) -> list[dict]:
+    """The warnings and errors behind a qualified status, flattened for the record.
+
+    Kept to the fields a reader acts on (severity, code, message, the client it
+    is about, and the recommended action) rather than the whole finding: this
+    goes into manifest.json, which `exakit info --json` prints verbatim.
+    """
+    findings = []
+    for finding in payload.get("findings") or []:
+        if not isinstance(finding, dict):
+            continue
+        if finding.get("severity") not in ("warning", "error"):
+            continue
+        scope = finding.get("scope") or {}
+        findings.append(
+            {
+                "severity": finding.get("severity"),
+                "code": finding.get("code"),
+                "client": scope.get("client") if isinstance(scope, dict) else None,
+                "message": finding.get("message"),
+                "recommended_action": finding.get("recommended_action"),
+            }
+        )
+    return findings
+
+
+def _doctor_stages() -> list[str]:
+    """The doctor's stage list, including the one that actually starts the server.
+
+    `server_launch` is a live probe: it spawns the configured command and speaks
+    MCP to it. That is the whole point — every other stage inspects paperwork, so
+    a client whose entry was present and well-formed reported "connected" while
+    the server behind it could not start at all (a missing uvx, a package that
+    will not resolve), which is a healthy doctor report and an AI client with no
+    Exasol tools in it.
+
+    It costs a subprocess and, on a cold uvx cache, a download. Set
+    EXAKIT_MCP_SKIP_SERVER_PROBE=1 to leave it out where that is unacceptable —
+    an offline machine, or a suite that must not reach the network.
+    """
+    stages = list(OperationRequest.stages)
+    if os.environ.get("EXAKIT_MCP_SKIP_SERVER_PROBE") == "1":
+        return stages
+    return stages[: stages.index("connectivity") + 1] + ["server_launch"] + stages[
+        stages.index("connectivity") + 1 :
+    ]
 
 
 def _build_operation_request(
@@ -283,6 +339,8 @@ def _build_operation_request(
         # to a comparison on both paths; the read-only paths never apply it.
         request["deployment_mode"] = "stdio"
         request["server_definition"] = to_primitive(context.server_definition)
+    if operation == "doctor":
+        request["stages"] = _doctor_stages()
     if operation == "repair":
         request["credential_reference"] = {"kind": "inline_env", "name": "EXA_PASSWORD"}
         request["validate_after_apply"] = True

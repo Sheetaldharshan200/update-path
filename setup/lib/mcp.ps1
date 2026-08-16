@@ -493,6 +493,14 @@ function Set-McpReadonlyAccess {
         Set-ExakitManifestValue "components.mcp_server.connection.user" $readonlyUser
         Set-ExakitManifestValue "components.mcp_server.connection.password_file" (Join-Path $script:CredsDir "mcp_readonly_password")
         Set-ExakitManifestValue "components.mcp_server.connection.schemas" $schemaTokens
+        # THE SAME FACT, SPELLED SO IT CANNOT BE MISREAD. schemas: ["STARTER_KIT"]
+        # reads as "this user can only see STARTER_KIT" - and an agent checking
+        # the install record before querying concluded exactly that, while the
+        # MCP user was in fact returning every loaded schema quite happily. The
+        # array stays (internal readers parse it); these two say what it means.
+        Set-ExakitManifestValue "components.mcp_server.connection.default_schema" ($schemaTokens | Select-Object -First 1)
+        Set-ExakitManifestValue "components.mcp_server.connection.read_scope" `
+            "every schema (USE ANY SCHEMA + SELECT ANY TABLE); 'schemas' is the connection default, not a limit"
         Set-ExakitManifestValue "components.mcp_server.connection.validated" $true
     } finally {
         Remove-Item -Force $tempConfig -ErrorAction SilentlyContinue

@@ -18,9 +18,11 @@ Allow without prompting:
   least-privilege read-only user, so the database itself rejects any write.
 
 Keep prompting (do **not** auto-allow):
-- **`exapump sql …`** — the `starter-kit` exapump profile connects as the
-  **admin** user and is *not* read-only. Auto-allowing it would defeat the kit's
-  inspect-before-run trust model. Every query through it should be seen first.
+- **`exapump sql …` and `exakit sql …`** — both connect as the **admin** user and
+  are *not* read-only. (`exakit sql` refuses a non-read statement without
+  `--write` and translates errors into remedies, which makes it the better one to
+  use — but that gate is a seatbelt, not a sandbox.) Auto-allowing either would
+  defeat the kit's inspect-before-run trust model. Every query should be seen first.
 - **Mutating / lifecycle commands** — `exakit uninstall`, installs, upgrades,
   anything under `mcp-repair`/`mcp-remove`.
 
@@ -29,28 +31,47 @@ the guardrail that makes the kit trustworthy.
 
 ## Claude Code
 
-Add a project allowlist in `.claude/settings.json` (checked into the repo so
-every user benefits):
+**`exakit skills-install` already does this for you.** It merges the allowlist below
+into `~/.claude/settings.json` — additively and idempotently, never removing or
+overwriting anything you have set. The section is here so you can see what was
+granted, and so you can apply it by hand if the merge was skipped (it declines
+rather than clobber a settings file it cannot parse).
 
 ```json
 {
   "permissions": {
     "allow": [
       "Bash(exakit status:*)",
-      "Bash(exakit info:*)",
-      "Bash(exakit version:*)",
-      "Bash(exakit mcp-doctor:*)",
-      "Bash(exakit logs:*)",
+      "Bash(~/.local/bin/exakit status:*)",
+      "Bash($HOME/.local/bin/exakit status:*)",
       "mcp__exasol"
     ],
     "deny": [
-      "Bash(exakit uninstall:*)"
+      "Bash(exakit uninstall:*)",
+      "Bash(~/.local/bin/exakit uninstall:*)",
+      "Bash($HOME/.local/bin/exakit uninstall:*)"
     ]
   }
 }
 ```
 
-`exapump sql` is intentionally absent, so SQL execution still prompts.
+**Three spellings of every command, and that is not redundancy.** A permission rule
+matches the command *text*. `~/.local/bin` is not on a bare non-interactive `PATH`,
+so an agent is told — by AGENTS.md, in as many words — to call the binary by its
+absolute path. Listing only the bare `exakit` form therefore covered the one
+invocation the docs steer agents away from, and every "pre-approved" command kept
+prompting anyway. The deny needs all three for the mirror-image reason: a rule that
+names only `exakit uninstall` is sidestepped by typing the full path.
+
+The real list covers the whole read-only surface — `status`, `info`, `version`,
+`mcp-doctor`, `logs`, `catalog`, `preflight`, `update-check`, `guide`, `mcp-status`,
+`mcp-validate`, `help`, plus the exact forms `exakit skills` and `exakit skills --json`
+— in each of the three spellings. `exakit skills-install` is deliberately *not*
+prefix-matched: it writes this very file, and an allowlisted command that can grant
+permissions is an escalation path.
+
+`exapump sql` and `exakit sql` are both intentionally absent, so SQL execution still
+prompts. Both connect as the **admin** user.
 
 ## Codex
 

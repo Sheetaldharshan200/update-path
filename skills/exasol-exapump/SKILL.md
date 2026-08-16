@@ -34,10 +34,23 @@ Two rules follow, and they are not negotiable:
 ## Running SQL
 
 ```bash
+exakit sql 'SELECT CURRENT_TIMESTAMP'                      # prefer this
 exapump sql -p starter-kit 'SELECT CURRENT_TIMESTAMP'      # one statement
 exapump sql -p starter-kit < script.sql                    # a script file
 exapump interactive -p starter-kit                         # interactive shell
 ```
+
+**Reach for `exakit sql` first.** It runs over the same profile, but it refuses
+anything that is not a single read statement unless you pass `--write`, and — the
+reason it exists — it turns a failure into its remedy. Raw exapump gives you the
+engine's text and a generic hint, so `FETCH FIRST` comes back as "check your SQL
+syntax" rather than "Exasol pages with `LIMIT`", and a refused connection never
+mentions `exakit start`. Drop to `exapump` for script files, bulk loads and the
+interactive shell, which `exakit sql` does not do.
+
+`exakit sql` is **not** a sandbox: it is the same admin connection, and its
+statement gate is a seatbelt against a typo. The enforced read-only boundary is
+the MCP user.
 
 `-p starter-kit` names the connection **profile** the kit created. Profiles
 live in `~/.exapump/config.toml`; `EXAPUMP_CONFIG` overrides that path.
@@ -100,14 +113,14 @@ The kit's loop is **ASK → INSPECT → RUN → VALIDATE → RERUN**, and exapum
 the VALIDATE step: reproduce the number through an independent path.
 
 ```bash
-exapump sql -p starter-kit "<the exact SQL the user already approved>"
+exakit sql "<the exact SQL the user already approved>"
 ```
 
 Matching numbers is the whole point — the AI's answer becomes the user's
 *verified* answer. Two cautions:
 
 - Issue **only** the exact approved `SELECT` here. Never DDL or DML through
-  exapump, ever.
+  exapump or `exakit sql --write`, ever.
 - Reproducing the same SQL proves it reruns and connects. To also sanity-check
   *correctness*, vary one thing — a filter, a grouping — and confirm the number
   moves the way you would expect.

@@ -12,8 +12,10 @@ exakit	info	[--json | -j]	Print the connection details panel (DSN, users, schema
 exakit	guide		Friendly walkthrough: connect AI clients (MCP), SQL clients (DBeaver or DbVisualizer), and Python (pyexasol).
 exakit	start		Start everything the kit runs: the local Exasol database (deploying or starting it as needed) and every installed add-on service.
 exakit	stop		Stop the add-on services and the local Exasol database.
+exakit	repair-runtime	[--yes]	Rebuild a database that cannot be started (the launcher reports it interrupted and every start fails the same way). DESTRUCTIVE: the deployment is replaced and its data is not recoverable; bundled datasets are reloaded afterwards. --yes (or EXAKIT_CONFIRM_RUNTIME_REPAIR=1) pre-answers the confirmation.
 exakit	autostart	[on|off]	Whether the database and add-on services come back automatically after a restart (launchd on macOS, systemd --user on Linux, the container restart policy for Nano). No argument shows the current state.
-exakit	data-load	[--force | -Force]	Open the focused data-loading menu: bundled sample data or a local CSV/Parquet/JSON file (JSON is shredded into tables by the JSON Tables add-on, offered on the spot). --force reloads the bundled sample.
+exakit	data-load	[--force | -Force]	Open the focused data-loading menu: bundled sample data or a local CSV/Parquet/JSON file (JSON is shredded into tables by the JSON Tables add-on, offered on the spot). --force reloads instead of skipping what is already there. Non-interactively, EXAKIT_DATASETS=tpch,energy,weather names exactly which bundled datasets to load, and it composes with --force.
+exakit	sql	'<statement>' [--write]	Run one SQL statement against the local database and translate a failure into the remedy (connection refused -> exakit start; FETCH FIRST/TOP -> LIMIT; object not found -> describe it first). Reads only unless --write. It connects with the starter-kit profile, which is the ADMIN user and is NOT sandboxed - the read-only boundary is the MCP user, not this command.
 exakit	mcp-setup		Permanently configure MCP in supported AI clients.
 exakit	mcp-status	[clients]	Show managed MCP state for all supported AI clients.
 exakit	mcp-validate	[clients]	Validate managed MCP configs and test connectivity.
@@ -25,8 +27,8 @@ exakit	skills	[--json | -j]	List the AI skills this kit carries — one per comp
 exakit	skills-install		Install the kit's AI skills into ~/.claude/skills and ~/.agents/skills for CLI agents (Claude Code, Codex).
 exakit	marketplace		Browse optional add-ons (dash-server, Exasol for VS Code, JSON Tables): Space selects, Enter installs. Installed add-ons update through exakit update; tools you installed yourself are recognised and never re-offered.
 exakit	uninstall	[--yes | --dry-run]	Pick what to remove (Skip, each add-on, or EVERYTHING) with a confirmation summary and a typed gate; single components by name (exakit uninstall mcp_configs). --dry-run previews the full plan; --yes is the scripted full uninstall.
-exakit	logs	[target] [-f] [--lines N] [--path]	Every log the kit can show: the installer run, the database container, each add-on service, and what the boot entries wrote at login. No target lists them with size and last-updated; -f follows one live; --path prints its path.
-exakit	catalog	[search]	Browse or search every exakit, exapump, and exasol command (this screen).
+exakit	logs	[target | --json] [-f] [--lines N] [--path]	Every log the kit can show: the installer run, the database container, each add-on service, and what the boot entries wrote at login. No target lists them with size and last-updated; -f follows one live; --path prints its path. --json lists the targets (with each one's path, size and last-updated) as one machine-readable object.
+exakit	catalog	[search] [--json | -j]	Browse or search every exakit, exapump, and exasol command (this screen). --json prints the whole command surface as one machine-readable object (tool, command, options, description), so an agent can discover what the CLI can do without parsing the decorated screen.
 exakit	help	[--all]	Show the exakit usage text (--all: every command). Any subcommand also answers --help with its catalog entry.
 exapump	sql	-p <profile> "<SQL>"	Run a single SQL statement through a saved connection profile.
 exapump	sql	-p <profile> < file.sql	Run a SQL script file (via stdin) through a profile.

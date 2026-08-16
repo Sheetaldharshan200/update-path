@@ -208,6 +208,11 @@ class OperationRequest:
     allow_restore: bool = True
     include_recommendations: bool = True
     remove_runtime_cache: bool = True
+    # `server_launch` is deliberately NOT here. It is the only stage that RUNS
+    # the configured server instead of inspecting paperwork about it, so it costs
+    # a subprocess and (on a cold uvx cache) a download — which is exactly what
+    # the hermetic suites must never do. `exakit mcp-doctor` adds it explicitly
+    # against a real install; see _doctor_stages in mcp/cli.py.
     stages: tuple[str, ...] = (
         "environment",
         "config_syntax",

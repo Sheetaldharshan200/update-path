@@ -51,6 +51,21 @@ trap {
     Write-Host ""
     Write-Host "  Installation failed: $($_.Exception.Message)" -ForegroundColor Red
     Write-Host "  Fix the issue above and re-run. If it keeps happening, check your network or proxy." -ForegroundColor Red
+    # Record the reason before exiting, the way install.sh does. This runs before
+    # the kit's own logging exists, so a failure here used to leave NOTHING
+    # behind on Windows: no log, no note. An agent whose install died at the
+    # download step had no artifact to read in its next session and no way to
+    # tell "never ran" from "ran and refused". Two lines - reason, then when -
+    # because `exakit status --json` reads the date off line 2, and an undated
+    # note that outlived its cause is how a healthy machine looks broken.
+    # Best-effort: a note is a nicety and must not mask the real error.
+    try {
+        $failHome = if ($env:EXAKIT_HOME) { $env:EXAKIT_HOME } else { Join-Path $HOME ".exasol-starter-kit" }
+        New-Item -ItemType Directory -Force -Path $failHome -ErrorAction SilentlyContinue | Out-Null
+        $stamp = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
+        Set-Content -Path (Join-Path $failHome ".last-failure") `
+            -Value @($_.Exception.Message, $stamp) -Encoding UTF8 -ErrorAction SilentlyContinue
+    } catch { }
     exit 1
 }
 

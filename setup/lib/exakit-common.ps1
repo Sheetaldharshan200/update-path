@@ -57,6 +57,11 @@ $script:CacheDir     = Join-Path $script:ExakitHome "cache"
 $script:CredsDir     = Join-Path $script:ExakitHome "credentials"
 $script:ManifestPath = Join-Path $script:ExakitHome "manifest.json"
 $script:McpDir       = Join-Path $script:ExakitHome "mcp"
+# Where an approved query is saved so it can be re-run tomorrow. The skill's
+# closing step ("make it rerunnable") names this directory by name, so it has to
+# exist: telling an agent to write into a path nothing creates turns the last
+# step of the trust loop into a mkdir it has to guess at.
+$script:WorkflowsDir = Join-Path $script:ExakitHome "workflows"
 $script:BinDir       = if ($env:EXAKIT_BIN_DIR) { $env:EXAKIT_BIN_DIR } else { Join-Path $HOME ".local\bin" }
 $script:ManagedPythonVersion = if ($env:EXAKIT_MANAGED_PYTHON_VERSION) { $env:EXAKIT_MANAGED_PYTHON_VERSION } else { "3.12" }
 $script:McpReadonlyUser    = if ($env:EXAKIT_MCP_READONLY_USER) { $env:EXAKIT_MCP_READONLY_USER } else { "mcp_readonly" }
@@ -158,6 +163,42 @@ function Warn2([string]$Msg) {
     if ($script:UiFancy) { Write-Host ("      {0}!{1} {2}" -f $script:UiWarn, $script:UiReset, $Msg) }
     else { Write-Host "      ! $Msg" -ForegroundColor Yellow }
     Write-ExakitLog "WARN" $Msg
+}
+
+# Show-ExakitDbErrorRemedy <text> - the error-translation layer for the database
+# faults every agent and every new user hits first. The engine's own messages are
+# precise but remedy-free ("Connection refused", "syntax error, unexpected
+# FETCH_", "object X not found"); each match here appends the one line that names
+# the fix. Callers pass whatever output they captured; unknown text is silent.
+#
+# This side had NO translator at all until now - the Windows and Nano paths got
+# the raw engine text and nothing else, so "every error message names its remedy"
+# was a macOS-only promise.
+# twin: exakit_explain_db_error in setup/lib/common.sh. Keep the cases and the
+# wording in step.
+function Show-ExakitDbErrorRemedy {
+    param([string]$Text)
+    if (-not $Text) { return }
+    if ($Text -match 'onnection refused' -or $Text -match 'Errno 61' -or
+        $Text -match 'Errno 111' -or $Text -match '(?i)could not connect') {
+        Warn2 "That is the database not answering - it is stopped or unreachable. Start it with: exakit start (then check: exakit status)"
+    }
+    if ($Text -match 'unexpected FETCH_' -or $Text -match 'unexpected TOP_' -or $Text -match 'FETCH FIRST') {
+        Warn2 "Exasol pages result sets with LIMIT <n> (optionally OFFSET) - not FETCH FIRST or TOP. Rewrite the query with LIMIT."
+    }
+    if ($Text -match 'not found' -and
+        ($Text -match '(?i)object' -or $Text -match '(?i)table' -or $Text -match '(?i)column' -or
+         $Text -match '(?i)schema' -or $Text -match '(?i)view')) {
+        Warn2 "A named object does not exist as written. Check the spelling and the schema qualifier - describe it first (MCP: describe_exasol_table_or_view; SQL: DESCRIBE <schema>.<table>)."
+    }
+    # A write refused for lack of privilege is the read-only guardrail doing its
+    # job, and the tempting next move - re-run it through `exapump -p
+    # starter-kit`, which connects as admin - is the one thing that breaks the
+    # trust model. Say so where the error appears, not only in the docs.
+    if ($Text -match '(?i)insufficient privileges' -or $Text -match '42500') {
+        Warn2 "That write was refused by the DATABASE: the MCP user is read-only by design, and this is the guardrail working as intended."
+        Warn2 "Do NOT re-run it through 'exapump -p starter-kit' - that profile is the ADMIN user and is not sandboxed. If a write is genuinely wanted, say so and let the user decide."
+    }
 }
 # Menu rendering (mirrors ui.sh's ui_menu_option/ui_menu_hint): options nest
 # under the "Choose ..." action line with the number in the accent colour; the
@@ -657,6 +698,11 @@ function Invoke-ExakitPython {
 # Manifest (native PowerShell JSON, no Python dependency for read/write)
 # ---------------------------------------------------------------------------
 function Initialize-ExakitManifest {
+    # The home the skills tell an agent to write into, created with the home
+    # itself rather than left for the agent to invent. Cheap, idempotent, and it
+    # runs on every install AND every re-run, so an older install grows the
+    # directory the moment the installer touches it again.
+    New-Item -ItemType Directory -Force -Path $script:WorkflowsDir -ErrorAction SilentlyContinue | Out-Null
     if (Test-Path $script:ManifestPath) {
         try {
             Get-Content $script:ManifestPath -Raw | ConvertFrom-Json | Out-Null
@@ -2420,32 +2466,36 @@ function Get-ExakitRepoRoot {
 # anything, and a malformed file is left alone. Twin of
 # exakit_apply_readonly_allowlist in common.sh.
 function Set-ExakitReadonlyAllowlist {
-    $allow = @(
-        "Bash(exakit status:*)",
-        "Bash(exakit info:*)",
-        "Bash(exakit version:*)",
-        "Bash(exakit mcp-doctor:*)",
-        "Bash(exakit logs:*)",
-        # The rest of the kit's read-only surface. Leaving these out is what
-        # kept the friction real: AGENTS.md tells an agent to discover commands
-        # with `exakit catalog` and to check its footing with update-check /
-        # mcp-status, and every one of those asked for approval while changing
-        # nothing. exapump sql and every mutating command stay absent on
-        # purpose - that gate is the trust model. The two skills entries are
-        # exact forms, NOT "exakit skills:*", because that prefix would also
-        # match `exakit skills-install`, which writes this very settings file.
-        "Bash(exakit catalog:*)",
-        "Bash(exakit preflight:*)",
-        "Bash(exakit update-check:*)",
-        "Bash(exakit guide:*)",
-        "Bash(exakit mcp-status:*)",
-        "Bash(exakit mcp-validate:*)",
-        "Bash(exakit help:*)",
-        "Bash(exakit skills)",
-        "Bash(exakit skills --json)",
-        "mcp__exasol"
+    # The kit's read-only command surface. Leaving any of these out is what kept
+    # the friction real: AGENTS.md tells an agent to discover commands with
+    # `exakit catalog` and to check its footing with update-check / mcp-status,
+    # and every one of those asked for approval while changing nothing. exapump
+    # sql and every mutating command stay absent on purpose - that gate is the
+    # trust model.
+    $readonly = @(
+        "status", "info", "version", "mcp-doctor", "logs", "catalog", "preflight",
+        "update-check", "guide", "mcp-status", "mcp-validate", "help"
     )
-    $deny = @("Bash(exakit uninstall:*)")
+    # EVERY SPELLING THE AGENT IS TOLD TO USE. A permission rule matches the
+    # command text, and AGENTS.md tells agents in as many words that
+    # ~/.local/bin is absent from a bare non-interactive PATH and to call the
+    # binary by absolute path. So the bare-`exakit` rules covered exactly the
+    # invocation the docs steer agents AWAY from, and every "read-only" command
+    # kept prompting anyway.
+    $prefixes = @("exakit", "~/.local/bin/exakit", "`$HOME/.local/bin/exakit")
+    $allow = @()
+    foreach ($prefix in $prefixes) {
+        foreach ($command in $readonly) { $allow += "Bash($prefix $command`:*)" }
+        # Exact forms, NOT "exakit skills:*", because that prefix would also
+        # match `exakit skills-install`, which writes this very settings file.
+        $allow += "Bash($prefix skills)"
+        $allow += "Bash($prefix skills --json)"
+    }
+    $allow += "mcp__exasol"
+    # The deny needs every spelling too, for the opposite reason: a rule that
+    # only names the bare form is trivially sidestepped by the absolute path the
+    # docs recommend.
+    $deny = @($prefixes | ForEach-Object { "Bash($_ uninstall`:*)" })
     $dir = Join-Path $HOME ".claude"
     $path = Join-Path $dir "settings.json"
     New-Item -ItemType Directory -Force -Path $dir | Out-Null

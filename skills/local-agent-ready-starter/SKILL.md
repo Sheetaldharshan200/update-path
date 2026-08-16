@@ -127,7 +127,13 @@ selected; **every selectable (pending) client is pre-selected**. The user restar
 client afterward.
 
 After setup, the client starts the MCP server named `exasol` on demand over stdio (it is not
-a background service). Verify with `exakit mcp-doctor`.
+a background service). Verify with `exakit mcp-doctor`, which starts the server itself and
+completes an MCP handshake — so a `connected` client is one that can really reach it.
+
+**If you are the client you just configured, you cannot use those tools yet.** An MCP client
+reads its server list at startup, so the `exasol` tools appear only after *your own* process
+restarts. Nothing is broken; say so plainly rather than diagnosing it. Use `exakit sql` for
+the rest of this session and leave the MCP path to the next one.
 
 The MCP login is a **dedicated, read-only database user** — it can read every schema in the
 database but cannot write, and that read-only limit is enforced by the database, not by
@@ -168,16 +174,18 @@ ASK  ->  INSPECT (show the SQL first)  ->  RUN (read-only)  ->  VALIDATE (indepe
    quirk (Exasol uses `LIMIT n`, **not** `FETCH FIRST`/`TOP`), or an identifier that needs
    different casing — fix and re-run **without** re-asking; the approved intent hasn't changed.
 4. **Validate independently.** Reproduce the number outside the assistant with the *same*
-   approved SQL: `exapump sql -p starter-kit "<the approved SQL>"`. Matching numbers is the
-   whole point — the AI's answer becomes the user's *verified* answer. **Caution:** the
-   `starter-kit` exapump profile connects as the **admin** user, *not* the read-only MCP user —
-   it is not sandboxed. Issue only the exact approved `SELECT` here; never DDL/DML through
-   exapump. Reproducing the same SQL proves it reruns and connects; to also sanity-check
-   *correctness*, vary one thing (a filter or grouping) and confirm the number moves the way
-   you'd expect.
-5. **Make it rerunnable.** Save the approved SQL to a file the user can rerun tomorrow
-   (e.g. under `~/.exasol-starter-kit/workflows/`). Point to the walkthrough in
-   `~/.exasol-starter-kit/kit/demo/first-revenue-analysis.md`.
+   approved SQL: `exakit sql "<the approved SQL>"`. Matching numbers is the whole point —
+   the AI's answer becomes the user's *verified* answer. Prefer `exakit sql` over
+   `exapump sql -p starter-kit`: it runs over the same connection but refuses anything that
+   is not a single read statement unless you pass `--write`, and it translates a failure
+   into its remedy instead of handing you the raw engine text. **Caution either way:** that
+   connection is the **admin** user, *not* the read-only MCP user — it is not sandboxed.
+   Issue only the exact approved `SELECT` here. Reproducing the same SQL proves it reruns
+   and connects; to also sanity-check *correctness*, vary one thing (a filter or grouping)
+   and confirm the number moves the way you'd expect.
+5. **Make it rerunnable.** Save the approved SQL to a file the user can rerun tomorrow:
+   `~/.exasol-starter-kit/workflows/` exists for exactly this and is created by the install.
+   Point to the walkthrough in `~/.exasol-starter-kit/kit/demo/first-revenue-analysis.md`.
 
 ## Non-negotiable guardrails
 
@@ -189,11 +197,14 @@ Follow these on every interaction, no exceptions:
     (`USE ANY SCHEMA` + `SELECT ANY TABLE`) but the database *enforces* read-only, so a
     mutation is rejected outright. This is the safe default path for querying.
 
-    Two DISTINCT layers stop a write here, and you can observe each: the MCP **tool gate**
-    rejects a non-SELECT before it ever reaches the database (`The query is invalid or not a
-    SELECT statement` — that message is the tool, not the engine), and beneath it the
-    **privilege gate** holds even if a statement got through. Prove the privilege gate any
-    time with one query as the MCP user:
+    Two layers stop a write here, and only one of them is load-bearing. The MCP **tool
+    gate** rejects a statement that does not *begin* with SELECT, before it reaches the
+    database (`The query is invalid or not a SELECT statement` — that message is the tool,
+    not the engine). It is a keyword check, not a parser: `SELECT 1; DROP TABLE T` passes
+    it and reaches the engine, which refuses it for its own reasons. So treat the tool gate
+    as a typo-catcher and **never** as the boundary. The boundary is the **privilege gate**
+    beneath it, which the database enforces and which holds no matter what got through.
+    Prove that one any time with a single query as the MCP user:
 
     ```sql
     SELECT PRIVILEGE FROM SYS.EXA_USER_SYS_PRIVS
@@ -218,8 +229,13 @@ Follow these on every interaction, no exceptions:
 
 ## When something goes wrong
 
-- `exakit status` — is the runtime running?
-- `exakit logs` — path to the latest log; every error message names its remedy.
+- `exakit status` — is the runtime running? Exit code 0 running, 3 not running, 4 not
+  installed; `--json` adds `remedies`, a map of component to the exact repair command.
+- **`Status: interrupted` is not `stopped`.** A database in that state cannot be started —
+  `exakit start` fails identically every time, and re-running the installer does not fix it.
+  The remedy is `exakit repair-runtime`, which **rebuilds the deployment and destroys its
+  data** (bundled datasets are reloaded; the user's own uploads are not). Ask first.
+- `exakit logs` — every log the kit can show (`--json` for the target list and paths).
 - `exakit mcp-doctor` / `exakit mcp-repair` — MCP connectivity.
 - Assistant can't see the database → confirm the runtime is running and the client was
   restarted after the MCP config change.
