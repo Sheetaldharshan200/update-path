@@ -2497,7 +2497,12 @@ _exakit_marketplace_load_modules() {
 _exakit_addon_applicable() {
     _aa_fn="$(_exakit_addon_fn "$1" applicable)"
     command -v "$_aa_fn" >/dev/null 2>&1 || return 0
-    "$_aa_fn"
+    # The probe belongs to the add-on module and can do real work: shell out to
+    # a code CLI, inspect the platform, read a path. Run it in a subshell so a
+    # probe that dies takes its own answer down and nothing else — `exakit
+    # version` listed only INSTALLED add-ons before, so no caller had ever run
+    # this for an absent one. "Cannot tell" means do not offer it.
+    ( "$_aa_fn" ) 2>/dev/null
 }
 
 # _exakit_addon_applicable_reason <id> — the one line that explains why it is

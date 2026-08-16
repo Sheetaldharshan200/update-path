@@ -678,7 +678,13 @@ version_out="$( EXAKIT_HOME="$UC" EXAKIT_MANIFEST="$UC/manifest.json" \
     EXAKIT_VERSIONS_CACHE="$UC/cache/versions.json" \
     EXAKIT_VERSIONS_URL="http://offline.invalid/versions.json" \
     bash "$ROOT/setup/exakit" version 2>&1 )"
-has "version reports the installed kit version" "Kit version:    0.2.0" "$version_out"
+# `exakit version` groups its rows into Kit / Components / Add-ons panels, so
+# the label lost its "Kit " prefix and the value column is padded to one width
+# across all three panels. Match the label and value, not the spacing between
+# them, or this pins a padding that legitimately moves when a longer value
+# (a repo name, a git-sha version) widens the screen.
+has "version reports the installed kit version" "Version " "$version_out"
+has "version reports the installed kit version value" "0.2.0" "$version_out"
 lacks "version prints no comparison table" "Component update check" "$version_out"
 # Framed like the connection panel, not three loose lines that read like an error.
 has "version frames the waiting updates" "Updates available" "$version_out"
@@ -968,8 +974,8 @@ check "the MCP server keeps its recorded version" "1.10.1" "$(live_read mcp)"
 absent_version="$( rm -f "$LIVE/bin/exapump" "$LIVE/venv/bin/python"
     EXAKIT_HOME="$LIVE" PATH="$(dirname "$(command -v python3)"):/usr/bin:/bin" \
         bash "$ROOT/setup/exakit" version 2>&1 )"
-has "version agrees that a deleted exapump is gone" "exapump:        not installed" "$absent_version"
-has "version agrees that a deleted venv is gone" "pyexasol:       not installed" "$absent_version"
+has "version agrees that a deleted exapump is gone" "exapump        not installed" "$absent_version"
+has "version agrees that a deleted venv is gone" "pyexasol       not installed" "$absent_version"
 # Put them back for anything that follows.
 printf '#!/bin/sh\necho "exapump 0.13.0"\n' > "$LIVE/bin/exapump"
 rm -f "$LIVE/venv/bin/python"
@@ -1290,7 +1296,7 @@ agree_out="$(version_out)"
 lacks "and says nothing extra when they agree" "(kit installed" "$agree_out"
 # The Nano runtime records a full image reference but probes back a bare tag; the two
 # must be compared as tags, or every Nano install would claim a phantom difference.
-has "the runtime row compares tag with tag" "Runtime:        nano 2026.2.0-nano.2" "$agree_out"
+has "the runtime row compares tag with tag" "Runtime        nano 2026.2.0-nano.2" "$agree_out"
 
 echo "a component with no build for this machine is never offered:"
 # exapump publishes nothing for Windows on ARM, and nothing for a CPU outside
@@ -2458,7 +2464,8 @@ PSEOF
         EXAKIT_VERSIONS_CACHE="$UC/cache/versions.json" \
         EXAKIT_VERSIONS_URL="http://offline.invalid/versions.json" \
         pwsh -NoProfile -File "$ROOT/setup/exakit.ps1" version 2>&1 | tr -d '\r')"
-    has "powershell: version reports the kit version" "Kit version:    0.2.0" "$ps_version"
+    has "powershell: version reports the kit version" "Version " "$ps_version"
+    has "powershell: version reports the kit version value" "0.2.0" "$ps_version"
     lacks "powershell: version prints no table" "Component update check" "$ps_version"
     has "powershell: version frames the waiting updates" "Updates available" "$ps_version"
     has "powershell: version points at update-check" "See what's new   exakit update-check" "$ps_version"

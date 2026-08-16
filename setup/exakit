@@ -249,52 +249,96 @@ EXAKIT_SJ_PY
         [ "$_cs_running" -eq 1 ] && exit 0 || exit 3
     fi
 
-    printf 'Kit level:  %s\n' "$(manifest_get kit_level 2>/dev/null)"
-    printf 'Runtime:    %s\n' "${_type:-none}"
-    printf 'Status:     %s\n' "$_cs_db"
+    # One label column for the whole screen. The pad was a hardcoded 11, but
+    # "dash-server:" is 12, so every service row sat a column out of line — and
+    # the registry can add longer ids than that. Measure instead of guessing.
+    _cs_lw=12
+    for _st_id in $(exakit_service_ids 2>/dev/null); do
+        [ "$_st_id" = "database" ] && continue
+        _cs_n=$(( ${#_st_id} + 1 ))
+        [ "$_cs_n" -gt "$_cs_lw" ] && _cs_lw=$_cs_n
+    done
+    _cs_row() { printf "%-${_cs_lw}s %s\n" "$1" "$2"; }
+
+    _cs_row 'Kit level:' "$(manifest_get kit_level 2>/dev/null)"
+    _cs_row 'Runtime:'   "${_type:-none}"
+    _cs_row 'Status:'    "$_cs_db"
     # Every add-on that runs as a service, with the state it is actually in —
     # registry-driven, so a new add-on appears here on its own.
     for _st_id in $(exakit_service_ids 2>/dev/null); do
         [ "$_st_id" = "database" ] && continue
-        printf '%-11s %s\n' "$_st_id:" "$(exakit_service_status "$_st_id")"
+        _cs_row "$_st_id:" "$(exakit_service_status "$_st_id")"
     done
     if [ "$_cs_autostart" = "true" ]; then
-        printf 'Autostart:  on\n'
+        _cs_row 'Autostart:' 'on'
     else
-        printf 'Autostart:  off — turn it on with: exakit autostart on\n'
+        _cs_row 'Autostart:' 'off — turn it on with: exakit autostart on'
     fi
     if [ -n "$_cs_datasets" ]; then
         # Comma-separated: the ids are space-separated in the manifest, and
         # printing them raw ran the names together as one string.
-        printf 'Datasets:   %s\n' "$(printf '%s' "$_cs_datasets" | tr -s ' ' | sed 's/^ //; s/ $//; s/ /, /g')"
+        _cs_row 'Datasets:' "$(printf '%s' "$_cs_datasets" | tr -s ' ' | sed 's/^ //; s/ $//; s/ /, /g')"
     else
-        printf 'Datasets:   none loaded — load some with: exakit data-load\n'
+        _cs_row 'Datasets:' 'none loaded — load some with: exakit data-load'
     fi
-    printf 'Steps done: %s\n' "$(manifest_get steps_completed 2>/dev/null)"
-    # pyexasol installs soft: when it is missing, say so here with the one command
-    # that fixes it, instead of leaving a silent gap in the install.
-    if [ -n "$_cs_pyx" ]; then
-        printf 'pyexasol:   %s\n' "$_cs_pyx"
-    elif manifest_get components.pyexasol.validated >/dev/null 2>&1; then
-        printf 'pyexasol:   not installed — repair: exakit update pyexasol\n'
+
+    # Every SOFT component, not just one. exapump, the MCP server and pyexasol
+    # all install through exakit_soft_step, so ANY of them can be missing from an
+    # install that finished. The install-time report (exakit_print_soft_failures)
+    # prints once and is gone by the time anyone types `exakit status`.
+    #
+    # This screen used to give pyexasol a dedicated "not installed" line and say
+    # nothing about the other two: a failed exapump showed up only as an absence
+    # from the steps_completed array, which is precisely the kind of signal a
+    # reader does not notice. Same failure, three different treatments.
+    #
+    # steps_completed itself is gone from the human screen: it was raw JSON in a
+    # screen a person reads, and it reported trouble only by omission. This says
+    # it directly. `status --json` still carries steps_completed untouched.
+    _cs_missing=""
+    while IFS='|' read -r _cs_cid _cs_ckey _cs_cfix; do
+        [ -n "$_cs_cid" ] || continue
+        # A manifest record is what says "this install attempted the component",
+        # so a kit copy built without one of them is not reported as broken.
+        manifest_get "$_cs_ckey" >/dev/null 2>&1 || continue
+        exakit_component_current "$_cs_cid" >/dev/null 2>&1 && continue
+        _cs_missing="${_cs_missing}${_cs_missing:+
+}$(printf '%-9s repair: %s' "$_cs_cid" "$_cs_cfix")"
+    done <<EXAKIT_CS_SOFT
+exapump|components.exapump.validated|exakit update exapump
+mcp|components.mcp_server.validated|exakit update mcp
+pyexasol|components.pyexasol.validated|exakit update pyexasol
+EXAKIT_CS_SOFT
+    if [ -n "$_cs_missing" ]; then
+        _cs_label='Missing:'
+        _cs_oifs=$IFS; IFS='
+'
+        for _cs_line in $_cs_missing; do
+            IFS=$_cs_oifs
+            _cs_row "$_cs_label" "$_cs_line"
+            _cs_label=''
+            _cs_oifs=$IFS; IFS='
+'
+        done
+        IFS=$_cs_oifs
     fi
-    printf 'Manifest:   %s\n' "$EXAKIT_MANIFEST"
+    _cs_row 'Manifest:' "$EXAKIT_MANIFEST"
     # Superseded launchers the kit set aside during an upgrade. Each is a full
     # ~130 MB binary, and nothing reported them, so they accumulated silently
     # and no command would ever reclaim the space.
     _cs_strays="$(exakit_stray_launchers 2>/dev/null || true)"
     if [ -n "$_cs_strays" ]; then
-        printf 'Stray:      %s superseded launcher(s) in %s — safe to delete: %s\n' \
+        _cs_row 'Stray:' "$(printf '%s superseded launcher(s) in %s — safe to delete: %s' \
             "$(printf '%s\n' "$_cs_strays" | wc -l | tr -d ' ')" \
-            "$EXAKIT_BIN_DIR" "rm $(printf '%s ' $_cs_strays)"
+            "$EXAKIT_BIN_DIR" "rm $(printf '%s ' $_cs_strays)")"
     fi
     if [ "$_cs_running" -ne 1 ]; then
         # An interrupted deployment cannot be started, so pointing at `exakit
         # start` here is worse than useless: it is the loop the reader was
         # already in. Name the command that actually clears it.
         case "$_cs_db" in
-            interrupted*) printf 'Repair it:  exakit repair-runtime   (replaces the database; its data is not recoverable)\n' ;;
-            *)            printf 'Start it:   exakit start\n' ;;
+            interrupted*) _cs_row 'Repair it:' 'exakit repair-runtime   (replaces the database; its data is not recoverable)' ;;
+            *)            _cs_row 'Start it:' 'exakit start' ;;
         esac
         exit 3
     fi
@@ -1063,7 +1107,14 @@ case "${1:-help}" in
     info)     shift
               case "${1:-}" in
                   --json|-j) cmd_info_json ;;
-                  *) _with_notice connection_panel ;;
+                  # The --json form was reachable only from `exakit help`, so a
+                  # reader looking at these details had no way to learn the
+                  # machine-readable one exists. The hint lives here rather than
+                  # in connection_panel because the install ends with that same
+                  # panel, and someone finishing an install is not looking for a
+                  # JSON dump.
+                  *) _with_notice connection_panel
+                     printf '  %sMachine-readable: exakit info --json%s\n\n' "${UI_DIM:-}" "${UI_RESET:-}" ;;
               esac ;;
     guide)    _with_notice exakit_guide ;;
     start)    _with_notice cmd_start ;;
