@@ -2115,7 +2115,7 @@ level2="$(kit2_table "$WORK/with-kit2.json" \
                                    runtime.type) printf "nano\n" ;;
                                    kit.version) printf "0.2.0\n" ;;
                                    *) return 1 ;; esac; }')"
-has "Kit 2 installed -> its own row" "kit2       0.1.0" "$level2"
+has "Kit 2 installed -> its own row" "kit2 0.1.0" "$(row "$level2" kit2)"
 lacks "and no discovery line any more" "is available — add it with" "$level2"
 level2_behind="$(kit2_table "$WORK/with-kit2.json" \
     'manifest_get() { case "$1" in kit_level) printf "2\n" ;;

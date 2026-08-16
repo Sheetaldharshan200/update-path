@@ -31,7 +31,7 @@
 #                       run one SQL statement and translate the error into a
 #                       remedy; reads only unless --write. Uses the ADMIN
 #                       connection (the read-only boundary is the MCP user)
-#   mcp-setup           connect MCP to more AI clients
+#   mcp-setup           permanently configure MCP in supported AI clients
 #   mcp-doctor          check the configured MCP clients, repair what has
 #                       drifted, then re-check (there is no separate repair)
 #   mcp-status          show managed MCP state for the supported AI clients
