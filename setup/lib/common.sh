@@ -426,6 +426,25 @@ ui_checkbox_menu() {
         _cb_i=$((_cb_i + 1))
     done
 
+    # The keyboard hint has to describe what the keys actually DO. On an
+    # either/or menu — exactly two selectable rows, one of them exclusive —
+    # Space does not toggle anything a reader would call a toggle: it moves the
+    # tick from one answer to the other, which is choosing. "Toggle" invited
+    # people to switch both off (Enter then silently refuses, because at least
+    # one selection is required) or to read two answers to one question as two
+    # independent switches. A real multi-select keeps "toggle", which is exactly
+    # what Space does there.
+    #
+    # Derived from the menu's shape rather than set per call site, so a new
+    # either/or menu gets the right hint without anyone remembering to ask.
+    _cb_sel_n=0
+    for _cb_s in $_UI_CHECKBOX_SELECTABLE; do _cb_sel_n=$((_cb_sel_n + 1)); done
+    if [ -n "${EXAKIT_CHECKBOX_EXCLUSIVE:-}" ] && [ "$_cb_sel_n" -eq 2 ]; then
+        _cb_space='Space to select'
+    else
+        _cb_space='Space to toggle'
+    fi
+
     _cb_tty="$(_exakit_prompt_tty)"
     if [ -z "$_cb_tty" ]; then
         EXAKIT_CHECKBOX_SELECTION="$_cb_defaults"
@@ -497,7 +516,7 @@ ui_checkbox_menu() {
             _cb_drawn=$((_cb_drawn + $(_ui_wrapped_lines $((_cb_chrome + ${#_cb_text})) "$_cb_cols")))
             _cb_i=$((_cb_i + 1))
         done
-        _cb_hint="$(_ui_fit_row "↑/↓ to move · Space to toggle · Enter to confirm" 6 "$_cb_cols")"
+        _cb_hint="$(_ui_fit_row "↑/↓ to move · $_cb_space · Enter to confirm" 6 "$_cb_cols")"
         ui_menu_hint "$_cb_hint"
         _cb_drawn=$((_cb_drawn + $(_ui_wrapped_lines $((6 + ${#_cb_hint})) "$_cb_cols")))
         # One raw keypress, no echo. Enter arrives as an empty read; IFS= keeps

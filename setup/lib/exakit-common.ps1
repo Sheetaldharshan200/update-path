@@ -296,6 +296,20 @@ function Read-ExakitCheckboxMenu {
     # never selectable, skipped by the cursor, and excluded from "a".
     $isHeader = { param($i) $Options[$i - 1].StartsWith("#") }
     $isDisabled = { param($i) $Options[$i - 1].StartsWith("!") }
+
+    # The keyboard hint has to describe what the keys actually DO. On an
+    # either/or menu - exactly two selectable rows, one of them exclusive -
+    # Space does not toggle anything a reader would call a toggle: it moves the
+    # tick from one answer to the other, which is choosing. A real multi-select
+    # keeps "toggle", which is exactly what Space does there. Derived from the
+    # menu's shape, not per call site. Mirrors ui_checkbox_menu in common.sh.
+    $selectableCount = 0
+    for ($i = 1; $i -le $Options.Count; $i++) {
+        if ((& $isHeader $i) -or (& $isDisabled $i)) { continue }
+        $selectableCount += 1
+    }
+    $spaceVerb = "Space to toggle"
+    if ($ExclusiveIndex -ge 1 -and $selectableCount -eq 2) { $spaceVerb = "Space to select" }
     $step = {
         param($dir)
         for ($s = 0; $s -lt $Options.Count; $s++) {
@@ -332,7 +346,7 @@ function Read-ExakitCheckboxMenu {
                 Write-Host ("    {0} [ ] {1}" -f $ptr, $Options[$i - 1])
             }
         }
-        Write-ExakitMenuHint "Up/Down to move - Space to toggle - Enter to confirm"
+        Write-ExakitMenuHint "Up/Down to move - $spaceVerb - Enter to confirm"
         $key = [Console]::ReadKey($true)
         $handled = $true
         switch ($key.Key) {
