@@ -2800,7 +2800,7 @@ function Get-ExakitMarketplaceAddons {
         [pscustomobject]@{
             Id          = "dash-server"
             Label       = "dash-server (AI dashboard host)"
-            Description = "Agent-built live dashboards on your Exasol data, operated over MCP"
+            Description = "Live dashboards on your Exasol data, built by AI"
             InstallFn   = "Install-DashServer"
             ValidateFn  = "Test-DashServer"
             UpdateFn    = "Update-DashServer"
@@ -2817,7 +2817,7 @@ function Get-ExakitMarketplaceAddons {
         [pscustomobject]@{
             Id          = "exasol-vscode"
             Label       = "Exasol for VS Code (editor extension)"
-            Description = "SQL editing and schema browsing for your Exasol database, inside VS Code"
+            Description = "SQL editing and schema browsing inside VS Code"
             InstallFn   = "Install-ExasolVscode"
             ValidateFn  = "Test-ExasolVscode"
             UpdateFn    = "Update-ExasolVscode"
@@ -2831,7 +2831,7 @@ function Get-ExakitMarketplaceAddons {
         [pscustomobject]@{
             Id          = "json-tables"
             Label       = "JSON Tables (JSON into Exasol)"
-            Description = "Ingest, query and reshape JSON-shaped data - the engine ships prebuilt, no Rust toolchain"
+            Description = "Load JSON files into Exasol as regular tables"
             InstallFn   = "Install-JsonTables"
             ValidateFn  = "Test-JsonTables"
             UpdateFn    = "Update-JsonTables"
@@ -2974,27 +2974,36 @@ function Show-ExakitMarketplaceMenu {
         # Not applicable here and not installed: not an option on this machine,
         # so it is not shown at all - no row, no table line.
         if (-not (Test-ExakitAddonOfferable $addon.Id)) { continue }
+        # Every add-on gets BOTH a table row and a menu row. The menu row for a
+        # state that cannot be installed is a disabled row ("!" prefix): shown,
+        # dimmed, unselectable, saying why. That is what lets the table drop its
+        # Status and Action columns without hiding anything - a first-time user
+        # reads three columns of catalogue, and anyone re-running the command
+        # still sees why a row is not on offer, in the menu where they are
+        # looking. The Description column carries the state for a row that is
+        # not simply available, because the all-covered path returns before the
+        # menu is ever drawn and the table is then the only output.
         if (Test-ExakitMarketplaceAddonInstalled $addon.Id) {
             $ver = ""
             if (Get-Command Get-ExakitComponentCurrent -ErrorAction SilentlyContinue) { $ver = Get-ExakitComponentCurrent $addon.Id }
             elseif (Get-Command $addon.VersionFn -ErrorAction SilentlyContinue) { $ver = & $addon.VersionFn }
             if (-not $ver) { $ver = "?" }
-            $rows += @{ Id = $null; Label = ""
-                Table = ("{0,-14} {1,-20} {2,-14} {3}" -f $addon.Id, "installed", $ver, "exakit update $($addon.Id)") }
+            $rows += @{ Id = $null; Label = "$($addon.Id) - already installed"
+                Table = ("{0,-14} {1,-14} {2}" -f $addon.Id, $ver, "Installed. Update: exakit update $($addon.Id)") }
         } elseif (Test-ExakitAddonSystemPresent $addon.Id) {
             # The user already has the tool from somewhere else - covered, and
             # the kit does not manage it.
-            $rows += @{ Id = $null; Label = ""
-                Table = ("{0,-14} {1,-20} {2,-14} {3}" -f $addon.Id, "on this system", "-", "managed outside the kit") }
+            $rows += @{ Id = $null; Label = "$($addon.Id) - already on this system"
+                Table = ("{0,-14} {1,-14} {2}" -f $addon.Id, "-", "Already on this system, managed outside the kit") }
         } elseif (-not (Get-Command $addon.InstallFn -ErrorAction SilentlyContinue)) {
-            $rows += @{ Id = $null; Label = ""
-                Table = ("{0,-14} {1,-20} {2,-14} {3}" -f $addon.Id, "not in this kit copy", "-", "exakit update exakit") }
+            $rows += @{ Id = $null; Label = "$($addon.Id) - not in this kit copy"
+                Table = ("{0,-14} {1,-14} {2}" -f $addon.Id, "-", "Not in this kit copy. Run: exakit update exakit") }
         } else {
             $advertised = ""
             if (Get-Command Get-ExakitComponentAvailable -ErrorAction SilentlyContinue) { $advertised = Get-ExakitComponentAvailable $addon.Id }
             if (-not $advertised) { $advertised = "unknown" }
-            $rows += @{ Id = $addon.Id; Label = "$($addon.Label) - $($addon.Description)"
-                Table = ("{0,-14} {1,-20} {2,-14} {3}" -f $addon.Id, "available", $advertised, "select below to install") }
+            $rows += @{ Id = $addon.Id; Label = "$($addon.Id) - $($addon.Description)"
+                Table = ("{0,-14} {1,-14} {2}" -f $addon.Id, $advertised, $addon.Description) }
         }
     }
 
@@ -3027,9 +3036,9 @@ function Show-ExakitMarketplaceMenu {
     # screens read as one family.
     Write-Host ""
     Write-Host "  Marketplace add-ons"
-    Write-Host "  -------------------"
-    Write-Host ("{0,-14} {1,-20} {2,-14} {3}" -f "Add-on", "Status", "Version", "Action")
-    foreach ($row in $rows) { Write-Host $row.Table }
+    Write-Host ("  " + ("-" * 74))
+    Write-Host ("  {0,-14} {1,-14} {2}" -f "Add-on", "Version", "Description")
+    foreach ($row in $rows) { Write-Host ("  " + $row.Table) }
     Write-Host ""
 
     $selectable = @($rows | Where-Object { $_.Id })
@@ -3050,12 +3059,24 @@ function Show-ExakitMarketplaceMenu {
     $menuIds = New-Object System.Collections.Generic.List[string]
     [void]$menuLabels.Add("Available add-ons")
     [void]$menuIds.Add("__group__")
+    # Children in two passes: installable rows first, so the group's child range
+    # (2 .. selectable+1) stays contiguous, then the disabled rows. The corner
+    # connector belongs to the last child overall, whichever pass produced it.
+    $disabled = @($rows | Where-Object { -not $_.Id -and $_.Label })
+    $children = $selectable.Count + $disabled.Count
     $child = 0
     foreach ($row in $selectable) {
         $child += 1
-        $conn = if ($child -eq $selectable.Count) { $corner } else { $tee }
+        $conn = if ($child -eq $children) { $corner } else { $tee }
         [void]$menuLabels.Add("$conn $($row.Label)")
         [void]$menuIds.Add($row.Id)
+    }
+    foreach ($row in $disabled) {
+        $child += 1
+        $conn = if ($child -eq $children) { $corner } else { $tee }
+        # "!" first: the checkbox menu tests the label's first character.
+        [void]$menuLabels.Add("!$conn $($row.Label)")
+        [void]$menuIds.Add("__disabled__")
     }
     [void]$menuLabels.Add("Cancel (install nothing)")
     [void]$menuIds.Add("__cancel__")
