@@ -1891,14 +1891,12 @@ function Invoke-CmdWhatsNew {
     }
     if (-not (Write-ExakitWhatsNew -Version $Version -Heading "What's new in $Version")) {
         $root = Get-ExakitRepoRoot
-        $file = if ($root) { Join-Path $root "WHATS-NEW.md" } else { $null }
-        if ($file -and (Test-Path $file)) {
+        $file = Get-ExakitWhatsNewFile -KitRoot $root
+        if ($file) {
             Info "No notes for $Version. Versions covered:"
-            foreach ($line in (Get-Content -Path $file)) {
-                if ($line.StartsWith("## ")) { Write-Host ("      " + $line.Substring(3)) }
-            }
+            foreach ($v in (Get-ExakitWhatsNewVersions -KitRoot $root)) { Write-Host ("      " + $v) }
         } else {
-            Info "This kit copy does not carry WHATS-NEW.md."
+            Info "This kit copy does not carry setup/whats-new.json."
         }
     }
 }

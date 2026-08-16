@@ -947,11 +947,11 @@ cmd_whats_new() {
     [ -n "$_cwn_version" ] || die "Could not tell which kit version this is. Name one: exakit whats-new 0.2.0"
     if ! exakit_print_whats_new "$_cwn_version" "What's new in $_cwn_version"; then
         _cwn_root="$(exakit_repo_root 2>/dev/null || true)"
-        if [ -n "$_cwn_root" ] && [ -f "$_cwn_root/WHATS-NEW.md" ]; then
+        if [ -n "$_cwn_root" ] && exakit_whats_new_file "$_cwn_root" >/dev/null 2>&1; then
             info "No notes for $_cwn_version. Versions covered:"
-            sed -n 's/^## \(.*\)$/      \1/p' "$_cwn_root/WHATS-NEW.md"
+            exakit_whats_new_versions "$_cwn_root" 2>/dev/null | sed 's/^/      /'
         else
-            info "This kit copy does not carry WHATS-NEW.md."
+            info "This kit copy does not carry setup/whats-new.json."
         fi
     fi
 }

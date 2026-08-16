@@ -170,7 +170,7 @@ try {
         # The versions manifest travels with the copy: it is the offline tier of
         # version resolution and the record of which kit version this is.
         Copy-ExakitAsset -Source (Join-Path $KitRoot "versions.json") -Destination (Join-Path $script:ExakitHome "kit\versions.json")
-        Copy-ExakitAsset -Source (Join-Path $KitRoot "WHATS-NEW.md") -Destination (Join-Path $script:ExakitHome "kit\WHATS-NEW.md")
+        Copy-ExakitAsset -Source (Join-Path $KitRoot "setup\whats-new.json") -Destination (Join-Path $script:ExakitHome "kit\setup\whats-new.json")
 
         # Set-ExakitCmdShim owns the shim's content (the kit self-update writes the
         # same file, so it must not drift): the bare `exakit` command is ONLY the

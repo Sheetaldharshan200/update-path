@@ -1481,23 +1481,35 @@ quiet="$( EXAKIT_HOME="$WORK/soft-ok-home"
 check "a clean run says nothing and marks everything" \
     "silent exapump,mcp,pyexasol,exakit_helper" "$quiet"
 echo "release notes travel with the kit:"
-mkdir -p "$WORK/wn-kit"
-printf '# What is new\n\n## 0.3.0\n\n- the newer thing\n\n## 0.2.0\n\n- the older thing\n' \
-    > "$WORK/wn-kit/WHATS-NEW.md"
-check "a section is read whole and stops at the next heading" "- the older thing" \
-    "$(exakit_whats_new_section "$WORK/wn-kit" 0.2.0 | tr -d '[:space:]' | sed 's/^-*//;s/^/- /;s/\(.\)$/\1/' >/dev/null; \
-       exakit_whats_new_section "$WORK/wn-kit" 0.2.0 | grep -v '^$' | head -1)"
-check "the later section is separate" "- the newer thing" \
-    "$(exakit_whats_new_section "$WORK/wn-kit" 0.3.0 | grep -v '^$' | head -1)"
-# Silence, not noise, for the two cases a real upgrade meets.
+mkdir -p "$WORK/wn-kit/setup"
+cat > "$WORK/wn-kit/setup/whats-new.json" <<'WN_ONE'
+{
+  "_comment": "keys starting with _ are notes to maintainers, never versions",
+  "0.3.0": ["the newer thing"],
+  "0.2.0": ["the older thing"]
+}
+WN_ONE
+check "a version's lines are read as its own" "  - the older thing" \
+    "$(exakit_whats_new_points "$WORK/wn-kit" 0.2.0 | head -1)"
+check "the later version is separate" "  - the newer thing" \
+    "$(exakit_whats_new_points "$WORK/wn-kit" 0.3.0 | head -1)"
+# Silence, not noise, for the cases a real upgrade meets.
 check "an unknown version is silent" "rc=1" \
-    "$(exakit_whats_new_section "$WORK/wn-kit" 9.9.9 >/dev/null 2>&1; printf 'rc=%s' "$?")"
+    "$(exakit_whats_new_points "$WORK/wn-kit" 9.9.9 >/dev/null 2>&1; printf 'rc=%s' "$?")"
 check "a kit copy without the file is silent" "rc=1" \
-    "$(exakit_whats_new_section "$WORK" 0.2.0 >/dev/null 2>&1; printf 'rc=%s' "$?")"
-# A heading with nothing under it must not print an empty panel.
-printf '# What is new\n\n## 0.4.0\n\n\n## 0.3.0\n\n- real\n' > "$WORK/wn-kit/WHATS-NEW.md"
-check "an empty section counts as no section" "rc=1" \
-    "$(exakit_whats_new_section "$WORK/wn-kit" 0.4.0 >/dev/null 2>&1; printf 'rc=%s' "$?")"
+    "$(exakit_whats_new_points "$WORK" 0.2.0 >/dev/null 2>&1; printf 'rc=%s' "$?")"
+# A key with an empty list must not print an empty card.
+printf '{"0.4.0": [], "0.3.0": ["real"]}\n' > "$WORK/wn-kit/setup/whats-new.json"
+check "an empty list counts as no card" "rc=1" \
+    "$(exakit_whats_new_points "$WORK/wn-kit" 0.4.0 >/dev/null 2>&1; printf 'rc=%s' "$?")"
+# A hand-edited file with a syntax error must not end a successful upgrade.
+printf '{"0.3.0": ["oops",]}\n' > "$WORK/wn-kit/setup/whats-new.json"
+check "a malformed file is silent, not fatal" "rc=1" \
+    "$(exakit_whats_new_points "$WORK/wn-kit" 0.3.0 >/dev/null 2>&1; printf 'rc=%s' "$?")"
+# The comment key is not a version.
+printf '{"_comment": ["not a version"], "0.3.0": ["real"]}\n' > "$WORK/wn-kit/setup/whats-new.json"
+check "a _comment key is never offered as a version" "0.3.0" \
+    "$(exakit_whats_new_versions "$WORK/wn-kit" | tr '\n' ' ' | sed 's/ $//')"
 
 echo "the post-install \"What's new\" box:"
 # The box is the one place an upgrading user learns what they just got, and the
@@ -1505,49 +1517,26 @@ echo "the post-install \"What's new\" box:"
 # has to say so, and every other run has to stay completely silent.
 #
 # Sentinels, not real note text: the fixture below is the only file that contains
-# them, so a test cannot pass by accidentally reading this checkout's WHATS-NEW.md.
-cat > "$WORK/wn-notes.md" <<'WN_NOTES'
-# What is new
-
-## 0.4.5
-
-Only prose lives under this heading, so it has no points at all.
-
-## 0.4.0
-
-- future-sentinel-040
-
-## 0.25.0
-
-- lexical-trap-sentinel-025
-
-## 0.3.0
-
-Prose before the list is not a point.
-
-**Changes**
-
-- `three-oh` point one
-- three-oh point two, which runs on and on and on and on and on and on and on
-  past any width a drawn box could hold, wrapped in the file like the real notes
-- three-oh point three
-- three-oh point four
-- three-oh point five
-- three-oh point six
-- seventh-point-past-the-cap
-
-## 0.2.0
-
-- two-oh-sentinel
-- two-oh second point
-
-## 0.1.5
-
-- one-five-sentinel
-
-## 0.1.0
-
-- ancient-sentinel-must-not-appear
+# them, so a test cannot pass by accidentally reading this checkout's cards.
+cat > "$WORK/wn-notes.json" <<'WN_NOTES'
+{
+  "_comment": "0.4.5 has no lines at all: a version can ship with nothing to say.",
+  "0.4.5": [],
+  "0.4.0": ["future-sentinel-040"],
+  "0.25.0": ["lexical-trap-sentinel-025"],
+  "0.3.0": [
+    "three-oh point one",
+    "three-oh point two, which runs on and on and on and on and on and on and on past any width a drawn card could hold",
+    "three-oh point three",
+    "three-oh point four",
+    "three-oh point five",
+    "three-oh point six",
+    "seventh-point-past-the-cap"
+  ],
+  "0.2.0": ["two-oh-sentinel", "two-oh second point"],
+  "0.1.5": ["one-five-sentinel"],
+  "0.1.0": ["ancient-sentinel-must-not-appear"]
+}
 WN_NOTES
 
 # wn_kit <version> — a kit tree that states <version> about itself and carries the
@@ -1560,7 +1549,8 @@ doc = json.load(open(sys.argv[1]))
 doc["kit"]["version"] = sys.argv[3]
 json.dump(doc, open(sys.argv[2], "w"), indent=2)
 WN_KIT_PY
-    cp "$WORK/wn-notes.md" "$WORK/wn-kit-$1/WHATS-NEW.md"
+    mkdir -p "$WORK/wn-kit-$1/setup"
+    cp "$WORK/wn-notes.json" "$WORK/wn-kit-$1/setup/whats-new.json"
 }
 for wn_v in 0.1.0 0.1.5 0.2.0 0.3.0 0.4.0 0.4.5; do wn_kit "$wn_v"; done
 
@@ -1587,7 +1577,7 @@ wn_shape() {
 }
 # The version headings the box printed, in the order it printed them.
 wn_order() {
-    printf '%s\n' "$1" | sed -n 's/.*In \([0-9][0-9.]*\):.*/\1/p' \
+    printf '%s\n' "$1" | sed -n 's/.*new in \([0-9][0-9.]*\).*/\1/p' \
         | awk '{ printf "%s%s", (NR > 1 ? " " : ""), $0 } END { printf "\n" }'
 }
 
@@ -1595,7 +1585,7 @@ check "a first-ever install shows no box" "silent" "$(wn_shape "$(wn_run first 0
 # Same home again, now moving 0.3.0 -> 0.4.0.
 wn_upgrade="$(wn_run first 0.4.0)"
 check "an upgrade shows one" "printed" "$(wn_shape "$wn_upgrade")"
-has "with the version it moved to" "In 0.4.0:" "$wn_upgrade"
+has "with the version it moved to" "new in 0.4.0" "$wn_upgrade"
 has "and that version's points" "future-sentinel-040" "$wn_upgrade"
 has "and the line that names the move" "moved from 0.3.0 to 0.4.0" "$wn_upgrade"
 lacks "not the points of a version it already had" "lexical-trap-sentinel-025" "$wn_upgrade"
@@ -1606,8 +1596,10 @@ check "an idempotent re-run at the same version shows none" "silent" \
 # newest hop only, both fail here.
 wn_run cum 0.1.0 >/dev/null
 wn_cum="$(wn_run cum 0.3.0)"
-check "a 0.1.0 -> 0.3.0 upgrade draws exactly one box" "1" \
-    "$(printf '%s\n' "$wn_cum" | grep -c "What's new")"
+# One card per version crossed, not one box for the jump: three hops, three
+# cards, so a reader can take them one at a time.
+check "a 0.1.0 -> 0.3.0 upgrade draws one card per version" "3" \
+    "$(printf '%s\n' "$wn_cum" | grep -c "new in")"
 check "covering every version in between, oldest first" "0.1.5 0.2.0 0.3.0" \
     "$(wn_order "$wn_cum")"
 has "with the points of the middle hop" "two-oh-sentinel" "$wn_cum"
@@ -1617,7 +1609,10 @@ lacks "and nothing from a version not installed yet" "future-sentinel-040" "$wn_
 # 0.25.0 sorts BEFORE 0.3.0 as a string and AFTER it as a version: a lexical
 # comparison would smuggle notes for a release the user does not have into the box.
 lacks "and nothing from a version that only sorts low as text" "lexical-trap-sentinel-025" "$wn_cum"
-has "a wrapped point is joined and cut to the box width" "on and on and..." "$wn_cum"
+# Authoring length is guarded by tests/whats-new.sh; this proves the runtime
+# fallback still cuts a line that somehow got through, rather than blowing out
+# the card's borders.
+has "an over-long line is still cut to the card width" "on and..." "$wn_cum"
 lacks "and only the first few points of a version are shown" "seventh-point-past-the-cap" "$wn_cum"
 check "the widest line still fits a terminal" "fits" \
     "$(printf '%s\n' "$wn_cum" | awk 'length($0) > 90 { print "TOO-WIDE: " length($0); exit } END { print "fits" }')"
@@ -2194,8 +2189,9 @@ MK_VERSIONS_PY
     fi
     # Release notes for the version this archive carries: the update prints them
     # from the copy it just staged, so they have to travel with it.
-    printf '# What is new\n\n## %s\n\n- a line only kit %s could print\n' \
-        "$_mk_version" "$_mk_version" > "$_mk_src/repo-main/WHATS-NEW.md"
+    mkdir -p "$_mk_src/repo-main/setup"
+    printf '{"%s": ["a line only kit %s could print"]}\n' \
+        "$_mk_version" "$_mk_version" > "$_mk_src/repo-main/setup/whats-new.json"
     ( cd "$_mk_src" && tar -czf "$_mk_dest" repo-main )
 }
 
