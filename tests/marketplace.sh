@@ -421,7 +421,7 @@ _covered_out="$( (
     exakit_marketplace_menu 2>&1
 ) )"
 has "no selectable rows -> covered list, no menu" "Everything available is already" "$_covered_out"
-has "the covered list shows the install" "installed" "$_covered_out"
+has "the covered list shows the install" "Installed. Update:" "$_covered_out"
 has "a system install reads as covered, not managed" "on this system" "$_covered_out"
 rm -rf "$EXAKIT_HOME/dash-server-venv"
 
@@ -954,7 +954,12 @@ check "uninstall sweeps the boot entries too" "before=some after=0" "$_as_sweep"
 echo "json-tables (prebuilt engine, no Rust toolchain):"
 check "the add-on is registered" "json-tables" \
     "$(exakit_marketplace_addons | cut -d'|' -f1 | grep -x json-tables)"
-has "and its one-liner promises no toolchain" "no Rust toolchain" \
+# The one-liner is what a first-time user reads in the table and the menu, so
+# it says what the add-on DOES, in one short clause. The prebuilt-engine fact
+# (no Rust toolchain needed) is real but is installation trivia, not a reason
+# to pick it; it lives in skills/json-tables/SKILL.md where someone hitting a
+# build question will look.
+has "its one-liner says what the add-on does" "Load JSON files into Exasol" \
     "$(exakit_marketplace_addons | grep '^json-tables|')"
 
 # The asset name is the contract between the packaging workflow and the
@@ -1092,7 +1097,7 @@ check "a manually installed add-on reads as present" "present" "$( (
 ) )"
 check "the menu says so instead of offering an install" "on this system" "$( (
     PATH="$WORK/manual-bin:$PATH"
-    exakit_marketplace_menu 2>/dev/null | grep '^json-tables' | sed -n 's/^json-tables *\([a-z ]*[a-z]\) .*/\1/p'
+    exakit_marketplace_menu 2>/dev/null | grep '^ *json-tables' | grep -o 'on this system' | head -1
 ) )"
 check "and it cannot be selected" "not-selectable" "$( (
     PATH="$WORK/manual-bin:$PATH"

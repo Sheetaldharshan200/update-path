@@ -2431,9 +2431,9 @@ exakit_component_current() {
 
 # exakit_marketplace_addons — one line per add-on: "id|label|description".
 exakit_marketplace_addons() {
-    printf '%s\n' "dash-server|dash-server (AI dashboard host)|Agent-built live dashboards on your Exasol data, operated over MCP"
-    printf '%s\n' "exasol-vscode|Exasol for VS Code (editor extension)|SQL editing and schema browsing for your Exasol database, inside VS Code"
-    printf '%s\n' "json-tables|JSON Tables (JSON into Exasol)|Ingest, query and reshape JSON-shaped data — the engine ships prebuilt, no Rust toolchain"
+    printf '%s\n' "dash-server|dash-server (AI dashboard host)|Live dashboards on your Exasol data, built by AI"
+    printf '%s\n' "exasol-vscode|Exasol for VS Code (editor extension)|SQL editing and schema browsing inside VS Code"
+    printf '%s\n' "json-tables|JSON Tables (JSON into Exasol)|Load JSON files into Exasol as regular tables"
 }
 
 # _exakit_addon_fn <id> <suffix> — the module function for an add-on.
@@ -2654,23 +2654,32 @@ exakit_marketplace_menu() {
         # Not applicable here and not installed: it is not an option on this
         # machine, so it is not shown at all — no row, no table line.
         _exakit_addon_offerable "$_mm_id" || continue
+        # Every add-on gets BOTH a table row and a menu row. The menu row for a
+        # state that cannot be installed is a disabled row ("!" prefix): shown,
+        # dimmed, unselectable, saying why. That is what lets the table drop its
+        # Status and Action columns without hiding anything — a first-time user
+        # reads three columns of catalogue, and anyone re-running the command
+        # still sees why a row is not on offer, in the menu where they are
+        # looking. The Description column carries the state for a row that is
+        # not simply available, because the all-covered path returns before the
+        # menu is ever drawn and the table is then the only output.
         if exakit_marketplace_addon_installed "$_mm_id"; then
             _mm_ver="$(exakit_component_current "$_mm_id" 2>/dev/null || true)"
-            _mm_rows+=("$(printf '%-14s %-20s %-14s %s' "$_mm_id" "installed" "${_mm_ver:-?}" "exakit update $_mm_id")")
-            _mm_ids+=("__installed__"); _mm_labels+=("")
+            _mm_rows+=("$(printf '%-14s %-14s %s' "$_mm_id" "${_mm_ver:-?}" "Installed. Update: exakit update $_mm_id")")
+            _mm_ids+=("__disabled__"); _mm_labels+=("$_mm_id - already installed")
         elif _exakit_addon_system_present "$_mm_id"; then
-            # The user already has the tool from somewhere else — covered, and
+            # The user already has the tool from somewhere else: covered, and
             # the kit does not manage it.
-            _mm_rows+=("$(printf '%-14s %-20s %-14s %s' "$_mm_id" "on this system" "-" "managed outside the kit")")
-            _mm_ids+=("__installed__"); _mm_labels+=("")
+            _mm_rows+=("$(printf '%-14s %-14s %s' "$_mm_id" "-" "Already on this system, managed outside the kit")")
+            _mm_ids+=("__disabled__"); _mm_labels+=("$_mm_id - already on this system")
         elif ! exakit_marketplace_addon_available "$_mm_id"; then
-            _mm_rows+=("$(printf '%-14s %-20s %-14s %s' "$_mm_id" "not in this kit copy" "-" "exakit update exakit")")
-            _mm_ids+=("__unavailable__"); _mm_labels+=("")
+            _mm_rows+=("$(printf '%-14s %-14s %s' "$_mm_id" "-" "Not in this kit copy. Run: exakit update exakit")")
+            _mm_ids+=("__disabled__"); _mm_labels+=("$_mm_id - not in this kit copy")
         else
             _mm_adv="$(exakit_component_available "$_mm_id" 2>/dev/null || true)"
-            _mm_rows+=("$(printf '%-14s %-20s %-14s %s' "$_mm_id" "available" "${_mm_adv:-unknown}" "select below to install")")
+            _mm_rows+=("$(printf '%-14s %-14s %s' "$_mm_id" "${_mm_adv:-unknown}" "$_mm_desc")")
             _mm_ids+=("$_mm_id")
-            _mm_labels+=("$_mm_label — $_mm_desc")
+            _mm_labels+=("$_mm_id - $_mm_desc")
             _mm_selectable=$((_mm_selectable + 1))
         fi
     done <<EXAKIT_MM_EOF
@@ -2726,11 +2735,11 @@ EXAKIT_MM_EOF
     # The state table — same shape as the update-check table, so the two
     # screens read as one family.
     printf '\n  Marketplace add-ons\n'
-    printf '  -------------------\n'
-    printf '%-14s %-20s %-14s %s\n' "Add-on" "Status" "Version" "Action"
+    printf '  %s\n' "$(ui_repeat '-' 74)"
+    printf '  %-14s %-14s %s\n' "Add-on" "Version" "Description"
     _mm_i=0
     while [ "$_mm_i" -lt "${#_mm_rows[@]}" ]; do
-        printf '%s\n' "${_mm_rows[$_mm_i]}"
+        printf '  %s\n' "${_mm_rows[$_mm_i]}"
         _mm_i=$((_mm_i + 1))
     done
     printf '\n'
@@ -2750,6 +2759,16 @@ EXAKIT_MM_EOF
     _mm_tee="${UI_TEE:-|-}"; _mm_corner="${UI_CORNER:-\`-}"
     _mm_menu_labels=("Available add-ons")
     _mm_menu_ids=("__group__")
+    # Children in two passes: installable rows first, so the group's child range
+    # (2 .. selectable+1) stays contiguous, then the disabled rows. The corner
+    # connector belongs to the last child overall, whichever pass produced it.
+    _mm_disabled=0
+    _mm_i=0
+    while [ "$_mm_i" -lt "${#_mm_ids[@]}" ]; do
+        case "${_mm_ids[$_mm_i]}" in __disabled__) _mm_disabled=$((_mm_disabled + 1)) ;; esac
+        _mm_i=$((_mm_i + 1))
+    done
+    _mm_children=$((_mm_selectable + _mm_disabled))
     _mm_child=0
     _mm_i=0
     while [ "$_mm_i" -lt "${#_mm_ids[@]}" ]; do
@@ -2757,9 +2776,22 @@ EXAKIT_MM_EOF
             __*__) ;;
             *)
                 _mm_child=$((_mm_child + 1))
-                if [ "$_mm_child" -eq "$_mm_selectable" ]; then _mm_conn="$_mm_corner"; else _mm_conn="$_mm_tee"; fi
+                if [ "$_mm_child" -eq "$_mm_children" ]; then _mm_conn="$_mm_corner"; else _mm_conn="$_mm_tee"; fi
                 _mm_menu_labels+=("$_mm_conn ${_mm_labels[$_mm_i]}")
                 _mm_menu_ids+=("${_mm_ids[$_mm_i]}")
+                ;;
+        esac
+        _mm_i=$((_mm_i + 1))
+    done
+    _mm_i=0
+    while [ "$_mm_i" -lt "${#_mm_ids[@]}" ]; do
+        case "${_mm_ids[$_mm_i]}" in
+            __disabled__)
+                _mm_child=$((_mm_child + 1))
+                if [ "$_mm_child" -eq "$_mm_children" ]; then _mm_conn="$_mm_corner"; else _mm_conn="$_mm_tee"; fi
+                # "!" first: _cb_is_disabled tests the label's first byte.
+                _mm_menu_labels+=("!$_mm_conn ${_mm_labels[$_mm_i]}")
+                _mm_menu_ids+=("__disabled__")
                 ;;
         esac
         _mm_i=$((_mm_i + 1))
