@@ -5537,7 +5537,7 @@ exakit_print_mcp_operation_summary() {
     _result_file="$1"
     require_python3
     run_python - "$_result_file" <<'PY'
-import json, sys
+import json, os, sys
 
 LABELS = {
     "claude_desktop": "Claude",
@@ -5553,15 +5553,86 @@ LABELS = {
 with open(sys.argv[1], encoding="utf-8") as handle:
     doc = json.load(handle)
 
-clients = ", ".join(LABELS.get(item, item) for item in doc.get("selected_clients", []))
-print("")
-print("  MCP operation summary")
-print(f"  Operation: {doc.get('operation', 'unknown')}")
-print(f"  Clients:   {clients or 'all managed clients'}")
-print(f"  Status:    {doc.get('status', 'unknown')}")
-print(f"  Summary:   {doc.get('summary', 'No summary returned')}")
-if doc.get("backup_reference"):
-    print(f"  Snapshot:  {doc.get('backup_reference')}")
+# `mcp-status` is a STATE QUERY, and the operation summary answers a different
+# question. It listed `selected_clients`, which with no client named is every
+# client the kit SUPPORTS - so all eight printed whether one was configured or
+# eight - and reduced the per-client records to "Tracked 4 managed artifact(s)".
+# A reader asking "is my Claude set up?" got the kit's capabilities and a count.
+#
+# The rows are already in the result; this prints them. Snapshot is left out on
+# purpose: a backup id is worth showing after a command that CHANGED something,
+# and is noise on a read-only screen.
+STATE_LABELS = {
+    "configured": "configured",
+    "not_set_up": "not set up",
+    "not_installed": "not installed",
+}
+clients_detail = doc.get("details", {}).get("clients") or []
+if doc.get("operation") == "status" and clients_detail:
+    rows = []
+    for entry in clients_detail:
+        name = LABELS.get(entry.get("client"), entry.get("client", "unknown"))
+        state = STATE_LABELS.get(entry.get("state"), entry.get("state", "unknown"))
+        if entry.get("state") == "configured":
+            note = entry.get("path") or ""
+            home = os.path.expanduser("~")
+            if note.startswith(home):
+                note = "~" + note[len(home):]
+        elif entry.get("state") == "not_set_up":
+            note = "run: exakit mcp-setup"
+        else:
+            # The State column already said "not installed"; repeating it here
+            # spends the widest column on nothing.
+            note = ""
+        rows.append((name, state, note))
+    width = max(len(r[0]) for r in rows)
+    state_w = max(len(r[1]) for r in rows)
+    # Keep the row inside 80 columns. A real config path is long enough on its
+    # own ("~/Library/Application Support/Claude/claude_desktop_config.json" is
+    # 62) to push the table past any terminal, and a wrapped row loses the
+    # column alignment that makes the table readable at a glance. The FILE NAME
+    # is the part that identifies it, so the middle goes rather than the end.
+    budget = 80 - (2 + width + 2 + state_w + 2)
+    trimmed = []
+    for name, state, note in rows:
+        if len(note) > budget and "/" in note:
+            parts = note.split("/")
+            # Keep as many trailing segments as fit: the directory above the file
+            # is often what tells two clients apart (Code/User/mcp.json), so drop
+            # only what the budget forces.
+            keep = 1
+            while keep < len(parts):
+                candidate = parts[0] + "/.../" + "/".join(parts[-(keep + 1):])
+                if len(candidate) > budget:
+                    break
+                keep += 1
+            note = parts[0] + "/.../" + "/".join(parts[-keep:])
+            if len(note) > budget:
+                note = ".../" + parts[-1]
+        trimmed.append((name, state, note))
+    rows = trimmed
+    print("")
+    print("  MCP clients")
+    print("  " + "-" * 74)
+    print(f"  {'Client'.ljust(width)}  {'State'.ljust(state_w)}  Config")
+    for name, state, note in rows:
+        print(f"  {name.ljust(width)}  {state.ljust(state_w)}  {note}".rstrip())
+    print("")
+    configured = sum(1 for e in clients_detail if e.get("state") == "configured")
+    if configured:
+        print("  Not working? Check it end to end with: exakit mcp-doctor")
+    else:
+        print("  Nothing configured yet. Connect a client with: exakit mcp-setup")
+else:
+    clients = ", ".join(LABELS.get(item, item) for item in doc.get("selected_clients", []))
+    print("")
+    print("  MCP operation summary")
+    print(f"  Operation: {doc.get('operation', 'unknown')}")
+    print(f"  Clients:   {clients or 'all managed clients'}")
+    print(f"  Status:    {doc.get('status', 'unknown')}")
+    print(f"  Summary:   {doc.get('summary', 'No summary returned')}")
+    if doc.get("backup_reference"):
+        print(f"  Snapshot:  {doc.get('backup_reference')}")
 
 # Clients left alone because their own config file could not be used. The rest
 # of the selection is still configured, so report this per client.
@@ -7399,12 +7470,14 @@ exakit_autostart_disable() {
 exakit_autostart_print() {
     printf '\n  Automatic start after a restart\n'
     printf '  -------------------------------\n'
-    printf '%-14s %s\n' "Service" "At login"
+    # Indented to the title: the header and rows were flush left under a title
+    # two columns in, so the table read as if it belonged to something else.
+    printf '  %-14s %s\n' "Service" "Status"
     for _ap_id in $(exakit_service_ids); do
         if _exakit_autostart_registered "$_ap_id"; then
-            printf '%-14s %s\n' "$_ap_id" "yes"
+            printf '  %-14s %s\n' "$_ap_id" "yes"
         else
-            printf '%-14s %s\n' "$_ap_id" "no"
+            printf '  %-14s %s\n' "$_ap_id" "no"
         fi
     done
     printf '\n'
@@ -7438,19 +7511,38 @@ exakit_uninstall_menu() {
     # Kit-managed add-ons, each removable on its own.
     _um_addons="$(exakit_marketplace_installed_addons 2>/dev/null || true)"
     if [ -n "$_um_addons" ]; then
-        _um_labels+=("#Add-ons (kit-managed)")
-        _um_keys+=("__header__")
+        # "Clear the add-ons, keep the kit" was already reachable - tick every
+        # add-on row and leave EVERYTHING alone - but nothing on the screen said
+        # so, and with three add-ons it was three keystrokes and a guess about
+        # whether the combination was safe. This states the outcome instead.
+        #
+        # A plain row, not a group parent: the checkbox widget carries one group
+        # spec and EVERYTHING already owns it (it has to stay a master over the
+        # add-on rows, or the screen could claim "everything" with one unticked).
+        # Only offered when there is more than one add-on, because with a single
+        # add-on it is the same keystroke twice.
+        # The scope row, and the caption at the same time. A separate
+        # "Add-ons (kit-managed)" caption said the word twice and left the sweep
+        # floating above the tree it acts on.
+        #
+        # Both scope rows say what SURVIVES, not what goes: "keeps: nothing" is
+        # the plainest statement EVERYTHING can make, and it is the one fact a
+        # reader at this screen is actually weighing.
+        _um_labels+=("Add-ons only — keeps: database, data, exapump, MCP, pyexasol")
+        _um_keys+=("__all_addons__")
         _um_count="$(printf '%s\n' $_um_addons | grep -c .)"
         _um_i=0
         for _um_id in $_um_addons; do
             _um_i=$((_um_i + 1))
             if [ "$_um_i" -eq "$_um_count" ]; then _um_conn="$_um_corner"; else _um_conn="$_um_tee"; fi
-            _um_labels+=("$_um_conn $_um_id")
+            # Indented a level further than the scope row above them, so the
+            # members read as belonging to it rather than sitting beside it.
+            _um_labels+=("  $_um_conn $_um_id")
             _um_keys+=("$_um_id")
         done
     fi
 
-    _um_labels+=("EVERYTHING — the full kit, including the database and all its data")
+    _um_labels+=("EVERYTHING — keeps: nothing")
     _um_keys+=("everything")
     _um_every_idx="${#_um_labels[@]}"
 
@@ -7481,6 +7573,22 @@ exakit_uninstall_menu() {
     for _um_idx in $(printf '%s' "$EXAKIT_CHECKBOX_SELECTION" | tr ',' ' '); do
         [ "$_um_idx" -ge 2 ] || continue
         _um_key="${_um_keys[$((_um_idx - 1))]}"
+        # BEFORE the __*__ skip below: the sweep key is spelled like the
+        # placeholder keys (headers, spacers) that the skip exists to drop, so
+        # checking it afterwards silently discarded the pick and the menu
+        # answered "Nothing selected" with the row plainly ticked.
+        if [ "$_um_key" = "__all_addons__" ]; then
+            # Expand to the add-ons themselves, so the confirmation panel and the
+            # removal loop see the same concrete list every other pick produces:
+            # nobody types UNINSTALL against a row that hides its members.
+            for _um_a in $_um_addons; do
+                case " $_um_picked " in *" $_um_a "*) continue ;; esac
+                _um_picked="${_um_picked:+$_um_picked }$_um_a"
+                _um_picked_labels="${_um_picked_labels:+$_um_picked_labels
+}$_um_a"
+            done
+            continue
+        fi
         case "$_um_key" in __*__) continue ;; esac
         # EVERYTHING swallows any other pick — the full run covers it all.
         if [ "$_um_key" = "everything" ]; then
@@ -7488,9 +7596,10 @@ exakit_uninstall_menu() {
             _um_picked_labels="EVERYTHING — the full kit (database + data, MCP configs, skills, exapump, pyexasol, add-ons, kit home, exakit)"
             break
         fi
+        case " $_um_picked " in *" $_um_key "*) continue ;; esac
         _um_picked="${_um_picked:+$_um_picked }$_um_key"
         _um_picked_labels="${_um_picked_labels:+$_um_picked_labels
-}$(printf '%s' "${_um_labels[$((_um_idx - 1))]}" | sed "s/^$_um_tee //; s/^$_um_corner //")"
+}$(printf '%s' "${_um_labels[$((_um_idx - 1))]}" | sed "s/^  *//; s/^$_um_tee //; s/^$_um_corner //")"
     done
     [ -n "$_um_picked" ] || { info "Nothing selected — nothing was uninstalled."; return 0; }
 

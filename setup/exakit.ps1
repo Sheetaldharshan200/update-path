@@ -375,10 +375,11 @@ function Show-ExakitAutostart {
     Write-Host ""
     Write-Host "  Automatic start after a restart"
     Write-Host "  -------------------------------"
-    Write-Host ("{0,-14} {1}" -f "Service", "At login")
+    # Indented to the title, matching exakit_autostart_print in common.sh.
+    Write-Host ("  {0,-14} {1}" -f "Service", "Status")
     foreach ($id in (Get-ExakitServiceIds)) {
         $state = if (Test-ExakitAutostartRegistered -Id $id) { "yes" } else { "no" }
-        Write-Host ("{0,-14} {1}" -f $id, $state)
+        Write-Host ("  {0,-14} {1}" -f $id, $state)
     }
     Write-Host ""
     Info "Turn it on with: exakit autostart on   -   off with: exakit autostart off"
@@ -671,16 +672,21 @@ function Show-ExakitUninstallMenu {
     # Kit-managed add-ons, each removable on its own (registry-driven).
     $addons = @(Get-ExakitMarketplaceInstalledAddons)
     if ($addons.Count -gt 0) {
-        [void]$labels.Add("#Add-ons (kit-managed)")
-        [void]$keys.Add("__header__")
+        # The scope row, and the caption at the same time. A separate
+        # "Add-ons (kit-managed)" caption said the word twice and left the sweep
+        # floating above the tree it acts on. Both scope rows say what SURVIVES.
+        # Mirrors exakit_uninstall_menu in common.sh.
+        [void]$labels.Add("Add-ons only - keeps: database, data, exapump, MCP, pyexasol")
+        [void]$keys.Add("__all_addons__")
         for ($i = 0; $i -lt $addons.Count; $i++) {
             $conn = if ($i -eq $addons.Count - 1) { $corner } else { $tee }
-            [void]$labels.Add("$conn $($addons[$i])")
+            # Indented a level further than the scope row above them.
+            [void]$labels.Add("  $conn $($addons[$i])")
             [void]$keys.Add($addons[$i])
         }
     }
 
-    [void]$labels.Add("EVERYTHING - the full kit, including the database and all its data")
+    [void]$labels.Add("EVERYTHING - keeps: nothing")
     [void]$keys.Add("everything")
     $everyIdx = $labels.Count
 
@@ -706,6 +712,18 @@ function Show-ExakitUninstallMenu {
     foreach ($idx in $selection) {
         if ($idx -lt 2) { continue }
         $key = $keys[$idx - 1]
+        # BEFORE the "__" skip: the sweep key is spelled like the placeholder
+        # keys that skip exists to drop, so checking it afterwards silently
+        # discarded the pick and the menu answered "Nothing selected" with the
+        # row plainly ticked.
+        if ($key -eq "__all_addons__") {
+            foreach ($a in $addons) {
+                if ($picked -contains $a) { continue }
+                $picked += $a
+                $pickedLabels += $a
+            }
+            continue
+        }
         if ($key.StartsWith("__")) { continue }
         if ($key -eq "everything") {
             # EVERYTHING swallows any other pick - the full run covers it all.
@@ -714,7 +732,7 @@ function Show-ExakitUninstallMenu {
             break
         }
         $picked += $key
-        $pickedLabels += ($labels[$idx - 1] -replace ("^" + [regex]::Escape($tee) + " "), "" -replace ("^" + [regex]::Escape($corner) + " "), "")
+        $pickedLabels += ($labels[$idx - 1].TrimStart() -replace ("^" + [regex]::Escape($tee) + " "), "" -replace ("^" + [regex]::Escape($corner) + " "), "")
     }
     if ($picked.Count -eq 0) { Info "Nothing selected - nothing was uninstalled."; return }
 
