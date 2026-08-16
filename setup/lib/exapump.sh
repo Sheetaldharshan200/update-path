@@ -1341,7 +1341,10 @@ EXAKIT_DLS_EOF
             _dls_defaults="${_dls_defaults:+$_dls_defaults,}$_dls_i"
             _dls_i=$((_dls_i + 1))
         done
-        EXAKIT_CHECKBOX_GROUP="1:2:$((_dls_pending_n + 1))"
+        # "all": master toggle, checked only while EVERY dataset is. See the
+        # same spec in exakit_marketplace_menu — one child ticked must not
+        # render as a checked parent, or the row lies about what will load.
+        EXAKIT_CHECKBOX_GROUP="1:2:$((_dls_pending_n + 1)):all"
     else
         info "Every bundled dataset is already loaded (reload with: exakit data-load --force)."
         _dls_defaults="$_dls_final_idx"

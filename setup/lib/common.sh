@@ -2808,7 +2808,11 @@ EXAKIT_MM_EOF
         _mm_defaults="${_mm_defaults:+$_mm_defaults,}$_mm_i"
         _mm_i=$((_mm_i + 1))
     done
-    EXAKIT_CHECKBOX_GROUP="1:2:$((_mm_selectable + 1))"
+    # "all": the parent is a master toggle, checked only while EVERY child is.
+    # Under the default "any" it stayed checked with one child ticked, so the
+    # summary row read "everything is selected" when it was not — on the row a
+    # user glances at to confirm what is about to be installed.
+    EXAKIT_CHECKBOX_GROUP="1:2:$((_mm_selectable + 1)):all"
     EXAKIT_CHECKBOX_EXCLUSIVE="$_mm_cancel_idx"
     ui_checkbox_menu "Select add-ons to install" "$_mm_defaults" "${_mm_menu_labels[@]}"
     case ",$EXAKIT_CHECKBOX_SELECTION," in

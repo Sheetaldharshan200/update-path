@@ -3087,7 +3087,7 @@ function Show-ExakitMarketplaceMenu {
     $defaults = @(1..($selectable.Count + 1))
     $selection = Read-ExakitCheckboxMenu -Title "Select add-ons to install" `
         -Options $menuLabels.ToArray() -Defaults $defaults -ExclusiveIndex $cancelIdx `
-        -GroupParent 1 -GroupFirst 2 -GroupLast ($selectable.Count + 1)
+        -GroupParent 1 -GroupFirst 2 -GroupLast ($selectable.Count + 1) -GroupMode "all"
     if ($selection -contains $cancelIdx) {
         Info "Marketplace closed - nothing was installed."
         return
