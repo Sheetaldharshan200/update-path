@@ -43,11 +43,19 @@ branch on:
 | Exit | Meaning | Do |
 |---|---|---|
 | `0` | running | carry on |
-| `3` | installed but the database is stopped | `exakit start` |
+| `3` | installed but the database is not running | read the status line: `stopped` → `exakit start`; `interrupted` → `exakit repair-runtime` |
 | `4` | not installed | run the installer |
 
-The `--json` object includes `running`, `datasets_loaded`, `services` and
-`steps_completed`.
+**`interrupted` is a third state, and `exakit start` cannot fix it.** After a crash
+(SIGKILL, a hard power loss) the launcher records the deployment as interrupted, and every
+start attempt afterwards fails identically — as does re-running the installer. Only
+`exakit repair-runtime` clears it, and that **rebuilds the deployment and destroys its
+data** (bundled datasets are reloaded afterwards; the user's own uploads are not). Ask the
+user before running it.
+
+The `--json` object includes `running`, `datasets_loaded` (verified against the database,
+not just the manifest), `services`, `steps_completed`, and `remedies` — a map of component
+to the exact repair command. Read the remedy from there rather than inferring it.
 
 ## Start and stop
 
@@ -82,13 +90,18 @@ Nano, a Startup entry on Windows — but the command is the same everywhere.
 
 Work the ladder in order; do not improvise past it:
 
-1. `exakit status` — what does the exit code actually say?
-2. `exakit start` — the direct fix for a stopped database.
-3. `exakit logs` — lists every log the kit can show, with size and last-updated.
-   `exakit logs -f <target>` follows one live; `exakit logs <target> --path`
-   prints its path.
+1. `exakit status` — what does the exit code, and the status line, actually say?
+2. `exakit start` — the direct fix for a **stopped** database. If it fails once, read the
+   status again rather than running it a second time: an `interrupted` deployment fails
+   this way every time, and repeating it is the loop, not the fix.
+3. `exakit logs` — lists every log the kit can show, with size and last-updated
+   (`--json` for the list and paths). `exakit logs -f <target>` follows one live;
+   `exakit logs <target> --path` prints its path.
 4. Re-run the installer. It is **safe and resumable** — finished steps are
    skipped, failed ones retried.
+5. `exakit repair-runtime` — the last resort, and the *only* thing that clears an
+   `interrupted` deployment. It replaces the database and **its data is not
+   recoverable**. Ask the user first; pass `--yes` only once they have agreed.
 
 ### The error you will hit most
 

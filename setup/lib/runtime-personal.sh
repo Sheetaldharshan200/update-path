@@ -479,6 +479,51 @@ personal_launcher_supports() {
     "$(personal_cli)" --help 2>&1 | grep -w "$1" >/dev/null
 }
 
+# personal_deployment_wedged — has the launcher marked this deployment as
+# INTERRUPTED? That is a third state, and collapsing it into "stopped" is what
+# made a crashed database look like a merely idle one.
+#
+# Reproduced: SIGKILL the runner, and the launcher records
+# currentWorkflowState.interrupted and thereafter refuses to start with "local VM
+# state contains invalid database port: 0" — forever, because every start attempt
+# rewrites the VM state file without ever putting the database port back. `exakit
+# start` cannot fix it, and neither can the launcher's own advice to run stop and
+# start. Only a redeploy clears it, which personal_deploy_local already knows how
+# to do; it just was never reached (see step_artifact_state).
+#
+# Read from the launcher's own state file rather than by running `exasol status`:
+# this is called from `exakit status`, which agents poll, and a file read is free
+# where a launcher subprocess is not.
+personal_deployment_wedged() {
+    [ -n "${EXAKIT_PERSONAL_DEPLOY_DIR:-}" ] || return 1
+    _pdw_state="$EXAKIT_PERSONAL_DEPLOY_DIR/.exasolLauncherState.json"
+    [ -f "$_pdw_state" ] || return 1
+    exakit_can_run_python || return 1
+    run_python - "$_pdw_state" <<'EXAKIT_WEDGE_PY' 2>/dev/null
+import json, sys
+try:
+    with open(sys.argv[1]) as handle:
+        doc = json.load(handle)
+except (OSError, ValueError):
+    sys.exit(1)
+state = doc.get("currentWorkflowState")
+if not isinstance(state, dict) or "interrupted" not in state:
+    sys.exit(1)
+detail = state.get("interrupted") or {}
+if isinstance(detail, dict) and detail.get("error"):
+    print(detail["error"])
+sys.exit(0)
+EXAKIT_WEDGE_PY
+}
+
+# personal_repair_command — the one command that actually clears a wedged
+# deployment. Named in every place the wedge is reported, because the state is
+# unrecoverable by any gentler route and an agent that is told "stopped" will
+# loop on `exakit start` instead.
+personal_repair_command() {
+    printf 'exakit repair-runtime\n'
+}
+
 personal_status() {
     if ! command -v exasol >/dev/null 2>&1 && [ ! -x "$EXAKIT_PERSONAL_BIN" ]; then
         echo "not installed"
@@ -487,6 +532,10 @@ personal_status() {
         # port tells the truth about whether the database is actually up.
         if port_in_use "$EXAKIT_PERSONAL_PORT"; then
             echo "running"
+        elif personal_deployment_wedged >/dev/null 2>&1; then
+            # Not "stopped": start will fail, and saying stopped sends the
+            # reader (and every agent) to a command that cannot work.
+            echo "interrupted"
         else
             echo "stopped"
         fi
@@ -497,7 +546,16 @@ personal_status() {
 
 personal_start() {
     if personal_launcher_supports start; then
-        run_logged "$(personal_cli)" start || die "Failed to start the deployment"
+        if ! run_logged "$(personal_cli)" start; then
+            # Say what to do, not just that it failed. A start that fails on a
+            # wedged deployment fails identically every time it is retried, and
+            # "Failed to start the deployment" plus a log path sent readers back
+            # to `exakit start` in a loop.
+            if personal_deployment_wedged >/dev/null 2>&1; then
+                die "The deployment is interrupted and cannot be started — the launcher has to rebuild it. Repair it with: $(personal_repair_command) (this replaces the deployment; its data is not recoverable)."
+            fi
+            die "Failed to start the deployment. Check the log above, then retry with 'exakit start'; if it fails the same way, repair with: $(personal_repair_command)"
+        fi
         ok "Deployment started"
     else
         info "This launcher version has no explicit start command."
@@ -509,6 +567,9 @@ personal_stop() {
     if personal_launcher_supports stop; then
         run_logged "$(personal_cli)" stop || die "Failed to stop the deployment"
         manifest_set runtime.status "stopped"
+        # exapump.sh caches a reachable database for the run; this run just
+        # ended that. Guarded: the runtime modules load without exapump.sh.
+        command -v exakit_forget_db_reachable >/dev/null 2>&1 && exakit_forget_db_reachable
         ok "Deployment stopped"
     else
         info "This launcher version has no explicit stop command."

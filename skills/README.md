@@ -1,9 +1,19 @@
 # Skills — AI assistant guidance for the starter kit
 
 > **TL;DR** — These are AI *skills*: small `SKILL.md` recipes that teach an AI
-> assistant how to drive this kit. They use the open `SKILL.md` standard that
-> **Claude Code, Codex, Cursor, and other compatible agents** read, so the same
-> files work everywhere — no per-tool copies.
+> assistant how to drive this kit. `exakit skills-install` copies them into
+> `~/.claude/skills/` and `~/.agents/skills/`.
+
+**What is verified, and what is assumed.** Claude Code reads `~/.claude/skills/`
+and picks these up on its next start — that path is tested. `~/.agents/skills/`
+is written for agents that follow the same convention; whether a given tool reads
+it is that tool's business, and the kit does not claim to have verified each one.
+Nothing depends on it: an agent that reads no skills at all still gets the whole
+contract from [AGENTS.md](../AGENTS.md), which inlines the guardrails (the
+ask → inspect → run → validate loop, "exapump and `exakit sql` are the admin
+connection", and the `SYS.EXA_USER_SYS_PRIVS` privilege probe) precisely so they
+survive a skill-less harness. Skills make an agent better here; they are not what
+makes it safe.
 
 ## What's here
 

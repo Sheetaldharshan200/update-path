@@ -700,6 +700,11 @@ function Stop-Nano {
     $code = Invoke-ExakitLogged (Get-NanoEngine) "stop" "-t" "60" $script:NanoContainer
     if ($code -ne 0) { Fail "Failed to stop container" }
     Set-ExakitManifestValue "runtime.status" "stopped"
+    # exapump.ps1 caches a reachable database for the run; this run just ended
+    # that. Guarded: the runtime modules load without exapump.ps1.
+    if (Get-Command Clear-ExakitDbReachable -ErrorAction SilentlyContinue) {
+        Clear-ExakitDbReachable
+    }
     Ok "Nano stopped"
 }
 

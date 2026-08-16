@@ -14,7 +14,15 @@
 
 EXAKIT_EXAPUMP_PROFILE="${EXAKIT_EXAPUMP_PROFILE:-starter-kit}"
 EXAKIT_EXAPUMP_BIN="$EXAKIT_BIN_DIR/exapump"
-EXAPUMP_CONFIG="$HOME/.exapump/config.toml"
+# ONE definition of where exapump keeps its profiles, and it is overridable.
+# The uninstall path used to spell it `rm -rf "$HOME/.exapump"` inline: a test
+# that sandboxes EXAKIT_HOME and EXAKIT_BIN_DIR (as every suite here does) but
+# not HOME therefore deleted the DEVELOPER'S OWN profile, and the machine only
+# said so later, as `Profile 'starter-kit' not found in config` from a command
+# that had worked ten minutes earlier. Every reader and the remover now share
+# this variable, so sandboxing it once is enough.
+EXAKIT_EXAPUMP_CONFIG_DIR="${EXAKIT_EXAPUMP_CONFIG_DIR:-$HOME/.exapump}"
+EXAPUMP_CONFIG="$EXAKIT_EXAPUMP_CONFIG_DIR/config.toml"
 
 exapump_asset_name() {
     _ver="$EXAKIT_EXAPUMP_VERSION"
@@ -990,10 +998,23 @@ exakit_bundled_datasets() {
     done | sort -t'|' -n -k1,1 | cut -d'|' -f2-
 }
 
-# exakit_db_reachable — one cached probe per run: can we run SQL right now?
+# exakit_db_reachable — can we run SQL right now?
+#
+# ONLY A "YES" IS CACHED. Caching the "no" too is what let one installer run
+# report a full database while looking at an empty one: the probe ran before
+# the runtime step, the deployment was down (or being replaced), and the 0 that
+# answer left behind was still there when the data step asked afterwards. Every
+# dataset then fell through to the manifest flag and printed "already loaded"
+# against a database with no schemas in it — and the run exited 0.
+#
+# A "yes" cannot go stale the same way: nothing in a kit run takes the database
+# down without going through personal_stop/nano_stop, and those call
+# exakit_forget_db_reachable. A "no" can go stale on any run that starts or
+# deploys one, so it is re-probed. The cost is one refused local connection per
+# ask, and exakit_dataset_loaded is the only caller.
 _EXAKIT_DB_REACHABLE=""
 exakit_db_reachable() {
-    if [ -z "$_EXAKIT_DB_REACHABLE" ]; then
+    if [ "$_EXAKIT_DB_REACHABLE" != 1 ]; then
         if [ -n "$(manifest_get components.exapump.profile 2>/dev/null)" ] && \
            "$(exapump_cli)" sql -p "$EXAKIT_EXAPUMP_PROFILE" "SELECT 1" >/dev/null 2>&1; then
             _EXAKIT_DB_REACHABLE=1
@@ -1002,6 +1023,14 @@ exakit_db_reachable() {
         fi
     fi
     [ "$_EXAKIT_DB_REACHABLE" = 1 ]
+}
+
+# exakit_forget_db_reachable — drop the cached "yes" after the kit itself takes
+# the database down, so a later check re-probes instead of trusting a state that
+# this run has just ended.
+exakit_forget_db_reachable() {
+    _EXAKIT_DB_REACHABLE=""
+    return 0
 }
 
 # exakit_table_present <table> [schema] — does the table exist in the given
@@ -1015,26 +1044,48 @@ exakit_table_present() {
         2>> "${EXAKIT_LOG_FILE:-/dev/null}" | grep -q "EXAKIT_TABLE_PRESENT"
 }
 
-# exakit_dataset_loaded <flag> <markers_csv> [schema] — is the dataset actually
-# loaded? The DATABASE is the source of truth: when it is reachable, every
-# marker table must exist in the dataset's schema (and the manifest flag is
-# synced to what was observed, so a destroy+redeploy that left a stale "loaded"
-# flag self-heals). Only when the database is unreachable do we fall back to
-# the manifest flag alone.
+# _exakit_sync_dataset_flag <key> <true|false> — write one manifest flag only
+# when it disagrees with what was observed. Split out because a dataset has TWO
+# keys to keep honest, not one (see exakit_dataset_loaded).
+_exakit_sync_dataset_flag() {
+    [ -n "$1" ] || return 0
+    [ "$(manifest_get "$1" 2>/dev/null)" = "$2" ] || manifest_set "$1" "$2"
+    return 0
+}
+
+# exakit_dataset_loaded <flag> <markers_csv> [schema] [id] — is the dataset
+# actually loaded? The DATABASE is the source of truth: when it is reachable,
+# every marker table must exist in the dataset's schema, and BOTH manifest keys
+# are synced to what was observed, so a destroy+redeploy that left a stale
+# "loaded" flag self-heals. Only when the database is unreachable do we fall
+# back to the manifest.
+#
+# TWO KEYS, on purpose. A dataset.conf may set flag= to override the manifest
+# key (TPC-H keeps the historical data.loaded so older installs stay
+# recognized), while `exakit status` reads the canonical
+# data.datasets.<id>.loaded for every dataset alike. Syncing only the override
+# is what let `exakit status --json` keep listing tpch as loaded against a
+# database with no schemas in it, long after this function had observed the
+# tables were gone and healed the other key. Whichever key the caller names,
+# the canonical one is written too.
 exakit_dataset_loaded() {
     _dl_flag="$1"
     _dl_markers="$(printf '%s' "$2" | tr ',' ' ')"
     _dl_schema="$3"
+    _dl_id="${4:-}"
+    _dl_canonical=""
+    [ -n "$_dl_id" ] && _dl_canonical="data.datasets.${_dl_id}.loaded"
+    [ "$_dl_canonical" = "$_dl_flag" ] && _dl_canonical=""
     if exakit_db_reachable && [ -n "$_dl_markers" ]; then
         for _dl_table in $_dl_markers; do
             if ! exakit_table_present "$_dl_table" "$_dl_schema"; then
-                [ "$(manifest_get "$_dl_flag" 2>/dev/null)" = "true" ] && \
-                    manifest_set "$_dl_flag" false
+                _exakit_sync_dataset_flag "$_dl_flag" false
+                _exakit_sync_dataset_flag "$_dl_canonical" false
                 return 1
             fi
         done
-        [ "$(manifest_get "$_dl_flag" 2>/dev/null)" = "true" ] || \
-            manifest_set "$_dl_flag" true
+        _exakit_sync_dataset_flag "$_dl_flag" true
+        _exakit_sync_dataset_flag "$_dl_canonical" true
         return 0
     fi
     [ "$(manifest_get "$_dl_flag" 2>/dev/null)" = "true" ]
@@ -1045,8 +1096,64 @@ exakit_dataset_loaded() {
 exakit_pending_datasets() {
     exakit_bundled_datasets | while IFS='|' read -r _bd_id _bd_label _bd_flag _bd_markers _bd_schema; do
         [ -n "$_bd_id" ] || continue
-        exakit_dataset_loaded "$_bd_flag" "$_bd_markers" "$_bd_schema" || printf '%s|%s\n' "$_bd_id" "$_bd_label"
+        exakit_dataset_loaded "$_bd_flag" "$_bd_markers" "$_bd_schema" "$_bd_id" \
+            || printf '%s|%s\n' "$_bd_id" "$_bd_label"
     done
+}
+
+# exakit_verified_datasets — the ids of bundled datasets whose marker tables are
+# ACTUALLY in the database right now, one per line, and the manifest flags healed
+# to match. The verifying counterpart to the manifest read in
+# exakit_loaded_datasets. Returns non-zero (and prints nothing) when the database
+# cannot be asked, so the caller keeps the manifest's answer instead of reporting
+# an empty database.
+#
+# ONE query for every marker table, not one per table: this runs inside
+# `exakit status`, which agents call constantly and which used to cost nothing.
+# Eight round trips to answer "what data is in there?" would be a tax on the
+# command's whole reason to exist.
+exakit_verified_datasets() {
+    exakit_db_reachable || return 1
+    _vd_present="$("$(exapump_cli)" sql -p "$EXAKIT_EXAPUMP_PROFILE" \
+        "SELECT TABLE_SCHEMA || '.' || TABLE_NAME AS QUALIFIED FROM SYS.EXA_ALL_TABLES" \
+        2>/dev/null)" || return 1
+    _vd_ids=""
+    _vd_heal=""
+    # A pipeline would put this loop in a subshell and lose both accumulators,
+    # so feed the list in through a here-doc instead. bash 3.2: no process
+    # substitution, no lastpipe.
+    while IFS='|' read -r _vd_id _vd_label _vd_flag _vd_markers _vd_schema; do
+        [ -n "$_vd_id" ] || continue
+        # No markers declared means nothing to verify — keep the manifest's word
+        # rather than silently demoting the dataset to "not loaded".
+        if [ -z "$_vd_markers" ]; then
+            [ "$(manifest_get "$_vd_flag" 2>/dev/null)" = "true" ] && \
+                _vd_ids="${_vd_ids}${_vd_id}
+"
+            continue
+        fi
+        _vd_ok=1
+        for _vd_table in $(printf '%s' "$_vd_markers" | tr ',' ' '); do
+            printf '%s\n' "$_vd_present" \
+                | grep -Fqx "$_vd_schema.$_vd_table" || { _vd_ok=0; break; }
+        done
+        if [ "$_vd_ok" = 1 ]; then
+            _vd_ids="${_vd_ids}${_vd_id}
+"
+            _vd_heal="${_vd_heal}${_vd_flag}=true
+data.datasets.${_vd_id}.loaded=true
+"
+        else
+            _vd_heal="${_vd_heal}${_vd_flag}=false
+data.datasets.${_vd_id}.loaded=false
+"
+        fi
+    done <<EOF
+$(exakit_bundled_datasets)
+EOF
+    [ -n "$_vd_heal" ] && printf '%s' "$_vd_heal" | manifest_set_many
+    [ -n "$_vd_ids" ] && printf '%s' "$_vd_ids"
+    return 0
 }
 
 # exakit_load_dataset <kit_root> <id> [--force] — load one bundled dataset.
@@ -1080,7 +1187,14 @@ exakit_load_dataset_dir() {
     [ -n "$(manifest_get components.exapump.profile 2>/dev/null)" ] || \
         die "No exapump connection profile is recorded — the exapump setup step has not completed. Re-run the installer, then retry."
 
-    if [ "$(manifest_get "$_ld_flag" 2>/dev/null)" = "true" ] && [ "$_ld_force" != "--force" ]; then
+    # Ask the DATABASE, not the manifest. Reading the flag directly here is what
+    # let an install that had just replaced the deployment print "already
+    # loaded" three times into a database with no schemas in it, and exit 0.
+    # exakit_dataset_loaded re-checks the marker tables whenever the database is
+    # reachable and heals both flags, so a destroy+redeploy reloads by itself.
+    _ld_markers="$(_exakit_dataset_conf_get markers "$_ld_dir/dataset.conf" 2>/dev/null)"
+    if [ "$_ld_force" != "--force" ] && \
+       exakit_dataset_loaded "$_ld_flag" "$_ld_markers" "$_ld_schema" "$_ld_id"; then
         ok "Dataset '$_ld_id' already loaded (pass --force to re-run)"
         return 0
     fi

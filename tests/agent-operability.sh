@@ -35,7 +35,11 @@ has "and carries running=false" '"running": false' "$_sj"
 has "and the loaded datasets" '"tpch"' "$_sj"
 has "prose names the datasets too" "tpch" "$(EXAKIT_HOME="$WORK/stopped" bash "$ROOT/setup/exakit" status 2>/dev/null | grep '^Datasets:')"
 has "prose names the fix" "exakit start" "$(EXAKIT_HOME="$WORK/stopped" bash "$ROOT/setup/exakit" status 2>/dev/null | tail -1)"
-check "an unknown status flag is refused nonzero" "1" "$(EXAKIT_HOME="$WORK/stopped" bash "$ROOT/setup/exakit" status --nope >/dev/null 2>&1; echo $?)"
+# 2, not 1: bad input has its own code across the CLI now (the same one an
+# unknown subcommand uses), so an agent can tell "I typed it wrong" from "the
+# command ran and failed". It also records no failure note — see the reject
+# assertions further down.
+check "an unknown status flag is refused with the bad-input code" "2" "$(EXAKIT_HOME="$WORK/stopped" bash "$ROOT/setup/exakit" status --nope >/dev/null 2>&1; echo $?)"
 
 echo "mcp-doctor diagnoses the stopped database first:"
 _doc="$(EXAKIT_HOME="$WORK/stopped" bash "$ROOT/setup/exakit" mcp-doctor 2>&1)"
@@ -56,13 +60,38 @@ echo "the read-only allowlist merge:"
 . "$ROOT/setup/lib/common.sh" >/dev/null 2>&1
 _alh="$WORK/allow-home"
 mkdir -p "$_alh"
-# Counted from the source, not hardcoded: this assertion is about "a fresh file
-# gets EVERY entry", and a literal number turns each new allowlist entry into a
-# spurious test failure that says nothing about the behaviour.
-_alw_n=$(sed -n '/^ALLOW = \[/,/^\]/p' "$ROOT/setup/lib/common.sh" | grep -c '^[[:space:]]*"')
-_dny_n=$(sed -n '/^DENY = \[/,/^\]/p' "$ROOT/setup/lib/common.sh" | grep -c '^[[:space:]]*"')
-check "fresh file gets the full list" "ADDED $((_alw_n + _dny_n))" "$(HOME="$_alh" exakit_apply_readonly_allowlist)"
+# Counted from what was actually written, not from the source text: the lists are
+# generated (one entry per command per invocation spelling), so a literal number
+# — or a grep for quoted source lines — turns every new entry into a spurious
+# failure that says nothing about the behaviour.
+_alw_first="$(HOME="$_alh" exakit_apply_readonly_allowlist)"
+_alw_total=$(python3 -c "
+import json; d=json.load(open('$_alh/.claude/settings.json'))['permissions']
+print(len(d['allow']) + len(d['deny']))")
+check "fresh file gets the full list" "ADDED $_alw_total" "$_alw_first"
 check "second run adds nothing" "ADDED 0" "$(HOME="$_alh" exakit_apply_readonly_allowlist)"
+
+# THE REGRESSION THIS PINS: the rules matched only a bare `exakit`, while
+# AGENTS.md tells agents ~/.local/bin is off a non-interactive PATH and to call
+# the binary by absolute path. Every "pre-approved" read-only command therefore
+# kept prompting. Each spelling the docs hand an agent has to be covered.
+check "every invocation spelling is allowlisted" "bare ok | tilde ok | home ok | deny all 3" "$(python3 -c "
+import json; a=json.load(open('$_alh/.claude/settings.json'))['permissions']
+allow, deny = a['allow'], a['deny']
+print('bare ok' if 'Bash(exakit status:*)' in allow else 'bare MISSING',
+      '| tilde ok' if 'Bash(~/.local/bin/exakit status:*)' in allow else '| tilde MISSING',
+      '| home ok' if 'Bash(\$HOME/.local/bin/exakit status:*)' in allow else '| home MISSING',
+      '| deny all 3' if len([d for d in deny if 'uninstall' in d]) == 3 else '| deny ONLY %d' % len([d for d in deny if 'uninstall' in d]))")"
+check "and the PowerShell twin lists the same spellings" "yes" \
+    "$(grep -q '\$prefixes = @("exakit", "~/.local/bin/exakit"' "$ROOT/setup/lib/exakit-common.ps1" && echo yes || echo no)"
+# exapump sql must NEVER be pre-approved: that profile is the admin connection,
+# and auto-allowing it is exactly the trust model the kit sells being switched off.
+check "exapump sql is still gated" "gated" "$(python3 -c "
+import json; a=json.load(open('$_alh/.claude/settings.json'))['permissions']['allow']
+print('LEAKED' if any('exapump' in e for e in a) else 'gated')")"
+check "and so is exakit sql" "gated" "$(python3 -c "
+import json; a=json.load(open('$_alh/.claude/settings.json'))['permissions']['allow']
+print('LEAKED' if any('exakit sql' in e for e in a) else 'gated')")"
 printf '{"model": "opus", "permissions": {"allow": ["Bash(ls:*)"]}}' > "$_alh/.claude/settings.json"
 HOME="$_alh" exakit_apply_readonly_allowlist >/dev/null
 check "existing settings survive the merge" "opus ls-kept status-added deny-set" "$(python3 -c "
@@ -197,15 +226,23 @@ echo "the read-only allowlist covers the read-only surface it documents:"
 # The doc's principle is "allow what changes nothing". Every read-only command
 # the catalog declares must be in ALLOW, or the friction it promises to remove
 # is still being asked for.
-# Entries only: the block's own comments mention the patterns it deliberately
-# does NOT grant, so grepping them would assert the opposite of the truth.
-_allow="$(sed -n '/^ALLOW = \[/,/^\]/p' "$ROOT/setup/lib/common.sh" | grep -v '^[[:space:]]*#')"
+# Asserted against the settings file the merge WRITES, not against the source
+# text: the lists are generated (one entry per command per invocation spelling),
+# so grepping the source would assert the shape of the code rather than the
+# behaviour — and the block's own comments name the patterns it deliberately does
+# NOT grant, so a source grep can assert the exact opposite of the truth.
+_surface_home="$WORK/allow-surface"
+mkdir -p "$_surface_home"
+HOME="$_surface_home" exakit_apply_readonly_allowlist >/dev/null
+_allow="$(python3 -c "
+import json; print('\n'.join(json.load(open('$_surface_home/.claude/settings.json'))['permissions']['allow']))")"
 for _cmd in status info version mcp-doctor logs catalog preflight update-check guide mcp-status mcp-validate; do
     has "allowlist covers exakit $_cmd" "exakit $_cmd" "$_allow"
 done
 # ...and must NOT auto-allow anything that writes, including the command that
 # writes this very settings file.
-_deny="$(sed -n '/^DENY = \[/,/^\]/p' "$ROOT/setup/lib/common.sh" | grep -v '^[[:space:]]*#')"
+_deny="$(python3 -c "
+import json; print('\n'.join(json.load(open('$_surface_home/.claude/settings.json'))['permissions']['deny']))")"
 case "$_allow" in
     *"exakit skills:*"*) check "allowlist does not prefix-match skills-install" "safe" "PREFIX-MATCHES-INSTALL" ;;
     *) check "allowlist does not prefix-match skills-install" "safe" "safe" ;;
@@ -254,8 +291,11 @@ has "a kit self-update refreshes the installed skills" "exakit_install_skills" "
 
 # The library-not-found message named the default path even when EXAKIT_HOME
 # pointed somewhere else, sending the reader to a directory the code never read.
+# Matched against the whole file, not a fixed line range: the range was the
+# header comment's length, so adding a command to the usage block broke an
+# assertion that has nothing to do with the usage block.
 has "the lib-not-found error names the path actually searched" \
-    'kit/setup/lib)' "$(sed -n '1,80p' "$ROOT/setup/exakit")"
+    'kit/setup/lib)' "$(grep -n 'cannot find the kit library' -A2 "$ROOT/setup/exakit")"
 
 # doctor's findings carry remedies; returning next_actions=[] beside a non-empty
 # findings list reads as "nothing to do" on a machine with problems.
@@ -391,6 +431,293 @@ _psc="$(cat "$ROOT/setup/lib/exakit-common.ps1")"
 has "PowerShell twin takes the same lock" "Enter-ExakitManifestLock" "$_psc"
 has "and releases it in a finally block" "Exit-ExakitManifestLock \$lock" "$_psc"
 lacks "PowerShell has no shared temp name either" 'ManifestPath.tmp"' "$_psc"
+
+# ---------------------------------------------------------------------------
+# The agent-operability audit's findings, each pinned so it cannot come back.
+# Every assertion below FAILS without the fix it guards; that is the point of
+# having it. The comment on each says what the agent actually saw.
+# ---------------------------------------------------------------------------
+
+echo "a database that cannot start is not reported as merely stopped:"
+# THE BUG: SIGKILL the runner and the launcher records the deployment as
+# interrupted, after which every `exakit start` fails identically forever.
+# personal_status collapsed that into "stopped", so status said "Start it:
+# exakit start" -- the loop the reader was already in -- and the installer
+# skipped the deployment step as already done and failed the same way on every
+# re-run, with EXAKIT_REUSE_DB=0 never getting a say.
+_wedge="$WORK/wedged"
+mkdir -p "$_wedge/deploy"
+printf '{"currentWorkflowState": {"interrupted": {"error": "local VM state contains invalid database port: 0", "interruptedDuringOperation": "start"}}}\n' \
+    > "$_wedge/deploy/.exasolLauncherState.json"
+. "$ROOT/setup/lib/runtime-personal.sh" >/dev/null 2>&1
+EXAKIT_PERSONAL_DEPLOY_DIR="$_wedge/deploy"
+check "an interrupted deployment is detected" "wedged" \
+    "$(personal_deployment_wedged >/dev/null 2>&1 && echo wedged || echo missed)"
+check "and the remedy is the repair, not a start" "exakit repair-runtime" "$(exakit_runtime_remedy)"
+# The livelock itself: begin_step skips a step whose artifact state is anything
+# but a proven "missing", so runtime answering "unknown" here is what made a
+# wedged database unrecoverable by ANY documented route.
+check "the runtime step re-runs instead of being skipped" "missing" "$(step_artifact_state runtime)"
+# Called WITHOUT a subshell: the reason travels in a variable, and $( ) would
+# discard it along with the subshell that set it.
+EXAKIT_STEP_RERUN_REASON=""
+step_artifact_state runtime >/dev/null
+has "and says why, rather than 'what it installed is missing'" "interrupted" \
+    "${EXAKIT_STEP_RERUN_REASON:-}"
+# A merely stopped deployment must NOT be judged missing: that would redeploy a
+# healthy database and destroy its data.
+EXAKIT_PERSONAL_DEPLOY_DIR="$_wedge/absent"
+check "a stopped deployment is still left alone" "unknown" "$(step_artifact_state runtime)"
+has "repair-runtime is a real command" "repair-runtime" "$(grep -c '^    repair-runtime)' "$ROOT/setup/exakit" >/dev/null && echo repair-runtime)"
+has "and it is in the catalog" "repair-runtime" "$(cut -f2 "$ROOT/setup/lib/catalog.tsv")"
+has "and the PowerShell twin exists" "Invoke-CmdRepairRuntime" "$(cat "$ROOT/setup/exakit.ps1")"
+
+echo "a removed exapump profile is repaired by re-running the installer:"
+# THE BUG: the exapump step writes a binary AND a connection profile, but its
+# artifact check looked only at the binary. A profile that had been removed --
+# by a test suite that sandboxed EXAKIT_HOME but not HOME, in the case that
+# found this -- left the step "already done, skipping" on every re-run while
+# `exapump sql -p starter-kit` answered "Profile 'starter-kit' not found in
+# config" forever. Re-running the installer is meant to be the cure for exactly
+# that shape of damage.
+_xp="$WORK/exapump-step"
+mkdir -p "$_xp/bin"
+printf '#!/bin/sh\nexit 0\n' > "$_xp/bin/exapump"; chmod +x "$_xp/bin/exapump"
+( EXAKIT_HOME="$_xp/home" bash -c '
+    . "'"$ROOT"'/setup/lib/common.sh" >/dev/null 2>&1
+    manifest_get() { [ "$1" = components.exapump.path ] && printf "%s\n" "'"$_xp"'/bin/exapump"; }
+    EXAPUMP_CONFIG="'"$_xp"'/missing/config.toml"
+    printf "profile-gone=%s\n" "$(step_artifact_state exapump)"
+    mkdir -p "'"$_xp"'/present"; printf "x\n" > "'"$_xp"'/present/config.toml"
+    EXAPUMP_CONFIG="'"$_xp"'/present/config.toml"
+    printf "profile-there=%s\n" "$(step_artifact_state exapump)"
+' ) > "$WORK/xp.out" 2>/dev/null
+has "a missing profile re-runs the step" "profile-gone=missing" "$(cat "$WORK/xp.out")"
+has "and a present one leaves it alone" "profile-there=present" "$(cat "$WORK/xp.out")"
+# begin_step reads the artifact state in a command substitution, so the reason
+# the state set died with the subshell and every re-run reported the generic
+# "what it installed is missing" -- the one line that could have said which
+# artifact was actually gone.
+_xp_reason="$(EXAKIT_HOME="$_xp/home2" bash -c '
+    . "'"$ROOT"'/setup/lib/common.sh" >/dev/null 2>&1
+    manifest_get() { [ "$1" = components.exapump.path ] && printf "%s\n" "'"$_xp"'/bin/exapump"; }
+    step_done() { return 0; }
+    EXAPUMP_CONFIG="'"$_xp"'/gone/config.toml"
+    begin_step exapump "exapump" 2>&1' 2>/dev/null)"
+has "and the re-run says WHICH artifact was gone" "connection profile is gone" "$_xp_reason"
+# The removal that caused it must go through the shared variable, so a suite
+# that sandboxes it cannot reach the developer's real profile directory.
+lacks "uninstall never hardcodes the real HOME for profiles" 'rm -rf "$HOME/.exapump"' \
+    "$(cat "$ROOT/setup/lib/common.sh")"
+has "and the marketplace suite sandboxes HOME" 'HOME="$WORK/fake-home"' \
+    "$(cat "$ROOT/tests/marketplace.sh")"
+
+echo "status reports the datasets that are really there:"
+# THE BUG: after a destroy+redeploy, `exakit status --json` reported
+# datasets_loaded ["energy","tpch","weather"] against a database with ZERO
+# schemas -- the worst possible answer for an agent rebuilding its bearings,
+# because it goes straight to "object TPCH.LINEITEM not found" with the real
+# cause recorded nowhere.
+has "loaded datasets are verified against the database, not just read" \
+    "exakit_verified_datasets" "$(sed -n '/^exakit_loaded_datasets()/,/^}/p' "$ROOT/setup/lib/common.sh")"
+has "and the PowerShell twin verifies too" "Get-ExakitVerifiedDatasets" \
+    "$(sed -n '/^function Get-ExakitLoadedDatasets/,/^}/p' "$ROOT/setup/exakit.ps1")"
+# THE SECOND HALF: the self-heal wrote data.loaded (tpch's flag= override) while
+# status read data.datasets.tpch.loaded, so the heal fired and status kept lying.
+has "the self-heal writes the key status reads" "data.datasets.\${_dl_id}.loaded" \
+    "$(sed -n '/^exakit_dataset_loaded()/,/^}/p' "$ROOT/setup/lib/exapump.sh")"
+has "the load path asks the database, not the manifest flag" "exakit_dataset_loaded" \
+    "$(sed -n '/already loaded (pass --force/,+0p;/_ld_markers=/,+3p' "$ROOT/setup/lib/exapump.sh")"
+# THE THIRD: exakit_db_reachable cached its "no" for the whole process, so an
+# installer run that redeployed the database kept the answer it got while the
+# old one was down and reported every dataset "already loaded" into an empty DB.
+lacks "a negative db-reachable answer is never cached" '[ -z "$_EXAKIT_DB_REACHABLE" ]' \
+    "$(sed -n '/^exakit_db_reachable()/,/^}/p' "$ROOT/setup/lib/exapump.sh")"
+has "and stopping the database drops the cached yes" "exakit_forget_db_reachable" \
+    "$(cat "$ROOT/setup/lib/runtime-personal.sh" "$ROOT/setup/lib/runtime-nano.sh")"
+
+echo "every --json answer has the same three keys:"
+# THE BUG: healthy mcp-doctor returned status/findings/next_actions, a stopped
+# database returned {"database","remedy"}, and not-installed returned
+# {"installed":false,...}. No key was common to all three, so a parser that read
+# .status off the healthy shape hit a KeyError on the two states worth branching
+# on. Asserted on the two shapes that need no live database.
+# Through a FILE, not an interpolated string: the payloads contain quotes and
+# newlines, and embedding them in a python literal tests the quoting, not the kit.
+_common_keys() {
+    python3 - "$1" <<'PY'
+import json, sys
+want = {"installed", "status", "remedy"}
+try:
+    with open(sys.argv[1]) as handle:
+        doc = json.load(handle)
+except (OSError, ValueError) as exc:
+    print("unparseable: %s" % exc)
+    raise SystemExit(0)
+missing = sorted(want - set(doc))
+print("yes" if not missing else "missing %s" % missing)
+PY
+}
+for _shape in status mcp-doctor; do
+    EXAKIT_HOME="$WORK/none" bash "$ROOT/setup/exakit" $_shape --json > "$WORK/shape.json" 2>/dev/null
+    check "$_shape --json (not installed) carries installed/status/remedy" "yes" \
+        "$(_common_keys "$WORK/shape.json")"
+    EXAKIT_HOME="$WORK/stopped" bash "$ROOT/setup/exakit" $_shape --json > "$WORK/shape.json" 2>/dev/null
+    check "$_shape --json (database down) carries them too" "yes" \
+        "$(_common_keys "$WORK/shape.json")"
+done
+
+echo "the documented exit codes are the real ones:"
+# THE BUG: AGENTS.md promised 0/3/4 on status, version, update-check, info --json
+# and mcp-doctor. Measured with the database stopped: only status and mcp-doctor
+# returned 3. info --json returned 0 -- so an agent branching the way it was told
+# read "healthy" off a stopped database.
+check "info --json exits 3 when the database is down" "3" \
+    "$(EXAKIT_HOME="$WORK/stopped" bash "$ROOT/setup/exakit" info --json >/dev/null 2>&1; echo $?)"
+check "info --json exits 4 when nothing is installed" "4" \
+    "$(EXAKIT_HOME="$WORK/none" bash "$ROOT/setup/exakit" info --json >/dev/null 2>&1; echo $?)"
+check "and still prints an object in both states" "yes" "$(
+    EXAKIT_HOME="$WORK/none" bash "$ROOT/setup/exakit" info --json 2>/dev/null | python3 -m json.tool >/dev/null 2>&1 && echo yes || echo no)"
+# version/update-check report on VERSIONS, which a stopped database does not
+# change. AGENTS.md must not promise a database-health code they never return.
+check "version does not fake a database-health code" "0" \
+    "$(EXAKIT_HOME="$WORK/stopped" bash "$ROOT/setup/exakit" version >/dev/null 2>&1; echo $?)"
+lacks "and AGENTS.md no longer claims otherwise" \
+    'Exit codes on `status`, `version`, `update-check`, `info --json` and `mcp-doctor`: `0` healthy/running, `3` database not running' \
+    "$(cat "$ROOT/AGENTS.md")"
+check "an unknown subcommand still exits 2" "2" \
+    "$(bash "$ROOT/setup/exakit" frobnicate >/dev/null 2>&1; echo $?)"
+
+echo "the SQL path an agent is told to use names its remedy:"
+# THE BUG: exakit_explain_db_error was wired ONLY into the kit's internal setup
+# SQL -- the one path no agent ever sees. Running SQL the documented way gave the
+# raw engine text, so "every error message names its remedy" was true of the
+# lifecycle commands and false of the SQL path the skill mandates for every
+# validation.
+has "exakit sql exists" "cmd_sql" "$(cat "$ROOT/setup/exakit")"
+has "and routes failures through the translator" "exakit_explain_db_error" \
+    "$(sed -n '/^cmd_sql()/,/^}/p' "$ROOT/setup/exakit")"
+has "and is in the catalog" "sql" "$(cut -f2 "$ROOT/setup/lib/catalog.tsv")"
+has "the PowerShell twin exists" "Invoke-CmdSql" "$(cat "$ROOT/setup/exakit.ps1")"
+# PowerShell had NO translator at all: the Windows and Nano paths got raw engine
+# text and nothing else, making the promise macOS-only.
+has "PowerShell has the translator too" "Show-ExakitDbErrorRemedy" \
+    "$(cat "$ROOT/setup/lib/exakit-common.ps1")"
+for _case in "LIMIT" "exakit start" "describe it first"; do
+    has "PowerShell translator covers '$_case'" "$_case" \
+        "$(sed -n '/^function Show-ExakitDbErrorRemedy/,/^}/p' "$ROOT/setup/lib/exakit-common.ps1")"
+done
+# The gate: a seatbelt, not a sandbox -- but it must at least refuse the two
+# shapes that are never wanted from a "read" command.
+_sqlw="$(EXAKIT_HOME="$WORK/stopped" bash "$ROOT/setup/exakit" sql "DROP TABLE T" 2>&1)"
+has "a write is refused without --write" "not a read statement" "$_sqlw"
+_sqlm="$(EXAKIT_HOME="$WORK/stopped" bash "$ROOT/setup/exakit" sql "SELECT 1; DROP TABLE T" 2>&1)"
+has "and a smuggled second statement is refused" "Only one statement" "$_sqlm"
+# A REJECTED STATEMENT IS NOT AN INSTALL FAILURE. `.last-failure` is what
+# `exakit status --json` reports as `last_failure`, so recording a typo there
+# hangs a stale "failure" off an otherwise healthy machine — and an agent that
+# reads status to reconstruct its bearings acts on it.
+check "a rejected statement leaves no failure note" "clean" \
+    "$([ -f "$WORK/stopped/.last-failure" ] && echo "POLLUTED: $(head -1 "$WORK/stopped/.last-failure")" || echo clean)"
+check "and exits 2, like any other bad input" "2" \
+    "$(EXAKIT_HOME="$WORK/stopped" bash "$ROOT/setup/exakit" sql "DROP TABLE T" >/dev/null 2>&1; echo $?)"
+
+echo "data-load --force honours the dataset selection:"
+# THE BUG: EXAKIT_DATASETS=tpch,energy,weather exakit data-load --force reloaded
+# tpch ALONE and reported success, with no non-interactive way to reload the
+# others short of a full re-install. --force means "reload anyway", not "reload
+# something else".
+_dlf="$(sed -n '/^cmd_data_load()/,/^}/p' "$ROOT/setup/exakit")"
+has "--force still reads EXAKIT_DATASETS" "EXAKIT_DATASETS" "$_dlf"
+has "and the PowerShell twin does too" "EXAKIT_DATASETS" \
+    "$(sed -n '/^function Invoke-CmdDataLoad/,/^}/p' "$ROOT/setup/exakit.ps1")"
+# ...and it has to be discoverable from the CLI, not only from AGENTS.md.
+has "the catalog documents the variable" "EXAKIT_DATASETS" "$(cat "$ROOT/setup/lib/catalog.tsv")"
+
+echo "the discovery surfaces are machine-readable:"
+# THE BUG: an agent told to "discover every command with exakit catalog" had to
+# pattern-match an ANSI-decorated screen; `exakit logs` was prose only too.
+check "catalog --json is one object" "yes" \
+    "$(bash "$ROOT/setup/exakit" catalog --json 2>/dev/null | python3 -m json.tool >/dev/null 2>&1 && echo yes || echo no)"
+bash "$ROOT/setup/exakit" catalog --json > "$WORK/catalog.json" 2>/dev/null
+check "and it finds the commands" "yes" "$(python3 - "$WORK/catalog.json" <<'PY'
+import json, sys
+want = {"status", "sql", "repair-runtime"}
+doc = json.load(open(sys.argv[1]))
+names = {command["command"] for command in doc["commands"]}
+missing = sorted(want - names)
+print("yes" if not missing else "missing %s" % missing)
+PY
+)"
+check "logs --json is one object even with no logs" "yes" \
+    "$(EXAKIT_HOME="$WORK/none" bash "$ROOT/setup/exakit" logs --json 2>/dev/null | python3 -m json.tool >/dev/null 2>&1 && echo yes || echo no)"
+# The rows go through argv, not stdin: run_python reads the PROGRAM from stdin,
+# so a piped payload silently produced zero targets.
+lacks "logs --json does not feed data on stdin" 'printf .%s. "$_loj_rows" | run_python' \
+    "$(cat "$ROOT/setup/lib/common.sh")"
+
+echo "mcp-doctor actually starts the server it calls connected:"
+# THE BUG: every doctor stage inspected paperwork -- config syntax read the client
+# file, "connectivity" opened a TCP socket to the DATABASE, manifest consistency
+# compared hashes. Nothing ran the configured command, so a missing uvx or a
+# package that would not resolve still reported connected, which is a healthy
+# report and an AI client with no Exasol tools in it.
+has "there is a server_launch stage" "def validate_server_launch" "$(cat "$ROOT/mcp/validator/service.py")"
+has "and the doctor asks for it" "server_launch" "$(sed -n '/^def _doctor_stages/,/^def /p' "$ROOT/mcp/cli.py")"
+has "with an opt-out for offline runs" "EXAKIT_MCP_SKIP_SERVER_PROBE" "$(cat "$ROOT/mcp/cli.py")"
+# It must stay OUT of the default stage list: the hermetic suites must never
+# spawn a subprocess or reach the network.
+lacks "it is not in the default stage list" '"server_launch",' \
+    "$(sed -n '/    stages: tuple\[str, ...\] = (/,/    )/p' "$ROOT/mcp/core/models.py")"
+# communicate() closes stdin, and an MCP stdio server treats that EOF as "client
+# gone" and exits without answering -- measured against the real server, which
+# never replied to tools/list. The fix is to write the requests and leave the
+# pipe open, draining stdout on a thread until the answer lands.
+has "the handshake keeps stdin open while it waits" "process.stdin.flush()" \
+    "$(sed -n '/def _mcp_handshake/,/^    def /p' "$ROOT/mcp/validator/service.py")"
+lacks "and does not hand the requests to communicate()" "= process.communicate(" \
+    "$(sed -n '/def _mcp_handshake/,/^    def /p' "$ROOT/mcp/validator/service.py")"
+has "the server's stderr is never read into a finding" "stderr=subprocess.DEVNULL" \
+    "$(sed -n '/def _mcp_handshake/,/^    def /p' "$ROOT/mcp/validator/service.py")"
+
+echo "the install record does not contradict itself:"
+# THE BUG: connection.schemas ["STARTER_KIT"] reads as "this user can only see
+# STARTER_KIT", and an agent checking the record concluded exactly that -- while
+# the MCP user was returning TPCH, ENERGY and WEATHER quite happily.
+has "the read scope is spelled out, not inferred from 'schemas'" "read_scope" \
+    "$(cat "$ROOT/setup/lib/common.sh")"
+has "and the PowerShell twin records it too" "read_scope" "$(cat "$ROOT/setup/lib/mcp.ps1")"
+# ...and a qualified status has to say WHY, or the manifest keeps a permanent
+# "success_with_warnings" that names no warning.
+has "a qualified client-setup status records its findings" "_setup_findings" \
+    "$(cat "$ROOT/mcp/cli.py")"
+
+echo "the small promises hold too:"
+# An undated note is how a healthy machine looks broken: status --json reads the
+# date off line 2, and install.sh's own fail() wrote only line 1.
+has "install.sh dates its failure note" "date '+%Y-%m-%d %H:%M:%S'" "$(cat "$ROOT/install.sh")"
+has "and install.ps1 writes one at all" ".last-failure" "$(cat "$ROOT/install.ps1")"
+# The skill's closing step names this directory; nothing created it.
+has "the workflows directory is created with the home" "EXAKIT_WORKFLOWS_DIR" \
+    "$(sed -n '/^manifest_init()/,/^}/p' "$ROOT/setup/lib/common.sh")"
+has "and the PowerShell twin creates it" "WorkflowsDir" \
+    "$(sed -n '/^function Initialize-ExakitManifest/,/^}/p' "$ROOT/setup/lib/exakit-common.ps1")"
+# The clipboard is the user's, and an unattended install has no business
+# overwriting it for a prompt nobody is about to paste.
+has "the clipboard is only touched with a terminal attached" "exakit_stdin_is_tty" \
+    "$(sed -n '/First prompt to try in your AI client/,/^}/p' "$ROOT/setup/lib/common.sh")"
+# The credential guardrail named only the credentials dir, while the password is
+# also in clear text in every client config an agent reads while debugging MCP.
+has "the guardrail covers the client configs too" ".claude.json" \
+    "$(cat "$ROOT/AGENTS.md")"
+# The tool gate is a keyword check: SELECT 1; DROP TABLE T passes it and reaches
+# the engine. Claiming it stops a write "before it ever reaches the database"
+# points the reader at the wrong layer.
+lacks "no skill claims the tool gate is the boundary" "rejects a non-SELECT before it ever reaches the" \
+    "$(cat "$ROOT"/skills/*/SKILL.md)"
+# An agent that ran the install cannot use the MCP tools it just configured.
+has "AGENTS.md says the MCP tools need a client restart" "no \`exasol\` tools until it restarts" \
+    "$(cat "$ROOT/AGENTS.md")"
 
 echo "passed: $PASS, failed: $FAIL"
 [ "$FAIL" -eq 0 ]

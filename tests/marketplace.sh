@@ -34,9 +34,20 @@ trap 'rm -rf "$WORK"' EXIT
 
 # The kit home is redirected for the whole run: nothing here may touch a real
 # installation. common.sh derives its paths at source time, so this comes first.
+#
+# HOME IS REDIRECTED TOO, and that is not belt-and-braces. Redirecting only
+# EXAKIT_HOME and EXAKIT_BIN_DIR left every path spelled "$HOME/..." pointing at
+# the developer's real home, and this suite exercises component removal — so a
+# run of these tests deleted the developer's actual ~/.exapump profiles, and the
+# machine only said so later, from an unrelated command. Anything derived from
+# HOME at source time has to be redirected before common.sh is read.
 EXAKIT_HOME="$WORK/home"
 EXAKIT_BIN_DIR="$WORK/bin"
-mkdir -p "$EXAKIT_HOME" "$EXAKIT_BIN_DIR"
+HOME="$WORK/fake-home"
+export HOME
+EXAKIT_EXAPUMP_CONFIG_DIR="$HOME/.exapump"
+export EXAKIT_EXAPUMP_CONFIG_DIR
+mkdir -p "$EXAKIT_HOME" "$EXAKIT_BIN_DIR" "$HOME"
 # The suite must behave the same on a machine that really has dash-server
 # installed — the feature working must not fail its own tests. The generic
 # system-present probe walks PATH, so rebuild PATH without any directory that

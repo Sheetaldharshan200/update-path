@@ -500,6 +500,9 @@ nano_stop() {
     info "Stopping Nano container (waiting up to 60s for a clean shutdown)"
     run_logged "$(nano_engine)" stop -t 60 "$EXAKIT_NANO_CONTAINER" || die "Failed to stop container"
     manifest_set runtime.status "stopped"
+    # exapump.sh caches a reachable database for the run; this run just ended
+    # that. Guarded: the runtime modules load without exapump.sh.
+    command -v exakit_forget_db_reachable >/dev/null 2>&1 && exakit_forget_db_reachable
     ok "Nano stopped"
 }
 

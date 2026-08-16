@@ -169,7 +169,12 @@ check "one root missing: state is partial" "partial" "$(exakit_skill_state zz-in
 
 # What the install recorded is the only honest answer to "which skills are
 # ours to remove" once the kit copy is gone.
-has "manifest records the skill set version" "1.0.0" \
+# Read from versions.json, not hardcoded: the assertion is "the install records
+# the shipped skill-set version", and a literal turns every legitimate bump of
+# that version into a failure that says nothing about the behaviour.
+_skills_version="$(python3 -c "
+import json; print(json.load(open('$ROOT/versions.json'))['components']['skills']['version'])")"
+has "manifest records the skill set version" "$_skills_version" \
     "$(manifest_get components.skills.version 2>/dev/null || true)"
 has "manifest records what was installed" "zz-invented-skill" \
     "$(manifest_get components.skills.installed 2>/dev/null || true)"

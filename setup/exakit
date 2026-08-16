@@ -21,8 +21,16 @@
 #                       clients (DBeaver, DbVisualizer), and Python (pyexasol)
 #   start               start the local database and every add-on service
 #   stop                stop them again
+#   repair-runtime [--yes]  rebuild a database that cannot be started (the
+#                       launcher reports it interrupted and every start fails);
+#                       DESTRUCTIVE — the deployment is replaced and its data
+#                       is gone, bundled datasets are reloaded afterwards
 #   autostart [on|off]  whether everything comes back after a restart
 #   data-load [--force] open focused data loading options; --force reloads bundled sample data
+#   sql '<statement>' [--write]
+#                       run one SQL statement and translate the error into a
+#                       remedy; reads only unless --write. Uses the ADMIN
+#                       connection (the read-only boundary is the MCP user)
 #   mcp-setup           permanently configure MCP in supported AI clients
 #   mcp-doctor          check MCP config, connectivity, and managed state
 #   mcp-status          show managed MCP state for the supported AI clients
@@ -49,9 +57,13 @@
 #                       --dry-run previews the full plan; --yes is the
 #                       scripted full uninstall
 #   whats-new [version] what changed in this kit version
-#   logs [target]       every log the kit can show; no target lists them
+#   logs [target] [--json]
+#                       every log the kit can show; no target lists them.
+#                       --json lists the targets and their paths machine-readably
 #                       (-f follows, --lines N, --path prints the path)
-#   catalog [search]    browse/search every exakit, exapump & exasol command
+#   catalog [search] [--json]
+#                       browse/search every exakit, exapump & exasol command;
+#                       --json prints the whole command surface as an object
 #   help                this text
 #
 # Installed to ~/.local/bin by the setup scripts; also runs straight from a
@@ -114,7 +126,12 @@ _require_install() {
 # object; the other state queries did not, and the three disagreed.
 _not_installed_answer() {
     if [ "${1:-0}" -eq 1 ]; then
-        printf '{"installed": false, "manifest": "%s", "reason": "no install record", "remedy": "run the installer"}\n' \
+        # `installed`, `status` and `remedy` appear in EVERY --json answer these
+        # state queries can give (see the db-not-running answer in
+        # cmd_mcp_doctor). They used to differ per state with no key in common,
+        # so a parser that read .status off the healthy shape hit a KeyError on
+        # exactly the two states worth branching on.
+        printf '{"installed": false, "status": "not installed", "manifest": "%s", "reason": "no install record", "remedy": "run the installer"}\n' \
             "$EXAKIT_MANIFEST"
     else
         printf 'Not installed (no manifest at %s). Run the installer first.\n' "$EXAKIT_MANIFEST" >&2
@@ -139,7 +156,7 @@ cmd_status() {
     for _cs_arg in "$@"; do
         case "$_cs_arg" in
             --json|-j) _cs_json=1 ;;
-            *) die "Unknown option '$_cs_arg' for status (supported: --json)." ;;
+            *) reject "Unknown option '$_cs_arg' for status (supported: --json)." ;;
         esac
     done
     # One helper for all three state queries, so status/info/mcp-doctor cannot
@@ -197,9 +214,20 @@ remedies = {}
 if not pyx:
     remedies["pyexasol"] = "exakit update pyexasol"
 if not running:
-    remedies["database"] = "exakit start"
+    # "exakit start" is the wrong remedy for an INTERRUPTED deployment: it fails
+    # identically every time, which is how an agent ends up looping on it. The
+    # runtime reports that state distinctly so the remedy can differ.
+    remedies["database"] = (
+        "exakit repair-runtime" if db.startswith("interrupted") else "exakit start"
+    )
 payload = {
     "installed": True,
+    # Top-level `status` and `remedy` are the keys EVERY --json answer from a
+    # state query carries, in every state (see _not_installed_answer and the
+    # db-not-running answer in cmd_mcp_doctor). runtime.status stays exactly
+    # where it was; this is the one field a parser can read without first
+    # knowing which of the three shapes it received.
+    "status": db,
     "kit_level": kit or None,
     "runtime": {"type": rtype or None, "status": db},
     "running": running,
@@ -209,6 +237,9 @@ payload = {
     "steps_completed": steps_list,
     "pyexasol": pyx or None,
     "remedies": remedies,
+    # The single most useful remedy, hoisted so it sits at the same key in every
+    # state a state query can report. `remedies` keeps the full per-component map.
+    "remedy": remedies.get("database"),
     "last_failure": note or None,
     "last_failure_at": note_at or None,
     "manifest": manifest,
@@ -256,7 +287,13 @@ EXAKIT_SJ_PY
             "$EXAKIT_BIN_DIR" "rm $(printf '%s ' $_cs_strays)"
     fi
     if [ "$_cs_running" -ne 1 ]; then
-        printf 'Start it:   exakit start\n'
+        # An interrupted deployment cannot be started, so pointing at `exakit
+        # start` here is worse than useless: it is the loop the reader was
+        # already in. Name the command that actually clears it.
+        case "$_cs_db" in
+            interrupted*) printf 'Repair it:  exakit repair-runtime   (replaces the database; its data is not recoverable)\n' ;;
+            *)            printf 'Start it:   exakit start\n' ;;
+        esac
         exit 3
     fi
     exit 0
@@ -297,6 +334,59 @@ cmd_stop() {
     esac
 }
 
+# cmd_repair_runtime [--yes] — rebuild a database that cannot be started.
+#
+# THE ESCAPE FROM A WEDGE, and the reason it exists: a SIGKILLed Exasol Personal
+# runner leaves the launcher's workflow state "interrupted", after which every
+# start fails identically forever. Before this command the documented recovery
+# was a loop — the installer skipped the deployment step as already done, failed
+# at start, and closed by advising a re-run that behaved the same way, while
+# EXAKIT_REUSE_DB=0 never got a say because the skip happened first.
+#
+# Re-running the platform setup script IS the repair: the deployment step already
+# knows how to try a start, watch it fail, destroy and deploy fresh. Dropping the
+# `runtime` tick first is what lets it be reached, and it also covers a runtime
+# whose wedge this kit does not yet recognise. Everything downstream (the MCP
+# read-only user, the datasets) is rebuilt by the same run, because a replaced
+# database has none of them.
+#
+# DESTRUCTIVE: the deployment is replaced and its data is gone. Interactive runs
+# are asked; --yes and EXAKIT_CONFIRM_RUNTIME_REPAIR=1 pre-answer it.
+cmd_repair_runtime() {
+    _require_install
+    _rr_yes=0
+    for _rr_arg in "$@"; do
+        case "$_rr_arg" in
+            --yes|-y) _rr_yes=1 ;;
+            *) reject "Unknown option '$_rr_arg' for repair-runtime (supported: --yes)." ;;
+        esac
+    done
+    [ "${EXAKIT_CONFIRM_RUNTIME_REPAIR:-0}" = "1" ] && _rr_yes=1
+
+    _rr_kit="$(exakit_repo_root)" || die "Could not find the kit copy to re-run setup from. Re-run the installer instead."
+    case "$(detect_os)" in
+        macos)      _rr_setup="setup/setup-macos.sh" ;;
+        linux|wsl)  _rr_setup="setup/setup-wsl.sh" ;;
+        *)          die "repair-runtime has no setup script for this platform. On Windows, re-run install.ps1." ;;
+    esac
+    [ -f "$_rr_kit/$_rr_setup" ] || die "The kit copy at $_rr_kit has no $_rr_setup. Re-run the installer instead."
+
+    warn "Repairing the runtime REPLACES the database. Its data is not recoverable."
+    info "Bundled datasets are reloaded afterwards; anything you loaded yourself is not."
+    if [ "$_rr_yes" -ne 1 ]; then
+        confirm "Replace the database and rebuild it now?" n || \
+            die "Nothing was changed. Re-run with --yes (or EXAKIT_CONFIRM_RUNTIME_REPAIR=1) when you are ready."
+    fi
+
+    exakit_init_logging
+    # Drop the tick so the deployment step runs even on a runtime whose wedged
+    # state step_artifact_state cannot yet recognise.
+    exakit_unmark_step runtime
+    info "Re-running $_rr_setup to rebuild the database"
+    export EXAKIT_BANNER_SHOWN=1
+    exec bash "$_rr_kit/$_rr_setup"
+}
+
 # cmd_autostart [on|off] — whether everything the kit runs comes back after a
 # restart. With no argument it reports the current state.
 cmd_autostart() {
@@ -306,7 +396,7 @@ cmd_autostart() {
         on|enable)   exakit_autostart_enable ;;
         off|disable) exakit_autostart_disable ;;
         ""|status)   exakit_autostart_print ;;
-        *) die "Unknown option '$1' for autostart (use: on, off, or no argument to show the state)." ;;
+        *) reject "Unknown option '$1' for autostart (use: on, off, or no argument to show the state)." ;;
     esac
 }
 
@@ -320,7 +410,7 @@ cmd_uninstall() {
         case "$_uni_arg" in
             -y|--yes)      _uni_yes=1 ;;
             -n|--dry-run)  _uni_dry=1 ;;
-            *) die "Unknown option '$_uni_arg' for uninstall (supported: --yes, --dry-run)." ;;
+            *) reject "Unknown option '$_uni_arg' for uninstall (supported: --yes, --dry-run)." ;;
         esac
     done
     exakit_init_logging 2>/dev/null || true
@@ -456,25 +546,33 @@ cmd_logs() {
     _log_follow=0
     _log_lines=200
     _log_path_only=0
+    _log_json=0
     while [ "$#" -gt 0 ]; do
         case "$1" in
             -f|--follow) _log_follow=1 ;;
             --path)      _log_path_only=1 ;;
+            --json|-j)   _log_json=1 ;;
             --lines)     shift; _log_lines="${1:-200}" ;;
             -n)          shift; _log_lines="${1:-200}" ;;
-            -*)          die "Unknown option '$1' for logs (supported: -f/--follow, --lines N, --path)." ;;
-            *)           [ -n "$_log_target" ] && die "Only one log target at a time (got '$_log_target' and '$1')."
+            -*)          reject "Unknown option '$1' for logs (supported: -f/--follow, --lines N, --path, --json)." ;;
+            *)           [ -n "$_log_target" ] && reject "Only one log target at a time (got '$_log_target' and '$1')."
                          _log_target="$1" ;;
         esac
         shift
     done
     case "$_log_lines" in
-        ''|*[!0-9]*) die "--lines needs a number (got '$_log_lines')." ;;
+        ''|*[!0-9]*) reject "--lines needs a number (got '$_log_lines')." ;;
     esac
     if [ -z "$_log_target" ]; then
+        if [ "$_log_json" -eq 1 ]; then
+            exakit_logs_overview_json || die "python3 is needed for --json."
+            return 0
+        fi
         exakit_logs_overview
         return 0
     fi
+    [ "$_log_json" -eq 1 ] && \
+        reject "--json lists the log targets; it does not apply to one target's contents. Use: exakit logs --json, then exakit logs $_log_target --path"
     exakit_logs_show "$_log_target" "$_log_follow" "$_log_lines" "$_log_path_only"
 }
 
@@ -482,7 +580,7 @@ cmd_data_load() {
     _require_install
     case "${1:-}" in
         ""|--force) ;;
-        *) die "Unknown option '$1' for data-load (only --force is supported)." ;;
+        *) reject "Unknown option '$1' for data-load (only --force is supported)." ;;
     esac
     command -v exakit_load_sample_data >/dev/null 2>&1 || \
         die "The exapump data-loading module is not available in this kit build."
@@ -493,6 +591,32 @@ cmd_data_load() {
     if [ "${1:-}" = "--force" ]; then
         _kit_root="$(exakit_repo_root)" || \
             die "Could not find the kit's sql/ and data/ files to load."
+        # EXAKIT_DATASETS names WHICH datasets; --force says "reload them even
+        # though they are already there". They compose. --force used to ignore
+        # the variable outright and reload the bundled sample alone, so an
+        # unattended `EXAKIT_DATASETS=tpch,energy,weather exakit data-load
+        # --force` silently restored one of the three and reported success —
+        # with no way at all to reload the others without a full re-install.
+        if [ -n "${EXAKIT_DATASETS:-}" ]; then
+            _dl_known=" $(exakit_bundled_datasets | cut -d'|' -f1 | tr '\n' ' ') "
+            _dl_any=0
+            _dl_failed=0
+            for _dl_id in $(printf '%s' "$EXAKIT_DATASETS" | tr ',' ' '); do
+                case "$_dl_known" in
+                    *" $_dl_id "*)
+                        _dl_any=1
+                        info "Reloading dataset '$_dl_id' (EXAKIT_DATASETS, --force)"
+                        exakit_load_dataset "$_kit_root" "$_dl_id" "--force" || _dl_failed=1
+                        ;;
+                    *)
+                        warn "Unknown dataset id '$_dl_id' in EXAKIT_DATASETS (available:$(printf '%s' "$_dl_known" | sed 's/ *$//'))."
+                        ;;
+                esac
+            done
+            [ "$_dl_any" -eq 1 ] || \
+                die "EXAKIT_DATASETS='$EXAKIT_DATASETS' matched no bundled dataset — nothing was reloaded."
+            return "$_dl_failed"
+        fi
         info "Reloading the bundled sample dataset (log: ${EXAKIT_LOG_FILE:-none})"
         exakit_load_sample_data "$_kit_root" "--force"
     else
@@ -538,9 +662,13 @@ cmd_mcp_doctor() {
     exakit_init_logging
     if ! exakit_runtime_is_running; then
         if [ "$_cmd_json" -eq 1 ]; then
-            printf '{"database": "not running", "remedy": "exakit start"}\n'
+            # Same three keys as every other --json answer from a state query
+            # (installed / status / remedy), so one parser handles all of them.
+            # `database` is kept for callers written against the older shape.
+            printf '{"installed": true, "status": "database not running", "database": "not running", "remedy": "%s"}\n' \
+                "$(exakit_runtime_remedy)"
         else
-            warn "The database is not running — fix that first: exakit start"
+            warn "The database is not running — fix that first: $(exakit_runtime_remedy)"
             info "MCP diagnostics need a live database (the read-only user and its grants are checked against it)."
         fi
         exit 3
@@ -647,6 +775,67 @@ EOF
 cmd_info_json() {
     [ -s "$EXAKIT_MANIFEST" ] || _not_installed_answer 1
     cat "$EXAKIT_MANIFEST"
+    # THE SAME TRI-STATE AS `status`. AGENTS.md documents 0/3/4 for this command
+    # and it only ever answered 0 or 4, so an agent that branched on the exit code
+    # the way it was told read "healthy" off a stopped database. The record on
+    # stdout is unchanged and complete either way; only the code was lying.
+    exakit_runtime_is_running || exit 3
+    exit 0
+}
+
+# cmd_sql <statement> [--write] — run one SQL statement and translate the error.
+#
+# WHY THIS EXISTS: the kit has an error translator that turns the three raw
+# engine faults every agent hits first into a remedy ("use LIMIT", "exakit
+# start", "describe it first"), and it was wired ONLY into the kit's own internal
+# setup SQL — the one path no agent ever sees. Running SQL the documented way
+# (`exapump sql -p starter-kit`) produced the raw engine text with a generic
+# hint, so "every error message names its remedy" was true of the lifecycle
+# commands and false of the SQL path the skill tells the agent to use for every
+# validation. This is that path, with the translator attached.
+#
+# NOT A SANDBOX, and the help says so. The `starter-kit` profile is the ADMIN
+# connection; the statement gate below is a seatbelt against a typo, not a
+# security boundary. The boundary is the MCP read-only user, which the database
+# itself enforces. --write is how you say you meant it.
+cmd_sql() {
+    _require_install
+    _sql_write=0
+    _sql_text=""
+    for _sql_arg in "$@"; do
+        case "$_sql_arg" in
+            --write) _sql_write=1 ;;
+            --*) reject "Unknown option '$_sql_arg' for sql (supported: --write)." ;;
+            *) [ -n "$_sql_text" ] && reject "Pass ONE statement, quoted: exakit sql 'SELECT 1'" ; _sql_text="$_sql_arg" ;;
+        esac
+    done
+    [ -n "$_sql_text" ] || reject "Nothing to run. Usage: exakit sql 'SELECT ...' [--write]"
+
+    if [ "$_sql_write" -ne 1 ]; then
+        # Normalise for the check only; the statement runs exactly as given.
+        _sql_probe="$(printf '%s' "$_sql_text" | tr '\n\t' '  ' | sed 's/^ *//')"
+        _sql_head="$(printf '%s' "$_sql_probe" | cut -c1-8 | tr '[:lower:]' '[:upper:]')"
+        case "$_sql_head" in
+            SELECT*|WITH*|DESCRIBE*|EXPLAIN*|SHOW*) : ;;
+            *) reject "That is not a read statement, and 'exakit sql' defaults to reads. Re-run with --write if you mean it — and note the profile it uses is the ADMIN connection, not the read-only MCP user." ;;
+        esac
+        # Reject a second statement outright. The MCP tool gate lets
+        # "SELECT 1; DROP TABLE T" through because it only inspects the opening
+        # keyword — the engine happens to refuse it, but nothing above the engine
+        # does. Refusing it here costs nothing and removes the same footgun.
+        case "$(printf '%s' "$_sql_probe" | sed 's/;* *$//')" in
+            *";"*) reject "Only one statement at a time. A trailing ';' is fine; a second statement is not." ;;
+        esac
+    fi
+
+    _sql_out="$("$(exapump_cli)" sql -p "$EXAKIT_EXAPUMP_PROFILE" "$_sql_text" 2>&1)"
+    _sql_rc=$?
+    printf '%s\n' "$_sql_out"
+    if [ "$_sql_rc" -ne 0 ]; then
+        # The whole point: say what to do about it.
+        exakit_explain_db_error "$_sql_out"
+    fi
+    return "$_sql_rc"
 }
 
 # cmd_whats_new [version] — what changed, for this kit or a named one.
@@ -675,9 +864,50 @@ cmd_whats_new() {
 # cmd_catalog [search] — render the searchable command catalog from the shared
 # catalog.tsv (one source of truth for both the bash and PowerShell CLIs).
 cmd_catalog() {
-    _search="$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]')"
+    # --json: the command surface itself, machine-readable. Without it an agent
+    # told to "discover every command with exakit catalog" had to pattern-match
+    # ANSI-decorated prose to find out what the CLI can do — the one discovery
+    # surface with no structured form.
+    _cat_json=0
+    _cat_args=""
+    for _cat_arg in "$@"; do
+        case "$_cat_arg" in
+            --json|-j) _cat_json=1 ;;
+            *) _cat_args="${_cat_args:+$_cat_args }$_cat_arg" ;;
+        esac
+    done
+    _search="$(printf '%s' "$_cat_args" | tr '[:upper:]' '[:lower:]')"
     _catalog="$_lib_dir/catalog.tsv"
     [ -f "$_catalog" ] || die "Catalog data not found: $_catalog"
+
+    if [ "$_cat_json" -eq 1 ]; then
+        exakit_can_run_python || die "python3 is needed for --json."
+        run_python - "$_catalog" "$_search" <<'EXAKIT_CATALOG_JSON_PY'
+import json, sys
+path, search = sys.argv[1], sys.argv[2]
+commands = []
+with open(path) as handle:
+    for number, line in enumerate(handle):
+        if number == 0 or not line.strip():
+            continue
+        fields = line.rstrip("\n").split("\t")
+        if len(fields) < 4:
+            continue
+        tool, command, options, description = fields[0], fields[1], fields[2], fields[3]
+        if search and search not in " ".join(fields).lower():
+            continue
+        commands.append({
+            "tool": tool,
+            "command": command,
+            "options": options,
+            "description": description,
+            "invocation": ("%s %s" % (tool, command)).strip(),
+        })
+print(json.dumps({"search": search or None, "count": len(commands),
+                  "commands": commands}, indent=2))
+EXAKIT_CATALOG_JSON_PY
+        return 0
+    fi
 
     if [ -t 1 ]; then
         _cy=$'\033[36m'; _cyb=$'\033[1;36m'; _dim=$'\033[2m'; _b=$'\033[1m'; _gn=$'\033[1;32m'; _r=$'\033[0m'
@@ -787,6 +1017,7 @@ case "${1:-help}" in
     guide)    _with_notice exakit_guide ;;
     start)    _with_notice cmd_start ;;
     stop)     _with_notice cmd_stop ;;
+    repair-runtime) shift; cmd_repair_runtime "$@" ;;
     autostart) shift; _with_notice cmd_autostart "${1:-}" ;;
     data-load) shift; _with_notice cmd_data_load "${1:-}" ;;
     mcp-setup) _with_notice cmd_mcp_setup ;;
@@ -807,8 +1038,9 @@ case "${1:-help}" in
     rollback-kit2) cmd_kit2_script rollback-kit2.sh ;;
     uninstall) shift; cmd_uninstall "$@" ;;
     whats-new) shift; cmd_whats_new "${1:-}" ;;
+    sql)      shift; cmd_sql "$@" ;;
     logs)     shift; cmd_logs "$@" ;;
-    catalog)  shift; cmd_catalog "${1:-}" ;;
+    catalog)  shift; cmd_catalog "$@" ;;
     help|-h|--help) shift; usage "${1:-}" ;;
     *) echo "exakit: unknown command '${1}'" >&2; usage >&2; exit 2 ;;
 esac

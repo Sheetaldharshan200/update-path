@@ -541,6 +541,10 @@ function Invoke-ExapumpSqlFile {
     $result = Invoke-ExapumpSqlFileCapture $Path
     if (-not $result.Success) {
         Write-ExapumpOutput -Output $result.Output
+        # Translate the common faults into their remedy before dying, so
+        # "Connection refused" arrives WITH "exakit start" instead of leaving the
+        # reader to map one to the other.
+        Show-ExakitDbErrorRemedy $result.Output
         Fail "SQL file failed: $Path (see log)"
     }
     Ok "$Description done"
@@ -558,6 +562,7 @@ function Invoke-ExapumpUpload {
     $result = Invoke-Exapump @("upload", $Path, "--table", $Target, "-p", $script:ExapumpProfile)
     if (-not $result.Success) {
         Write-ExapumpOutput -Output $result.Output
+        Show-ExakitDbErrorRemedy $result.Output
         Fail "Upload failed: $Path -> $Target (see log)"
     }
     Ok "$(Split-Path $Path -Leaf) loaded"
@@ -799,10 +804,20 @@ function Get-ExakitBundledDatasets {
     return @($datasets | Sort-Object { $_.Order }, { $_.Id })
 }
 
-# Test-ExakitDbReachable - one cached probe per run: can we run SQL right now?
+# Test-ExakitDbReachable - can we run SQL right now?
+#
+# ONLY A "YES" IS CACHED. Caching the "no" too is what let one installer run
+# report a full database while looking at an empty one: the probe ran before the
+# runtime step, the deployment was down (or being replaced), and that answer was
+# still cached when the data step asked afterwards. Every dataset then fell
+# through to the manifest flag and printed "already loaded" against a database
+# with no schemas in it. A "yes" cannot go stale the same way - nothing in a kit
+# run takes the database down without going through Stop-ExakitNano /
+# Stop-ExasolPersonal, and those call Clear-ExakitDbReachable.
+# twin: exakit_db_reachable in setup/lib/exapump.sh.
 $script:ExakitDbReachable = $null
 function Test-ExakitDbReachable {
-    if ($null -eq $script:ExakitDbReachable) {
+    if ($script:ExakitDbReachable -ne $true) {
         $script:ExakitDbReachable = $false
         if (Get-ExakitManifestValue "components.exapump.profile") {
             $result = Invoke-Exapump @("sql", "-p", $script:ExapumpProfile, "SELECT 1")
@@ -810,6 +825,14 @@ function Test-ExakitDbReachable {
         }
     }
     return $script:ExakitDbReachable
+}
+
+# Clear-ExakitDbReachable - drop the cached "yes" after the kit itself takes the
+# database down, so a later check re-probes instead of trusting a state this run
+# has just ended.
+# twin: exakit_forget_db_reachable in setup/lib/exapump.sh.
+function Clear-ExakitDbReachable {
+    $script:ExakitDbReachable = $null
 }
 
 # Test-ExakitTablePresent <table> [schema] - does the table exist in the given
@@ -823,24 +846,57 @@ function Test-ExakitTablePresent {
     return ($result.Success -and $result.Output -match "EXAKIT_TABLE_PRESENT")
 }
 
+# Sync-ExakitDatasetFlag - write one manifest flag only when it disagrees with
+# what was observed.
+function Sync-ExakitDatasetFlag {
+    param([string]$Key, [bool]$Value)
+    if (-not $Key) { return }
+    if ((Get-ExakitManifestValue $Key) -ne $Value) { Set-ExakitManifestValue $Key $Value }
+}
+
 # Test-ExakitDatasetLoaded - the DATABASE is the source of truth: when it is
-# reachable, every marker table must exist (and the manifest flag is synced to
+# reachable, every marker table must exist, and BOTH manifest keys are synced to
 # what was observed, so a destroy+redeploy that left a stale "loaded" flag
-# self-heals). Only when the database is unreachable do we fall back to the
-# manifest flag alone.
+# self-heals. Only when the database is unreachable do we fall back to the
+# manifest.
+#
+# TWO KEYS, on purpose. A dataset.conf may set flag= to override the manifest key
+# (TPC-H keeps the historical data.loaded so older installs stay recognized),
+# while `exakit status` reads the canonical data.datasets.<id>.loaded for every
+# dataset alike. Syncing only the override is what let status keep listing tpch
+# as loaded against a database with no schemas in it.
+# twin: exakit_dataset_loaded in setup/lib/exapump.sh.
 function Test-ExakitDatasetLoaded {
     param([Parameter(Mandatory)][hashtable]$Dataset)
+    $canonical = "data.datasets.$($Dataset.Id).loaded"
+    if ($canonical -eq $Dataset.Flag) { $canonical = "" }
     if ((Test-ExakitDbReachable) -and $Dataset.Markers.Count -gt 0) {
         foreach ($table in $Dataset.Markers) {
             if (-not (Test-ExakitTablePresent $table $Dataset.Schema)) {
-                if ((Get-ExakitManifestValue $Dataset.Flag) -eq $true) { Set-ExakitManifestValue $Dataset.Flag $false }
+                Sync-ExakitDatasetFlag $Dataset.Flag $false
+                Sync-ExakitDatasetFlag $canonical $false
                 return $false
             }
         }
-        if ((Get-ExakitManifestValue $Dataset.Flag) -ne $true) { Set-ExakitManifestValue $Dataset.Flag $true }
+        Sync-ExakitDatasetFlag $Dataset.Flag $true
+        Sync-ExakitDatasetFlag $canonical $true
         return $true
     }
     return ((Get-ExakitManifestValue $Dataset.Flag) -eq $true)
+}
+
+# Get-ExakitVerifiedDatasets - the ids of bundled datasets whose marker tables
+# are ACTUALLY in the database right now, with the manifest flags healed to
+# match. Returns $null when the database cannot be asked, so the caller keeps
+# the manifest's answer instead of reporting an empty database.
+# twin: exakit_verified_datasets in setup/lib/exapump.sh.
+function Get-ExakitVerifiedDatasets {
+    if (-not (Test-ExakitDbReachable)) { return $null }
+    $loaded = @()
+    foreach ($dataset in (Get-ExakitBundledDatasets)) {
+        if (Test-ExakitDatasetLoaded $dataset) { $loaded += $dataset.Id }
+    }
+    return ,@($loaded)
 }
 
 # Datasets that are NOT loaded yet - drives the dynamic data menus.
@@ -877,7 +933,19 @@ function Invoke-ExakitDatasetDirLoad {
     if (-not (Get-ExakitManifestValue "components.exapump.profile")) {
         Fail "No exapump connection profile is recorded - the exapump setup step has not completed. Re-run the installer, then retry."
     }
-    if ((Get-ExakitManifestValue $flag) -eq $true -and -not $Force) {
+    # Ask the DATABASE, not the manifest. Reading the flag directly here is what
+    # let an install that had just replaced the deployment print "already loaded"
+    # into a database with no schemas in it, and exit 0.
+    $markers = @()
+    if (Test-Path $confPath) {
+        foreach ($line in (Get-Content $confPath)) {
+            if ($line -match '^markers=(.+)$') {
+                $markers = @($Matches[1].Split(',') | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+            }
+        }
+    }
+    $probe = @{ Id = $Id; Flag = $flag; Markers = $markers; Schema = $schema }
+    if ((-not $Force) -and (Test-ExakitDatasetLoaded $probe)) {
         Ok "Dataset '$Id' already loaded"
         return
     }

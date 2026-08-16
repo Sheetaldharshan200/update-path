@@ -83,7 +83,16 @@ main() {
         printf '\033[1;31m  ✗\033[0m %s\n' "$*" >&2
         _fail_home="${EXAKIT_HOME:-$HOME/.exasol-starter-kit}"
         if mkdir -p "$_fail_home" 2>/dev/null; then
-            printf '%s\n' "$*" > "$_fail_home/.last-failure" 2>/dev/null || true
+            # TWO lines, matching exakit_note_failure: line 1 the reason, line 2
+            # when it happened. `exakit status --json` reads the date off line 2,
+            # and this writer left it empty — so the one failure an agent is most
+            # likely to meet (the installer dying before the kit exists) produced
+            # exactly the undated note that makes a healthy machine look broken
+            # months later. date is POSIX; a missing one must not break the note.
+            # Same format as _exakit_ts in common.sh, so both writers of this
+            # file produce a line 2 the same reader can parse.
+            printf '%s\n%s\n' "$*" "$(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null || true)" \
+                > "$_fail_home/.last-failure" 2>/dev/null || true
         fi
         exit 1
     }

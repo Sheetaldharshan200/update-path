@@ -40,6 +40,11 @@ EXAKIT_CACHE_DIR="$EXAKIT_HOME/cache"
 EXAKIT_MANIFEST="$EXAKIT_HOME/manifest.json"
 EXAKIT_MCP_DIR="$EXAKIT_HOME/mcp"
 EXAKIT_CREDS_DIR="$EXAKIT_HOME/credentials"
+# Where an approved query is saved so it can be re-run tomorrow. The skill's
+# closing step ("make it rerunnable") names this directory by name, so it has to
+# exist: telling an agent to write into a path nothing creates turns the last
+# step of the trust loop into an mkdir it has to guess at.
+EXAKIT_WORKFLOWS_DIR="$EXAKIT_HOME/workflows"
 EXAKIT_BIN_DIR="${EXAKIT_BIN_DIR:-$HOME/.local/bin}"
 EXAKIT_MANAGED_PYTHON_VERSION="${EXAKIT_MANAGED_PYTHON_VERSION:-3.12}"
 EXAKIT_MCP_READONLY_USER="${EXAKIT_MCP_READONLY_USER:-mcp_readonly}"
@@ -625,6 +630,20 @@ exakit_clear_failure_note() {
     return 0
 }
 
+# reject <message> — refuse BAD INPUT and stop, without recording a failure note.
+#
+# The distinction matters to `exakit status --json`, which surfaces the note as
+# `last_failure` — a field meant for "a step of your install did not finish". A
+# rejected SQL statement is not that: it is the user (or the agent) being told to
+# type something else, and recording it left a stale "failure" hanging off an
+# otherwise healthy machine until something else overwrote it. Exit 2, the same
+# code an unknown subcommand uses, because both mean "your input was wrong".
+reject() {
+    printf '\n  %s%s %s%s%s\n' "${UI_ERR:-}" "${UI_CROSS:-[x]}" "${UI_BOLD:-}" "$*" "${UI_RESET:-}" >&2
+    _exakit_log_file "REJECT $*"
+    exit 2
+}
+
 # Fatal error, rendered as a small "card": a prominent ✗ header, then a dim
 # gutter line pointing at the log — consistent shape for every failure.
 die() {
@@ -873,6 +892,11 @@ exakit_can_run_python() {
 
 manifest_init() {
     mkdir -p "$EXAKIT_HOME"
+    # The home the skills tell an agent to write into, created with the home
+    # itself rather than left for the agent to invent. Cheap, idempotent, and it
+    # runs on every install AND every re-run, so an older install grows the
+    # directory the moment the installer touches it again.
+    mkdir -p "$EXAKIT_WORKFLOWS_DIR" 2>/dev/null || true
     if [ -f "$EXAKIT_MANIFEST" ]; then
         # Self-heal after an interrupted run: a manifest that no longer
         # parses is quarantined and rebuilt. Each install step re-verifies
@@ -953,6 +977,75 @@ except json.JSONDecodeError:
     node[parts[-1]] = value
 _exakit_write(path, doc)
 PY
+}
+
+# manifest_set_many — apply several boolean flags in ONE locked read-modify-write,
+# reading "<dot.path>=true|false" lines on stdin. Writes only when at least one
+# key actually changes, so a caller can offer it every observation without
+# rewriting the file each time.
+#
+# Exists for `exakit status`, which now verifies the loaded datasets against the
+# database and heals the flags it finds wrong. Doing that one manifest_set at a
+# time meant six python processes on a command agents poll constantly; the whole
+# heal is one process now. Never fatal: healing bookkeeping must not fail a
+# status read.
+manifest_set_many() {
+    [ -f "$EXAKIT_MANIFEST" ] || return 0
+    exakit_can_run_python || return 0
+    run_python - "$EXAKIT_MANIFEST" <<'PY' 2>/dev/null || true
+import fcntl, json, os, sys, tempfile
+
+path = sys.argv[1]
+wanted = []
+for line in sys.stdin.read().splitlines():
+    if "=" not in line:
+        continue
+    key, _, value = line.partition("=")
+    key = key.strip()
+    if key:
+        wanted.append((key, value.strip() == "true"))
+if not wanted:
+    sys.exit(0)
+
+lock = open(path + ".lock", "a+")
+fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+try:
+    with open(path) as handle:
+        doc = json.load(handle)
+except (OSError, ValueError):
+    sys.exit(0)
+
+changed = False
+for key, value in wanted:
+    node = doc
+    parts = key.split(".")
+    for part in parts[:-1]:
+        nxt = node.get(part)
+        if not isinstance(nxt, dict):
+            nxt = {}
+            node[part] = nxt
+        node = nxt
+    if node.get(parts[-1]) != value:
+        node[parts[-1]] = value
+        changed = True
+if not changed:
+    sys.exit(0)
+
+fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path) or ".",
+                          prefix=os.path.basename(path) + ".")
+try:
+    with os.fdopen(fd, "w") as handle:
+        json.dump(doc, handle, indent=2)
+        handle.write("\n")
+    os.replace(tmp, path)
+except BaseException:
+    try:
+        os.unlink(tmp)
+    except OSError:
+        pass
+    raise
+PY
+    return 0
 }
 
 # manifest_get <dot.path> — prints the value; exits non-zero if missing.
@@ -1623,12 +1716,41 @@ exakit_runtime_is_running() {
     esac
 }
 
-# exakit_loaded_datasets — the bundled datasets recorded as loaded, one id per
-# line. The manifest is the record (data.datasets.<id>.loaded); surfacing it
-# here is what lets `exakit status` answer "what data is in there?" without
-# anyone parsing an undocumented JSON file.
+# exakit_runtime_remedy — the command that actually fixes a database which is not
+# running right now. ONE definition, because every place that reports the state
+# also has to report the fix, and they must not drift: `exakit start` is right for
+# a stopped database and wrong for an interrupted one, where it fails identically
+# every time it is tried.
+# ⇄ twin: Get-ExakitRuntimeRemedy in setup/exakit.ps1.
+exakit_runtime_remedy() {
+    if command -v personal_deployment_wedged >/dev/null 2>&1 && \
+       personal_deployment_wedged >/dev/null 2>&1; then
+        printf 'exakit repair-runtime\n'
+    else
+        printf 'exakit start\n'
+    fi
+}
+
+# exakit_loaded_datasets — the bundled datasets that are loaded, one id per
+# line. This is what `exakit status` answers "what data is in there?" with, so
+# it has to be true and not merely recorded.
+#
+# THE DATABASE IS ASKED FIRST. The manifest alone reported three loaded datasets
+# against a database with zero schemas after a destroy+redeploy — the worst
+# possible answer for an agent rebuilding its bearings after a context reset,
+# because it sends it straight into "object TPCH.LINEITEM not found" with the
+# real cause (no data) recorded nowhere. exakit_verified_datasets checks the
+# marker tables and heals the flags; it lives in exapump.sh, which the CLI loads
+# conditionally, and it declines when the database is unreachable. Either way
+# the manifest read below is the fallback, never the first answer.
 exakit_loaded_datasets() {
     [ -f "$EXAKIT_MANIFEST" ] || return 0
+    if command -v exakit_verified_datasets >/dev/null 2>&1; then
+        _eld_verified="$(exakit_verified_datasets 2>/dev/null)" && {
+            [ -n "$_eld_verified" ] && printf '%s\n' "$_eld_verified"
+            return 0
+        }
+    fi
     exakit_can_run_python || return 0
     run_python - "$EXAKIT_MANIFEST" <<'EXAKIT_LD_PY' 2>/dev/null
 import json, sys
@@ -3928,16 +4050,46 @@ step_artifact_state() {
             _sas_path="$(manifest_get components.exapump.path 2>/dev/null || true)"
             if [ -z "$_sas_path" ]; then
                 printf 'unknown\n'
-            elif [ -x "$_sas_path" ] && [ -s "$_sas_path" ]; then
-                printf 'present\n'
-            else
+            elif [ ! -x "$_sas_path" ] || [ ! -s "$_sas_path" ]; then
                 printf 'missing\n'
+            elif [ -n "${EXAPUMP_CONFIG:-}" ] && [ ! -s "$EXAPUMP_CONFIG" ]; then
+                # THE BINARY IS NOT THE WHOLE STEP. The step also writes the
+                # connection profile, and only the binary was ever checked — so a
+                # profile that had been removed left the step "already done,
+                # skipping" on every re-run while `exapump sql -p starter-kit`
+                # answered "Profile 'starter-kit' not found in config" forever.
+                # Re-running the installer is supposed to be the cure for that.
+                EXAKIT_STEP_RERUN_REASON="the exapump connection profile is gone — writing it again"
+                printf 'missing\n'
+            else
+                printf 'present\n'
+            fi
+            ;;
+        runtime)
+            # A deployed database is normally "unknown" by rule 1: a false
+            # "missing" here redeploys and destroys data, so neither "stopped"
+            # nor "unreachable" may ever answer it.
+            #
+            # ONE state is safe to call missing, and it is the one that used to
+            # loop forever: a deployment the LAUNCHER ITSELF has recorded as
+            # interrupted. That is not an opinion this function forms — it is a
+            # flag the launcher wrote, and after it every start fails identically
+            # ("local VM state contains invalid database port: 0"). The step was
+            # skipped as done, the run then failed at start, and the closing
+            # advice was to re-run the installer, which skipped it again. The
+            # deployment step already knows how to try a start, watch it fail,
+            # and replace the deployment; this is what lets it be reached.
+            if command -v personal_deployment_wedged >/dev/null 2>&1 && \
+               personal_deployment_wedged >/dev/null 2>&1; then
+                EXAKIT_STEP_RERUN_REASON="the database is interrupted and cannot be started — rebuilding it"
+                printf 'missing\n'
+            else
+                printf 'unknown\n'
             fi
             ;;
         *)
-            # runtime (a deployed database or container), mcp, pyexasol and the
-            # kit2 asset steps: nothing a file test can settle without risking a
-            # destructive false "missing". See rule 1 above.
+            # mcp, pyexasol and the kit2 asset steps: nothing a file test can
+            # settle without risking a destructive false "missing". See rule 1.
             printf 'unknown\n'
             ;;
     esac
@@ -4019,10 +4171,20 @@ begin_step() {
     EXAKIT_CURRENT_STEP="$1"
     EXAKIT_ACTIVE_LABEL="$2"     # spinner label for run_logged inside this step
     _bs_rerun=0
+    # Cleared before every judgement so one step's reason cannot be reported
+    # against the next; step_artifact_state sets it when it has a better
+    # explanation than the generic "what it installed is missing".
+    EXAKIT_STEP_RERUN_REASON=""
     if step_done "$1"; then
         # "unknown" (and "present") keep the manifest's answer: only a proven
         # "missing" is allowed to override the tick.
         if [ "$(step_artifact_state "$1")" = "missing" ]; then
+            # Run the judgement AGAIN, in this shell, purely to recover
+            # EXAKIT_STEP_RERUN_REASON: the call above is a command
+            # substitution, so the variable it set died with the subshell and
+            # every re-run reported the generic reason. The check is file tests
+            # and a manifest read, so a second one costs nothing.
+            step_artifact_state "$1" >/dev/null 2>&1
             _bs_rerun=1
         else
             # Step-level line (a whole step's status, not a nested outcome).
@@ -4039,7 +4201,7 @@ begin_step() {
         "${UI_BOLD:-}" "$2" "${UI_RESET:-}"
     _exakit_log_file "STEP  $2"
     if [ "$_bs_rerun" -eq 1 ]; then
-        info "Recorded as done, but what it installed is missing — running it again"
+        info "Recorded as done, but ${EXAKIT_STEP_RERUN_REASON:-what it installed is missing — running it again}"
     fi
     return 0
 }
@@ -4506,36 +4668,42 @@ exakit_apply_readonly_allowlist() {
 import json, os, sys
 
 path = sys.argv[1]
-ALLOW = [
-    "Bash(exakit status:*)",
-    "Bash(exakit info:*)",
-    "Bash(exakit version:*)",
-    "Bash(exakit mcp-doctor:*)",
-    "Bash(exakit logs:*)",
-    # The rest of the kit's read-only surface. Leaving these out is what kept
-    # the friction real: an agent following AGENTS.md is told to discover
-    # commands with `exakit catalog` and to check its footing with
-    # `update-check` / `mcp-status`, and every one of those asked for approval
-    # while changing nothing. `exapump sql` and every mutating command stay
-    # absent on purpose — that gate is the trust model.
-    "Bash(exakit catalog:*)",
-    "Bash(exakit preflight:*)",
-    "Bash(exakit update-check:*)",
-    "Bash(exakit guide:*)",
-    "Bash(exakit mcp-status:*)",
-    "Bash(exakit mcp-validate:*)",
-    "Bash(exakit help:*)",
+
+# The kit's read-only command surface. Leaving any of these out is what kept the
+# friction real: an agent following AGENTS.md is told to discover commands with
+# `exakit catalog` and to check its footing with `update-check` / `mcp-status`,
+# and every one of those asked for approval while changing nothing. `exapump sql`
+# and every mutating command stay absent on purpose — that gate is the trust
+# model.
+READONLY = [
+    "status", "info", "version", "mcp-doctor", "logs", "catalog", "preflight",
+    "update-check", "guide", "mcp-status", "mcp-validate", "help",
+]
+
+# EVERY SPELLING THE AGENT IS TOLD TO USE. A permission rule matches the command
+# text, and AGENTS.md tells agents in as many words that ~/.local/bin is absent
+# from a bare non-interactive PATH and to call the binary by absolute path. So
+# the bare-`exakit` rules covered exactly the invocation the docs steer agents
+# AWAY from, and every "read-only" command kept prompting anyway — the two halves
+# of the kit's own advice cancelling out. All three spellings are listed now.
+PREFIXES = ["exakit", "~/.local/bin/exakit", "$HOME/.local/bin/exakit"]
+
+ALLOW = []
+for prefix in PREFIXES:
+    for command in READONLY:
+        ALLOW.append("Bash(%s %s:*)" % (prefix, command))
     # Exact forms, deliberately NOT "exakit skills:*": that prefix would also
     # match `exakit skills-install`, which writes this very settings file. An
     # allowlisted command that can add allowlist entries is an escalation path,
     # so the listing is allowed and the install still asks.
-    "Bash(exakit skills)",
-    "Bash(exakit skills --json)",
-    "mcp__exasol",
-]
-DENY = [
-    "Bash(exakit uninstall:*)",
-]
+    ALLOW.append("Bash(%s skills)" % prefix)
+    ALLOW.append("Bash(%s skills --json)" % prefix)
+ALLOW.append("mcp__exasol")
+
+# The deny needs every spelling too, for the opposite reason: a rule that only
+# names the bare form is trivially sidestepped by the absolute path the docs
+# recommend.
+DENY = ["Bash(%s uninstall:*)" % prefix for prefix in PREFIXES]
 
 doc = {}
 if os.path.exists(path):
@@ -5070,6 +5238,14 @@ exakit_configure_mcp_readonly_access() {
     # limited to this list); kept as an array for the posture re-check and the
     # exapump default-schema pick.
     manifest_set components.mcp_server.connection.schemas "[\"$(printf '%s' "$_readonly_schemas" | tr ',' '\n' | sed '/^$/d' | paste -sd '","' -)\"]"
+    # THE SAME FACT, SPELLED SO IT CANNOT BE MISREAD. `schemas: ["STARTER_KIT"]`
+    # reads as "this user can only see STARTER_KIT" — and an agent checking the
+    # install record before querying concluded exactly that, while the MCP user
+    # was in fact returning TPCH, ENERGY and WEATHER quite happily. The array
+    # stays (internal readers parse it); these two say what it means.
+    manifest_set components.mcp_server.connection.default_schema "$_default_schema"
+    manifest_set components.mcp_server.connection.read_scope \
+        "every schema (USE ANY SCHEMA + SELECT ANY TABLE); 'schemas' is the connection default, not a limit"
     manifest_set components.mcp_server.connection.validated "true"
     rm -f "$_temp_config"
     ok "Dedicated MCP read-only access is configured and validated"
@@ -5282,8 +5458,15 @@ exakit_print_mcp_ready_panel() {
     ui_panel_end
     # Put the prompt straight onto the clipboard so the first interaction is a
     # paste, not a retype. Best-effort: silent when no clipboard tool exists.
+    #
+    # ONLY WITH A TERMINAL ATTACHED. The clipboard is the user's, and an
+    # unattended install — an agent driving the kit, CI, a provisioning script —
+    # has no business overwriting whatever they had on it for a prompt nobody is
+    # about to paste. There is no undo for a clipboard.
     _first_prompt='Use the exasol MCP server connected to my local Exasol database. List the available schemas and tables first. Then answer my questions with read-only SQL only, show me the SQL before you run it, and do not create, update, or delete anything.'
-    if printf '%s' "$_first_prompt" | exakit_copy_clipboard 2>/dev/null; then
+    if ! exakit_stdin_is_tty; then
+        info "Paste this prompt into your AI client after restarting it."
+    elif printf '%s' "$_first_prompt" | exakit_copy_clipboard 2>/dev/null; then
         ok "This prompt is copied to your clipboard — paste it after restarting your client."
     fi
 }
@@ -5672,6 +5855,33 @@ exakit_mcp_operation() {
     }
     _result_file="$(mktemp "${TMPDIR:-/tmp}/exakit-mcp-operation.XXXXXX")"
     _operation_status=0
+    # _exakit_stamp_mcp_json <file> — print the MCP result with `installed` and
+    # `remedy` added. Fails (prints nothing) when the file is not a JSON object,
+    # so the caller can fall back to passing it through untouched.
+    _exakit_stamp_mcp_json() {
+        exakit_can_run_python || return 1
+        run_python - "$1" <<'EXAKIT_MCP_STAMP_PY' 2>/dev/null
+import json, sys
+try:
+    with open(sys.argv[1]) as handle:
+        doc = json.load(handle)
+except (OSError, ValueError):
+    sys.exit(1)
+if not isinstance(doc, dict):
+    sys.exit(1)
+doc.setdefault("installed", True)
+if "remedy" not in doc:
+    actions = doc.get("next_actions")
+    remedy = None
+    if isinstance(actions, list):
+        for action in actions:
+            if isinstance(action, dict) and action.get("message"):
+                remedy = action["message"]
+                break
+    doc["remedy"] = remedy
+print(json.dumps(doc, indent=2, sort_keys=True))
+EXAKIT_MCP_STAMP_PY
+    }
     # JSON mode (EXAKIT_MCP_RESULT_JSON=1): the operation's own result file is
     # already the machine-readable truth the summary is rendered from — print
     # it verbatim and keep every human line off stdout.
@@ -5682,9 +5892,15 @@ exakit_mcp_operation() {
             _operation_status=$?
         fi
         if [ -s "$_result_file" ]; then
-            cat "$_result_file"
+            # Add the discriminators every --json answer from a state query
+            # carries — `installed` and `remedy` — so one parser handles the
+            # healthy report, the database-down answer and the not-installed
+            # answer alike. The subsystem's own fields are never touched, and a
+            # result that is not valid JSON is passed through byte for byte
+            # rather than swallowed.
+            _exakit_stamp_mcp_json "$_result_file" || cat "$_result_file"
         else
-            printf '{"error": "the MCP %s operation produced no result (see log)"}\n' "$_operation"
+            printf '{"installed": true, "status": "error", "remedy": "exakit logs setup", "error": "the MCP %s operation produced no result (see log)"}\n' "$_operation"
             [ "$_operation_status" -eq 0 ] && _operation_status=1
         fi
         rm -f "$_result_file"
@@ -6410,6 +6626,7 @@ connection_panel() {
 
     ui_panel_line "Manifest:     $(ui_tilde "$EXAKIT_MANIFEST")"
     ui_panel_line "Logs:         $(ui_tilde "$EXAKIT_LOG_DIR")"
+    ui_panel_line "Saved SQL:    $(ui_tilde "$EXAKIT_WORKFLOWS_DIR")"
     ui_panel_line "SQL client:   $(ui_link https://dbeaver.io/download/ "DBeaver") or $(ui_link https://www.dbvis.com/download/ "DbVisualizer")"
     ui_panel_line "How to connect: exakit guide"
     # One line, only while something is still on offer: the marketplace is the
@@ -6646,7 +6863,10 @@ _exakit_uninstall_component() {
             fi
             info "Removing exapump and its profiles"
             rm -f "$EXAKIT_BIN_DIR/exapump"
-            rm -rf "$HOME/.exapump" "$EXAKIT_HOME/libexec"
+            # Through the shared variable, never a bare "$HOME/.exapump": a
+            # caller that sandboxes EXAKIT_HOME but not HOME would otherwise
+            # delete the real profile directory (a test suite did exactly that).
+            rm -rf "${EXAKIT_EXAPUMP_CONFIG_DIR:-$HOME/.exapump}" "$EXAKIT_HOME/libexec"
             manifest_del components.exapump
             exakit_unmark_step exapump
             ;;
@@ -6746,6 +6966,54 @@ _exakit_log_mtime() {
 }
 
 # exakit_logs_overview — what can be viewed, in the kit's table shape.
+# exakit_logs_overview_json — the same listing, machine-readable, so an agent can
+# pick a target and its path without parsing a column-aligned table. Always an
+# object, including when there are no logs at all, so a parser never gets empty
+# stdout (the same rule the other --json surfaces follow).
+exakit_logs_overview_json() {
+    exakit_can_run_python || return 1
+    _loj_rows=""
+    while IFS='|' read -r _loj_id _loj_label _loj_kind _loj_src; do
+        [ -n "$_loj_id" ] || continue
+        if [ "$_loj_kind" = "cmd" ]; then
+            _loj_rows="${_loj_rows}${_loj_id}|${_loj_label}|${_loj_kind}|${_loj_src}|live|kept by the engine
+"
+        else
+            _loj_rows="${_loj_rows}${_loj_id}|${_loj_label}|${_loj_kind}|${_loj_src}|$(_exakit_log_size "$_loj_src")|$(_exakit_log_mtime "$_loj_src")
+"
+        fi
+    done <<EXAKIT_LOJ_EOF
+$(exakit_log_targets)
+EXAKIT_LOJ_EOF
+    # Rows go through argv, not stdin: run_python reads the PROGRAM from stdin
+    # (the here-doc), so a piped payload arrives as an empty read and the
+    # listing silently comes back with zero targets.
+    run_python - "$_loj_rows" <<'EXAKIT_LOJ_PY'
+import json, sys
+targets = []
+for line in sys.argv[1].splitlines():
+    if not line.strip():
+        continue
+    fields = line.split("|")
+    if len(fields) < 6:
+        continue
+    identifier, label, kind, source, size, updated = fields[:6]
+    targets.append({
+        "target": identifier,
+        "what": label,
+        "kind": kind,
+        # A command-backed target has no file; null is the honest answer, and it
+        # is what tells a caller to use `exakit logs <target>` instead of opening
+        # a path itself.
+        "path": source if kind != "cmd" else None,
+        "command": source if kind == "cmd" else None,
+        "size": size,
+        "updated": updated,
+    })
+print(json.dumps({"count": len(targets), "targets": targets}, indent=2))
+EXAKIT_LOJ_PY
+}
+
 exakit_logs_overview() {
     _lo_rows="$(exakit_log_targets)"
     if [ -z "$_lo_rows" ]; then
@@ -7259,9 +7527,9 @@ exakit_uninstall_run() {
     _exakit_remove_installed_skills "$_dry"
 
     # 4) exapump profile store (the kit created it; the binary goes in step 6).
-    if [ -e "$HOME/.exapump" ]; then
-        _step "exapump profiles at $HOME/.exapump"
-        _rm "$HOME/.exapump"
+    if [ -e "${EXAKIT_EXAPUMP_CONFIG_DIR:-$HOME/.exapump}" ]; then
+        _step "exapump profiles at ${EXAKIT_EXAPUMP_CONFIG_DIR:-$HOME/.exapump}"
+        _rm "${EXAKIT_EXAPUMP_CONFIG_DIR:-$HOME/.exapump}"
     fi
 
     # 5) Kit home: credentials, logs, manifest, cached kit copy, MCP snapshots,

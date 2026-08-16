@@ -97,10 +97,22 @@ function Assert-ExakitInstalled {
     if (-not (Get-RuntimeType)) { Fail "No runtime recorded in the manifest yet." }
 }
 
-# Get-ExakitLoadedDatasets - the bundled datasets recorded as loaded. Twin of
-# exakit_loaded_datasets: the manifest is the record; status surfaces it so
-# nobody has to know where the file lives.
+# Get-ExakitLoadedDatasets - the bundled datasets that are loaded. Twin of
+# exakit_loaded_datasets.
+#
+# THE DATABASE IS ASKED FIRST. The manifest alone reported three loaded datasets
+# against a database with zero schemas after a destroy+redeploy - the worst
+# possible answer for an agent rebuilding its bearings after a context reset,
+# because it sends it straight into "object not found" with the real cause
+# recorded nowhere. Get-ExakitVerifiedDatasets checks the marker tables and heals
+# the flags; it lives in exapump.ps1, which the CLI loads conditionally, and it
+# returns $null when the database is unreachable. Either way the manifest read
+# below is the fallback, never the first answer.
 function Get-ExakitLoadedDatasets {
+    if (Get-Command Get-ExakitVerifiedDatasets -ErrorAction SilentlyContinue) {
+        $verified = Get-ExakitVerifiedDatasets
+        if ($null -ne $verified) { return @($verified) }
+    }
     $datasets = Get-ExakitManifestValue "data.datasets"
     if (-not $datasets) { return @() }
     $loaded = @()
@@ -382,6 +394,48 @@ function Invoke-CmdStop {
         Stop-ExakitService -Id $id
     }
     switch (Get-RuntimeType) { "nano" { Stop-Nano } }
+}
+
+# Invoke-CmdRepairRuntime [-Yes] - rebuild a database that cannot be started.
+#
+# THE ESCAPE FROM A WEDGE. When a runtime is deployed but refuses to start, the
+# installer used to skip its step as already done, fail at start, and close by
+# advising a re-run that behaved the same way - a loop with no exit, and
+# EXAKIT_REUSE_DB=0 never got a say because the skip happened first. Re-running
+# the platform setup script IS the repair: the deployment step already knows how
+# to try a start, watch it fail, and replace the deployment. Dropping the
+# `runtime` tick first is what lets it be reached.
+#
+# DESTRUCTIVE: the deployment is replaced and its data is gone. Interactive runs
+# are asked; -Yes and EXAKIT_CONFIRM_RUNTIME_REPAIR=1 pre-answer it.
+# twin: cmd_repair_runtime in setup/exakit.
+function Invoke-CmdRepairRuntime {
+    param([switch]$Yes)
+    Assert-ExakitInstalled
+    $confirmed = [bool]$Yes
+    if ($env:EXAKIT_CONFIRM_RUNTIME_REPAIR -eq "1") { $confirmed = $true }
+
+    $kit = Get-ExakitRepoRoot
+    if (-not $kit) { Fail "Could not find the kit copy to re-run setup from. Re-run the installer instead." }
+    $setup = Join-Path $kit "setup\setup-windows-docker.ps1"
+    if (-not (Test-Path $setup)) { Fail "The kit copy at $kit has no setup\setup-windows-docker.ps1. Re-run the installer instead." }
+
+    Warn2 "Repairing the runtime REPLACES the database. Its data is not recoverable."
+    Info "Bundled datasets are reloaded afterwards; anything you loaded yourself is not."
+    if (-not $confirmed) {
+        if (-not (Confirm-ExakitPrompt "Replace the database and rebuild it now?" $false)) {
+            Fail "Nothing was changed. Re-run with -Yes (or EXAKIT_CONFIRM_RUNTIME_REPAIR=1) when you are ready."
+        }
+    }
+
+    Initialize-ExakitLogging
+    # Drop the tick so the deployment step runs even on a runtime whose wedged
+    # state the kit cannot yet recognise on its own.
+    Remove-ExakitStepDone "runtime"
+    Info "Re-running setup\setup-windows-docker.ps1 to rebuild the database"
+    $env:EXAKIT_BANNER_SHOWN = "1"
+    & $setup
+    exit $LASTEXITCODE
 }
 
 # Invoke-ExakitUninstallRun -DryRun - remove every artifact the kit installs, in
@@ -1813,6 +1867,40 @@ function Get-ExakitLogTargets {
     return $targets
 }
 
+# Show-ExakitLogsOverviewJson - the same listing, machine-readable, so an agent
+# can pick a target and its path without parsing a column-aligned table. Always
+# an object, including when there are no logs at all, so a parser never gets
+# empty stdout (the rule every other -Json surface follows).
+# twin: exakit_logs_overview_json in setup/lib/common.sh.
+function Show-ExakitLogsOverviewJson {
+    $targets = Get-ExakitLogTargets
+    $rows = @()
+    foreach ($target in $targets) {
+        $size = "-"; $updated = "-"
+        if ($target.Kind -eq "cmd") {
+            $size = "live"; $updated = "kept by the engine"
+        } elseif (Test-Path $target.Source) {
+            $item = Get-Item $target.Source
+            $size = if ($item.Length -ge 1MB) { "$([int]($item.Length / 1MB))M" }
+                    elseif ($item.Length -ge 1KB) { "$([int]($item.Length / 1KB))K" }
+                    else { "$($item.Length)B" }
+            $updated = $item.LastWriteTime.ToString("yyyy-MM-dd HH:mm")
+        }
+        $rows += [pscustomobject]@{
+            target  = $target.Id
+            what    = $target.Label
+            kind    = $target.Kind
+            # A command-backed target has no file; null is the honest answer and
+            # is what tells a caller to use `exakit logs <target>` instead.
+            path    = if ($target.Kind -eq "cmd") { $null } else { $target.Source }
+            command = if ($target.Kind -eq "cmd") { $target.Source } else { $null }
+            size    = $size
+            updated = $updated
+        }
+    }
+    [pscustomobject]@{ count = $rows.Count; targets = @($rows) } | ConvertTo-Json -Depth 6
+}
+
 function Show-ExakitLogsOverview {
     $targets = Get-ExakitLogTargets
     if ($targets.Count -eq 0) {
@@ -1876,22 +1964,30 @@ function Invoke-CmdLogs {
     $target = ""
     $follow = $false
     $pathOnly = $false
+    $json = $false
     $lines = 200
     for ($i = 0; $i -lt $LogArgs.Count; $i++) {
         switch ($LogArgs[$i]) {
             { $_ -in @("-f", "--follow", "-Follow") } { $follow = $true }
             { $_ -in @("--path", "-Path") }           { $pathOnly = $true }
+            { $_ -in @("--json", "-j", "-Json") }     { $json = $true }
             { $_ -in @("--lines", "-n", "-Lines") }   { $i++; $lines = [int]$LogArgs[$i] }
             default {
                 if ($LogArgs[$i].StartsWith("-")) {
-                    Fail "Unknown option '$($LogArgs[$i])' for logs (supported: -f/--follow, --lines N, --path)."
+                    Fail "Unknown option '$($LogArgs[$i])' for logs (supported: -f/--follow, --lines N, --path, --json)."
                 }
                 if ($target) { Fail "Only one log target at a time (got '$target' and '$($LogArgs[$i])')." }
                 $target = $LogArgs[$i]
             }
         }
     }
-    if (-not $target) { Show-ExakitLogsOverview; return }
+    if (-not $target) {
+        if ($json) { Show-ExakitLogsOverviewJson; return }
+        Show-ExakitLogsOverview; return
+    }
+    if ($json) {
+        Fail "--json lists the log targets; it does not apply to one target's contents. Use: exakit logs --json, then exakit logs $target --path"
+    }
     Show-ExakitLog -Target $target -Follow:$follow -Lines $lines -PathOnly:$pathOnly
 }
 
@@ -1908,6 +2004,27 @@ function Invoke-CmdDataLoad {
     if ($ForceFlag) {
         $kitRoot = Get-ExakitRepoRoot
         if (-not $kitRoot) { Fail "Could not find the kit's sql/ and data/ files to load." }
+        # EXAKIT_DATASETS names WHICH datasets; -Force says "reload them even
+        # though they are already there". They compose. -Force used to ignore the
+        # variable outright and reload the bundled sample alone, so an unattended
+        # reload silently restored one of three datasets and reported success.
+        if ($env:EXAKIT_DATASETS) {
+            $known = @(Get-ExakitBundledDatasets | ForEach-Object { $_.Id })
+            $any = $false
+            foreach ($id in ($env:EXAKIT_DATASETS -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ })) {
+                if ($known -contains $id) {
+                    $any = $true
+                    Info "Reloading dataset '$id' (EXAKIT_DATASETS, -Force)"
+                    Invoke-ExakitDatasetLoad -KitRoot $kitRoot -Id $id -Force
+                } else {
+                    Warn2 "Unknown dataset id '$id' in EXAKIT_DATASETS (available: $($known -join ', '))."
+                }
+            }
+            if (-not $any) {
+                Fail "EXAKIT_DATASETS='$($env:EXAKIT_DATASETS)' matched no bundled dataset - nothing was reloaded."
+            }
+            return
+        }
         Info "Reloading the bundled sample dataset (log: $script:LogFile)"
         Invoke-ExakitSampleDataLoad -KitRoot $kitRoot -Force
     } else {
@@ -1938,9 +2055,35 @@ function Invoke-CmdMcpRestore {
 }
 
 function Invoke-CmdCatalog {
-    param([string]$Search = "")
+    param([string]$Search = "", [switch]$Json)
     $catalogPath = Join-Path $libDir "catalog.tsv"
     if (-not (Test-Path $catalogPath)) { Fail "Catalog data not found: $catalogPath" }
+
+    # -Json: the command surface itself, machine-readable. Without it an agent
+    # told to "discover every command with exakit catalog" had to pattern-match
+    # a decorated screen - the one discovery surface with no structured form.
+    if ($Json) {
+        $q = $Search.ToLowerInvariant()
+        $commands = @()
+        foreach ($row in (Import-Csv -Path $catalogPath -Delimiter "`t")) {
+            if (-not $row.command) { continue }
+            $haystack = "$($row.tool) $($row.command) $($row.options) $($row.description)".ToLowerInvariant()
+            if ($q -and $haystack -notlike "*$q*") { continue }
+            $commands += [pscustomobject]@{
+                tool        = $row.tool
+                command     = $row.command
+                options     = $row.options
+                description = $row.description
+                invocation  = "$($row.tool) $($row.command)".Trim()
+            }
+        }
+        [pscustomobject]@{
+            search   = if ($q) { $q } else { $null }
+            count    = $commands.Count
+            commands = @($commands)
+        } | ConvertTo-Json -Depth 6
+        return
+    }
 
     # Let the box-drawing / bullet glyphs render on the Windows console, which
     # defaults to a non-UTF-8 code page; restore the previous encoding after.
@@ -2042,6 +2185,46 @@ function Invoke-CmdInfoJson {
         Write-ExakitNotInstalledAnswer -Json
     }
     Write-Output $raw.TrimEnd("`r", "`n")
+    # THE SAME TRI-STATE AS `status`. AGENTS.md documents 0/3/4 for this command
+    # and it only ever answered 0 or 4, so an agent that branched on the exit code
+    # the way it was told read "healthy" off a stopped database. The record on
+    # stdout is unchanged either way; only the code was lying.
+    if ((Get-ExakitRuntimeStatus) -ne "running") { exit 3 }
+    exit 0
+}
+
+# Invoke-CmdSql <statement> [-Write] - run one SQL statement and translate the
+# error. Twin of cmd_sql in setup/exakit; see there for why it exists (the error
+# translator was wired only into the kit's own internal SQL, never the path an
+# agent actually runs) and why the statement gate is a seatbelt rather than a
+# sandbox - the starter-kit profile is the ADMIN connection, and the real
+# boundary is the read-only MCP user.
+function Invoke-CmdSql {
+    param([string]$Statement, [switch]$Write)
+    Assert-ExakitInstalled
+    if (-not $Statement) { Fail "Nothing to run. Usage: exakit sql 'SELECT ...' [--write]" }
+
+    if (-not $Write) {
+        $probe = ($Statement -replace '[\r\n\t]', ' ').TrimStart()
+        if ($probe -notmatch '^(?i)\s*(SELECT|WITH|DESCRIBE|EXPLAIN|SHOW)\b') {
+            Fail "That is not a read statement, and 'exakit sql' defaults to reads. Re-run with --write if you mean it - and note the profile it uses is the ADMIN connection, not the read-only MCP user."
+        }
+        # Reject a second statement outright. The MCP tool gate lets
+        # "SELECT 1; DROP TABLE T" through because it only inspects the opening
+        # keyword; refusing it here costs nothing and removes the same footgun.
+        if (($probe -replace ';*\s*$', '') -match ';') {
+            Fail "Only one statement at a time. A trailing ';' is fine; a second statement is not."
+        }
+    }
+
+    $result = Invoke-Exapump @("sql", "-p", $script:ExapumpProfile, $Statement)
+    if ($result.Output) { Write-Output $result.Output }
+    if (-not $result.Success) {
+        # The whole point: say what to do about it.
+        Show-ExakitDbErrorRemedy $result.Output
+        exit 1
+    }
+    exit 0
 }
 
 function Show-ExakitUsage {
@@ -2139,6 +2322,14 @@ try {
         "guide"        { Show-ExakitGuide }
         "start"        { Invoke-CmdStart }
         "stop"         { Invoke-CmdStop }
+        "sql" {
+            $sqlWrite = ($RestArgs -contains "--write" -or $RestArgs -contains "-Write")
+            $sqlText = @($RestArgs | Where-Object { $_ -notin @("--write", "-Write") }) | Select-Object -First 1
+            Invoke-CmdSql -Statement $sqlText -Write:$sqlWrite
+        }
+        "repair-runtime" {
+            Invoke-CmdRepairRuntime -Yes:([bool]($RestArgs -contains "--yes" -or $RestArgs -contains "-y" -or $RestArgs -contains "-Yes"))
+        }
         "autostart"    { Invoke-CmdAutostart -Action (($RestArgs | Select-Object -First 1)) }
         "data-load"    { Invoke-CmdDataLoad -ForceFlag ($RestArgs | Select-Object -First 1) }
         "mcp-setup"    { Invoke-CmdMcpSetup }
@@ -2190,7 +2381,11 @@ try {
         "uninstall"    { Invoke-CmdUninstall -AssumeYes:($RestArgs -contains "-Yes" -or $RestArgs -contains "--yes" -or $RestArgs -contains "-y") -DryRun:($RestArgs -contains "-DryRun" -or $RestArgs -contains "--dry-run" -or $RestArgs -contains "-n") }
         "whats-new"    { Invoke-CmdWhatsNew -Version ($RestArgs | Select-Object -First 1) }
         "logs"         { Invoke-CmdLogs -LogArgs $RestArgs }
-        "catalog"      { Invoke-CmdCatalog -Search ($RestArgs | Select-Object -First 1) }
+        "catalog"      {
+            $catJson = ($RestArgs -contains "--json" -or $RestArgs -contains "-j" -or $RestArgs -contains "-Json")
+            $catSearch = @($RestArgs | Where-Object { $_ -notin @("--json", "-j", "-Json") }) | Select-Object -First 1
+            Invoke-CmdCatalog -Search $catSearch -Json:$catJson
+        }
         { $_ -in @("help", "-h", "--help") } { Show-ExakitUsage -All:($RestArgs -contains "--all" -or $RestArgs -contains "-a") }
         default {
             Write-Host "exakit: unknown command '$Command'" -ForegroundColor Red
