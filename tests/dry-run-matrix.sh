@@ -791,7 +791,7 @@ panel_widths="$(
     ui_panel_begin "Connection details"
     ui_panel_line "Logs:         ~/.exasol-starter-kit/logs"
     ui_panel_line "$_p_link"
-    ui_panel_line "How to connect: exakit guide"
+    ui_panel_line "More info:    exakit guide"
     ui_panel_end
 )"
 # strip every escape, then count distinct rendered row lengths: 1 means aligned
