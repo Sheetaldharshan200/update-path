@@ -7075,17 +7075,26 @@ _exakit_remove_installed_skills() {
         _skill_names="$(manifest_get components.skills.installed 2>/dev/null |
             tr -d '[]"' | tr ',' ' ')"
     fi
+    # One line per FOLDER, not per skill. Nine skills across two discovery
+    # folders printed eighteen near-identical lines in the middle of an
+    # uninstall - long enough to push everything else off a screen, and saying
+    # nothing the count and the folder do not. The individual paths are still
+    # worth having in the log, where a reader goes when they want them.
     for _root in "$HOME/.claude/skills" "$HOME/.agents/skills"; do
+        _rs_found=0
         for _name in $_skill_names; do
-            if [ -e "$_root/$_name" ]; then
-                if [ "$_rs_dry" = "1" ]; then
-                    info "  will remove: AI skill $_root/$_name"
-                else
-                    info "AI skill $_root/$_name"
-                    rm -rf "$_root/$_name"
-                fi
-            fi
+            [ -e "$_root/$_name" ] || continue
+            _rs_found=$((_rs_found + 1))
+            _exakit_log_file "INFO  AI skill $_root/$_name"
+            [ "$_rs_dry" = "1" ] || rm -rf "$_root/$_name"
         done
+        [ "$_rs_found" -gt 0 ] || continue
+        if [ "$_rs_found" = 1 ]; then _rs_word="skill"; else _rs_word="skills"; fi
+        if [ "$_rs_dry" = "1" ]; then
+            info "  will remove: $_rs_found AI $_rs_word from $(ui_tilde "$_root")"
+        else
+            info "$_rs_found AI $_rs_word from $(ui_tilde "$_root")"
+        fi
     done
     return 0
 }
@@ -7774,7 +7783,20 @@ EXAKIT_UM_PANEL_EOF
         _exakit_uninstall_component "$_um_key" 0
     done
     printf '\n'
-    ok "Done. See where you stand with: exakit status"
+    # A full uninstall has just deleted the exakit binary, so pointing at
+    # `exakit status` sends the reader to a command that no longer exists -
+    # the last word of the run being one that cannot be followed. Anything
+    # short of EVERYTHING leaves the CLI in place, and there status is exactly
+    # the right next step.
+    case " $_um_picked " in
+        *" everything "*)
+            ok "Done. The kit is gone."
+            info "Install it again any time: curl -fsSL https://raw.githubusercontent.com/$EXAKIT_KIT_REPO/main/install.sh | sh"
+            ;;
+        *)
+            ok "Done. See where you stand with: exakit status"
+            ;;
+    esac
     return 0
 }
 

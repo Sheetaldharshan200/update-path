@@ -529,15 +529,24 @@ function Invoke-ExakitUninstallRun {
     #    once the checkout is gone. One helper, shared with the selectable
     #    uninstall below, so the two paths can never disagree about which
     #    skills belong to the kit.
+    # One line per FOLDER, not per skill: nine skills across two discovery
+    # folders printed eighteen near-identical lines in the middle of an
+    # uninstall. The individual paths go to the log, where a reader looks when
+    # they want them. Mirrors _exakit_remove_installed_skills in common.sh.
     $skillNames = @(Get-ExakitKitSkillNames)
     foreach ($root in (Get-ExakitSkillRoots)) {
+        $found = 0
         foreach ($name in $skillNames) {
             $p = Join-Path $root $name
-            if (Test-Path $p) {
-                if ($DryRun) { Info "  will remove: AI skill $p" }
-                else { Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $p }
-            }
+            if (-not (Test-Path $p)) { continue }
+            $found += 1
+            Write-ExakitLog "INFO" "AI skill $p"
+            if (-not $DryRun) { Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $p }
         }
+        if ($found -eq 0) { continue }
+        $word = if ($found -eq 1) { "skill" } else { "skills" }
+        if ($DryRun) { Info "  will remove: $found AI $word from $root" }
+        else { Info "$found AI $word from $root" }
     }
 
     # 4) exapump profile store (the kit created it; the binary goes in step 6).
@@ -754,7 +763,15 @@ function Show-ExakitUninstallMenu {
     Write-Host ""
     foreach ($key in $picked) { Invoke-ExakitUninstallComponent -Key $key }
     Write-Host ""
-    Ok "Done. See where you stand with: exakit status"
+    # A full uninstall has just deleted the exakit command, so pointing at
+    # `exakit status` ends the run with an instruction that cannot be followed.
+    # Anything short of EVERYTHING leaves the CLI in place.
+    if ($picked -contains "everything") {
+        Ok "Done. The kit is gone."
+        Info "Install it again any time: curl -fsSL https://raw.githubusercontent.com/$script:KitRepo/main/install.sh | sh"
+    } else {
+        Ok "Done. See where you stand with: exakit status"
+    }
 }
 
 # One selectable piece of the kit, removed on its own. Twin of

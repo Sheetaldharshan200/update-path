@@ -122,6 +122,53 @@ case "$out_skip" in
     *) fail "EVERYTHING no longer states its scope in the same terms" ;;
 esac
 
+# 8. The closing line has to be followable. A full uninstall deletes the exakit
+#    binary, so ending the run with "See where you stand with: exakit status"
+#    hands the reader a command that no longer exists - as the last word of the
+#    run, with nothing after it to correct the impression.
+case "$out_all" in
+    *"exakit status"*) fail "a full uninstall still points at exakit status, which it has just deleted" ;;
+    *)                 pass "a full uninstall does not point at the command it removed" ;;
+esac
+case "$out_all" in
+    *"install.sh"*) pass "and offers the reinstall command instead" ;;
+    *)              fail "a full uninstall leaves the reader with no way back" ;;
+esac
+# Anything short of EVERYTHING leaves the CLI in place, and there status IS the
+# right next step: the fix must not silence it for every scope.
+case "$out" in
+    *"exakit status"*) pass "a partial uninstall still points at exakit status" ;;
+    *)                 fail "a partial uninstall lost its next step - the CLI is still installed" ;;
+esac
+
+# 9. Skills are reported per FOLDER, not per skill. Nine skills across two
+#    discovery folders printed eighteen near-identical lines mid-uninstall.
+_sk_home="$WORK/skillhome"
+mkdir -p "$_sk_home/.claude/skills" "$_sk_home/.agents/skills"
+for _sk in dash-server exasol-mcp json-tables; do
+    mkdir -p "$_sk_home/.claude/skills/$_sk" "$_sk_home/.agents/skills/$_sk"
+done
+_sk_out="$(
+    export HOME="$_sk_home"
+    export EXAKIT_HOME="$WORK/skillkit"; mkdir -p "$EXAKIT_HOME"
+    . "$ROOT/setup/lib/ui.sh" 2>/dev/null; ui_detect 2>/dev/null
+    . "$ROOT/setup/lib/common.sh"
+    printf '{"components":{"skills":{"installed":["dash-server","exasol-mcp","json-tables"]}}}\n' \
+        > "$EXAKIT_HOME/manifest.json"
+    exakit_repo_root() { return 1; }
+    _exakit_remove_installed_skills 0 2>&1
+)"
+_sk_lines="$(printf '%s\n' "$_sk_out" | grep -c "AI skill")"
+if [ "$_sk_lines" -le 2 ]; then
+    pass "three skills in two folders report on $_sk_lines line(s), not six"
+else
+    fail "skill removal printed $_sk_lines lines - one per skill per folder is a wall of near-identical text"
+fi
+case "$_sk_out" in
+    *"3 AI skills"*) pass "and the line says how many went" ;;
+    *)               fail "the collapsed line does not say how many skills were removed" ;;
+esac
+
 # 8. The PowerShell twin routes the same way; it cannot be executed here.
 PS="$ROOT/setup/exakit.ps1"
 if grep -q '__all_addons__' "$PS" && grep -q 'keeps: nothing' "$PS"; then
@@ -135,6 +182,18 @@ if awk '/\$key -eq "__all_addons__"/ { found = NR } /StartsWith\("__"\)/ { if (!
     pass "the PowerShell twin handles the sweep before the placeholder skip"
 else
     fail "the PowerShell twin checks the sweep key after the __ skip - the pick is discarded"
+fi
+
+PS_MAIN="$ROOT/setup/exakit.ps1"
+if grep -q 'The kit is gone' "$PS_MAIN"; then
+    pass "the PowerShell twin has the full-uninstall closing line"
+else
+    fail "the PowerShell twin still ends a full uninstall with a command it deleted"
+fi
+if grep -q 'AI \$word from' "$PS_MAIN"; then
+    pass "the PowerShell twin collapses the skill lines too"
+else
+    fail "the PowerShell twin still prints one line per skill per folder"
 fi
 
 printf '\n%d checks, %d failed\n' "$checks" "$fails"
