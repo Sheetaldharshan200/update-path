@@ -2357,11 +2357,11 @@ function Show-ExakitUsage {
         "  info                 show your connection details"
         "  start | stop         run or pause the local database"
         "  data-load            load the sample data or your own CSV / Parquet"
-        "  mcp-doctor           check the AI clients you connected, and repair them"
+        "  mcp-doctor           check MCP config of AI clients you connected, and repair"
         "  marketplace          optional add-ons (dashboards & more)"
         ""
         "Keeping up to date:"
-        "  version              which versions you have, and which are tested"
+        "  version              installed version details"
         "  update-check         what would change, and what it involves"
         "  update               apply the latest updates"
     ) | ForEach-Object { Write-Host $_ }

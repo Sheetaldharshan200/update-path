@@ -6,6 +6,15 @@
 
 set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+
+# A failure note that was ALREADY in the developer's kit home before this suite
+# started is not pollution this suite caused - any real command of theirs that
+# failed leaves one. Remember what was there, so the check at the end can tell
+# "the suite wrote this" from "it was already here" instead of reporting a false
+# alarm and training people to ignore it.
+_PRE_NOTE=""
+[ -e "$HOME/.exasol-starter-kit/.last-failure" ] && \
+    _PRE_NOTE="$(cat "$HOME/.exasol-starter-kit/.last-failure" 2>/dev/null)"
 PASS=0
 FAIL=0
 
@@ -1459,9 +1468,14 @@ echo
 # downgrade-guard case used to leave a bogus .last-failure behind, which took an
 # agent-operability audit to notice. Assert the live home is untouched.
 _real_home="${HOME}/.exasol-starter-kit"
-if [ -e "$_real_home/.last-failure" ]; then
+_now_note=""
+[ -e "$_real_home/.last-failure" ] && _now_note="$(cat "$_real_home/.last-failure" 2>/dev/null)"
+if [ -n "$_now_note" ] && [ "$_now_note" != "$_PRE_NOTE" ]; then
     check "the suite left no failure note in the real kit home" "clean" \
-        "POLLUTED: $(head -n 1 "$_real_home/.last-failure" 2>/dev/null)"
+        "POLLUTED: $(printf '%s' "$_now_note" | head -n 1)"
+elif [ -n "$_now_note" ]; then
+    # Unchanged from before the run: the developer's own, not ours.
+    check "the suite left no failure note in the real kit home" "clean" "clean"
 else
     check "the suite left no failure note in the real kit home" "clean" "clean"
 fi
