@@ -789,29 +789,40 @@ cmd_mcp_doctor() {
     if [ "$_cmd_json" -eq 1 ]; then
         exit 1
     fi
+    # The repair runs QUIETLY. Its own summary panel repeats the client list and
+    # the operation header the diagnosis above just printed, and in the common
+    # case it has nothing to say beyond "no repair was needed" - three
+    # near-identical reports for one question, where the reader is trying to
+    # work out what actually happened. One line is the whole content.
     printf '\n'
-    info "Repairing what can be repaired"
     # shellcheck disable=SC2086 — client names are single tokens by contract
-    exakit_mcp_operation repair $_cmd_rest
+    _cmd_repair_out="$(exakit_mcp_operation repair $_cmd_rest 2>&1)"
     _cmd_repair_rc=$?
     if [ "$_cmd_repair_rc" != 0 ] && [ "$_cmd_repair_rc" != 2 ]; then
+        printf '%s\n' "$_cmd_repair_out"
         die "Could not repair the managed MCP configuration"
     fi
 
-    # Re-check once, so the last thing on screen is the state the machine is
-    # actually in rather than the state it was in before the repair. Once only:
-    # a repair that did not take is a fault to report, not a loop to run.
+    case "$_cmd_repair_out" in
+        *no_change*|*"already consistent"*)
+            # Nothing was rewritten, so a re-check would reprint the report
+            # above word for word. Say what happened and stop.
+            info "Nothing to repair: the managed client config is already consistent."
+            warn "The findings above are not config drift, so they remain."
+            exit 1
+            ;;
+    esac
+
+    # Something WAS rewritten, so the report above is now out of date. Re-check
+    # once - once only: a repair that did not take is a fault to report, not a
+    # loop to run - and let that reading be the last word.
+    info "Repaired the managed client config — re-checking"
     printf '\n'
-    info "Re-checking after the repair"
     # shellcheck disable=SC2086 — client names are single tokens by contract
     exakit_mcp_operation doctor $_cmd_rest
     _cmd_rc=$?
     [ "$_cmd_rc" = 0 ] && { ok "Everything the repair could fix is fixed."; return 0; }
     [ "$_cmd_rc" = 2 ] || die "Could not run MCP diagnostics"
-    # Still faulty, and the report above says why. Some faults are not config
-    # drift at all - a server that will not start cannot be repaired by
-    # rewriting the entry that points at it - so this is an honest end state,
-    # not a failure of the command.
     warn "Some findings are not config drift and remain — see the notes above."
     exit 1
 }
