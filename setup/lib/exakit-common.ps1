@@ -1406,9 +1406,6 @@ function Write-ExakitWhatsNewBox {
             foreach ($p in $pts) { Write-ExakitPanelLine $p.PadRight($width) }
             # Only on the last card: repeating it per version turns a pointer
             # into noise, and the newest version is the one to read in full.
-            if ($v -eq $last) {
-                Write-ExakitPanelLine ("  Full notes: exakit whats-new $to").PadRight($width)
-            }
             Complete-ExakitPanel
         }
     } catch {
