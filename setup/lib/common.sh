@@ -6898,7 +6898,7 @@ connection_panel() {
     else
         ui_panel_line "SQL client:   $(ui_link https://dbeaver.io/download/ "DBeaver") or $(ui_link https://www.dbvis.com/download/ "DbVisualizer")"
     fi
-    ui_panel_line "How to connect: exakit guide"
+    ui_panel_line "More info:    exakit guide"
     # One line, only while something is still on offer: the marketplace is the
     # optional layer on top of a finished install, so this is where it is
     # discovered — never during the install itself.
