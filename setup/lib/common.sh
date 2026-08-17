@@ -6677,10 +6677,6 @@ PWB_WIDTH
             done <<PWB_BODY
 $_pwb_pts
 PWB_BODY
-            # Only on the last card: repeating it per version turns a pointer
-            # into noise, and the newest version is the one to read in full.
-            [ "$_pwb_v" = "$_pwb_last" ] && \
-                ui_panel_line "$(printf '%-*s' "$_pwb_w" "  Full notes: exakit whats-new $_pwb_to")"
             ui_panel_end
         done
     fi
