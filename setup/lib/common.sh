@@ -6868,7 +6868,6 @@ connection_panel() {
     [ -n "$_mcp_user" ]  && ui_panel_line "MCP user:     $_mcp_user"
     [ -n "$_mcp_pwfile" ] && ui_panel_line "MCP pass:     stored in $(ui_tilde "$_mcp_pwfile")"
     ui_panel_line "TLS:          enabled (self-signed certificate)"
-    [ "$_type" = "personal" ] && ui_panel_line "Details:      run 'exasol info' for deployment state"
 
     _exapump="$(manifest_get components.exapump.path 2>/dev/null)"
     if [ -n "$_exapump" ]; then
