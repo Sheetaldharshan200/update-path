@@ -897,15 +897,13 @@ Everyday commands:
   start | stop         run or pause the database and add-on services
   autostart [on|off]   come back automatically after a restart
   data-load            load the sample data or your own CSV / Parquet / JSON
-  mcp-doctor           check the AI (MCP) connection
-  logs [target]        installer, database and service logs
+  mcp-doctor           check the AI clients you connected, and repair them
   marketplace          optional add-ons (dashboards & more)
 
 Keeping up to date:
   version              which versions you have, and which are tested
   update-check         what would change, and what it involves
-  update               apply what is waiting, asking first before it
-                       stops the database
+  update               apply the latest updates
 EOF
 }
 
