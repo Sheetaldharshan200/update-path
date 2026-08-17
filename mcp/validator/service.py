@@ -280,9 +280,13 @@ class ValidatorService:
                     severity=Severity.ERROR,
                     blocking=True,
                     message=f"The MCP server did not complete an MCP handshake ({printable}): {exc}",
+                    # No "rewrite the entry" advice here: the entry is fine, the
+                    # server behind it will not start. Rewriting a correct entry
+                    # changes nothing, and doctor has already tried. The only
+                    # thing that moves this forward is seeing the failure.
                     recommended_action=(
-                        "Run the command by hand to see the failure; 'exakit mcp-doctor' rewrites "
-                        "to rewrite the entry."
+                        "Run that command by hand to see why it fails - the config "
+                        "entry is correct, so rewriting it will not help."
                     ),
                 )
             )
