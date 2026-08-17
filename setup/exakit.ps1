@@ -2357,7 +2357,7 @@ function Show-ExakitUsage {
         "  info                 show your connection details"
         "  start | stop         run or pause the local database"
         "  data-load            load the sample data or your own CSV / Parquet"
-        "  mcp-doctor           check MCP config of AI clients you connected, and repair"
+        "  mcp-doctor           test & repair mcp-config of connected AI clients"
         "  marketplace          optional add-ons (dashboards & more)"
         ""
         "Keeping up to date:"
