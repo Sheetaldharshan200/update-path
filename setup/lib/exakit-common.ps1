@@ -103,6 +103,16 @@ if ($env:EXAKIT_KIT_REPO) { $script:KitRepo = $env:EXAKIT_KIT_REPO }
 elseif ($env:EXAKIT_REPO) { $script:KitRepo = $env:EXAKIT_REPO }
 else { $script:KitRepo = "krishna-exasol/update-path" }
 $script:VersionsUrl = if ($env:EXAKIT_VERSIONS_URL) { $env:EXAKIT_VERSIONS_URL } else { "https://raw.githubusercontent.com/$($script:KitRepo)/main/versions.json" }
+# The public install entry point for Windows. Twin of EXAKIT_INSTALL_URL in
+# common.sh, pointing at the PowerShell installer rather than the shell one.
+$script:InstallUrl = if ($env:EXAKIT_INSTALL_URL) { $env:EXAKIT_INSTALL_URL } else { "https://www.exasol.com/install/starter-kit.ps1" }
+
+# Get-ExakitInstallCommand - the install one-liner for THIS platform. Twin of
+# exakit_install_command in common.sh. Windows runs irm | iex; it does not have
+# curl piped into sh, which is what this line used to print.
+function Get-ExakitInstallCommand {
+    return "irm $($script:InstallUrl) | iex"
+}
 $script:VersionsTtl = 86400
 if ($env:EXAKIT_VERSIONS_TTL -match '^[0-9]+$') { $script:VersionsTtl = [int]$env:EXAKIT_VERSIONS_TTL }
 $script:VersionsCachePath = if ($env:EXAKIT_VERSIONS_CACHE) { $env:EXAKIT_VERSIONS_CACHE } else { Join-Path $script:CacheDir "versions.json" }

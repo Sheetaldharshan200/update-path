@@ -95,6 +95,10 @@ EXAKIT_VERSION_LOOKUP_MAX_TIME="${EXAKIT_VERSION_LOOKUP_MAX_TIME:-12}"
 # Nothing is collected on our side: the request carries a User-Agent header and
 # no query string, and no third party is involved.
 EXAKIT_VERSIONS_URL="${EXAKIT_VERSIONS_URL:-https://raw.githubusercontent.com/${EXAKIT_KIT_REPO}/main/versions.json}"
+# The public install entry point, which is NOT the raw repository URL: someone
+# reinstalling months from now should be sent to the address the product
+# publishes, not to a branch of whichever repository built their copy.
+EXAKIT_INSTALL_URL="${EXAKIT_INSTALL_URL:-https://www.exasol.com/install/starter-kit.sh}"
 EXAKIT_VERSIONS_TTL="${EXAKIT_VERSIONS_TTL:-86400}"
 EXAKIT_VERSIONS_CACHE="${EXAKIT_VERSIONS_CACHE:-$EXAKIT_CACHE_DIR/versions.json}"
 # Schema the client understands. A document that announces a higher number is
@@ -7036,6 +7040,14 @@ read_credential() {
     cat "$_rc_file" 2>/dev/null
 }
 
+# exakit_install_command - the install one-liner for THIS platform, so the
+# farewell line of an uninstall is something the reader can actually paste.
+# This side serves macOS, Linux and WSL, which all curl into sh; Windows has
+# its own twin (Get-ExakitInstallCommand) that hands back the irm form.
+exakit_install_command() {
+    printf 'curl -fsSL %s | sh\n' "$EXAKIT_INSTALL_URL"
+}
+
 # --- full uninstall --------------------------------------------------------
 #
 # exakit_uninstall_run <dry_run> — remove every artifact this kit installs, in
@@ -7786,7 +7798,7 @@ EXAKIT_UM_PANEL_EOF
     case " $_um_picked " in
         *" everything "*)
             ok "Done. The kit is gone."
-            info "Install it again any time: curl -fsSL https://raw.githubusercontent.com/$EXAKIT_KIT_REPO/main/install.sh | sh"
+            info "Install it again any time: $(exakit_install_command)"
             ;;
         *)
             ok "Done. See where you stand with: exakit status"
