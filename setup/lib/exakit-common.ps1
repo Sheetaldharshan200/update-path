@@ -101,7 +101,7 @@ $script:DbPort          = if ($env:EXAKIT_DB_PORT) { $env:EXAKIT_DB_PORT } else 
 # no query string, and no third party is involved.
 if ($env:EXAKIT_KIT_REPO) { $script:KitRepo = $env:EXAKIT_KIT_REPO }
 elseif ($env:EXAKIT_REPO) { $script:KitRepo = $env:EXAKIT_REPO }
-else { $script:KitRepo = "krishna-exasol/update-path" }
+else { $script:KitRepo = "exasol-labs/exasol-personal-local-starterkit" }
 $script:VersionsUrl = if ($env:EXAKIT_VERSIONS_URL) { $env:EXAKIT_VERSIONS_URL } else { "https://raw.githubusercontent.com/$($script:KitRepo)/main/versions.json" }
 # The public install entry point for Windows. Twin of EXAKIT_INSTALL_URL in
 # common.sh, pointing at the PowerShell installer rather than the shell one.
