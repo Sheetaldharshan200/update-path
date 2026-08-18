@@ -51,7 +51,7 @@ personal_teardown(){ printf '%s\n' "$*" > "$SANDBOX/marker_personal"; }
 exakit_mcp_operation(){ printf '%s\n' "$*" > "$SANDBOX/marker_mcp"; }
 # The engine sweeps add-on launchers by registry id; mirror the real registry
 # so a machine with the dash-server launcher gets it removed.
-exakit_marketplace_addons(){ printf '%s\n' "dash-server|x|x"; }
+exakit_marketplace_addons(){ printf '%s\n' "dash-server|x"; }
 
 # --- pull in only the functions under test --------------------------------
 # The engine plus the skills-removal helper it delegates to (shared with the

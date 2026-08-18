@@ -44,7 +44,6 @@
     {
       "title": "Get started",
       "commands": [
-        "preflight",
         "guide",
         "mcp-setup",
         "data-load"
@@ -90,9 +89,7 @@
       "title": "Keeping up to date",
       "commands": [
         "version",
-        "update-check",
-        "update",
-        "update personal"
+        "update"
       ]
     },
     {
@@ -111,15 +108,6 @@
     }
   ],
   "commands": [
-    {
-      "command": "preflight",
-      "options": "",
-      "summary": "Check this machine's requirements; install nothing.",
-      "description": "Checks runtime, RAM, disk and ports and reports what would block an install. Changes nothing.",
-      "examples": [
-        "exakit preflight"
-      ]
-    },
     {
       "command": "status",
       "options": "[--json | -j]",
@@ -331,16 +319,6 @@
       ]
     },
     {
-      "command": "update-check",
-      "options": "[all|runtime|exakit|exapump|mcp|pyexasol|<add-on>|nano|personal]",
-      "summary": "What would change, and what it involves.",
-      "description": "Compares what is installed against the versions the maintainers advertise, and prints the exact command for each. The only command that prints the full table.",
-      "examples": [
-        "exakit update-check",
-        "exakit update-check exapump"
-      ]
-    },
-    {
       "command": "update",
       "options": "[all|runtime|exakit|exapump|mcp|pyexasol|<add-on>|nano|personal]",
       "summary": "Apply the updates that are waiting.",
@@ -353,15 +331,6 @@
         "exakit update",
         "exakit update exapump",
         "exakit update --yes"
-      ]
-    },
-    {
-      "command": "update personal",
-      "options": "[--plan|--backup|--apply]",
-      "summary": "Exasol Personal major-version updates.",
-      "description": "A major upgrade is a real data migration, so it never starts on its own. --plan prints the backup-gated steps, --backup takes the deployment backup, --apply runs the launcher step.",
-      "examples": [
-        "exakit update personal --plan"
       ]
     },
     {
