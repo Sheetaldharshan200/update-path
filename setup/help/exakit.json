@@ -96,14 +96,6 @@
       ]
     },
     {
-      "title": "Trust assets (Kit 2)",
-      "commands": [
-        "upgrade-kit2",
-        "rollback-kit2",
-        "update kit2"
-      ]
-    },
-    {
       "title": "Repair and removal",
       "commands": [
         "repair-runtime",
@@ -370,33 +362,6 @@
       "description": "A major upgrade is a real data migration, so it never starts on its own. --plan prints the backup-gated steps, --backup takes the deployment backup, --apply runs the launcher step.",
       "examples": [
         "exakit update personal --plan"
-      ]
-    },
-    {
-      "command": "upgrade-kit2",
-      "options": "",
-      "summary": "Add the Kit 2 trust assets.",
-      "description": "Adds the Trusted AI Workflow add-on on top of this install: semantic model, audit/run log, saved workflow. Nothing is reinstalled and no data is touched; safe to re-run.",
-      "examples": [
-        "exakit upgrade-kit2"
-      ]
-    },
-    {
-      "command": "rollback-kit2",
-      "options": "",
-      "summary": "Return to Kit 1.",
-      "description": "Removes exactly what upgrade-kit2 added. The database, exapump, MCP server and sample data stay untouched.",
-      "examples": [
-        "exakit rollback-kit2"
-      ]
-    },
-    {
-      "command": "update kit2",
-      "options": "",
-      "summary": "Re-stage the Kit 2 assets.",
-      "description": "Re-stages Kit 2 assets from the current kit copy. Valid once Kit 2 is installed; a newer asset bundle arrives with the kit itself.",
-      "examples": [
-        "exakit update kit2"
       ]
     },
     {
