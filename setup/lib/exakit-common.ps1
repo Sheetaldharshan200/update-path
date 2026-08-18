@@ -2794,6 +2794,8 @@ function Confirm-ExakitRuntimeRunning {
 #   2. Add a components.<id> block to versions.json: version, severity, and
 #      repo (GitHub-release-installed) or package (PyPI-installed).
 #   3. Add one entry here.
+# The add-on's one-line description is NOT one of those changes: it is the About
+# field of its own repository, read through Get-ExakitMarketplaceAddonDescription.
 # (CI guards move with it: the expected-components set in versions.yml and the
 # COUPLED fallback-constant table in versions-bump.yml.)
 function Get-ExakitMarketplaceAddons {
@@ -2801,7 +2803,6 @@ function Get-ExakitMarketplaceAddons {
         [pscustomobject]@{
             Id          = "dash-server"
             Label       = "dash-server (AI dashboard host)"
-            Description = "Live dashboards on your Exasol data, built by AI"
             InstallFn   = "Install-DashServer"
             ValidateFn  = "Test-DashServer"
             UpdateFn    = "Update-DashServer"
@@ -2818,7 +2819,6 @@ function Get-ExakitMarketplaceAddons {
         [pscustomobject]@{
             Id          = "exasol-vscode"
             Label       = "Exasol for VS Code (editor extension)"
-            Description = "SQL editing and schema browsing inside VS Code"
             InstallFn   = "Install-ExasolVscode"
             ValidateFn  = "Test-ExasolVscode"
             UpdateFn    = "Update-ExasolVscode"
@@ -2832,7 +2832,6 @@ function Get-ExakitMarketplaceAddons {
         [pscustomobject]@{
             Id          = "json-tables"
             Label       = "JSON Tables (JSON into Exasol)"
-            Description = "Load JSON files into Exasol as regular tables"
             InstallFn   = "Install-JsonTables"
             ValidateFn  = "Test-JsonTables"
             UpdateFn    = "Update-JsonTables"
@@ -2845,6 +2844,214 @@ function Get-ExakitMarketplaceAddons {
             FallbackVar = "JsonTablesVersionFallback"
         }
     )
+}
+
+# ---------------------------------------------------------------------------
+# Add-on "About" text - fetched from the add-on's own repository, cached here
+# ---------------------------------------------------------------------------
+# The description the marketplace shows is the About field of the add-on's
+# repository. Nothing about the wording is stored in this repository, so the team
+# that owns a tool owns its one-liner, in one place, and it cannot drift out of
+# sync with what we print.
+#
+# The cache is what makes a network-backed string safe in front of an
+# interactive menu, and it is the same mechanism help.ps1 already uses for the
+# help documents: a TTL'd file per id, an .attempt- marker so a failure is not
+# retried on every run, an atomic write, and a refusal to fetch over anything
+# but HTTPS. Only the rows that actually SHOW a description are fetched.
+# Twin of the same block in common.sh.
+
+$script:ExakitAboutUrl = if ($env:EXAKIT_ABOUT_URL) { $env:EXAKIT_ABOUT_URL } else { "https://api.github.com/repos" }
+$script:ExakitAboutTtl = if ($env:EXAKIT_ABOUT_TTL) { [int]$env:EXAKIT_ABOUT_TTL } else { 86400 }
+$script:ExakitAboutOffline = ($env:EXAKIT_ABOUT_OFFLINE -eq "1")
+# Hard ceiling on a cached About line. A repository we do not control decides
+# this string's length; nothing downstream should have to cope with an
+# unbounded one.
+$script:ExakitAboutMaxLen = if ($env:EXAKIT_ABOUT_MAX_LEN) { [int]$env:EXAKIT_ABOUT_MAX_LEN } else { 200 }
+# Width of the Description cell, in the table and the checkbox label alike. The
+# table's rule is 74 columns and the two leading cells spend 30 of them.
+$script:ExakitAboutWidth = if ($env:EXAKIT_ABOUT_WIDTH) { [int]$env:EXAKIT_ABOUT_WIDTH } else { 44 }
+
+function Get-ExakitAboutCacheDir {
+    if ($env:EXAKIT_ABOUT_CACHE_DIR) { return $env:EXAKIT_ABOUT_CACHE_DIR }
+    return (Join-Path $script:ExakitHome "cache\about")
+}
+
+# Get-ExakitAddonDocument <id> - the add-on's help document, read from disk.
+#
+# help.ps1, when loaded, knows the fetched cache copy and validates it, so
+# prefer it (-NoFetch keeps it off the network). But setup-windows-docker.ps1
+# does not source help.ps1 - and the closing offer runs from there - so the
+# shipped locations are resolved here as well.
+function Get-ExakitAddonDocument {
+    param([string]$Id)
+    if (Get-Command Get-ExakitHelpDocument -ErrorAction SilentlyContinue) {
+        $doc = Get-ExakitHelpDocument -Id $Id -NoFetch
+        if ($doc) { return $doc }
+    }
+    $candidates = @()
+    $candidates += (Join-Path (Join-Path $script:ExakitHome "cache\help") "$Id.json")
+    if ($script:LibDir) {
+        $candidates += (Join-Path (Join-Path (Split-Path $script:LibDir -Parent) "help") "$Id.json")
+    }
+    $candidates += (Join-Path (Join-Path $script:ExakitHome "kit") "setup\help\$Id.json")
+    foreach ($path in $candidates) {
+        if (Test-Path $path) {
+            try { return (Get-Content -Raw -Path $path -Encoding UTF8 | ConvertFrom-Json) } catch { }
+        }
+    }
+    return $null
+}
+
+# Get-ExakitAddonRepo <id> - the add-on's repository, as owner/name.
+#
+# This value is interpolated into a URL, so it is validated as two plain path
+# segments and nothing else.
+function Get-ExakitAddonRepo {
+    param([string]$Id)
+    $doc = Get-ExakitAddonDocument $Id
+    if (-not $doc) { return "" }
+    $repo = [string]$doc.repo
+    if ($repo -match '^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$') { return $repo }
+    return ""
+}
+
+function Test-ExakitAboutCacheFresh {
+    param([string]$Path)
+    if (-not (Test-Path $Path)) { return $false }
+    if ($script:ExakitAboutTtl -le 0) { return $false }
+    $age = ((Get-Date) - (Get-Item $Path).LastWriteTime).TotalSeconds
+    return ($age -lt $script:ExakitAboutTtl)
+}
+
+# Convert-ExakitAboutText <text> - one printable line, filtered ON THE WAY IN.
+#
+# This is free-form prose from a repository we do not control, printed straight
+# into the user's terminal. The help documents get their guarantees from a
+# schema; a bare string has none, so the filtering is explicit and happens once,
+# before anything reaches the cache: escape sequences removed whole, every
+# remaining control character turned into a space (the bare ESC of a
+# half-sequence included), whitespace collapsed to one line, length capped on a
+# word boundary. Twin of _exakit_about_sanitise / _exakit_about_cap.
+function Convert-ExakitAboutText {
+    param([string]$Text)
+    if (-not $Text) { return "" }
+    $esc = [string][char]27
+    $bel = [string][char]7
+    $clean = $Text
+    $clean = [regex]::Replace($clean, "$esc\[[0-9;?]*[A-Za-z]", "")
+    $clean = [regex]::Replace($clean, "$esc\]8;;[^$bel$esc]*($bel|$esc\\)", "")
+    $clean = [regex]::Replace($clean, "\p{Cc}", " ")
+    $clean = [regex]::Replace($clean, "\s+", " ").Trim()
+    if ($clean.Length -gt $script:ExakitAboutMaxLen) {
+        $clean = $clean.Substring(0, $script:ExakitAboutMaxLen)
+        $cut = $clean.LastIndexOf(" ")
+        if ($cut -gt 0) { $clean = $clean.Substring(0, $cut) }
+    }
+    return $clean
+}
+
+# Update-ExakitAboutCache <id> - refresh one add-on's cached About line.
+# $true when a line was cached; $false for every other outcome (the caller falls
+# back, it never fails a screen).
+function Update-ExakitAboutCache {
+    param([string]$Id)
+    if ($script:ExakitAboutOffline) { return $false }
+    if ($script:ExakitAboutUrl -notmatch '^https://') { return $false }
+    $repo = Get-ExakitAddonRepo $Id
+    if (-not $repo) { return $false }
+    $cacheDir = Get-ExakitAboutCacheDir
+    $cache = Join-Path $cacheDir "$Id.txt"
+    if (Test-ExakitAboutCacheFresh $cache) { return $false }
+    # The marker is what keeps a rate-limited or offline machine from asking
+    # again on every run: it is written BEFORE the request, so the question
+    # counts as asked whatever the answer turns out to be.
+    $attempt = Join-Path $cacheDir ".attempt-$Id"
+    if (Test-ExakitAboutCacheFresh $attempt) { return $false }
+    New-Item -ItemType Directory -Force -Path $cacheDir -ErrorAction SilentlyContinue | Out-Null
+    New-Item -ItemType File -Force -Path $attempt -ErrorAction SilentlyContinue | Out-Null
+    try {
+        $doc = Invoke-RestMethod -Uri "$($script:ExakitAboutUrl)/$repo" -UseBasicParsing -TimeoutSec 5
+    } catch { return $false }
+    if (-not $doc) { return $false }
+    $text = Convert-ExakitAboutText ([string]$doc.description)
+    if (-not $text) { return $false }
+    $tmp = "$cache.tmp"
+    try {
+        Set-Content -Path $tmp -Value $text -Encoding UTF8 -ErrorAction Stop
+        Move-Item -Force -Path $tmp -Destination $cache -ErrorAction Stop
+    } catch {
+        Remove-Item -Force $tmp -ErrorAction SilentlyContinue
+        return $false
+    }
+    return $true
+}
+
+# Get-ExakitMarketplaceAddonDescription <id> - the one-liner a screen shows.
+# Always answers something; the chain degrades instead of blanking a column:
+#   1. a cached About younger than the TTL     - the common case, no network
+#   2. a fresh fetch                           - one request, timeout bounded
+#   3. a STALE cached About, any age           - old wording beats no wording
+#   4. the help document's own tagline         - on disk, so this is the answer
+#                                                offline and when rate-limited
+#   5. a pointer at the help screen            - only if even that is missing
+function Get-ExakitMarketplaceAddonDescription {
+    param([string]$Id)
+    $cache = Join-Path (Get-ExakitAboutCacheDir) "$Id.txt"
+    if (-not (Test-ExakitAboutCacheFresh $cache)) { Update-ExakitAboutCache $Id | Out-Null }
+    if (Test-Path $cache) {
+        $text = ""
+        try { $text = ((Get-Content -Path $cache -Encoding UTF8 -TotalCount 1) | Out-String).Trim() } catch { }
+        if ($text) { return $text }
+    }
+    $doc = Get-ExakitAddonDocument $Id
+    if ($doc -and $doc.tagline) {
+        # A tagline is written as a help-screen header and ends in a period; a
+        # table cell does not.
+        return ([string]$doc.tagline).TrimEnd(".")
+    }
+    return "Details: exakit help $Id"
+}
+
+# Format-ExakitAboutWrap <text> [width] [pad] - the text in full, folded onto as
+# many lines as it needs. Continuation lines carry their own indent, because the
+# whole cell is printed through one Write-Host with the table's own prefix.
+#
+# This is the table's renderer: an About is written for a repository page, not
+# for a 44-column cell, and truncating it threw away the half that explained
+# what the tool was for. Word-wrapped, never mid-word: a word longer than the
+# width gets a line of its own and is allowed to overhang.
+# Twin of exakit_about_wrap in common.sh.
+function Format-ExakitAboutWrap {
+    param([string]$Text, [int]$Width = 0, [string]$Pad = "")
+    if ($Width -le 0) { $Width = $script:ExakitAboutWidth }
+    if ($Width -lt 8) { return $Text }
+    if (-not $Text) { return "" }
+    $lines = New-Object System.Collections.Generic.List[string]
+    $line = ""
+    foreach ($word in ($Text -split '\s+')) {
+        if (-not $word) { continue }
+        if (-not $line) { $line = $word }
+        elseif (($line.Length + 1 + $word.Length) -le $Width) { $line = "$line $word" }
+        else { [void]$lines.Add($line); $line = $word }
+    }
+    if ($line) { [void]$lines.Add($line) }
+    if ($lines.Count -eq 0) { return "" }
+    $out = $lines[0]
+    for ($i = 1; $i -lt $lines.Count; $i++) { $out = "$out`n$Pad$($lines[$i])" }
+    return $out
+}
+
+# Update-ExakitMarketplaceAboutCache - fill the cache for the rows that will
+# show a description, before a screen is drawn. Twin of
+# _exakit_marketplace_warm_about.
+function Update-ExakitMarketplaceAboutCache {
+    foreach ($addon in (Get-ExakitMarketplaceAddons)) {
+        if (-not (Test-ExakitAddonOfferable $addon.Id)) { continue }
+        if (Test-ExakitMarketplaceAddonPresent $addon.Id) { continue }
+        if (-not (Get-Command $addon.InstallFn -ErrorAction SilentlyContinue)) { continue }
+        Update-ExakitAboutCache $addon.Id | Out-Null
+    }
 }
 
 # The registry row for one id, or $null - the gate every generic registry arm
@@ -3009,8 +3216,21 @@ function Show-ExakitMarketplaceMenu {
             $advertised = ""
             if (Get-Command Get-ExakitComponentAvailable -ErrorAction SilentlyContinue) { $advertised = Get-ExakitComponentAvailable $addon.Id }
             if (-not $advertised) { $advertised = "unknown" }
-            $rows += @{ Id = $addon.Id; Label = "$($addon.Id) - $($addon.Description)"
-                Table = ("{0,-14} {1,-14} {2}" -f $addon.Id, $advertised, $addon.Description) }
+            # Only an installable row shows a description, and only a run that
+            # will actually DRAW one resolves it: a scripted answer
+            # (EXAKIT_MARKETPLACE_ADDONS) installs without a table, so an agent
+            # or a CI job never pays for the lookup.
+            $cell = ""
+            if (-not $env:EXAKIT_MARKETPLACE_ADDONS) {
+                # The table carries the About IN FULL, folded onto as many lines
+                # as it needs. Nothing truncates it.
+                $cell = Format-ExakitAboutWrap (Get-ExakitMarketplaceAddonDescription $addon.Id) $script:ExakitAboutWidth (" " * 32)
+            }
+            # The label NAMES the row, it does not re-explain it: the full text is
+            # in the table directly above, and the checkbox layer truncates every
+            # menu row to exactly one terminal line (its redraw depends on that).
+            $rows += @{ Id = $addon.Id; Label = $addon.Id
+                Table = ("{0,-14} {1,-14} {2}" -f $addon.Id, $advertised, $cell) }
         }
     }
 
@@ -3145,6 +3365,10 @@ function Invoke-ExakitMarketplaceApply {
 # Twin of exakit_marketplace_offer in common.sh.
 function Request-ExakitMarketplaceOffer {
     if (-not (Test-ExakitMarketplaceHasPending)) { return }
+    # Fill the About cache now, while the gate question below is still being
+    # read: this is the one screen where the cache is reliably cold (a machine
+    # minutes old), and the table it feeds does not exist yet.
+    Update-ExakitMarketplaceAboutCache
 
     # A scripted answer wins over any prompt (same contract as the menu).
     if ($env:EXAKIT_MARKETPLACE_ADDONS) {

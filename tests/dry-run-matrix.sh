@@ -812,15 +812,16 @@ import json
 doc = json.load(open('$ROOT/setup/help/exakit.json'))
 groups = [g for g in doc['groups'] if g['title'] == 'Keeping up to date']
 print(' '.join(groups[0]['commands']) if groups else '')" 2>/dev/null || true)"
-for _hl in version update-check update; do
+# update-check is deliberately absent: it is off the help screen, so the group
+# is version + update and the count below is one lower than it once was.
+for _hl in version update; do
     printf '%s' "$_upd_group" | grep -qw "$_hl" && ps_help_lines=$((ps_help_lines + 1))
 done
 grep -q 'Show-ExakitHelpOverview' "$ROOT/setup/exakit.ps1" && ps_help_lines=$((ps_help_lines + 1))
 if printf '%s' "$short_help" | grep -q 'Keeping up to date' && \
    printf '%s' "$short_help" | grep -qE '^ +version {2,}' && \
-   printf '%s' "$short_help" | grep -qE '^ +update-check {2,}' && \
    printf '%s' "$short_help" | grep -qE '^ +update {2,}' && \
-   [ "$ps_help_lines" = 4 ]; then
+   [ "$ps_help_lines" = 3 ]; then
     check "help(update_path_listed_both_sides)" "yes" "yes"
 else
     check "help(update_path_listed_both_sides)" "yes" "no"

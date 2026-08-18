@@ -237,8 +237,13 @@ the auto-bump workflow read. Keep the file canonical: `python3 -m json.tool
 `setup/lib/common.sh`, in `exakit_marketplace_addons`:
 
 ```bash
-printf '%s\n' "my-tool|my-tool (short label)|One-line description shown in the menu and the offer"
+printf '%s\n' "my-tool|my-tool (short label)"
 ```
+
+Two fields, and no description: the one-liner the menu shows is the **About
+field of your add-on's own repository**, fetched and cached at runtime (step 4).
+Typing a description here is the drift this replaced — it used to be spelled out
+in both registries and in the help document, and the three disagreed.
 
 `setup/lib/exakit-common.ps1`, in `Get-ExakitMarketplaceAddons`:
 
@@ -246,7 +251,6 @@ printf '%s\n' "my-tool|my-tool (short label)|One-line description shown in the m
 [pscustomobject]@{
     Id          = "my-tool"
     Label       = "my-tool (short label)"
-    Description = "One-line description shown in the menu and the offer"
     InstallFn   = "Install-MyTool"
     ValidateFn  = "Test-MyTool"
     UpdateFn    = "Update-MyTool"
@@ -255,6 +259,41 @@ printf '%s\n' "my-tool|my-tool (short label)|One-line description shown in the m
     FallbackVar = "MyToolVersionFallback"
 }
 ```
+
+### 4. Ship a help document — and with it, the description
+
+`setup/help/my-tool.json`, alongside the other components' documents. Two of its
+fields carry the marketplace:
+
+```json
+{
+  "schema_version": 1,
+  "id": "my-tool",
+  "kind": "addon",
+  "title": "my-tool",
+  "tagline": "What it does, in one clause.",
+  "repo": "exasol-labs/my-tool"
+}
+```
+
+`repo` is where the About is read from — `https://api.github.com/repos/<repo>`,
+resolved offline from this document, so a machine with no network still knows
+which repository owns the wording. `tagline` is the help screen's own header
+line, and it doubles as the answer when the About cannot be reached.
+
+The description therefore needs no maintenance in this repository: write the
+one-liner in your add-on's GitHub About and the marketplace picks it up within a
+day (`EXAKIT_ABOUT_TTL`, default 86400s). What the kit does to that text before
+printing it is not negotiable, though — it is prose from a repository the kit
+does not control, so escape sequences and control bytes are stripped, it is
+collapsed to one line and capped, on the way into the cache. It is then shown in
+full: the Description column is 44 characters wide and folds onto as many lines
+as the text needs, so nothing is cut off. A long About costs table rows rather
+than meaning -- but the checkbox list below the table shows ids only, because the
+shared checkbox layer keeps every menu row to exactly one terminal line.
+
+Skipping this document is allowed — the row then reads
+`Details: exakit help my-tool` — but the screen is worse for it.
 
 ### The CI guards (same PR, mechanical)
 
@@ -265,8 +304,9 @@ printf '%s\n' "my-tool|my-tool (short label)|One-line description shown in the m
 
 ### What you do NOT touch
 
-The registry line is the switch. Menu row, closing-offer row, presence
-detection, `exakit update my-tool`, `update all` gating (installed only),
+The registry line is the switch. The Description column and the checkbox
+label's one-liner (both come from the About, cached, with the tagline behind
+them), menu row, closing-offer row, presence detection, `exakit update my-tool`, `update all` gating (installed only),
 update-check row + discovery line, `exakit version` line,
 `EXAKIT_MARKETPLACE_ADDONS` parsing, uninstall sweep of the launcher and the
 kit-home state — all generic. `tests/marketplace.sh` asserts `common.sh`
