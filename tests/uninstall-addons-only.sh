@@ -130,9 +130,12 @@ case "$out_all" in
     *"exakit status"*) fail "a full uninstall still points at exakit status, which it has just deleted" ;;
     *)                 pass "a full uninstall does not point at the command it removed" ;;
 esac
+# Matched on the sentence, not on a filename: the installer is published at an
+# exasol.com address now, and the property under test is that the reader is
+# left with a way back - not which file serves it.
 case "$out_all" in
-    *"install.sh"*) pass "and offers the reinstall command instead" ;;
-    *)              fail "a full uninstall leaves the reader with no way back" ;;
+    *"Install it again any time:"*) pass "and offers the reinstall command instead" ;;
+    *)                              fail "a full uninstall leaves the reader with no way back" ;;
 esac
 # Anything short of EVERYTHING leaves the CLI in place, and there status IS the
 # right next step: the fix must not silence it for every scope.
