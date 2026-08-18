@@ -123,6 +123,30 @@ check "real: bystander kept"      yes "$(exists "$H/.local/bin/some-other-tool")
 # --- idempotent: a second real run on the now-empty tree must not error ----
 run_engine 0; check "idempotent second run" 0 "$?"
 
+# --- the farewell line has to be pasteable ON THIS PLATFORM ----------------
+# THE BUG: a full uninstall on Windows ended by telling the reader to run
+# `curl ... | sh`, which Windows does not have. Each side must hand back its
+# own form, and neither may point at a raw repository URL - someone
+# reinstalling months from now should be sent to the address the product
+# publishes, not to a branch of whichever repository built their copy.
+echo
+echo "the reinstall hint:"
+_ic="$( . "$ROOT/setup/lib/common.sh" >/dev/null 2>&1; exakit_install_command )"
+case "$_ic" in
+    "curl -fsSL https://www.exasol.com/install/starter-kit.sh | sh") _ic_ok=yes ;;
+    *) _ic_ok="$_ic" ;;
+esac
+check "the shell side curls the published installer into sh" "yes" "$_ic_ok"
+case "$_ic" in *raw.githubusercontent.com*) _ic_raw=yes ;; *) _ic_raw=no ;; esac
+check "and does not point at a raw repository URL" "no" "$_ic_raw"
+
+# The PowerShell twin is asserted from source: this suite is bash, and the one
+# thing that must never regress is Windows being handed the shell form.
+_psc="$(grep -c 'irm \$(\$script:InstallUrl) | iex' "$ROOT/setup/lib/exakit-common.ps1" 2>/dev/null; true)"
+check "the Windows twin hands back the irm form" "1" "$_psc"
+_psbad="$(grep -c 'Install it again any time: curl' "$ROOT/setup/exakit.ps1" 2>/dev/null; true)"
+check "and Windows is never told to curl into sh" "0" "$_psbad"
+
 echo
 echo "PASS=$PASS FAIL=$FAIL"
 [ "$FAIL" -eq 0 ]
