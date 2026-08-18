@@ -83,6 +83,12 @@ exit 0
 CODESTUBEOF
 chmod +x "$WORK/code-bin/code"
 PATH="$WORK/code-bin:$PATH"
+# No suite may reach the network, and the add-on About lookup is the first thing
+# in this layer that would: the closing offer warms its cache before it asks
+# anything. Offline is the default here and is flipped off only inside the About
+# section below, which points the URL at a dead port so nothing leaves the host.
+EXAKIT_ABOUT_OFFLINE=1
+export EXAKIT_ABOUT_OFFLINE
 . "$ROOT/setup/lib/common.sh"
 . "$ROOT/setup/lib/dash-server.sh"
 . "$ROOT/setup/lib/exasol-vscode.sh"
@@ -235,6 +241,95 @@ check "addon env-var name derivation" "EXAKIT_DASH_SERVER_VERSION_FALLBACK" "$(_
 # The shared library must stay free of per-add-on case arms: a "dash-server)"
 # pattern in common.sh would mean the generic registry regressed to surgery.
 check "common.sh carries no dash-server case arm" "0" "$(grep -c 'dash-server)' "$ROOT/setup/lib/common.sh")"
+
+echo "add-on About text (from the add-on's own repository, cached here):"
+# The wording lives in exactly ONE place -- the add-on's repository -- because it
+# used to live in three (both registries and the help document) and they drifted.
+# A description typed back into either registry is the regression to catch.
+check "the registry line carries id|label only" "2" \
+    "$(exakit_marketplace_addons | head -1 | awk -F'|' '{print NF}')"
+lacks "common.sh types no add-on description" "Live dashboards on your Exasol data" \
+    "$(cat "$ROOT/setup/lib/common.sh")"
+lacks "exakit-common.ps1 types no add-on description" "Live dashboards on your Exasol data" \
+    "$(cat "$ROOT/setup/lib/exakit-common.ps1")"
+
+# Which repository to ask is resolved OFFLINE, from the help document the kit
+# already ships -- so a cold, network-less machine still knows the answer exists.
+check "repo comes from the shipped help doc" "exasol-labs/dash-server" "$(_exakit_addon_repo dash-server)"
+check "json-tables points at its own upstream" "exasol-labs/exasol-json-tables" "$(_exakit_addon_repo json-tables)"
+check "an add-on with no document has no repo" "no" \
+    "$(_exakit_addon_repo not-a-tool >/dev/null 2>&1 && echo yes || echo no)"
+
+# A help document is data and this value is interpolated into a URL, so anything
+# that is not owner/name is REFUSED rather than sanitised into something
+# plausible-looking.
+mkdir -p "$WORK/help-fixtures"
+for _bad in "https://evil.example/x" "a/b/c" "../../etc/passwd" "owner/name;id"; do
+    check "hostile repo refused: $_bad" "no" "$( (
+        EXAKIT_HELP_CACHE_DIR="$WORK/help-fixtures"
+        printf '{"schema_version":1,"id":"probe","tagline":"t.","repo":"%s"}\n' "$_bad" \
+            > "$WORK/help-fixtures/probe.json"
+        _exakit_addon_repo probe >/dev/null 2>&1 && echo yes || echo no ) )"
+done
+
+# The About is free-form prose from a repository we do not control, printed
+# straight into a terminal. It is filtered on the way IN: escape sequences gone
+# whole, control bytes gone, one line, always.
+check "sanitiser strips CSI and control bytes" "LiveALERT dash boards second line" \
+    "$(printf 'Live\033[1;31mALERT\033[0m dash\tboards\nsecond\rline\a' | _exakit_about_sanitise)"
+check "sanitiser removes OSC 8 hyperlinks whole" "see this now" \
+    "$(printf 'see \033]8;;http://evil.example\033\\this\033]8;;\033\\ now' | _exakit_about_sanitise)"
+check "the length ceiling trims on a word boundary" "one two" \
+    "$(EXAKIT_ABOUT_MAX_LEN=9 _exakit_about_cap 'one two three')"
+
+# One width serves the table cell and the checkbox label, which cannot wrap.
+check "a line that fits is left alone" "short" "$(exakit_about_fit 'short' 44)"
+check "a long line truncates on a word boundary" "one two…" "$(exakit_about_fit 'one two three' 12)"
+
+# Offline is this suite's default. With nothing cached the answer is the help
+# document's own tagline, minus the trailing period a header carries and a table
+# cell does not.
+check "offline falls back to the tagline" "SQL editing and schema browsing inside VS Code" \
+    "$(exakit_marketplace_addon_description exasol-vscode)"
+check "and nothing was cached by that" "no" \
+    "$([ -f "$(_exakit_about_cache_path exasol-vscode)" ] && echo yes || echo no)"
+# Nothing cached AND no document: still a usable cell, never a blank one.
+check "with no About and no document it points at help" "Details: exakit help ghost" \
+    "$(exakit_marketplace_addon_description ghost)"
+
+mkdir -p "$EXAKIT_ABOUT_CACHE_DIR"
+printf 'Cached About line\n' > "$(_exakit_about_cache_path dash-server)"
+check "a fresh cache answers with no lookup" "Cached About line" \
+    "$(exakit_marketplace_addon_description dash-server)"
+
+# A stale cache plus an unreachable endpoint: old wording beats an empty column.
+# The endpoint is a dead local port, so no test here leaves the machine.
+touch -t 200001010000 "$(_exakit_about_cache_path dash-server)"
+check "a stale cache survives a failed lookup" "Cached About line" "$( (
+    EXAKIT_ABOUT_OFFLINE=0; EXAKIT_ABOUT_URL="https://127.0.0.1:9/repos"
+    exakit_marketplace_addon_description dash-server ) )"
+
+# The attempt stamp is written BEFORE the request, so one attempt per id per TTL
+# is made whatever the answer -- this is what keeps a rate-limited or offline
+# machine from paying a timeout on every single run.
+check "a failed lookup is not retried within the TTL" "first=1 second=2" "$( (
+    EXAKIT_ABOUT_OFFLINE=0; EXAKIT_ABOUT_URL="https://127.0.0.1:9/repos"
+    _exakit_about_fetch exasol-vscode >/dev/null 2>&1; printf 'first=%s ' "$?"
+    _exakit_about_fetch exasol-vscode >/dev/null 2>&1; printf 'second=%s' "$?" ) )"
+check "a non-HTTPS endpoint is refused outright" "1" "$( (
+    EXAKIT_ABOUT_OFFLINE=0; EXAKIT_ABOUT_URL="http://api.github.com/repos"
+    _exakit_about_fetch json-tables >/dev/null 2>&1; printf '%s' "$?" ) )"
+
+# A scripted answer installs without drawing a table, so it must resolve NO
+# description at all: that is what keeps agent and CI runs off the network.
+check "a scripted run resolves no description" "rc=0 looked=0" "$( (
+    : > "$WORK/looked"
+    exakit_marketplace_addon_description() { printf 'x\n' >> "$WORK/looked"; printf 'x\n'; }
+    dash_server_install() { return 0; }
+    dash_server_validate() { return 0; }
+    EXAKIT_MARKETPLACE_ADDONS="dash-server"
+    exakit_marketplace_menu >/dev/null 2>&1
+    printf 'rc=%s looked=%s' "$?" "$(wc -l < "$WORK/looked" | tr -d ' ')" ) )"
 
 echo "pip self-repair (dash-server app builds shell out to python -m pip):"
 # The stub python fails `-m pip` until a marker file appears; the stubbed uv
@@ -955,12 +1050,16 @@ echo "json-tables (prebuilt engine, no Rust toolchain):"
 check "the add-on is registered" "json-tables" \
     "$(exakit_marketplace_addons | cut -d'|' -f1 | grep -x json-tables)"
 # The one-liner is what a first-time user reads in the table and the menu, so
-# it says what the add-on DOES, in one short clause. The prebuilt-engine fact
-# (no Rust toolchain needed) is real but is installation trivia, not a reason
-# to pick it; it lives in skills/json-tables/SKILL.md where someone hitting a
-# build question will look.
-has "its one-liner says what the add-on does" "Load JSON files into Exasol" \
-    "$(exakit_marketplace_addons | grep '^json-tables|')"
+# it says what the add-on DOES, in one short clause. It is no longer typed into
+# the registry — it comes from the add-on repository's About, and offline (as
+# here) from the help document's tagline. The prebuilt-engine fact (no Rust
+# toolchain needed) is real but is installation trivia, not a reason to pick it;
+# it lives in skills/json-tables/SKILL.md where someone hitting a build question
+# will look.
+has "its one-liner says what the add-on does" "JSON" \
+    "$(exakit_marketplace_addon_description json-tables)"
+lacks "and does not mention the Rust toolchain" "Rust" \
+    "$(exakit_marketplace_addon_description json-tables)"
 
 # The asset name is the contract between the packaging workflow and the
 # installer: a mismatch means every download 404s. Pin both halves.
