@@ -243,20 +243,42 @@ def section(title):
 def kv(key, value, pad=16):
     para(value, indent=" " * (4 + pad), first="    %s%-*s%s" % (GN, pad, key, R))
 
-def cmd_line(prefix, command, options, summary, pad=22):
+def cmd_line(prefix, command, options, summary, pad=22, indent="    "):
     label = ("%s %s" % (prefix, command)).strip() if prefix else command
     if options:
         label = "%s %s" % (label, options)
     if len(label) <= pad and summary:
-        para(summary, indent=" " * (4 + pad + 1),
-             first="    %s%-*s%s %s" % (GN, pad, label, R, ""))
+        para(summary, indent=" " * (len(indent) + pad + 1),
+             first="%s%s%-*s%s " % (indent, GN, pad, label, R))
     else:
-        out("    %s%s%s" % (GN, label, R))
+        out("%s%s%s%s" % (indent, GN, label, R))
         if summary:
-            para(summary, indent="      ")
+            para(summary, indent=indent + "  ")
 
 def commands_of(doc):
     return doc.get("commands", []) or []
+
+# Every binary the kit documents. A command whose first word is one of these is
+# already spelled out ("exakit start" on the runtime page); anything else is a
+# bare subcommand and gets its document's prefix put in front.
+KNOWN_TOOLS = ("exakit", "exapump", "exasol", "dash-server",
+               "exasol-json-tables", "exasol-mcp-server", "exasol-mcp-server-http")
+
+def invocation(doc_id, entry):
+    """The command as a reader would actually type it."""
+    command = (entry.get("command") or "").strip()
+    parts = command.split()
+    if parts and parts[0] in KNOWN_TOOLS:
+        return command
+    prefix = (docs.get(doc_id) or {}).get("invocation_prefix") or doc_id
+    return ("%s %s" % (prefix, command)).strip()
+
+def invocation_with_options(doc_id, entry):
+    label = invocation(doc_id, entry)
+    options = entry.get("options") or ""
+    if options:
+        label = "%s %s" % (label, options)
+    return label
 
 def find_command(doc, name):
     name = name.strip().lower()
@@ -318,17 +340,29 @@ def render_overview():
                     sys.stdout.write(R)
         out()
 
-    summaries = {c.get("command"): c.get("summary", "") for c in commands_of(doc)}
+    by_name = {c.get("command"): c for c in commands_of(doc)}
     for group in doc.get("groups", []):
         section(group.get("title", ""))
         for name in group.get("commands", []):
-            cmd_line("", name, "", summaries.get(name, ""))
+            entry = by_name.get(name)
+            if not entry:
+                continue
+            cmd_line("", invocation("exakit", entry), "", entry.get("summary", ""), pad=24)
 
     others = [key for key in sorted(docs) if key != "exakit"]
     if others:
-        section("Components  (exakit <component> --help)")
+        # Each component names its own commands as a reader would type them.
+        # A bare list of component names told nobody what they could actually
+        # run; "exakit <component> --help" is the deeper page, not the summary.
+        section("Components")
         for key in others:
-            cmd_line("", key, "", docs[key].get("tagline", ""))
+            sub = docs[key]
+            out("    %s%s%s  %s%s%s" % (B, key, R, DIM, sub.get("tagline", ""), R))
+            for entry in commands_of(sub):
+                cmd_line("", invocation_with_options(key, entry), "",
+                         entry.get("summary") or entry.get("description", ""),
+                         pad=34, indent="      ")
+            out()
 
     out()
     para("Every command also answers --help. Browse everything with: exakit catalog",
@@ -353,12 +387,14 @@ def render_all():
             if not entry or name in seen:
                 continue
             seen.add(name)
-            cmd_line("", name, entry.get("options", ""), entry.get("summary", ""))
+            cmd_line("", invocation_with_options("exakit", entry), "",
+                     entry.get("summary", ""), pad=30)
     rest = [c for c in commands_of(doc) if c.get("command") not in seen]
     if rest:
         section("Other")
         for entry in rest:
-            cmd_line("", entry.get("command", ""), entry.get("options", ""), entry.get("summary", ""))
+            cmd_line("", invocation_with_options("exakit", entry), "",
+                     entry.get("summary", ""), pad=30)
     out()
     para("Detail for one command: exakit <command> --help", indent="  %s" % DIM)
     if color:
@@ -418,8 +454,8 @@ def render_component(key):
     if commands_of(doc):
         section("Commands")
         for entry in commands_of(doc):
-            cmd_line("", entry.get("command", ""), entry.get("options", ""),
-                     entry.get("summary") or entry.get("description", ""), pad=26)
+            cmd_line("", invocation_with_options(key, entry), "",
+                     entry.get("summary") or entry.get("description", ""), pad=34)
 
     if doc.get("snippets"):
         section("Example")
