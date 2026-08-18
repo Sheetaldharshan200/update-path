@@ -109,6 +109,24 @@ EXAKIT_VERSIONS_SCHEMA=1
 # so a support question ("where did this version come from?") has an answer.
 EXAKIT_VERSIONS_SOURCE_USED=""
 
+# Marketplace add-on "About" text. The one-line description the marketplace
+# shows for an add-on is NOT stored in this repository: it is the About field of
+# the add-on's own repository, fetched once and cached, so the tool that owns
+# the wording owns it in exactly one place. The cache is what makes that safe to
+# do in front of an interactive menu -- see exakit_marketplace_addon_description
+# for the full resolution order, including what happens with no network at all.
+EXAKIT_ABOUT_URL="${EXAKIT_ABOUT_URL:-https://api.github.com/repos}"
+EXAKIT_ABOUT_TTL="${EXAKIT_ABOUT_TTL:-86400}"
+EXAKIT_ABOUT_CACHE_DIR="${EXAKIT_ABOUT_CACHE_DIR:-$EXAKIT_CACHE_DIR/about}"
+EXAKIT_ABOUT_OFFLINE="${EXAKIT_ABOUT_OFFLINE:-0}"
+# Hard ceiling on a cached About line, in bytes. A repository we do not control
+# decides this string's length; nothing downstream should have to cope with an
+# unbounded one.
+EXAKIT_ABOUT_MAX_LEN="${EXAKIT_ABOUT_MAX_LEN:-200}"
+# Width of the Description cell, in the table and in the checkbox label alike.
+# The table's rule is 74 columns and the two leading cells spend 30 of them.
+EXAKIT_ABOUT_WIDTH="${EXAKIT_ABOUT_WIDTH:-44}"
+
 EXAKIT_DB_PORT="${EXAKIT_DB_PORT:-8563}"
 
 # ---------------------------------------------------------------------------
@@ -2448,15 +2466,24 @@ exakit_component_current() {
 #      repo (GitHub-release-installed) or package (PyPI-installed) — that
 #      field is what the generic upstream lookup reads.
 #   3. Add one line to exakit_marketplace_addons below.
+# The add-on's one-line description is NOT one of those changes: it is the
+# About field of its own repository, read through
+# exakit_marketplace_addon_description.
 # (CI guards move with it: the expected-components set in versions.yml and the
 # COUPLED fallback-constant table in versions-bump.yml.)
 # ⇄ twin: Get-ExakitMarketplaceAddons and friends in setup/exakit.ps1.
 
-# exakit_marketplace_addons — one line per add-on: "id|label|description".
+# exakit_marketplace_addons — one line per add-on: "id|label".
+#
+# There is deliberately no description field here. A one-liner typed into this
+# registry is a fourth copy of something the add-on's own repository already
+# states in its About, and the copies drifted: the wording differed between the
+# shell registry, the PowerShell registry and setup/help/<id>.json, and nothing
+# noticed. exakit_marketplace_addon_description reads the About instead.
 exakit_marketplace_addons() {
-    printf '%s\n' "dash-server|dash-server (AI dashboard host)|Live dashboards on your Exasol data, built by AI"
-    printf '%s\n' "exasol-vscode|Exasol for VS Code (editor extension)|SQL editing and schema browsing inside VS Code"
-    printf '%s\n' "json-tables|JSON Tables (JSON into Exasol)|Load JSON files into Exasol as regular tables"
+    printf '%s\n' "dash-server|dash-server (AI dashboard host)"
+    printf '%s\n' "exasol-vscode|Exasol for VS Code (editor extension)"
+    printf '%s\n' "json-tables|JSON Tables (JSON into Exasol)"
 }
 
 # _exakit_addon_fn <id> <suffix> — the module function for an add-on.
@@ -2477,9 +2504,261 @@ _exakit_addon_registered() {
     case "$1" in
         ''|*[!a-z0-9-]*) return 1 ;;
     esac
-    exakit_marketplace_addons | while IFS='|' read -r _ar_id _ar_label _ar_desc; do
+    exakit_marketplace_addons | while IFS='|' read -r _ar_id _ar_label; do
         [ "$_ar_id" = "$1" ] && printf 'yes\n' && break
     done | grep -q yes
+}
+
+# ---------------------------------------------------------------------------
+# Add-on "About" text — fetched from the add-on's own repository, cached here
+# ---------------------------------------------------------------------------
+# The description the marketplace shows is the About field of the add-on's
+# repository. Nothing about the wording is stored in this repository, so the
+# team that owns a tool owns its one-liner, in one place, and it cannot drift
+# out of sync with what we print.
+#
+# The cache is what makes a network-backed string safe in front of an
+# interactive menu, and it is the same mechanism help.sh already uses for the
+# help documents: a TTL'd file per id, an .attempt- stamp so a failure is not
+# retried on every run, an atomic write, and a hard refusal to fetch over
+# anything but HTTPS. Only the rows that actually SHOW a description are ever
+# fetched (an installed row prints its update command instead), so a machine
+# with nothing left to install makes no requests at all.
+
+# _exakit_addon_doc <id> — the best help document for this add-on already on
+# disk, and where the add-on's repository name is read from.
+#
+# help.sh, when loaded, also knows the fetched cache copy and validates it, so
+# prefer it. But the setup scripts source only common.sh, detect.sh and the
+# runtime module — and the closing offer runs from there — so this has to work
+# with help.sh absent, which is why the two shipped locations are resolved here
+# as well.
+_exakit_addon_doc() {
+    if command -v exakit_help_doc_local >/dev/null 2>&1; then
+        exakit_help_doc_local "$1" 2>/dev/null && return 0
+    fi
+    _aad_cache="${EXAKIT_HELP_CACHE_DIR:-$EXAKIT_CACHE_DIR/help}/$1.json"
+    [ -f "$_aad_cache" ] && { printf '%s\n' "$_aad_cache"; return 0; }
+    _aad_root="$(exakit_repo_root 2>/dev/null || true)"
+    for _aad_dir in ${_aad_root:+"$_aad_root/setup/help"} "$EXAKIT_HOME/kit/setup/help"; do
+        [ -f "$_aad_dir/$1.json" ] && { printf '%s\n' "$_aad_dir/$1.json"; return 0; }
+    done
+    return 1
+}
+
+# _exakit_addon_doc_field <id> <field> — one top-level string from that document.
+_exakit_addon_doc_field() {
+    _adf_doc="$(_exakit_addon_doc "$1" 2>/dev/null)" || return 1
+    [ -f "$_adf_doc" ] || return 1
+    if exakit_can_run_python; then
+        run_python - "$_adf_doc" "$2" <<'EXAKIT_ADF_PY' 2>/dev/null
+import json, sys
+try:
+    with open(sys.argv[1]) as handle:
+        doc = json.load(handle)
+except Exception:
+    sys.exit(1)
+value = doc.get(sys.argv[2])
+if isinstance(value, str) and value.strip():
+    print(value.strip())
+EXAKIT_ADF_PY
+        return $?
+    fi
+    sed -n 's/.*"'"$2"'"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$_adf_doc" | head -1
+}
+
+# _exakit_addon_repo <id> — the add-on's repository, as owner/name.
+#
+# This value is interpolated into a URL, so it is validated as two plain path
+# segments and nothing else. A document that says anything more interesting than
+# that has no repository as far as this code is concerned.
+_exakit_addon_repo() {
+    _aar_repo="$(_exakit_addon_doc_field "$1" repo 2>/dev/null || true)"
+    case "$_aar_repo" in
+        ''|*[!A-Za-z0-9._/-]*|*/*/*|/*|*/) return 1 ;;
+        */*) printf '%s\n' "$_aar_repo" ;;
+        *) return 1 ;;
+    esac
+}
+
+_exakit_about_cache_path() {
+    printf '%s\n' "$EXAKIT_ABOUT_CACHE_DIR/$1.txt"
+}
+
+# _exakit_about_cache_fresh <file> — younger than the TTL? ⇄ twin of
+# _exakit_help_cache_fresh; TTL 0 means "never trust the cache", which is what
+# the tests use to force the fetch path.
+_exakit_about_cache_fresh() {
+    [ -f "$1" ] || return 1
+    case "$EXAKIT_ABOUT_TTL" in
+        ''|*[!0-9]*) return 1 ;;
+        0) return 1 ;;
+    esac
+    _acf_mtime="$(_exakit_file_mtime "$1")"
+    case "$_acf_mtime" in
+        ''|*[!0-9]*) return 1 ;;
+    esac
+    [ "$(( $(date +%s) - _acf_mtime ))" -lt "$EXAKIT_ABOUT_TTL" ]
+}
+
+# _exakit_about_sanitise — stdin to one printable line, filtered ON THE WAY IN.
+#
+# This text is free-form prose from a repository we do not control, and it is
+# printed straight into the user's terminal. The help documents get their
+# guarantees from a JSON schema; a bare string has none, so the filtering is
+# explicit and happens once, before anything reaches the cache:
+#   1. CSI sequences and OSC 8 hyperlinks are removed whole. One -e per
+#      terminator, never a BRE alternation: `\|` is a GNU sed extension that
+#      BSD sed (macOS, this kit's first platform) silently fails to match — the
+#      trap already documented on _ui_visible_len in ui.sh.
+#   2. every remaining control byte goes, the bare ESC of a half-sequence
+#      included, so nothing can move the cursor, bleed colour into the rest of
+#      the screen, or rewrite the line above with a carriage return.
+#   3. newlines and tabs collapse to single spaces: this occupies one table
+#      cell, and a second line would break the row alignment.
+_exakit_about_sanitise() {
+    _abs_esc="$(printf '\033')"
+    _abs_bel="$(printf '\007')"
+    LC_ALL=C sed \
+        -e "s/${_abs_esc}\[[0-9;?]*[A-Za-z]//g" \
+        -e "s/${_abs_esc}]8;;[^${_abs_bel}${_abs_esc}]*${_abs_bel}//g" \
+        -e "s/${_abs_esc}]8;;[^${_abs_bel}${_abs_esc}]*${_abs_esc}\\\\//g" \
+        | LC_ALL=C tr '\n\r\t' '   ' \
+        | LC_ALL=C tr -d '\000-\037\177' \
+        | LC_ALL=C tr -s ' ' \
+        | sed -e 's/^ *//' -e 's/ *$//'
+}
+
+# _exakit_about_cap <text> — the length ceiling, trimmed back to a word boundary
+# so a multi-byte character is never cut in half (a continuation byte is never
+# a space).
+_exakit_about_cap() {
+    _abc_text="$1"
+    case "$EXAKIT_ABOUT_MAX_LEN" in
+        ''|*[!0-9]*) printf '%s\n' "$_abc_text"; return 0 ;;
+    esac
+    [ "${#_abc_text}" -le "$EXAKIT_ABOUT_MAX_LEN" ] && { printf '%s\n' "$_abc_text"; return 0; }
+    _abc_text="$(printf '%s' "$_abc_text" | LC_ALL=C cut -b "1-$EXAKIT_ABOUT_MAX_LEN")"
+    case "$_abc_text" in *' '*) _abc_text="${_abc_text% *}" ;; esac
+    printf '%s\n' "$_abc_text"
+}
+
+# _exakit_about_extract <json> — the About field out of a repository response.
+_exakit_about_extract() {
+    if exakit_can_run_python; then
+        printf '%s' "$1" | run_python -c 'import json,sys
+try:
+    print((json.load(sys.stdin).get("description") or "").strip())
+except Exception:
+    pass' 2>/dev/null
+        return 0
+    fi
+    printf '%s' "$1" | sed -n 's/.*"description"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1
+}
+
+# _exakit_about_fetch <id> — refresh one add-on's cached About line.
+# 0 = a line was cached, 2 = the fetch was skipped as unnecessary, 1 = nothing
+# was cached (and the caller falls back; it never fails a screen).
+_exakit_about_fetch() {
+    _abf_id="$1"
+    [ "$EXAKIT_ABOUT_OFFLINE" = "1" ] && return 1
+    case "$EXAKIT_ABOUT_URL" in
+        https://*) ;;
+        *) _exakit_log_file "WARN  refusing to fetch an add-on About over a non-HTTPS URL"; return 1 ;;
+    esac
+    _abf_repo="$(_exakit_addon_repo "$_abf_id" 2>/dev/null || true)"
+    [ -n "$_abf_repo" ] || return 1
+    _abf_cache="$(_exakit_about_cache_path "$_abf_id")"
+    _abf_attempt="$EXAKIT_ABOUT_CACHE_DIR/.attempt-$_abf_id"
+    _exakit_about_cache_fresh "$_abf_cache" && return 2
+    # The stamp is what keeps a rate-limited or offline machine from asking
+    # again on every single run: it is written BEFORE the request, so the
+    # question counts as asked whatever the answer turns out to be.
+    _exakit_about_cache_fresh "$_abf_attempt" && return 2
+    command -v curl >/dev/null 2>&1 || return 1
+    mkdir -p "$EXAKIT_ABOUT_CACHE_DIR" 2>/dev/null || return 1
+    : > "$_abf_attempt" 2>/dev/null || true
+    _abf_json="$(curl -fsSL --proto '=https' --retry 1 \
+        --connect-timeout "$EXAKIT_VERSION_LOOKUP_CONNECT_TIMEOUT" \
+        --max-time "$EXAKIT_VERSION_LOOKUP_MAX_TIME" \
+        -A "$(exakit_versions_user_agent 2>/dev/null || true)" \
+        "$EXAKIT_ABOUT_URL/$_abf_repo" 2>/dev/null || true)"
+    if [ -z "$_abf_json" ]; then
+        _exakit_log_file "INFO  About fetch failed for $_abf_id — keeping whatever is on disk"
+        return 1
+    fi
+    _abf_text="$(_exakit_about_cap "$(_exakit_about_extract "$_abf_json" | _exakit_about_sanitise)")"
+    if [ -z "$_abf_text" ]; then
+        _exakit_log_file "INFO  $_abf_repo has no About text to show for $_abf_id"
+        return 1
+    fi
+    _abf_tmp="$_abf_cache.tmp.$$"
+    printf '%s\n' "$_abf_text" > "$_abf_tmp" 2>/dev/null || { rm -f "$_abf_tmp"; return 1; }
+    mv -f "$_abf_tmp" "$_abf_cache" 2>/dev/null || { rm -f "$_abf_tmp"; return 1; }
+    _exakit_log_file "INFO  About refreshed for $_abf_id from $_abf_repo"
+    return 0
+}
+
+# exakit_marketplace_addon_description <id> — the one-liner a screen shows.
+# Always answers something; the chain degrades instead of blanking a column:
+#   1. a cached About younger than the TTL     — the common case, no network
+#   2. a fresh fetch                           — one request, timeouts bounded
+#   3. a STALE cached About, any age           — old wording beats no wording
+#   4. the help document's own tagline         — on disk, so this is the answer
+#                                                offline and when rate-limited
+#   5. a pointer at the help screen            — only if even that is missing
+exakit_marketplace_addon_description() {
+    _mad_cache="$(_exakit_about_cache_path "$1")"
+    _exakit_about_cache_fresh "$_mad_cache" || _exakit_about_fetch "$1" >/dev/null 2>&1 || true
+    if [ -f "$_mad_cache" ]; then
+        _mad_text="$(head -1 "$_mad_cache" 2>/dev/null || true)"
+        if [ -n "$_mad_text" ]; then
+            printf '%s\n' "$_mad_text"
+            return 0
+        fi
+    fi
+    _mad_text="$(_exakit_addon_doc_field "$1" tagline 2>/dev/null || true)"
+    if [ -n "$_mad_text" ]; then
+        # A tagline is written as a help-screen header and ends in a period; a
+        # table cell does not.
+        printf '%s\n' "${_mad_text%.}"
+        return 0
+    fi
+    printf 'Details: exakit help %s\n' "$1"
+}
+
+# exakit_about_fit <text> [width] — the text as one cell, truncated on a word
+# boundary. The table and the checkbox label share one width: the checkbox is a
+# single-line menu entry that cannot wrap, so wrapping the table alone would
+# split one screen into two different shapes.
+exakit_about_fit() {
+    _abt_text="$1"
+    _abt_w="${2:-$EXAKIT_ABOUT_WIDTH}"
+    case "$_abt_w" in
+        ''|*[!0-9]*) printf '%s\n' "$_abt_text"; return 0 ;;
+    esac
+    [ "$_abt_w" -lt 8 ] && { printf '%s\n' "$_abt_text"; return 0; }
+    [ "${#_abt_text}" -le "$_abt_w" ] && { printf '%s\n' "$_abt_text"; return 0; }
+    _abt_cut="$(printf '%s' "$_abt_text" | LC_ALL=C cut -b "1-$((_abt_w - 1))")"
+    case "$_abt_cut" in *' '*) _abt_cut="${_abt_cut% *}" ;; esac
+    printf '%s…\n' "$_abt_cut"
+}
+
+# _exakit_marketplace_warm_about — fill the cache for the rows that will show a
+# description, before a screen is drawn.
+#
+# This exists for the closing offer: it runs its gate question ("Browse it
+# now?") before the table exists, so the requests land while the user is reading
+# two sentences of prose rather than in front of a half-drawn table.
+_exakit_marketplace_warm_about() {
+    exakit_marketplace_addons | cut -d'|' -f1 | while read -r _mw_id; do
+        [ -n "$_mw_id" ] || continue
+        _exakit_addon_offerable "$_mw_id" || continue
+        _exakit_marketplace_addon_present "$_mw_id" && continue
+        exakit_marketplace_addon_available "$_mw_id" || continue
+        _exakit_about_fetch "$_mw_id" >/dev/null 2>&1 || true
+    done
+    return 0
 }
 
 # exakit_marketplace_addon_available <id> — is the add-on's module loaded in
@@ -2600,7 +2879,7 @@ _exakit_marketplace_addon_present() {
 # exakit_marketplace_installed_addons — ids of the add-ons present on this
 # machine. This is what folds them into `exakit update all` / update-check.
 exakit_marketplace_installed_addons() {
-    exakit_marketplace_addons | while IFS='|' read -r _ma_id _ma_label _ma_desc; do
+    exakit_marketplace_addons | while IFS='|' read -r _ma_id _ma_label; do
         [ -n "$_ma_id" ] || continue
         exakit_marketplace_addon_installed "$_ma_id" && printf '%s\n' "$_ma_id"
     done
@@ -2611,7 +2890,7 @@ exakit_marketplace_installed_addons() {
 # this machine yet (neither kit-managed nor a system install). Drives the
 # discovery one-liners and the closing offer.
 exakit_marketplace_has_pending() {
-    [ -n "$(exakit_marketplace_addons | while IFS='|' read -r _mp_id _mp_label _mp_desc; do
+    [ -n "$(exakit_marketplace_addons | while IFS='|' read -r _mp_id _mp_label; do
         [ -n "$_mp_id" ] || continue
         _exakit_addon_offerable "$_mp_id" || continue
         _exakit_marketplace_addon_present "$_mp_id" || printf '%s\n' "$_mp_id"
@@ -2648,7 +2927,7 @@ _exakit_marketplace_install_one() {
 # Kit 2 discovery line: it advertises, it never acts.
 exakit_print_marketplace_discovery_line() {
     _md_pending=""
-    _md_pending="$(exakit_marketplace_addons | while IFS='|' read -r _md_id _md_label _md_desc; do
+    _md_pending="$(exakit_marketplace_addons | while IFS='|' read -r _md_id _md_label; do
         [ -n "$_md_id" ] || continue
         _exakit_addon_offerable "$_md_id" || continue
         _exakit_marketplace_addon_present "$_md_id" || printf '%s ' "$_md_id"
@@ -2677,7 +2956,7 @@ exakit_marketplace_menu() {
     _mm_labels=()
     _mm_rows=()
     _mm_selectable=0
-    while IFS='|' read -r _mm_id _mm_label _mm_desc; do
+    while IFS='|' read -r _mm_id _mm_label; do
         [ -n "$_mm_id" ] || continue
         # Not applicable here and not installed: it is not an option on this
         # machine, so it is not shown at all — no row, no table line.
@@ -2705,6 +2984,14 @@ exakit_marketplace_menu() {
             _mm_ids+=("__disabled__"); _mm_labels+=("$_mm_id - not in this kit copy")
         else
             _mm_adv="$(exakit_component_available "$_mm_id" 2>/dev/null || true)"
+            # Only an installable row shows a description, and only a run that
+            # will actually DRAW one needs to resolve it: a scripted answer
+            # (EXAKIT_MARKETPLACE_ADDONS) installs without a table, so an agent
+            # or a CI job never pays for the lookup.
+            _mm_desc=""
+            if [ -z "${EXAKIT_MARKETPLACE_ADDONS:-}" ]; then
+                _mm_desc="$(exakit_about_fit "$(exakit_marketplace_addon_description "$_mm_id")")"
+            fi
             _mm_rows+=("$(printf '%-14s %-14s %s' "$_mm_id" "${_mm_adv:-unknown}" "$_mm_desc")")
             _mm_ids+=("$_mm_id")
             _mm_labels+=("$_mm_id - $_mm_desc")
@@ -2874,6 +3161,10 @@ EXAKIT_MM_EOF
 exakit_marketplace_offer() {
     _exakit_marketplace_load_modules
     exakit_marketplace_has_pending || return 0
+    # Fill the About cache now, while the gate question below is still being
+    # read: this is the one screen where the cache is reliably cold (a machine
+    # minutes old), and the table it feeds does not exist yet.
+    _exakit_marketplace_warm_about
 
     # A scripted answer wins over any prompt (same contract as the menu).
     if [ -n "${EXAKIT_MARKETPLACE_ADDONS:-}" ]; then
