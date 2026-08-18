@@ -552,20 +552,26 @@ function Invoke-ExapumpSqlFile {
 }
 
 # Invoke-ExapumpUpload <file> <schema.table> - load a CSV/Parquet file, logged.
+# $script:ExakitUploadQuiet - twin of EXAKIT_UPLOAD_QUIET in exapump.sh.
+# `exakit data-load` narrates the whole job with a single "Loading your data"
+# spinner, so per-file chatter is noise there. The installer leaves it false
+# and keeps its step-by-step narration.
+$script:ExakitUploadQuiet = $false
+
 function Invoke-ExapumpUpload {
     param([Parameter(Mandatory)][string]$Path, [Parameter(Mandatory)][string]$Target)
     if (-not (Test-Path $Path) -or (Get-Item $Path).Length -eq 0) {
         Warn2 "Data file missing or empty: $Path"
         return $false
     }
-    Info "Loading $(Split-Path $Path -Leaf) into $Target"
+    if (-not $script:ExakitUploadQuiet) { Info "Loading $(Split-Path $Path -Leaf) into $Target" }
     $result = Invoke-Exapump @("upload", $Path, "--table", $Target, "-p", $script:ExapumpProfile)
     if (-not $result.Success) {
         Write-ExapumpOutput -Output $result.Output
         Show-ExakitDbErrorRemedy $result.Output
         Fail "Upload failed: $Path -> $Target (see log)"
     }
-    Ok "$(Split-Path $Path -Leaf) loaded"
+    if (-not $script:ExakitUploadQuiet) { Ok "$(Split-Path $Path -Leaf) loaded" }
     return $true
 }
 
@@ -667,7 +673,7 @@ function Confirm-ExakitSchemaExists {
     $schemaUc = ConvertTo-UpperInvariantString $Schema
     if (-not $schemaUc) { return $false }
     if (Test-ExapumpSchemaPresent $schemaUc) { return $true }
-    Info "Creating schema $schemaUc"
+    if (-not $script:ExakitUploadQuiet) { Info "Creating schema $schemaUc" }
     $create = Invoke-Exapump @("sql", "-p", $script:ExapumpProfile, "CREATE SCHEMA $schemaUc")
     if (-not $create.Success) { Fail "Could not create schema $schemaUc" }
     return $true
@@ -680,7 +686,7 @@ function Confirm-ExakitLoadedTable {
     if ($rows -eq "0") {
         Warn2 "Verified $Target, but it currently has 0 rows."
     } else {
-        Ok "Verified $Target ($rows rows)"
+        if (-not $script:ExakitUploadQuiet) { Ok "Verified $Target ($rows rows)" }
     }
     Set-ExakitManifestValue "data.last_load.verified_table" $Target
     Set-ExakitManifestValue "data.last_load.verified_rows" $rows
@@ -694,6 +700,35 @@ function Request-ExakitOptionalVerification {
         Fail "Verification table must look like SCHEMA.TABLE and use letters, numbers, or underscores."
     }
     Confirm-ExakitLoadedTable (Get-ExakitUpperTableTarget $target)
+}
+
+# Get-ExakitDataFileKind <path> - csv | parquet | json | unknown, from the
+# name. Twin of exakit_data_file_kind in exapump.sh. Windows cannot run the
+# JSON engine (see json-tables.ps1), so this exists to REFUSE a JSON file with
+# its reason rather than hand it to exapump, which would fail obscurely.
+function Get-ExakitDataFileKind {
+    param([Parameter(Mandatory)][string]$Path)
+    $name = (Split-Path $Path -Leaf).ToLowerInvariant()
+    if ($name -match '\.(gz|bz2|zst|xz)$') { $name = $name -replace '\.(gz|bz2|zst|xz)$', '' }
+    if ($name -match '\.(json|ndjson|jsonl)$')  { return "json" }
+    if ($name -match '\.(parquet|pq)$')         { return "parquet" }
+    if ($name -match '\.(csv|tsv|txt)$')        { return "csv" }
+    return "unknown"
+}
+
+# Show-ExakitJsonUnsupported - one honest explanation, with the reason the
+# add-on itself gives, instead of a load that fails at the first ingest.
+function Show-ExakitJsonUnsupported {
+    $why = ""
+    if (Get-Command Get-JsonTablesApplicableReason -ErrorAction SilentlyContinue) {
+        $why = Get-JsonTablesApplicableReason
+    }
+    if ($why) {
+        Warn2 "JSON files need an engine that is not available on this machine: $why"
+    } else {
+        Warn2 "JSON files need an engine that is not available on this machine."
+    }
+    Info "CSV and Parquet load without it. Convert the file, or load it from macOS, Linux or WSL."
 }
 
 function Import-ExakitLocalFile {
@@ -711,6 +746,12 @@ function Import-ExakitLocalFile {
         if ((Test-Path $path) -and (Get-Item $path).Length -gt 0) { break }
         Warn2 "File not found or empty: $path"
     }
+    # A JSON file cannot be loaded on Windows at all, so say so here rather
+    # than after the user has picked a table for a load that cannot happen.
+    if ((Get-ExakitDataFileKind $path) -eq "json") {
+        Show-ExakitJsonUnsupported
+        return "back"
+    }
     $schema = if ($env:EXAKIT_SCHEMA) { $env:EXAKIT_SCHEMA } else { "STARTER_KIT" }
     $defaultTable = "$schema.$(Get-ExakitTableName $path)"
     while ($true) {
@@ -723,12 +764,22 @@ function Import-ExakitLocalFile {
         Warn2 "Target table must look like SCHEMA.TABLE and use letters, numbers, or underscores."
     }
     $target = Get-ExakitUpperTableTarget $target
-    Confirm-ExakitSchemaExists (Get-ExakitTargetSchema $target) | Out-Null
-    Invoke-ExapumpUpload $path $target | Out-Null
-    Set-ExakitManifestValue "data.last_load.type" "local_file"
-    Set-ExakitManifestValue "data.last_load.target" $target
-    Set-ExakitManifestValue "data.last_load.source" $path
-    Confirm-ExakitLoadedTable $target
+
+    # One label, one spinner, for the whole job - the twin of what exapump.sh
+    # does with EXAKIT_UPLOAD_QUIET and EXAKIT_ACTIVE_LABEL.
+    $script:ExakitUploadQuiet = $true
+    $script:ExakitActiveLabel = "Loading your data"
+    try {
+        Confirm-ExakitSchemaExists (Get-ExakitTargetSchema $target) | Out-Null
+        Invoke-ExapumpUpload $path $target | Out-Null
+        Set-ExakitManifestValue "data.last_load.type" "local_file"
+        Set-ExakitManifestValue "data.last_load.target" $target
+        Set-ExakitManifestValue "data.last_load.source" $path
+        Confirm-ExakitLoadedTable $target
+    } finally {
+        $script:ExakitUploadQuiet = $false
+        $script:ExakitActiveLabel = ""
+    }
     Ok "Loaded $path into $target"
 }
 
@@ -737,26 +788,46 @@ function Import-ExakitRemoteFile {
     if (-not $url) { Fail "Remote URL is required." }
     $name = Split-Path ($url -replace '\?.*$', '') -Leaf
     if (-not $name) { $name = "remote-data.csv" }
-    $tmpDir = Join-Path ([System.IO.Path]::GetTempPath()) "exakit-remote-data-$([guid]::NewGuid().ToString('N'))"
-    New-Item -ItemType Directory -Force -Path $tmpDir | Out-Null
-    $tmpFile = Join-Path $tmpDir $name
-    Info "Downloading remote data file"
-    Get-ExakitFile -Url $url -Dest $tmpFile
+    if ((Get-ExakitDataFileKind $name) -eq "json") {
+        Show-ExakitJsonUnsupported
+        return
+    }
+    # Both questions are asked before the download starts, so the whole job is
+    # one uninterrupted "Loading your data" from here on.
     $schema = if ($env:EXAKIT_SCHEMA) { $env:EXAKIT_SCHEMA } else { "STARTER_KIT" }
     $defaultTable = "$schema.$(Get-ExakitTableName $name)"
     $target = Read-ExakitPrompt "Target table (SCHEMA.TABLE)" $defaultTable
     if (-not (Test-ExakitTableTarget $target)) {
-        Remove-Item -Recurse -Force $tmpDir -ErrorAction SilentlyContinue
         Fail "Target table must look like SCHEMA.TABLE and use letters, numbers, or underscores."
     }
     $target = Get-ExakitUpperTableTarget $target
-    Confirm-ExakitSchemaExists (Get-ExakitTargetSchema $target) | Out-Null
-    Invoke-ExapumpUpload $tmpFile $target | Out-Null
-    Remove-Item -Recurse -Force $tmpDir -ErrorAction SilentlyContinue
-    Set-ExakitManifestValue "data.last_load.type" "remote_file"
-    Set-ExakitManifestValue "data.last_load.target" $target
-    Set-ExakitManifestValue "data.last_load.source" $url
-    Confirm-ExakitLoadedTable $target
+
+    $tmpDir = Join-Path ([System.IO.Path]::GetTempPath()) "exakit-remote-data-$([guid]::NewGuid().ToString('N'))"
+    New-Item -ItemType Directory -Force -Path $tmpDir | Out-Null
+    $tmpFile = Join-Path $tmpDir $name
+
+    $script:ExakitUploadQuiet = $true
+    $script:ExakitActiveLabel = "Loading your data"
+    try {
+        # Get-ExakitFile draws nothing of its own, so the dot loader is started
+        # here: a download is part of loading your data, not a step of its own.
+        Start-ExakitSpinner "Loading your data"
+        try {
+            Get-ExakitFile -Url $url -Dest $tmpFile
+        } finally {
+            Stop-ExakitSpinner
+        }
+        Confirm-ExakitSchemaExists (Get-ExakitTargetSchema $target) | Out-Null
+        Invoke-ExapumpUpload $tmpFile $target | Out-Null
+        Set-ExakitManifestValue "data.last_load.type" "remote_file"
+        Set-ExakitManifestValue "data.last_load.target" $target
+        Set-ExakitManifestValue "data.last_load.source" $url
+        Confirm-ExakitLoadedTable $target
+    } finally {
+        Remove-Item -Recurse -Force $tmpDir -ErrorAction SilentlyContinue
+        $script:ExakitUploadQuiet = $false
+        $script:ExakitActiveLabel = ""
+    }
     Ok "Loaded $url into $target"
 }
 
