@@ -41,8 +41,8 @@ scenario as a flowchart — see [MARKETPLACE-FLOWS.md](MARKETPLACE-FLOWS.md).
   the kit leaves it alone*; the kit never updates or uninstalls what it did
   not install). When everything is present, the offer and the discovery lines
   disappear entirely.
-- **Installed add-ons are full components.** They join `exakit update` /
-  `exakit update-check`, report in `exakit version`, pin with
+- **Installed add-ons are full components.** They join `exakit update`,
+  report in `exakit version`, pin with
   `EXAKIT_<ID>_VERSION`, and are swept by `exakit uninstall`. Add-ons you never
   picked are never touched by `update all`.
 
@@ -306,8 +306,8 @@ Skipping this document is allowed — the row then reads
 
 The registry line is the switch. The Description column and the checkbox
 label's one-liner (both come from the About, cached, with the tagline behind
-them), menu row, closing-offer row, presence detection, `exakit update my-tool`, `update all` gating (installed only),
-update-check row + discovery line, `exakit version` line,
+them), menu row, closing-offer row, presence detection, `exakit update
+my-tool`, `update all` gating (installed only), `exakit version` row,
 `EXAKIT_MARKETPLACE_ADDONS` parsing, uninstall sweep of the launcher and the
 kit-home state — all generic. `tests/marketplace.sh` asserts `common.sh`
 carries **zero** per-add-on case arms, so a regression back to hand-wired

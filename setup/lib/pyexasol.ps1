@@ -80,7 +80,7 @@ function Install-Pyexasol {
 
 # Update-Pyexasol - install the advertised version into the venv. Doubles as the
 # repair command: the install step is soft-fail, so this is what a user runs after
-# `exakit status` or `exakit update-check` reports pyexasol as missing. Asked for
+# `exakit status` or `exakit version` reports pyexasol as missing. Asked for
 # explicitly, so a failure here IS a failure. Twin of pyexasol_update.
 function Update-Pyexasol {
     $available = Get-ExakitComponentAvailable "pyexasol"

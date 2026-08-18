@@ -524,7 +524,7 @@ noop="$( EXAKIT_HOME="$WORK/noop-home"
     fi )"
 check "a re-run leaves an up-to-date command alone" "left-alone" "$noop"
 
-echo "update-check table:"
+echo "the version table:"
 # One fixture install, one advertised set, every interesting row at once:
 #   exakit    0.2.0            = 0.2.0             -> current (and NOT "inspect")
 #   nano      2026.2.0-nano.2 -> 2026.3.0-nano.1   -> heavy
@@ -605,7 +605,7 @@ EOF
 # exactly. The Severity cell is coloured when the suite is run on a terminal
 # (UI_FANCY), and an exact comparison must hold either way.
 # row <table> <first-cell> — one row, squeezed, with the card border removed.
-# The update-check table is drawn as a panel now, so every row arrives as
+# The table is drawn as a panel, so every row arrives as
 # "  | exakit  0.2.0  ... |"; matching "^exakit " found nothing at all.
 row() {
     printf '%s\n' "$1" \
@@ -633,17 +633,20 @@ uc_table="$( EXAKIT_HOME="$UC"
     EXAKIT_VERSIONS_CACHE="$UC/cache/versions.json"
     EXAKIT_VERSIONS_URL="http://offline.invalid/versions.json"
     _EXAKIT_VERSIONS_DOC=""; _EXAKIT_VERSIONS_SOURCE=""
-    exakit_print_update_check all 2>&1 )"
+    exakit_print_version_table 2>&1 )"
 
-# The header line itself, squeezed: the middle column is Tagged. Matching the
-# bare word would also match the "Available versions from ..." source line below
-# it, so the whole header is pinned instead — including its order.
-check "the column is Tagged, not Available or Latest" \
-    "Component Installed Tagged Severity Action" "$(row "$uc_table" Component)"
+# The header line itself, squeezed. `exakit version` and `exakit update-check`
+# were merged into one command, so there is one table and it has three columns:
+# what to name in a command, what is on the machine, and what is waiting.
+check "the table is Component / Version / Status" \
+    "Component Version Status" "$(row "$uc_table" Component)"
+lacks "the old Installed header is gone" "Installed " "$uc_table"
+lacks "the old Tagged column is gone" "Tagged" "$uc_table"
 lacks "the old Latest header is gone" "Latest" "$uc_table"
-has "there is a Severity column" "Severity" "$uc_table"
+lacks "the old Severity column is gone" "Severity" "$uc_table"
+lacks "the old Action column is gone" "Action" "$uc_table"
 has "the kit row compares its own version" "exakit 0.2.0" "$(row "$uc_table" exakit)"
-# The Installed column must keep showing what is installed. Asking
+# The Version column must keep showing what is installed. Asking
 # exakit_version_newer about a possible rollback passes the versions in reverse,
 # and bash has no function-local variables here: a callee that reused the name
 # _current would silently overwrite the row's installed version.
@@ -651,23 +654,48 @@ has "installed stays installed (exapump)" "exapump 0.13.0" "$(row "$uc_table" ex
 has "installed stays installed (nano)" "nano 2026.2.0-nano.2" "$(row "$uc_table" nano)"
 has "installed stays installed (mcp)" "mcp 1.10.1" "$(row "$uc_table" mcp)"
 lacks "no row is stuck on inspect" "inspect" "$uc_table"
-has "a runtime change is marked heavy" "exakit update runtime (heavy)" "$uc_table"
-# The whole ahead row, squeezed: the tagged version is shown bare (the column
-# name says what the number is, so the old "(older)" suffix is gone) and the
-# action is exactly "none". It used to read "none — yours is newer than tested",
-# which apologised for the install and made the tested set sound abandoned.
+# The advertised version IS the status: with no Tagged column, a row that is
+# behind has to name the number it is behind, or the screen says only that
+# something is wrong without saying what would fix it.
+check "a waiting update names the advertised version" \
+    "nano 2026.2.0-nano.2 2026.3.0-nano.1 available" "$(row "$uc_table" nano)"
+# The whole ahead row, squeezed: the status is exactly "none". Not "yours is
+# newer than tested", which apologised for the install and made the tested set
+# sound abandoned; not the tagged number either, which invites the reader to go
+# looking for a way back to it. And no severity — a severity rates the advertised
+# version, and there is nothing to recommend to someone already past it.
 check "an install ahead of the tagged set says only none" \
-    "exapump 0.13.0 0.12.0 recommended none" "$(row "$uc_table" exapump)"
+    "exapump 0.13.0 none" "$(row "$uc_table" exapump)"
 lacks "no version cell is annotated (older)" "(older)" "$uc_table"
 lacks "and nothing apologises for the install" "newer than tested" "$uc_table"
 lacks "no downgrade is offered" "exakit update exapump" "$uc_table"
 lacks "and no confirmation is promised" "advisory rollback" "$uc_table"
-has "a critical severity is shown" "critical" "$uc_table"
-has "a recommended severity is shown" "recommended" "$uc_table"
+# The kit never moves a component backwards, by any route: the ahead row offers
+# no command at all, and it must not be counted into the closing line either.
+lacks "the ahead row is not counted as waiting work" "ahead of tagged" "$uc_table"
+check "a flagged row carries its severity in the status" \
+    "mcp 1.10.1 1.11.0 available (critical)" "$(row "$uc_table" mcp)"
+# The fixture's only "recommended" component is the one that is AHEAD, and an
+# ahead row drops its severity on purpose, so the table itself cannot show one.
+# The renderer is guarded directly rather than by a fixture row that no longer
+# carries it -- and the pair together pin both halves of the rule.
+check "a recommended severity renders when a row is behind" \
+    "0.13.0 available (recommended)" "$(_exakit_status_cell "0.13.0 available" recommended)"
+check "and a normal severity adds nothing" \
+    "0.13.0 available" "$(_exakit_status_cell "0.13.0 available" normal)"
 has "the maintainer note is printed" "0.13.0 mis-detects CSV headers" "$uc_table"
-has "a missing component offers the repair" "exakit update pyexasol" "$uc_table"
-has "normal severities stay quiet" "- current" "$(row "$uc_table" exakit)"
+# The note hangs under its row. It used to be packed into a tab-separated string
+# with every other cell and split back apart with `set --`, which collapses runs
+# of IFS whitespace: the row whose severity was empty silently shifted its notes
+# into the wrong fields, so this note vanished exactly when a component was ahead.
+has "a missing component offers the repair" "2.2.2 available (repair)" "$(row "$uc_table" pyexasol)"
+has "normal severities stay quiet" "exakit 0.2.0 current" "$(row "$uc_table" exakit)"
 has "the source of the answers is stated" "Versions:" "$uc_table"
+# One command is promoted, and it is the one that applies everything.
+has "the screen promotes update-all" "Bring everything up to date with: exakit update" "$uc_table"
+lacks "and advertises no per-row command" "exakit update mcp" "$uc_table"
+lacks "no heavy caveat is printed here" "(heavy)" "$uc_table"
+lacks "no staged-upgrade caveat is printed here" "(major)" "$uc_table"
 
 min_kit_table="$( EXAKIT_HOME="$UC"
     EXAKIT_MANIFEST="$UC/manifest.json"
@@ -676,26 +704,36 @@ min_kit_table="$( EXAKIT_HOME="$UC"
     _EXAKIT_VERSIONS_DOC=""; _EXAKIT_VERSIONS_SOURCE=""
     # A component that needs a newer kit must send the user to the kit first.
     exakit_component_min_kit() { [ "$1" = "mcp" ] && printf '9.9.9\n'; return 0; }
-    exakit_print_update_check mcp 2>&1 )"
+    exakit_print_version_table 2>&1 )"
 has "min_kit_version routes to the kit first" "update exakit first (needs kit >= 9.9.9)" "$min_kit_table"
 
-echo "the full table belongs to update-check alone:"
+echo "one command renders the table, and it is exakit version:"
 version_out="$( EXAKIT_HOME="$UC" EXAKIT_MANIFEST="$UC/manifest.json" \
     EXAKIT_VERSIONS_CACHE="$UC/cache/versions.json" \
     EXAKIT_VERSIONS_URL="http://offline.invalid/versions.json" \
     bash "$ROOT/setup/exakit" version 2>&1 )"
-# `exakit version` groups its rows into Kit / Components / Add-ons panels, so
-# the label lost its "Kit " prefix and the value column is padded to one width
-# across all three panels. Match the label and value, not the spacing between
-# them, or this pins a padding that legitimately moves when a longer value
-# (a repo name, a git-sha version) widens the screen.
+# The Kit panel keeps its own shape: kit version, level, source and install date
+# have no component/version/status form. Match the label and value, not the
+# spacing between them, or this pins a padding that legitimately moves when a
+# longer value (a repo name, a git-sha version) widens the screen.
 has "version reports the installed kit version" "Version " "$version_out"
 has "version reports the installed kit version value" "0.2.0" "$version_out"
-lacks "version prints no comparison table" "Component update check" "$version_out"
-# Framed like the connection panel, not three loose lines that read like an error.
-has "version frames the waiting updates" "Updates available" "$version_out"
-has "version points at update-check" "See what's new   exakit update-check" "$version_out"
-has "version points at update" "Apply them       exakit update" "$version_out"
+has "version keeps the Kit panel" "Kit" "$version_out"
+# The merge, guarded from both sides: version renders the table itself...
+has "version renders the comparison table" "Component Version Status" \
+    "$(row "$version_out" Component)"
+has "version names what is waiting" "1.11.0 available" "$version_out"
+has "version promotes update-all" "Bring everything up to date with: exakit update" "$version_out"
+# ...and the second command it was merged from is gone, not hidden.
+lacks "version prints no separate updates panel" "Updates available" "$version_out"
+lacks "and points at no update-check" "update-check" "$version_out"
+uc_gone="$( EXAKIT_HOME="$UC" EXAKIT_MANIFEST="$UC/manifest.json" \
+    bash "$ROOT/setup/exakit" update-check 2>&1 || true )"
+has "update-check is not a command any more" "unknown command 'update-check'" "$uc_gone"
+uc_rc=0
+( EXAKIT_HOME="$UC" EXAKIT_MANIFEST="$UC/manifest.json" \
+    bash "$ROOT/setup/exakit" update-check >/dev/null 2>&1 ) || uc_rc=$?
+check "and it exits like any unknown command" "2" "$uc_rc"
 
 update_out="$( EXAKIT_HOME="$UC"
     EXAKIT_MANIFEST="$UC/manifest.json"
@@ -752,7 +790,7 @@ has "and reports the result" "Runtime updated" "$offer_yes"
 # branch gated on "different" and then continued, so the never-backwards guard
 # further down was unreachable for it: an installed 2.1.0 against a tested 2.0.0
 # was offered as a runtime update -- a DOWNGRADE, behind a prompt promising the
-# data would survive it -- while `exakit update-check` rendered that same row as
+# data would survive it -- while `exakit version` rendered that same row as
 # "none" and every light component said "keeping yours". Answer "y" here on
 # purpose: if the question is ever asked again, this run applies the downgrade
 # and the APPLIED assertion catches it rather than passing on a silent skip.
@@ -974,14 +1012,14 @@ check "the MCP server keeps its recorded version" "1.10.1" "$(live_read mcp)"
 
 # A component that is gone must read as gone in EVERY command. Swallowing the reader's
 # "provably absent" verdict made `exakit version` print a recorded version while
-# update-check and status both said "not installed".
+# the version table and status both said "not installed".
 # PATH must not contain a real exapump either, or the binary fallback finds the
 # tester's own install; python3 has to stay reachable for the manifest reads.
 absent_version="$( rm -f "$LIVE/bin/exapump" "$LIVE/venv/bin/python"
     EXAKIT_HOME="$LIVE" PATH="$(dirname "$(command -v python3)"):/usr/bin:/bin" \
         bash "$ROOT/setup/exakit" version 2>&1 )"
-has "version agrees that a deleted exapump is gone" "exapump        not installed" "$absent_version"
-has "version agrees that a deleted venv is gone" "pyexasol       not installed" "$absent_version"
+has "version agrees that a deleted exapump is gone" "exapump not installed" "$(row "$absent_version" exapump)"
+has "version agrees that a deleted venv is gone" "pyexasol not installed" "$(row "$absent_version" pyexasol)"
 # Put them back for anything that follows.
 printf '#!/bin/sh\necho "exapump 0.13.0"\n' > "$LIVE/bin/exapump"
 rm -f "$LIVE/venv/bin/python"
@@ -1083,7 +1121,7 @@ check "mcp: no mcp module at all keeps the record" "1.10.1" \
 echo "the MCP update compares against the client pin, not the record:"
 # The record only says what a previous run WROTE DOWN, and it is written before the
 # client configs are refreshed — so it can name a version no client is launching.
-# update-check already reports the live pin; the updater has to agree with it, or it
+# `exakit version` already reports the live pin; the updater has to agree with it, or it
 # announces "mcp 1.10.1 -> 2.0.0" from the pin and then declines the work it just
 # announced because the record already says 2.0.0.
 DIV="$WORK/divergent-home"
@@ -1167,7 +1205,7 @@ echo "the exapump update compares against the binary on disk, not the record:"
 # components.exapump.version is only what a previous run WROTE DOWN, and
 # exapump_record_manifest writes it from the version that run asked for — so it can
 # name a release that never landed, and it says nothing about a binary someone
-# replaced by hand. update-check and the dispatcher both report what the binary says;
+# replaced by hand. `exakit version` and the dispatcher both report what the binary says;
 # the updater has to agree with them, or it announces "exapump 8.1.0 -> 8.2.0" from
 # the probe and then declines that exact work because the record already says 8.2.0.
 XP="$WORK/exapump-divergent"
@@ -1259,7 +1297,7 @@ has "an install ahead of the tested set is kept" "is newer than the tested" "$xp
 lacks "and nothing is installed over it" "INSTALLED" "$xp_ahead"
 check "and the binary is untouched" "9.9.9" "$(xp_live)"
 
-echo "exakit version names both what is on the machine and what the kit installed:"
+echo "exakit version reports what is on the machine, and only that:"
 # Its own fixture on purpose: the cases above delete stubs to test absence, and this
 # one needs them present. One runtime key only (a real manifest has version OR image).
 DR="$WORK/drift-home"
@@ -1291,18 +1329,28 @@ EOF
 version_out() {
     EXAKIT_HOME="$DR" bash "$ROOT/setup/exakit" version 2>&1
 }
+# A component upgraded outside the kit reads as what it now IS. The cell used to
+# carry a "(kit installed 0.11.2)" suffix as well, and it cost more than it said:
+# the annotation is twice the width of the version it explains, so it widened every
+# row of the table and pushed the card past 80 columns, and it had to be stripped
+# back off before each comparison the table makes.
 drift_manifest 0.11.2 2.2.2
 drift_out="$(version_out)"
-has "a hand-upgraded exapump shows both" "0.13.0  (kit installed 0.11.2)" "$drift_out"
-has "a hand-upgraded pyexasol shows both" "2.9.9  (kit installed 2.2.2)" "$drift_out"
-# Nothing changed outside the kit: the record and the machine agree, so the line stays
-# as short as it always was.
+has "a hand-upgraded exapump reads as what it is" "exapump 0.13.0" "$(row "$drift_out" exapump)"
+has "a hand-upgraded pyexasol reads as what it is" "pyexasol 2.9.9" "$(row "$drift_out" pyexasol)"
+lacks "and the record is not printed beside it" "kit installed" "$drift_out"
+# The same with nothing changed outside the kit: one number either way, so the
+# reader cannot tell the two cases apart from the column, and does not need to.
 drift_manifest 0.13.0 2.9.9
 agree_out="$(version_out)"
-lacks "and says nothing extra when they agree" "(kit installed" "$agree_out"
-# The Nano runtime records a full image reference but probes back a bare tag; the two
-# must be compared as tags, or every Nano install would claim a phantom difference.
-has "the runtime row compares tag with tag" "Runtime        nano 2026.2.0-nano.2" "$agree_out"
+lacks "and says nothing extra when they agree" "kit installed" "$agree_out"
+# The Nano runtime records a full image reference (docker.io/exasol/nano:TAG) but
+# probes back a bare tag. The cell must be the tag: an image reference in a version
+# column is both unreadable and incomparable, and it would make every Nano install
+# claim a phantom update. The status is deliberately NOT pinned here — it is decided
+# by whatever the live versions.json advertises today.
+has "the runtime row shows a bare tag" "nano 2026.2.0-nano.2" "$(row "$agree_out" nano)"
+lacks "and no image reference reaches the table" "docker.io/exasol/nano" "$agree_out"
 
 echo "a component with no build for this machine is never offered:"
 # exapump publishes nothing for Windows on ARM, and nothing for a CPU outside
@@ -1314,7 +1362,7 @@ unsupported_row="$( EXAKIT_HOME="$UC"
     EXAKIT_VERSIONS_URL="http://offline.invalid/versions.json"
     _EXAKIT_VERSIONS_DOC=""; _EXAKIT_VERSIONS_SOURCE=""
     detect_arch() { printf unsupported; }
-    exakit_print_update_check exapump 2>&1 )"
+    exakit_print_version_table 2>&1 )"
 has "the row says not available" "exapump not available" "$(row "$unsupported_row" exapump)"
 has "and explains why once" "no exapump build exists for this platform" "$unsupported_row"
 lacks "and offers no command" "exakit update exapump" "$unsupported_row"
@@ -1356,23 +1404,33 @@ has "and the skip is stated" "is newer than the tested 0.12.0" "$ahead_skip"
 has "but its neighbours still are" "APPLIED mcp" "$ahead_skip"
 has "and the run itself succeeds" "rc=0" "$ahead_skip"
 
+# The table lists the runtime this machine actually runs, and only that one.
+# `exakit update-check personal` used to render a row for the other runtime on
+# request; the merged `exakit version` takes no target, and inventing a row for a
+# runtime nobody installed would offer to deploy Exasol Personal onto a Nano
+# machine — which is exactly the install the kit refuses to do.
 personal_row="$( EXAKIT_HOME="$UC"
     EXAKIT_MANIFEST="$UC/manifest.json"
     EXAKIT_VERSIONS_CACHE="$UC/cache/versions.json"
     EXAKIT_VERSIONS_URL="http://offline.invalid/versions.json"
     _EXAKIT_VERSIONS_DOC=""; _EXAKIT_VERSIONS_SOURCE=""
-    exakit_print_update_check personal 2>&1 )"
-has "a runtime this machine does not run is listed" "personal not installed" "$(row "$personal_row" personal)"
-lacks "but never offered for installation" "exakit update personal" "$personal_row"
+    exakit_print_version_table 2>&1 )"
+has "the installed runtime is the one listed" "nano 2026.2.0-nano.2" "$(row "$personal_row" nano)"
+lacks "the runtime this machine does not run gets no row" "personal " "$personal_row"
+lacks "and is never offered for installation" "exakit update personal" "$personal_row"
 
-echo "the Tagged column matches the policy in force:"
+echo "the advertised version matches the policy in force:"
 pinned_row="$( EXAKIT_HOME="$UC"
     EXAKIT_MANIFEST="$UC/manifest.json"
     EXAKIT_VERSIONS_CACHE="$UC/cache/versions.json"
     EXAKIT_VERSION_POLICY=pinned
     _EXAKIT_VERSIONS_DOC=""; _EXAKIT_VERSIONS_SOURCE=""
-    exakit_print_update_check exapump 2>&1 )"
-has "pinned policy offers the built-in fallback" "$EXAKIT_EXAPUMP_VERSION_FALLBACK" "$pinned_row"
+    exakit_print_version_table 2>&1 )"
+# Asserted on pyexasol, not exapump: the fixture's exapump is installed AHEAD of
+# every advertised set, and an ahead row says only "none" — so the number it is
+# ahead of is not on the screen to match, whatever policy produced it. pyexasol is
+# not installed at all, so its row names the version the policy resolved.
+has "pinned policy offers the built-in fallback" "$EXAKIT_PYEXASOL_VERSION_FALLBACK available" "$pinned_row"
 has "and says where that came from" "built-in fallbacks" "$pinned_row"
 lacks "not the manifest" "versions manifest that shipped" "$pinned_row"
 
@@ -1382,8 +1440,8 @@ override_row="$( EXAKIT_HOME="$UC"
     EXAKIT_VERSIONS_URL="http://offline.invalid/versions.json"
     _EXAKIT_VERSIONS_DOC=""; _EXAKIT_VERSIONS_SOURCE=""
     EXAKIT_EXAPUMP_VERSION=9.9.9
-    exakit_print_update_check exapump 2>&1 )"
-has "an override reaches the Tagged column" "9.9.9" "$override_row"
+    exakit_print_version_table 2>&1 )"
+has "an override reaches the advertised version" "9.9.9" "$override_row"
 has "and is credited as an override" "EXAKIT_* environment overrides" "$override_row"
 lacks "the maintainers' note is withheld from it" "mis-detects CSV headers" "$override_row"
 
@@ -1393,7 +1451,7 @@ unreadable_row="$( EXAKIT_HOME="$UC"
     EXAKIT_VERSIONS_URL="http://offline.invalid/versions.json"
     _EXAKIT_VERSIONS_DOC=""; _EXAKIT_VERSIONS_SOURCE=""
     exakit_repo_root() { return 1; }
-    exakit_print_update_check exapump 2>&1 )"
+    exakit_print_version_table 2>&1 )"
 has "no readable document is stated plainly" "could not be read" "$unreadable_row"
 has "and the row admits it does not know" "inspect" "$unreadable_row"
 
@@ -1887,7 +1945,7 @@ lacks "without claiming it is recommended" "A recommended" "$only_normal"
 lacks "or critical" "A critical" "$only_normal"
 
 # An install that has overshot the advertised set has nothing pending, and the
-# notice must not claim otherwise: `exakit update-check` renders those rows as
+# notice must not claim otherwise: `exakit version` renders those rows as
 # "none" and `exakit update` says "keeping yours", so announcing them made the
 # three commands disagree and pointed the user at a command that could do
 # nothing. exapump and mcp are advertised BELOW the recorded 0.0.1 install;
@@ -1940,7 +1998,7 @@ check "and did not recompute the verdict" "$stamp_after_first" "$(plan_stamp)"
 
 # A cached plan must not repeat an update the user has already taken. This is the
 # real-world failure it fixes: a plan computed while MCP was mid-install kept saying
-# "an update is available for mcp" while `exakit update-check`, run seconds later in
+# "an update is available for mcp" while `exakit version`, run seconds later in
 # the same session, reported everything current.
 plan_detail="$(sed -n 's/^light=//p' "$NT/cache/notice-plan" | head -1)"
 has "the plan records the advertised version with each candidate" "exapump:" "$plan_detail"
@@ -1957,7 +2015,7 @@ printf '#!/bin/sh\nprintf x >> "%s"\necho "exapump %s"\n' "$WORK/probe-count" \
     "$NOTICE_INSTALLED_EXAPUMP" > "$NT/bin/exapump"
 chmod +x "$NT/bin/exapump"
 
-# update-check computes the truth the long way, so it retires the plan: nothing it
+# the version table computes the truth the long way, so it retires the plan: nothing it
 # just contradicted may be repeated by the next command.
 notice "$WORK/notice-versions.json" >/dev/null
 retired="$( EXAKIT_HOME="$NT"
@@ -1967,9 +2025,9 @@ retired="$( EXAKIT_HOME="$NT"
     EXAKIT_VERSIONS_URL="http://offline.invalid/versions.json"
     _EXAKIT_VERSIONS_DOC=""; _EXAKIT_VERSIONS_SOURCE=""
     [ -f "$EXAKIT_NOTICE_PLAN" ] && printf 'had-plan '
-    exakit_print_update_check all >/dev/null 2>&1
+    exakit_print_version_table >/dev/null 2>&1
     [ -f "$EXAKIT_NOTICE_PLAN" ] && printf 'STILL-THERE' || printf 'retired' )"
-check "update-check retires the cached plan" "had-plan retired" "$retired"
+check "the version table retires the cached plan" "had-plan retired" "$retired"
 
 # A TTL of zero is how you ask for the old behaviour of always recomputing.
 notice "$WORK/notice-versions.json" 'EXAKIT_NOTICE_PLAN_TTL=0' >/dev/null
@@ -2071,7 +2129,7 @@ kit2_table() (
     _EXAKIT_VERSIONS_DOC=""; _EXAKIT_VERSIONS_SOURCE=""
     cp "$1" "$K2/kit/versions.json"
     eval "${2:-}"
-    exakit_print_update_check all 2>&1
+    exakit_print_version_table 2>&1
 )
 
 no_kit2="$(kit2_table "$REAL")"
@@ -2323,24 +2381,28 @@ if command -v pwsh >/dev/null 2>&1; then
     ps_table="$(EXAKIT_HOME="$UC" EXAKIT_BIN_DIR="$UC/bin" \
         EXAKIT_VERSIONS_CACHE="$UC/cache/versions.json" \
         EXAKIT_VERSIONS_URL="http://offline.invalid/versions.json" \
-        pwsh -NoProfile -File "$ROOT/setup/exakit.ps1" update-check all 2>&1 | tr -d '\r')"
-    check "powershell: Tagged column" \
-        "Component Installed Tagged Severity Action" "$(row "$ps_table" Component)"
-    has "powershell: kit row is comparable" "exakit     0.2.0             0.2.0" "$ps_table"
-    has "powershell: installed stays installed" "exapump    0.13.0" "$ps_table"
-    has "powershell: heavy runtime row" "exakit update runtime (heavy)" "$ps_table"
+        pwsh -NoProfile -File "$ROOT/setup/exakit.ps1" version 2>&1 | tr -d '\r')"
+    check "powershell: Component / Version / Status" \
+        "Component Version Status" "$(row "$ps_table" Component)"
+    has "powershell: kit row is comparable" "exakit 0.2.0 current" "$(row "$ps_table" exakit)"
+    has "powershell: installed stays installed" "exapump 0.13.0" "$(row "$ps_table" exapump)"
+    has "powershell: a waiting update names the version" \
+        "nano 2026.2.0-nano.2 2026.3.0-nano.1 available" "$(row "$ps_table" nano)"
     check "powershell: older advertised version" \
-        "exapump 0.13.0 0.12.0 recommended none" "$(row "$ps_table" exapump)"
+        "exapump 0.13.0 none" "$(row "$ps_table" exapump)"
     has "powershell: critical severity" "critical" "$ps_table"
     has "powershell: maintainer note" "0.13.0 mis-detects CSV headers" "$ps_table"
-    has "powershell: repair action for a missing component" "exakit update pyexasol" "$ps_table"
+    has "powershell: repair status for a missing component" \
+        "pyexasol not installed 2.2.2 available (repair)" "$(row "$ps_table" pyexasol)"
+    has "powershell: promotes update-all" "Bring everything up to date with: exakit update" "$ps_table"
     # The decisions the bash rows above make must be the same ones here.
     ps_personal="$(EXAKIT_HOME="$UC" EXAKIT_BIN_DIR="$UC/bin" \
         EXAKIT_VERSIONS_CACHE="$UC/cache/versions.json" \
         EXAKIT_VERSIONS_URL="http://offline.invalid/versions.json" \
-        pwsh -NoProfile -File "$ROOT/setup/exakit.ps1" update-check personal 2>&1 | tr -d '\r')"
-    has "powershell: an absent runtime is listed" "personal   not installed" "$ps_personal"
-    lacks "powershell: but never offered for installation" "exakit update personal" "$ps_personal"
+        pwsh -NoProfile -File "$ROOT/setup/exakit.ps1" version 2>&1 | tr -d '\r')"
+    has "powershell: the installed runtime is the one listed" "nano 2026.2.0-nano.2" "$(row "$ps_personal" nano)"
+    lacks "powershell: the absent runtime gets no row" "personal " "$ps_personal"
+    lacks "powershell: and is never offered for installation" "exakit update personal" "$ps_personal"
     # The inline runtime offer is mirrored code, and the half that decides whether a
     # database may be stopped is the half that must not drift. The decision
     # functions are called directly (running `update all` here would download a real
@@ -2377,13 +2439,13 @@ if command -v pwsh >/dev/null 2>&1; then
     has "powershell: the offer promises the restart" "started again and checked" "$ps_explain"
     has "powershell: the offer says the data survives" "the same data volume is reused" "$ps_explain"
     ps_pinned="$(EXAKIT_HOME="$UC" EXAKIT_BIN_DIR="$UC/bin" EXAKIT_VERSION_POLICY=pinned \
-        pwsh -NoProfile -File "$ROOT/setup/exakit.ps1" update-check exapump 2>&1 | tr -d '\r')"
+        pwsh -NoProfile -File "$ROOT/setup/exakit.ps1" version 2>&1 | tr -d '\r')"
     has "powershell: pinned policy uses the fallback" "built-in fallbacks" "$ps_pinned"
     ps_override="$(EXAKIT_HOME="$UC" EXAKIT_BIN_DIR="$UC/bin" \
         EXAKIT_VERSIONS_CACHE="$UC/cache/versions.json" \
         EXAKIT_VERSIONS_URL="http://offline.invalid/versions.json" \
         EXAKIT_EXAPUMP_VERSION=9.9.9 \
-        pwsh -NoProfile -File "$ROOT/setup/exakit.ps1" update-check exapump 2>&1 | tr -d '\r')"
+        pwsh -NoProfile -File "$ROOT/setup/exakit.ps1" version 2>&1 | tr -d '\r')"
     has "powershell: an override is credited" "EXAKIT_* environment overrides" "$ps_override"
     lacks "powershell: and withholds the maintainer note" "mis-detects CSV headers" "$ps_override"
     # The Windows self-update, for real: the download cmdlet is shadowed by a
@@ -2468,23 +2530,27 @@ PSEOF
         pwsh -NoProfile -File "$ROOT/setup/exakit.ps1" version 2>&1 | tr -d '\r')"
     has "powershell: version reports the kit version" "Version " "$ps_version"
     has "powershell: version reports the kit version value" "0.2.0" "$ps_version"
-    lacks "powershell: version prints no table" "Component update check" "$ps_version"
-    has "powershell: version frames the waiting updates" "Updates available" "$ps_version"
-    has "powershell: version points at update-check" "See what's new   exakit update-check" "$ps_version"
+    has "powershell: version renders the table" "Component Version Status" "$(row "$ps_version" Component)"
+    has "powershell: version promotes update-all" "Bring everything up to date with: exakit update" "$ps_version"
+    lacks "powershell: version prints no separate updates panel" "Updates available" "$ps_version"
+    lacks "powershell: and points at no update-check" "update-check" "$ps_version"
 else
     check "powershell(versions_manifest)" "skipped" "skipped"
     check "powershell(non_https_refused)" "skipped" "skipped"
     check "powershell(runtime_offer_decisions)" "skipped" "skipped"
-    for _skipped in "Tagged column" "kit row is comparable" "installed stays installed" \
-                    "heavy runtime row" "older advertised version" "critical severity" \
-                    "maintainer note" "repair action for a missing component" \
-                    "an absent runtime is listed" "but never offered for installation" \
+    for _skipped in "Component / Version / Status" "kit row is comparable" "installed stays installed" \
+                    "a waiting update names the version" "older advertised version" "critical severity" \
+                    "maintainer note" "repair status for a missing component" \
+                    "promotes update-all" \
+                    "the installed runtime is the one listed" "the absent runtime gets no row" \
+                    "and is never offered for installation" \
                     "pinned policy uses the fallback" "an override is credited" \
                     "and withholds the maintainer note" \
                     "the offer names the outage" "the offer promises the restart" \
                     "the offer says the data survives" \
-                    "version reports the kit version" "version prints no table" \
-                    "version frames the waiting updates" "version points at update-check" "(self_update)" \
+                    "version reports the kit version" "version renders the table" \
+                    "version promotes update-all" "version prints no separate updates panel" \
+                    "and points at no update-check" "(self_update)" \
                     "recommended light bump" "critical heavy bump" \
                     "the heavy line names the cost"; do
         check "powershell: $_skipped" "skipped" "skipped"

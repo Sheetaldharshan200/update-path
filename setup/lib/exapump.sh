@@ -532,7 +532,7 @@ exapump_confirm_installed_version() {
 exapump_update() {
     _latest="$(exakit_component_available exapump)"
     [ -n "$_latest" ] || die "Could not resolve the advertised exapump version."
-    # The already-current guard reads the same thing `exakit update-check` prints in
+    # The already-current guard reads the same thing `exakit version` prints in
     # its Installed column: the version the binary on disk reports when asked. The
     # manifest record is only what a previous run WROTE DOWN — exapump_record_manifest
     # writes it from EXAKIT_EXAPUMP_VERSION, before the download it describes is

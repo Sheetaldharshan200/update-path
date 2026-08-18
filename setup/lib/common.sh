@@ -925,7 +925,7 @@ run_python() {
 
 # Optional Python for best-effort flows (latest-version checks, digest lookup).
 # Unlike require_python3, this never exits: callers can fall back to shell
-# parsing or report "unknown" instead of failing a status/update-check command.
+# parsing or report "unknown" instead of failing a status/version command.
 exakit_can_run_python() {
     _exakit_has_system_python3 && return 0
     exakit_ensure_uv >/dev/null 2>&1
@@ -1520,7 +1520,7 @@ exakit_versions_cache_fresh() {
 
 # exakit_versions_update_cache [force] — refresh the cached document.
 # Skips the network while the cache is younger than the TTL; "force" is for the
-# explicit `exakit update-check`, which should always ask upstream.
+# explicit `exakit version`, which should always ask upstream.
 # Returns 0 when a validated document was installed, 2 when the fetch was
 # skipped as unnecessary, 1 when nothing could be fetched.
 #
@@ -1595,7 +1595,7 @@ exakit_versions_active_doc() {
 }
 
 # exakit_versions_source — where the answers came from: fetched | cache | baked
-# | fallback. Shown by update-check and recorded as desired.versions_source.
+# | fallback. Shown by `exakit version` and recorded as desired.versions_source.
 exakit_versions_source() {
     [ -n "$_EXAKIT_VERSIONS_SOURCE" ] || exakit_versions_resolve_doc >/dev/null 2>&1 || true
     printf '%s\n' "${_EXAKIT_VERSIONS_SOURCE:-fallback}"
@@ -1658,7 +1658,7 @@ PY
 #
 # `docker info` and `docker container inspect` do not return while Docker Desktop
 # is still starting, so an unbounded probe turns `exakit version` and
-# `exakit update-check` into commands that print nothing at all for as long as the
+# `exakit version` into commands that print nothing at all for as long as the
 # engine takes. Reading a version is never worth that wait: the probes fall back to
 # the recorded value, which is exactly what they do when the engine is stopped.
 #
@@ -1727,7 +1727,7 @@ exakit_installed_nano_tag() {
 # `exasol version` reports the launcher, and the launcher is a different axis from the
 # runtime: personal_update --apply installs a new launcher but leaves runtime.version
 # alone until the data migration is finished (it records runtime.launcher_version and
-# says so). Substituting the launcher version here made update-check call a half-done
+# says so). Substituting the launcher version here made `exakit version` call a half-done
 # major upgrade "current" and hid the outstanding migration, while personal_update kept
 # offering it — the two commands disagreeing about one install.
 exakit_installed_personal_version() {
@@ -2906,7 +2906,7 @@ _exakit_marketplace_addon_present() {
 }
 
 # exakit_marketplace_installed_addons — ids of the add-ons present on this
-# machine. This is what folds them into `exakit update all` / update-check.
+# machine. This is what folds them into `exakit update all` / `exakit version`.
 exakit_marketplace_installed_addons() {
     exakit_marketplace_addons | while IFS='|' read -r _ma_id _ma_label; do
         [ -n "$_ma_id" ] || continue
@@ -2951,25 +2951,9 @@ _exakit_marketplace_install_one() {
     return 0
 }
 
-# exakit_print_marketplace_discovery_line — one dim line under the update-check
-# table while something in the marketplace is still uninstalled. Mirrors the
-# Kit 2 discovery line: it advertises, it never acts.
-exakit_print_marketplace_discovery_line() {
-    _md_pending=""
-    _md_pending="$(exakit_marketplace_addons | while IFS='|' read -r _md_id _md_label; do
-        [ -n "$_md_id" ] || continue
-        _exakit_addon_offerable "$_md_id" || continue
-        _exakit_marketplace_addon_present "$_md_id" || printf '%s ' "$_md_id"
-    done)"
-    [ -n "$_md_pending" ] || return 0
-    printf '    %sOptional add-ons are available (%s) — browse them with: exakit marketplace%s\n' \
-        "${UI_DIM:-}" "$(printf '%s' "$_md_pending" | sed 's/ $//; s/ /, /g')" "${UI_RESET:-}"
-    return 0
-}
-
 # exakit_marketplace_menu — the `exakit marketplace` command body, wearing the
 # kit's two established looks so nothing here reads foreign:
-#   1. the STATE, as the same aligned table `exakit update-check` prints
+#   1. the STATE, as the same aligned table `exakit version` prints
 #      (Add-on / Status / Version / Action, one row per add-on, whatever its
 #      state — installed, on the system, missing module, or available);
 #   2. the SELECTION, as the same tree-checkbox the data-load menu uses: a
@@ -3084,7 +3068,7 @@ EXAKIT_MM_EOF
         return $?
     fi
 
-    # The state table — same shape as the update-check table, so the two
+    # The state table — same shape as the `exakit version` table, so the two
     # screens read as one family.
     printf '\n  Marketplace add-ons\n'
     printf '  %s\n' "$(ui_repeat '-' 74)"
@@ -3097,7 +3081,7 @@ EXAKIT_MM_EOF
     printf '\n'
 
     if [ "$_mm_selectable" -eq 0 ]; then
-        info "Everything available is already covered. Updates: exakit update-check"
+        info "Everything available is already covered. Updates: exakit version"
         return 0
     fi
 
@@ -3292,31 +3276,6 @@ exakit_min_kit_satisfied() {
     exakit_version_newer "$_mks_kit" "$1"
 }
 
-# exakit_updates_pending — true when a NEWER version is advertised for anything.
-# Reads the cached document and refreshes it only once the TTL has expired, so
-# `exakit version` costs at most one small fetch a day (none at all with a warm
-# cache) instead of the three API calls it used to make on every run.
-exakit_updates_pending() {
-    # `latest` policy means live upstream lookups; nothing that runs after an
-    # ordinary command may pay for three API calls.
-    [ "${EXAKIT_VERSION_POLICY:-manifest}" = "manifest" ] || return 1
-    exakit_versions_update_cache >/dev/null 2>&1 || true
-    exakit_versions_resolve_doc >/dev/null 2>&1 || true
-    for _upd_component in $(exakit_update_targets all); do
-        _upd_actual="$(exakit_update_actual_target "$_upd_component" 2>/dev/null || printf '%s\n' "$_upd_component")"
-        _upd_available="$(exakit_component_available "$_upd_actual" 2>/dev/null || true)"
-        [ -n "$_upd_available" ] || continue
-        _upd_current="$(exakit_component_current "$_upd_actual" 2>/dev/null || true)"
-        # A component that is not installed at all is a repair, not a new version.
-        # `exakit status` and update-check surface it; counting it here would make
-        # `exakit version` claim "New versions are available" with nothing newer.
-        [ -n "$_upd_current" ] || continue
-        [ "$_upd_current" != "unknown" ] || continue
-        exakit_version_newer "$_upd_available" "$_upd_current" && return 0
-    done
-    return 1
-}
-
 # exakit_component_is_ahead <component> — is the installed version newer than the
 # one the manifest publishes?
 #
@@ -3368,7 +3327,7 @@ exakit_print_versions_source_line() {
         _vsl_updated="$(exakit_format_manifest_date "$_vsl_updated")"
         _vsl_text="$_vsl_text (updated $_vsl_updated)"
     fi
-    # Kept inside 80 columns: this sits directly under the update-check card,
+    # Kept inside 80 columns: this sits directly under the version card,
     # and a line that wraps there undoes the alignment the card just bought.
     info "Versions: $_vsl_text"
     if exakit_versions_schema_ahead; then
@@ -3390,25 +3349,6 @@ _exakit_print_override_line() {
     return 0
 }
 
-# _exakit_severity_cell <severity> — the padded, coloured Severity cell. Only a
-# severity that is NOT normal shows text, so a flagged row is the only thing that
-# draws the eye. Padding happens before colouring so escapes cannot break the
-# column alignment.
-_exakit_severity_cell() {
-    case "$1" in
-        critical)
-            _sc_cell="$(printf '%-11s' critical)"
-            [ "${UI_FANCY:-0}" = 1 ] && _sc_cell="${UI_WARN:-}${_sc_cell}${UI_RESET:-}"
-            ;;
-        recommended)
-            _sc_cell="$(printf '%-11s' recommended)"
-            [ "${UI_FANCY:-0}" = 1 ] && _sc_cell="${UI_OK:-}${_sc_cell}${UI_RESET:-}"
-            ;;
-        *) _sc_cell="$(printf '%-11s' '-')" ;;
-    esac
-    printf '%s' "$_sc_cell"
-}
-
 # ---------------------------------------------------------------------------
 # After-command update notice
 # ---------------------------------------------------------------------------
@@ -3418,7 +3358,7 @@ _exakit_severity_cell() {
 # appears at most once a day, it never speaks unless stderr is a terminal, and
 # EXAKIT_NO_UPDATE_NOTICE=1 silences it for good.
 #
-# It is NOT a nag about every version: `exakit update-check` is where the full
+# It is NOT a nag about every version: `exakit version` is where the full
 # picture lives, and `exakit version` has its own always-on hint.
 # ⇄ twin: Show-ExakitUpdateNotice in setup/lib/exakit-common.ps1.
 EXAKIT_NOTICE_STATE="${EXAKIT_NOTICE_STATE:-$EXAKIT_CACHE_DIR/notice-state.json}"
@@ -3438,7 +3378,7 @@ EXAKIT_NOTICE_PLAN="${EXAKIT_NOTICE_PLAN:-$EXAKIT_CACHE_DIR/notice-plan}"
 EXAKIT_NOTICE_PLAN_TTL="${EXAKIT_NOTICE_PLAN_TTL:-900}"
 # 0 = show the notice after every command. A pending update that nobody is told
 # about is the same as no update mechanism at all: the machines that most need one
-# belong to people who never run `exakit update-check`. Set
+# belong to people who never run `exakit version`. Set
 # EXAKIT_NOTICE_INTERVAL to a number of seconds to throttle it (86400 for the old
 # once-a-day behaviour), or EXAKIT_NO_UPDATE_NOTICE=1 to silence it entirely.
 EXAKIT_NOTICE_INTERVAL="${EXAKIT_NOTICE_INTERVAL:-0}"
@@ -3468,7 +3408,7 @@ exakit_notice_record() {
 }
 
 # A notice may never make an unrelated command feel slow. The cache is normally
-# warm (update-check, version and update all refresh it); when it is not, this is
+# warm (version and update both refresh it); when it is not, this is
 # one very short attempt that gives up almost immediately.
 # _exakit_notice_signature — what the plan was derived from, as content.
 #
@@ -3581,7 +3521,7 @@ exakit_notice_after_command() {
         [ -n "$_notice_heavy_worst" ] || _notice_heavy_worst="normal"
         # Confirm each cached candidate is STILL behind before repeating it. A plan
         # written while a component was mid-install kept announcing an update the
-        # user had already taken, and disagreed with `exakit update-check` run
+        # user had already taken, and disagreed with `exakit version` run
         # seconds later. Costs one probe per pending component -- and when nothing
         # is pending, which is the normal case, it costs nothing at all.
         _notice_light="$(_exakit_notice_still_behind "$(_exakit_notice_plan_field light)")"
@@ -3611,7 +3551,7 @@ exakit_notice_after_command() {
         [ "$_notice_cur" != "$_notice_avail" ] || continue
         # Different is not the same as behind. An install that is PAST the
         # advertised version has nothing pending: the kit never moves a component
-        # backwards, so `exakit update-check` renders that row as "none" and
+        # backwards, so `exakit version` renders that row as "none" and
         # `exakit update` says "keeping yours". Announcing an update here made the
         # three commands contradict each other, and pointed the user at a command
         # that could not do anything. Compared in place rather than through
@@ -3704,7 +3644,7 @@ _exakit_notice_say() {
     if [ -n "$_notice_heavy" ]; then
         # Never "run update now" for the runtime: it stops the database, so the
         # user picks the moment after seeing what it involves.
-        printf '%s%s update is available for %s — requires stopping the database, details:  exakit update-check%s\n' \
+        printf '%s%s update is available for %s — requires stopping the database, details:  exakit version%s\n' \
             "${UI_DIM:-}" "$(_exakit_notice_word "$_notice_heavy_worst")" "$_notice_heavy" "${UI_RESET:-}" >&2
     fi
     printf '%sSilence this with EXAKIT_NO_UPDATE_NOTICE=1%s\n' "${UI_DIM:-}" "${UI_RESET:-}" >&2
@@ -3755,146 +3695,278 @@ exakit_update_kit2() {
     bash "$_k2u_script" || die "The Kit 2 upgrade script reported an error; nothing else was changed."
 }
 
-# exakit_print_update_check [target] — THE comparison table. It is the only
-# command that renders it: `exakit version` prints a two-line hint instead, and
-# `exakit update` prints just the work it is about to do.
+# exakit_print_version_table — the component table `exakit version` renders
+# under its Kit panel: what is installed, and whether anything newer is waiting.
 #
-# Someone who asks explicitly gets fresh data: the TTL exists for readers that
-# run behind other commands, not for this one.
-exakit_print_update_check() {
-    _target="${1:-all}"
-    _targets="$(exakit_update_targets "$_target")" || die "Unknown update target: $_target"
+# This is the merge of what used to be two commands. `exakit version` listed the
+# installed versions and `exakit update-check` compared them against the
+# advertised set, so answering the only question either was ever asked meant
+# running both and reading one screen against the other — and they disagreed
+# often enough to need a comment saying which to trust. There is one screen now,
+# and one place where a component's state is decided.
+#
+# Three columns, because the third answers the question the other two raise:
+#   Component  what to name in `exakit update <component>`
+#   Version    what is on this machine right now
+#   Status     current, or the advertised version and what applying it involves
+# The tagged version, the maintainer's severity and the action all live in
+# Status: each is only ever interesting for a row that is behind, and four
+# mostly-empty columns pushed the card past 80 columns to say nothing.
+#
+# Someone who asks explicitly gets fresh data: the TTL exists for the readers
+# that run behind other commands, not for this one.
+# ⇄ twin: Invoke-CmdVersion in setup/exakit.ps1.
+exakit_print_version_table() {
     if [ "${EXAKIT_VERSION_POLICY:-manifest}" = "manifest" ]; then
         exakit_versions_update_cache force >/dev/null 2>&1 || true
         exakit_versions_resolve_doc >/dev/null 2>&1 || true
     fi
-    printf '\n'
-    # Column width measured, not guessed. The old %-10s fitted the built-in
+    # One parallel array per column, not one packed string per row. The packed
+    # form needs a delimiter, and the tab it used was the wrong one: `set -- $row`
+    # collapses runs of IFS *whitespace*, so a row whose severity cell was empty
+    # silently shifted its notes into the wrong fields. The old code escaped that
+    # only because its severity cell was padded to a fixed width and could never
+    # be empty — which is exactly the invariant this table drops. Separate arrays
+    # cannot shift.
+    _uc_comp=(); _uc_ver=(); _uc_status=(); _uc_note=(); _uc_maint=()
+    # Column widths measured, not guessed. A fixed %-10s fits the built-in
     # component names and nothing else: dash-server (11), json-tables (11) and
     # exasol-vscode (13) each overflow it, and an overflowing cell pushes every
-    # column after it right ON THAT ROW ONLY - so the table lost its alignment
+    # column after it right ON THAT ROW ONLY — so the table lost its alignment
     # exactly when a user had add-ons installed, and only for their rows.
-    # Rows are collected before anything is drawn, so every column is measured
-    # from what it actually holds. The old fixed widths were wrong twice over:
-    # %-10s clipped nothing but pushed later columns right for dash-server (11),
-    # json-tables (11) and exasol-vscode (13) - the table broke exactly when a
-    # user had add-ons - while %-17s reserved 17 for values no longer than 13.
-    # Measuring wins back the room that kept the card inside 80 columns.
-    _uc_rows=()
-    _uc_cw=9; _uc_iw=9; _uc_tw=6
-    _updates=0
-    _heavy_pending=0
-    for _component in $_targets; do
+    _uc_cw=9; _uc_vw=7
+    # One counter, not three. The table used to sort what was waiting into quick,
+    # heavy and staged so it could print a different closing line for each, and
+    # the three lines said the same thing three ways. `exakit update` already
+    # knows a runtime change needs the database stopped and asks at the moment it
+    # matters; this screen only has to say that something is waiting.
+    _pending=0
+    for _component in $(exakit_version_table_targets); do
         _row_component="$(exakit_update_actual_target "$_component" 2>/dev/null || printf '%s\n' "$_component")"
-        _row_installed="$(exakit_component_current "$_row_component" 2>/dev/null || true)"
+        _row_installed="$(exakit_version_installed_cell "$_row_component")"
         _row_available="$(exakit_component_available "$_row_component" 2>/dev/null || true)"
-        [ -n "$_row_installed" ] || _row_installed="not installed"
         [ -n "$_row_available" ] || _row_available="unknown"
-        _row_display="$_row_available"
         _row_note=""
-        _action="current"
+        _row_severity="$(exakit_component_severity "$_row_component" 2>/dev/null || true)"
+        _status="current"
         if ! exakit_component_supported "$_row_component"; then
-            # Nothing to offer and nothing wrong: there is simply no build for this
-            # machine, and an update command that cannot succeed must not be printed.
+            # Nothing to offer and nothing wrong: there is simply no build for
+            # this machine, and an update command that cannot succeed must not be
+            # printed.
             _row_installed="not available"
-            _action="-"
+            _status="-"
+            _row_severity=""
             _row_note="no $_row_component build exists for this platform"
+        elif [ "$_row_installed" = "not installed" ] && _exakit_addon_registered "$_row_component"; then
+            # An add-on nobody has installed is not behind on anything: it is an
+            # offer. The marketplace is the only path that installs one, so that
+            # is the whole status — naming a version here would read as a pending
+            # update to something that is not on the machine.
+            _status="exakit marketplace"
+            _row_severity=""
         elif [ "$_row_available" = "unknown" ] || [ "$_row_installed" = "unknown" ]; then
-            _action="inspect"
+            _status="inspect"
         elif [ "$_row_installed" = "not installed" ] && exakit_component_is_heavy "$_row_component"; then
             # A runtime that is not installed is not a runtime this machine wants:
             # offering to deploy Exasol Personal onto a Nano install would be
             # actively wrong. (A missing light component, by contrast, is exactly
-            # the pyexasol repair case below.)
-            _action="inspect"
+            # the repair case below.)
+            _status="inspect"
         elif [ "$_row_installed" != "not installed" ] && \
              exakit_version_newer "$_row_installed" "$_row_available"; then
             # Installed is ahead of the published set. The kit never moves a
             # component backwards, so there is nothing to offer: lowering a
             # version in versions.json is not a rollback lever, and a user who
-            # upgraded a component themselves keeps what they chose. Counts
-            # toward neither the "apply them in one go" hint nor the heavy
-            # deferral, because no command belongs in this row at all.
+            # upgraded a component themselves keeps what they chose. Counts toward
+            # neither the "apply them in one go" hint nor the heavy deferral,
+            # because no command belongs in this row at all.
             #
-            # The row says only "none". The Tagged column already shows the lower
-            # number next to the installed one, so the reader can see why; adding
-            # an apology for it made the kit sound untested rather than current.
-            _action="none"
+            # The row says only "none". Not "yours is newer than tested", which
+            # apologised for the install and made the tested set sound abandoned;
+            # not the tagged number either, which invites the reader to go looking
+            # for a way back to it. There is nothing to do, so the row says so and
+            # stops. The severity goes with it — a severity rates the advertised
+            # version, and there is nothing to recommend to someone already past it.
+            _status="none"
+            _row_severity=""
         elif [ "$_row_installed" != "$_row_available" ]; then
             _row_min_kit="$(exakit_component_min_kit "$_row_component" 2>/dev/null || true)"
             if [ -n "$_row_min_kit" ] && ! exakit_min_kit_satisfied "$_row_min_kit"; then
-                _action="update exakit first (needs kit >= $_row_min_kit)"
+                # Waiting, but not on this reader: `exakit update` cannot apply
+                # it until the kit itself moves, so it must not be counted into
+                # the closing line that promises it can.
+                _status="update exakit first (needs kit >= $_row_min_kit)"
+                _pending=$((_pending - 1))
+            elif [ "$_row_installed" = "not installed" ]; then
+                # Not an upgrade: the component the manifest says belongs here is
+                # missing, and `exakit update` puts it back.
+                _status="$_row_available available (repair)"
             else
-                _action="exakit update $_component"
-                if [ "$_row_component" = "personal" ] && \
-                   [ "$(exakit_major_version "$_row_available")" != "$(exakit_major_version "$_row_installed")" ]; then
-                    _action="exakit update $_component --plan"
-                fi
-                if exakit_component_is_heavy "$_row_component"; then
-                    _action="$_action (heavy)"
-                    _heavy_pending=1
-                else
-                    # Counts only what a plain `exakit update` would actually
-                    # apply: a heavy row and a kit-blocked row must not inflate
-                    # the "apply them in one go" hint below.
-                    _updates=$((_updates + 1))
-                fi
+                # No "(heavy)" or "(major)" suffix: what applying a component
+                # involves is `exakit update`'s to explain, at the point where it
+                # asks. Saying it here warned about a cost on a screen that cannot
+                # charge it, twice for the runtime, and left the Status column
+                # reading like a set of caveats rather than a set of versions.
+                _status="$_row_available available"
             fi
+            _pending=$((_pending + 1))
         fi
         [ "${#_row_component}" -gt "$_uc_cw" ] && _uc_cw="${#_row_component}"
-        [ "${#_row_installed}" -gt "$_uc_iw" ] && _uc_iw="${#_row_installed}"
-        [ "${#_row_display}"   -gt "$_uc_tw" ] && _uc_tw="${#_row_display}"
-        _row_maint_note="$(exakit_component_note "$_row_component" 2>/dev/null || true)"
-        # Tab-separated so the draw pass can split it back apart; none of these
-        # fields can contain a tab.
-        _uc_rows+=("$_row_component	$_row_installed	$_row_display	$(_exakit_severity_cell "$(exakit_component_severity "$_row_component")")	$_action	$_row_note	$_row_maint_note")
+        [ "${#_row_installed}" -gt "$_uc_vw" ] && _uc_vw="${#_row_installed}"
+        _uc_comp+=("$_row_component")
+        _uc_ver+=("$_row_installed")
+        _uc_status+=("$(_exakit_status_cell "$_status" "$_row_severity")")
+        _uc_note+=("$_row_note")
+        _uc_maint+=("$(exakit_component_note "$_row_component" 2>/dev/null || true)")
     done
 
     # A card, like every other framed answer the kit gives. ui_panel_end measures
-    # with _ui_visible_len, so the coloured severity cell does not throw the
+    # with _ui_visible_len, so the coloured severity suffix does not throw the
     # border off the way a byte count would.
-    ui_panel_begin "Component update check"
-    ui_panel_line "$(printf '%-*s %-*s %-*s %-11s %s' "$_uc_cw" "Component" "$_uc_iw" "Installed" "$_uc_tw" "Tagged" "Severity" "Action")"
-    for _uc_row in "${_uc_rows[@]}"; do
-        _old_ifs="$IFS"; IFS='	'
-        set -- $_uc_row
-        IFS="$_old_ifs"
-        ui_panel_line "$(printf '%-*s %-*s %-*s %s %s' "$_uc_cw" "${1:-}" "$_uc_iw" "${2:-}" "$_uc_tw" "${3:-}" "${4:-}" "${5:-}")"
-        # Notes hang under their row, indented, inside the same card. Wrapped:
-        # a maintainer note is free text and one long enough to blow the card
-        # past 80 columns would wrap in the terminal instead, taking the border
-        # with it.
-        for _uc_note in "${6:-}" "${7:-}"; do
-            [ -n "$_uc_note" ] || continue
-            _uc_line=""
-            for _uc_word in $_uc_note; do
-                if [ -z "$_uc_line" ]; then
-                    _uc_line="$_uc_word"
-                elif [ "$(( ${#_uc_line} + 1 + ${#_uc_word} ))" -le 68 ]; then
-                    _uc_line="$_uc_line $_uc_word"
-                else
-                    ui_panel_line "  ${UI_DIM:-}$_uc_line${UI_RESET:-}"
-                    _uc_line="$_uc_word"
-                fi
-            done
-            [ -n "$_uc_line" ] && ui_panel_line "  ${UI_DIM:-}$_uc_line${UI_RESET:-}"
-        done
+    ui_panel_begin "Components"
+    ui_panel_line "$(printf '%-*s %-*s %s' "$_uc_cw" "Component" "$_uc_vw" "Version" "Status")"
+    _uc_i=0
+    while [ "$_uc_i" -lt "${#_uc_comp[@]}" ]; do
+        ui_panel_line "$(printf '%-*s %-*s %s' \
+            "$_uc_cw" "${_uc_comp[$_uc_i]}" "$_uc_vw" "${_uc_ver[$_uc_i]}" "${_uc_status[$_uc_i]}")"
+        _exakit_version_note_lines "${_uc_note[$_uc_i]}"
+        _exakit_version_note_lines "${_uc_maint[$_uc_i]}"
+        _uc_i=$((_uc_i + 1))
     done
     ui_panel_end
     printf '\n'
-    # This command just worked out the truth the long way. Retire the cached plan so
-    # the next notice cannot repeat something the table above has just contradicted.
+    # This screen just worked out the truth the long way. Retire the cached plan
+    # so the next notice cannot repeat something the table above has just
+    # contradicted.
     rm -f "$EXAKIT_NOTICE_PLAN" 2>/dev/null || true
     exakit_print_versions_source_line
     exakit_print_kit2_discovery_line
-    exakit_print_marketplace_discovery_line
-    if [ "$_updates" -gt 1 ]; then
-        info "Apply the quick ones in one go with: exakit update"
-    fi
-    if [ "$_heavy_pending" -eq 1 ]; then
-        info "A runtime change stops the database — exakit update offers it on a terminal, or run it directly: exakit update runtime"
+    # One command is promoted, and it is the one that handles everything:
+    # `exakit update`. Per-component commands still work and the rows name the
+    # components, so anyone who wants one has it — but a screen that listed a
+    # command per row taught the long way round to the reader who least needed it.
+    # The add-on rows carry their own `exakit marketplace`, so the discovery line
+    # that used to repeat it here is gone too.
+    if [ "$_pending" -gt 0 ]; then
+        info "Bring everything up to date with: exakit update"
     fi
     return 0
+}
+
+# _exakit_version_note_lines <text> — one note, wrapped and indented inside the
+# card. A maintainer note is free text, and one long enough to blow the card past
+# 80 columns would wrap in the terminal instead, taking the border with it.
+# Silent on an empty note, so no caller has to test first.
+_exakit_version_note_lines() {
+    [ -n "$1" ] || return 0
+    _vnl_line=""
+    for _vnl_word in $1; do
+        if [ -z "$_vnl_line" ]; then
+            _vnl_line="$_vnl_word"
+        elif [ "$(( ${#_vnl_line} + 1 + ${#_vnl_word} ))" -le 68 ]; then
+            _vnl_line="$_vnl_line $_vnl_word"
+        else
+            ui_panel_line "  ${UI_DIM:-}$_vnl_line${UI_RESET:-}"
+            _vnl_line="$_vnl_word"
+        fi
+    done
+    [ -n "$_vnl_line" ] && ui_panel_line "  ${UI_DIM:-}$_vnl_line${UI_RESET:-}"
+    return 0
+}
+
+# exakit_version_table_targets — every row the table shows.
+#
+# The update set (what `exakit update` would act on) plus the add-ons this
+# machine COULD install: a row saying "not installed" is only worth printing when
+# `exakit marketplace` can actually fix it, so an add-on that cannot run here (no
+# VS Code, JSON Tables on Windows) is left out entirely rather than dangling an
+# install that would be refused. Same filter, and so the same list, as the
+# marketplace screen itself.
+exakit_version_table_targets() {
+    exakit_update_targets all
+    exakit_marketplace_addons | cut -d'|' -f1 | while read -r _vtt_id; do
+        [ -n "$_vtt_id" ] || continue
+        _exakit_addon_offerable "$_vtt_id" || continue
+        # PRESENT, not kit-installed: a tool the user installed themselves is
+        # already on the machine, and the kit refuses to manage that copy — so a
+        # row telling them to run `exakit marketplace` for it advertises an
+        # install that would be declined. Same check the marketplace screen makes,
+        # so the two screens agree about what is still on offer.
+        _exakit_marketplace_addon_present "$_vtt_id" && continue
+        printf '%s\n' "$_vtt_id"
+    done
+}
+
+# exakit_version_installed_cell <component> — the Version cell: the version that
+# is on this machine right now, or "not installed".
+#
+# Only that. The cell used to carry a "(kit installed X)" suffix when the copy on
+# the machine was not the one the kit put there, and it cost more than it said:
+# the annotation is twice the width of the version it explains, so it widened
+# every row of the table to push the card past 80 columns, and it had to be
+# stripped back off before each of the comparisons below — one more thing to
+# forget on the next arm added. What is installed is what is installed.
+exakit_version_installed_cell() {
+    # The reader returns non-zero only when the component is provably ABSENT, and
+    # that verdict has to survive: swallowing it made `exakit version` print a
+    # recorded version for a deleted binary while status said "not installed".
+    if _vic_live="$(exakit_component_current "$1" 2>/dev/null)"; then
+        :
+    else
+        printf 'not installed\n'
+        return 0
+    fi
+    if [ -z "$_vic_live" ]; then
+        printf '%s\n' "$(exakit_version_recorded "$1" | sed -e 's/^$/not installed/')"
+        return 0
+    fi
+    printf '%s\n' "$_vic_live"
+}
+
+# exakit_version_recorded <component> — the version the manifest says this
+# install put on the machine, or empty when it records none.
+exakit_version_recorded() {
+    case "$1" in
+        nano|personal)
+            # runtime.image is a full reference (docker.io/exasol/nano:TAG) while
+            # the live probe reports the tag alone. Compare tag with tag, or every
+            # Nano install would claim a drift that is not there.
+            _vr_val="$(manifest_get runtime.version 2>/dev/null || true)"
+            if [ -z "$_vr_val" ]; then
+                _vr_val="$(manifest_get runtime.image 2>/dev/null || true)"
+                case "$_vr_val" in *:*) _vr_val="${_vr_val##*:}" ;; esac
+            fi
+            ;;
+        mcp) _vr_val="$(manifest_get components.mcp_server.version 2>/dev/null || true)" ;;
+        # The kit records no version for itself: exakit_component_current reads it
+        # from the installed command, and annotating that with the manifest's copy
+        # would report drift against the very file that was just updated.
+        exakit) _vr_val="" ;;
+        *) _vr_val="$(manifest_get "components.$(printf '%s' "$1" | tr '-' '_').version" 2>/dev/null || true)" ;;
+    esac
+    printf '%s\n' "$_vr_val"
+}
+
+# _exakit_status_cell <status> <severity> — the Status cell, with the maintainer's
+# severity appended when it is not the normal one.
+#
+# Only a flagged row shows a severity, so it stays the one thing on the screen
+# that draws the eye. Colour goes on last and only on the suffix: ui_panel_end
+# measures with _ui_visible_len, so the escapes cost the border nothing.
+_exakit_status_cell() {
+    case "$2" in
+        critical)
+            _sc_suffix="(critical)"
+            [ "${UI_FANCY:-0}" = 1 ] && _sc_suffix="${UI_WARN:-}${_sc_suffix}${UI_RESET:-}"
+            printf '%s %s' "$1" "$_sc_suffix"
+            ;;
+        recommended)
+            _sc_suffix="(recommended)"
+            [ "${UI_FANCY:-0}" = 1 ] && _sc_suffix="${UI_OK:-}${_sc_suffix}${UI_RESET:-}"
+            printf '%s %s' "$1" "$_sc_suffix"
+            ;;
+        *) printf '%s' "$1" ;;
+    esac
 }
 
 exakit_update_self() {
@@ -3981,7 +4053,7 @@ exakit_update_self() {
     manifest_set kit.source "${_repo}@${_kit_ref}"
     # Record the version too, not just where it came from. exakit_component_current
     # reads kit.version first, so without this the kit would report its old
-    # version forever: update-check would keep offering the same update, `exakit
+    # version forever: the table would keep offering the same update, `exakit
     # version` would keep nagging, and `exakit update` would re-download the whole
     # kit on every run.
     manifest_set kit.version "$_staged_version"
@@ -4320,14 +4392,14 @@ exakit_update() {
         # moves on. An explicit single target still runs, so its updater can
         # report the real reason.
         if [ "$_target" = "all" ] && [ -z "$_avail" ]; then
-            warn "No advertised version for $_upd_actual — skipping it. Details: exakit update-check"
+            warn "No advertised version for $_upd_actual — skipping it. Details: exakit version"
             continue
         fi
         # Never backwards, and this has to be settled BEFORE the heavy branch.
         # That branch gates on "$_cur" != "$_avail" and then continues, so it used
         # to reach the runtime offer with the installed version AHEAD of the
         # tested one and ask to stop the database for a downgrade -- while
-        # `exakit update-check` rendered the same row as "none" and every light
+        # `exakit version` rendered the same row as "none" and every light
         # component said "keeping yours". Different is not behind. Asked once
         # here, for every component, so no later branch can reach an update path
         # by skipping the question.
@@ -4350,7 +4422,7 @@ exakit_update() {
             continue
         fi
         # Only the components this run will actually touch are reported: the work
-        # plan, not a status table. `exakit update-check` is where everything is
+        # plan, not a status table. `exakit version` is where everything is
         # listed, including what is already current.
         #
         # A marketplace add-on named EXPLICITLY is the exception: its update hook
@@ -4382,7 +4454,7 @@ exakit_update() {
         ok "Everything is already current."
     fi
     if [ "$_deferred" -gt 0 ]; then
-        info "See everything, including the deferred runtime change: exakit update-check"
+        info "See everything, including the deferred runtime change: exakit version"
     fi
     return 0
 }
@@ -5083,7 +5155,7 @@ exakit_report_readonly_allowlist() {
     _skills_applied="$(exakit_apply_readonly_allowlist 2>/dev/null || true)"
     case "$_skills_applied" in
         ADDED\ 0) info "Read-only command allowlist already present in ~/.claude/settings.json." ;;
-        ADDED\ *) ok "Read-only exakit commands allowlisted in ~/.claude/settings.json (status, info, version, mcp-doctor, logs, catalog, preflight, update-check, guide, mcp-status, mcp-validate, skills; uninstall stays gated)." ;;
+        ADDED\ *) ok "Read-only exakit commands allowlisted in ~/.claude/settings.json (status, info, version, mcp-doctor, logs, catalog, preflight, guide, mcp-status, mcp-validate, skills; uninstall stays gated)." ;;
         SKIP*)    warn "~/.claude/settings.json could not be merged safely ($_skills_applied) — the allowlist in skills/reducing-agent-prompts.md shows what to add by hand." ;;
     esac
     return 0
@@ -5112,13 +5184,13 @@ path = sys.argv[1]
 
 # The kit's read-only command surface. Leaving any of these out is what kept the
 # friction real: an agent following AGENTS.md is told to discover commands with
-# `exakit catalog` and to check its footing with `update-check` / `mcp-status`,
+# `exakit catalog` and to check its footing with `version` / `mcp-status`,
 # and every one of those asked for approval while changing nothing. `exapump sql`
 # and every mutating command stay absent on purpose — that gate is the trust
 # model.
 READONLY = [
     "status", "info", "version", "mcp-doctor", "logs", "catalog", "preflight",
-    "update-check", "guide", "mcp-status", "mcp-validate", "help",
+    "guide", "mcp-status", "mcp-validate", "help",
 ]
 
 # EVERY SPELLING THE AGENT IS TOLD TO USE. A permission rule matches the command
@@ -7436,7 +7508,7 @@ _exakit_remove_installed_skills() {
 
 # _exakit_uninstall_component <key> <dry> — one selectable piece of the kit,
 # removed on its own. Each removal also clears its manifest record and step
-# flag, so `exakit status`, update-check and an installer re-run all read the
+# flag, so `exakit status`, `exakit version` and an installer re-run all read the
 # machine honestly afterwards. Best-effort throughout: one piece failing must
 # not strand the others.
 _exakit_uninstall_component() {

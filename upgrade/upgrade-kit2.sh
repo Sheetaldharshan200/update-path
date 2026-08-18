@@ -137,7 +137,7 @@ if [ "$_installed" -gt 0 ]; then
     manifest_set kit2.upgraded_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     # Which asset bundle this is, taken from the kit tree the assets came from -
     # not from an older kit copy that may still sit under the kit home. This is
-    # what `exakit update-check` compares against later.
+    # what `exakit version` compares against later.
     _k2_version="$(exakit_kit_version_at "$KIT_ROOT" kit2.version 2>/dev/null || true)"
     [ -n "$_k2_version" ] && manifest_set kit2.version "$_k2_version"
     exakit_finish

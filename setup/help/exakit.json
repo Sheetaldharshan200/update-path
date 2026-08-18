@@ -126,8 +126,8 @@
     {
       "command": "version",
       "options": "",
-      "summary": "Installed version details.",
-      "description": "Kit source and install date, plus the version of every component and installed add-on.",
+      "summary": "What is installed, and what is newer.",
+      "description": "Kit source and install date, then one row per component and add-on: what is installed, and whether the maintainers advertise something newer. Applying what is waiting is `exakit update`.",
       "examples": [
         "exakit version"
       ]

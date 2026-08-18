@@ -33,7 +33,7 @@ against a ~1 KB document, and the fleet picks it up within a day.
    **yanked**. A typo, or a version withdrawn after you published it, cannot reach
    users.
 3. Merge. Installs pick the new version up immediately; existing machines see it
-   in `exakit update-check` within `EXAKIT_VERSIONS_TTL` (a day by default).
+   in `exakit version` within `EXAKIT_VERSIONS_TTL` (a day by default).
 
 No tag, no release, no kit change. Tags exist only for kit-script releases (see
 below).
@@ -82,7 +82,7 @@ version bump interrupt someone who was doing something else.
 
 | Value | Effect |
 |---|---|
-| `normal` (or absent) | Shows in `exakit update-check`. Nothing else. Nobody is interrupted. |
+| `normal` (or absent) | Shows in `exakit version`. Nothing else. Nobody is interrupted. |
 | `recommended` | Adds a once-a-day line on `stderr` after unrelated commands. |
 | `critical` | The same line, worded as critical. |
 

@@ -116,8 +116,7 @@ A runtime version change is **announced but never applied silently**, because
 it touches the deployment:
 
 ```bash
-exakit update-check runtime    # what is advertised vs what is installed
-exakit update-check all        # every component at once
+exakit version    # every component at once: installed, and what is advertised
 ```
 
 On macOS, an Exasol Personal major update has its own explicit, non-destructive
@@ -135,7 +134,7 @@ Run them in that order. Database data is preserved.
 
 - **Never drive the runtime underneath the kit.** No `docker stop exasol-nano`,
   no `exasol install local` by hand. The kit's manifest is how `status`,
-  `update-check` and a re-run of the installer know the truth; bypassing it
+  `version` and a re-run of the installer know the truth; bypassing it
   makes all three lie.
 - **Never print or log the credential files** under
   `~/.exasol-starter-kit/credentials/`. Read them into a command when a command

@@ -181,7 +181,7 @@ exakit stop            # stop it (your data is kept)
 exakit data-load       # load more data
 exakit mcp-setup       # connect AI clients
 exakit mcp-doctor      # AI connection health check
-exakit update-check    # updates available?
+exakit version         # what is installed, and what is newer
 exakit update          # apply the quick ones (seconds, no downtime)
 exakit marketplace     # optional add-ons (dashboards & more)
 exakit help            # every command
@@ -216,7 +216,7 @@ maintainers publish that set, and your machine reads it — so an update means
 releases work with each other".
 
 ```bash
-exakit update-check    # what is installed vs what is available, and why
+exakit version         # what is installed vs what is available, and why
 exakit update          # apply everything that is waiting; it asks before it stops the database
 exakit update runtime  # the database itself, on its own — stops it briefly, keeps your data
 ```
@@ -296,7 +296,7 @@ https://github.com/user-attachments/assets/77916db0-d273-4720-8d59-1aedac95d5e8
 | Where's&nbsp;the&nbsp;deep-dive&nbsp;for&nbsp;my&nbsp;OS? | [macOS](quickstarts/macos.md) · [WSL](quickstarts/windows-wsl.md) · [Windows + Docker](quickstarts/windows-docker.md) |
 | Step-by-step&nbsp;to&nbsp;the&nbsp;first&nbsp;query? | [QUICKSTART](QUICKSTART.md) → [First workflow](demo/first-revenue-analysis.md) |
 | Installing&nbsp;over&nbsp;a&nbsp;database<br>I&nbsp;already&nbsp;have? | **It is adopted, not replaced.** A running database is reused (the installer asks, and defaults to yes); a stopped one is started and reused. Your data is untouched. Only a database that cannot start at all is replaced, and the installer says so first — including that the previous data is not recoverable. |
-| How&nbsp;do&nbsp;updates&nbsp;work? | The maintainers publish a tested version set; `exakit update-check` compares it against what you have and `exakit update` applies the quick parts in seconds. See [Staying up to date](#staying-up-to-date). |
+| How&nbsp;do&nbsp;updates&nbsp;work? | The maintainers publish a tested version set; `exakit version` compares it against what you have and `exakit update` applies the quick parts in seconds. See [Staying up to date](#staying-up-to-date). |
 | How&nbsp;do&nbsp;I&nbsp;remove&nbsp;everything? | `exakit uninstall` |
 
 ---

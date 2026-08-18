@@ -68,7 +68,7 @@ paste it into a settings file you then show the user.**
 ## Managing it
 
 ```bash
-exakit update-check exasol-vscode
+exakit version                   # its row shows installed vs advertised
 exakit update exasol-vscode      # also the repair command
 exakit uninstall                 # selectable on its own
 ```
