@@ -18,13 +18,13 @@
 **macOS / Linux / WSL**
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/krishna-exasol/update-path/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/exasol-labs/exasol-personal-local-starterkit/main/install.sh | sh
 ```
 
 **Windows (PowerShell)**
 
 ```powershell
-irm https://raw.githubusercontent.com/krishna-exasol/update-path/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/exasol-labs/exasol-personal-local-starterkit/main/install.ps1 | iex
 ```
 
 **Prefer to let your AI do it?** Paste this into Claude Code, Codex, or any coding agent:
@@ -32,7 +32,7 @@ irm https://raw.githubusercontent.com/krishna-exasol/update-path/main/install.ps
 <div align="left">
 
 ```text
-Install the Exasol starter kit from https://github.com/krishna-exasol/update-path
+Install the Exasol starter kit from https://github.com/exasol-labs/exasol-personal-local-starterkit
 ```
 
 </div>
@@ -82,7 +82,7 @@ Every platform also needs **Python 3.11+**.
 Not sure? Check first. It installs **nothing**:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/krishna-exasol/update-path/main/install.sh | EXAKIT_PREFLIGHT=1 sh
+curl -fsSL https://raw.githubusercontent.com/exasol-labs/exasol-personal-local-starterkit/main/install.sh | EXAKIT_PREFLIGHT=1 sh
 ```
 
 Step-by-step guides: [QUICKSTART](QUICKSTART.md) · [macOS](quickstarts/macos.md) · [WSL](quickstarts/windows-wsl.md) · [Windows + Docker](quickstarts/windows-docker.md)
