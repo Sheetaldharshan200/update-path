@@ -126,6 +126,33 @@ function Get-ExakitHelpDocuments {
 
 # --- rendering --------------------------------------------------------------
 
+# Every binary the kit documents. A command whose first word is one of these is
+# already spelled out ("exakit start" on the runtime page); anything else is a
+# bare subcommand and gets its document's prefix put in front. Twin of
+# KNOWN_TOOLS / invocation() in help.sh.
+$script:ExakitHelpKnownTools = @("exakit", "exapump", "exasol", "dash-server",
+    "exasol-json-tables", "exasol-mcp-server", "exasol-mcp-server-http")
+
+function Get-ExakitHelpInvocation {
+    param([string]$DocId, $Entry, $Doc)
+    $command = ""
+    if ($Entry.command) { $command = ([string]$Entry.command).Trim() }
+    $parts = $command -split '\s+'
+    if ($parts.Count -gt 0 -and $script:ExakitHelpKnownTools -contains $parts[0]) {
+        return $command
+    }
+    $prefix = $DocId
+    if ($Doc -and $Doc.invocation_prefix) { $prefix = $Doc.invocation_prefix }
+    return ("$prefix $command").Trim()
+}
+
+function Get-ExakitHelpInvocationWithOptions {
+    param([string]$DocId, $Entry, $Doc)
+    $label = Get-ExakitHelpInvocation -DocId $DocId -Entry $Entry -Doc $Doc
+    if ($Entry.options) { $label = "$label $($Entry.options)" }
+    return $label
+}
+
 function Write-ExakitHelpWrapped {
     param([string]$Text, [string]$Indent = "    ", [string]$First = $null)
     if (-not $Text) { return }
@@ -170,13 +197,13 @@ function Write-ExakitHelpSection {
 }
 
 function Write-ExakitHelpCommand {
-    param([string]$Label, [string]$Summary, [int]$Pad = 26)
+    param([string]$Label, [string]$Summary, [int]$Pad = 26, [string]$Indent = "    ")
     if ($Label.Length -le $Pad -and $Summary) {
-        Write-Host ("    " + $Label.PadRight($Pad)) -ForegroundColor Green -NoNewline
+        Write-Host ($Indent + $Label.PadRight($Pad)) -ForegroundColor Green -NoNewline
         Write-Host " $Summary"
     } else {
-        Write-Host "    $Label" -ForegroundColor Green
-        if ($Summary) { Write-ExakitHelpWrapped -Text $Summary -Indent "      " }
+        Write-Host "$Indent$Label" -ForegroundColor Green
+        if ($Summary) { Write-ExakitHelpWrapped -Text $Summary -Indent ($Indent + "  ") }
     }
 }
 
@@ -202,20 +229,34 @@ function Show-ExakitHelpOverview {
         Write-ExakitHelpSection "Start here"
         Write-ExakitHelpSteps $doc.quickstart
     }
-    $summary = @{}
-    foreach ($entry in $doc.commands) { $summary[$entry.command] = $entry.summary }
+    $byName = @{}
+    foreach ($entry in $doc.commands) { $byName[$entry.command] = $entry }
     foreach ($group in $doc.groups) {
         Write-ExakitHelpSection $group.title
         foreach ($name in $group.commands) {
-            Write-ExakitHelpCommand -Label $name -Summary $summary[$name] -Pad 22
+            $entry = $byName[$name]
+            if (-not $entry) { continue }
+            $label = Get-ExakitHelpInvocation -DocId "exakit" -Entry $entry -Doc $doc
+            Write-ExakitHelpCommand -Label $label -Summary $entry.summary -Pad 24
         }
     }
     $others = @()
     foreach ($key in ($docs.Keys | Sort-Object)) { if ($key -ne "exakit") { $others += $key } }
     if ($others.Count -gt 0) {
-        Write-ExakitHelpSection "Components  (exakit <component> --help)"
+        # Each component names its own commands as a reader would type them. A
+        # bare list of component names told nobody what they could actually run.
+        Write-ExakitHelpSection "Components"
         foreach ($key in $others) {
-            Write-ExakitHelpCommand -Label $key -Summary $docs[$key].tagline -Pad 22
+            $sub = $docs[$key]
+            Write-Host "    $key" -NoNewline
+            Write-Host "  $($sub.tagline)" -ForegroundColor DarkGray
+            foreach ($entry in $sub.commands) {
+                $text = $entry.summary
+                if (-not $text) { $text = $entry.description }
+                Write-ExakitHelpCommand -Indent "      " -Pad 34 -Summary $text `
+                    -Label (Get-ExakitHelpInvocationWithOptions -DocId $key -Entry $entry -Doc $sub)
+            }
+            Write-Host ""
         }
     }
     Write-Host ""
@@ -238,9 +279,8 @@ function Show-ExakitHelpAll {
             $entry = $byName[$name]
             if (-not $entry -or $seen[$name]) { continue }
             $seen[$name] = $true
-            $label = $name
-            if ($entry.options) { $label = "$name $($entry.options)" }
-            Write-ExakitHelpCommand -Label $label -Summary $entry.summary
+            Write-ExakitHelpCommand -Pad 30 -Summary $entry.summary `
+                -Label (Get-ExakitHelpInvocationWithOptions -DocId "exakit" -Entry $entry -Doc $doc)
         }
     }
     Write-Host ""
@@ -300,11 +340,10 @@ function Show-ExakitHelpComponent {
     if ($doc.commands) {
         Write-ExakitHelpSection "Commands"
         foreach ($entry in $doc.commands) {
-            $label = $entry.command
-            if ($entry.options) { $label = "$($entry.command) $($entry.options)" }
             $text = $entry.summary
             if (-not $text) { $text = $entry.description }
-            Write-ExakitHelpCommand -Label $label -Summary $text
+            Write-ExakitHelpCommand -Pad 34 -Summary $text `
+                -Label (Get-ExakitHelpInvocationWithOptions -DocId $Id -Entry $entry -Doc $doc)
         }
     }
     if ($doc.environment) {
