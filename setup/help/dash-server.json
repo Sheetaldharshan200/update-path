@@ -1,0 +1,96 @@
+{
+  "schema_version": 1,
+  "id": "dash-server",
+  "kind": "addon",
+  "title": "dash-server",
+  "tagline": "Agent-operated Dash hosting for live dashboards on your database.",
+  "role": "An add-on that hosts Dash apps against the local database. Your AI agent drives it through its MCP control plane while you watch the result in a browser.",
+  "repo": "exasol-labs/dash-server",
+  "package": "dash-server",
+  "binary": "~/.local/bin/dash-server",
+  "url": "http://127.0.0.1:5100",
+  "control_plane": "http://127.0.0.1:5100/mcp",
+  "installed_by": "Never by the installer. Only through exakit marketplace.",
+  "db_user": "Reuses the kit's read-only mcp_readonly user - dashboards read, they do not write.",
+  "quickstart": [
+    {
+      "step": "Install it",
+      "run": "EXAKIT_MARKETPLACE_ADDONS=dash-server exakit marketplace"
+    },
+    {
+      "step": "Start it",
+      "run": "dash-server"
+    },
+    {
+      "step": "Open it",
+      "run": "http://127.0.0.1:5100"
+    }
+  ],
+  "commands": [
+    {
+      "command": "dash-server",
+      "options": "",
+      "summary": "Start the server.",
+      "description": "A second copy will not bind: the first one (often started at login) is already serving.",
+      "examples": [
+        "dash-server"
+      ]
+    },
+    {
+      "command": "exakit start",
+      "options": "",
+      "summary": "Starts the database and every service, including this one.",
+      "examples": [
+        "exakit start"
+      ]
+    },
+    {
+      "command": "exakit status",
+      "options": "",
+      "summary": "Shows running, stopped, or the port held by someone else.",
+      "examples": [
+        "exakit status"
+      ]
+    },
+    {
+      "command": "exakit logs",
+      "options": "dash-server [-f]",
+      "summary": "What the service wrote.",
+      "examples": [
+        "exakit logs dash-server -f"
+      ]
+    },
+    {
+      "command": "exakit update dash-server",
+      "options": "",
+      "summary": "Update it, and regenerate its launcher.",
+      "examples": [
+        "exakit update dash-server"
+      ]
+    }
+  ],
+  "environment": [
+    {
+      "name": "EXAKIT_DASH_SERVER_PORT",
+      "effect": "Serve on a different port: EXAKIT_DASH_SERVER_PORT=5200 exakit update dash-server."
+    }
+  ],
+  "notes": [
+    "If port 5100 is taken at install time the kit moves to the next free port and records it.",
+    "The launcher stores only the PATH of the credential file, never the password, and reads it fresh at run time."
+  ],
+  "troubleshooting": [
+    {
+      "symptom": "It looks like a crash on start",
+      "remedy": "A second copy cannot bind the port. The first one is already serving - check exakit status."
+    },
+    {
+      "symptom": "The control plane answers but the page is blank or 500",
+      "remedy": "exakit logs dash-server -f while you reload the page."
+    }
+  ],
+  "see_also": [
+    "exakit marketplace",
+    "mcp"
+  ]
+}
