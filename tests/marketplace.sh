@@ -282,9 +282,18 @@ check "sanitiser removes OSC 8 hyperlinks whole" "see this now" \
 check "the length ceiling trims on a word boundary" "one two" \
     "$(EXAKIT_ABOUT_MAX_LEN=9 _exakit_about_cap 'one two three')"
 
-# One width serves the table cell and the checkbox label, which cannot wrap.
-check "a line that fits is left alone" "short" "$(exakit_about_fit 'short' 44)"
-check "a long line truncates on a word boundary" "one two…" "$(exakit_about_fit 'one two three' 12)"
+# The About is shown IN FULL: the table folds it, nothing truncates it. A word
+# longer than the width overhangs on a line of its own rather than being broken.
+check "a line that fits stays on one line" "short" "$(exakit_about_wrap 'short' 44)"
+check "a long line folds on word boundaries" "one two|three|four five" \
+    "$(exakit_about_wrap 'one two three four five' 9 | tr '\n' '|' | sed 's/|$//')"
+check "continuation lines carry their indent" "one two|..three" \
+    "$(exakit_about_wrap 'one two three' 8 '..' | tr '\n' '|' | sed 's/|$//')"
+check "an over-long word is not broken" "supercalifragilistic|next" \
+    "$(exakit_about_wrap 'supercalifragilistic next' 10 | tr '\n' '|' | sed 's/|$//')"
+# Nothing may truncate an About any more -- the helper that did is gone.
+check "the truncating helper is gone" "no" \
+    "$(command -v exakit_about_fit >/dev/null 2>&1 && echo yes || echo no)"
 
 # Offline is this suite's default. With nothing cached the answer is the help
 # document's own tagline, minus the trailing period a header carries and a table

@@ -3013,20 +3013,33 @@ function Get-ExakitMarketplaceAddonDescription {
     return "Details: exakit help $Id"
 }
 
-# Format-ExakitAboutCell <text> [width] - the text as one cell, truncated on a
-# word boundary. The table and the checkbox label share one width: the checkbox
-# is a single-line menu entry that cannot wrap, so wrapping the table alone
-# would split one screen into two different shapes.
-function Format-ExakitAboutCell {
-    param([string]$Text, [int]$Width = 0)
+# Format-ExakitAboutWrap <text> [width] [pad] - the text in full, folded onto as
+# many lines as it needs. Continuation lines carry their own indent, because the
+# whole cell is printed through one Write-Host with the table's own prefix.
+#
+# This is the table's renderer: an About is written for a repository page, not
+# for a 44-column cell, and truncating it threw away the half that explained
+# what the tool was for. Word-wrapped, never mid-word: a word longer than the
+# width gets a line of its own and is allowed to overhang.
+# Twin of exakit_about_wrap in common.sh.
+function Format-ExakitAboutWrap {
+    param([string]$Text, [int]$Width = 0, [string]$Pad = "")
     if ($Width -le 0) { $Width = $script:ExakitAboutWidth }
     if ($Width -lt 8) { return $Text }
     if (-not $Text) { return "" }
-    if ($Text.Length -le $Width) { return $Text }
-    $cut = $Text.Substring(0, $Width - 1)
-    $space = $cut.LastIndexOf(" ")
-    if ($space -gt 0) { $cut = $cut.Substring(0, $space) }
-    return "$cut$([char]0x2026)"
+    $lines = New-Object System.Collections.Generic.List[string]
+    $line = ""
+    foreach ($word in ($Text -split '\s+')) {
+        if (-not $word) { continue }
+        if (-not $line) { $line = $word }
+        elseif (($line.Length + 1 + $word.Length) -le $Width) { $line = "$line $word" }
+        else { [void]$lines.Add($line); $line = $word }
+    }
+    if ($line) { [void]$lines.Add($line) }
+    if ($lines.Count -eq 0) { return "" }
+    $out = $lines[0]
+    for ($i = 1; $i -lt $lines.Count; $i++) { $out = "$out`n$Pad$($lines[$i])" }
+    return $out
 }
 
 # Update-ExakitMarketplaceAboutCache - fill the cache for the rows that will
@@ -3207,12 +3220,17 @@ function Show-ExakitMarketplaceMenu {
             # will actually DRAW one resolves it: a scripted answer
             # (EXAKIT_MARKETPLACE_ADDONS) installs without a table, so an agent
             # or a CI job never pays for the lookup.
-            $desc = ""
+            $cell = ""
             if (-not $env:EXAKIT_MARKETPLACE_ADDONS) {
-                $desc = Format-ExakitAboutCell (Get-ExakitMarketplaceAddonDescription $addon.Id)
+                # The table carries the About IN FULL, folded onto as many lines
+                # as it needs. Nothing truncates it.
+                $cell = Format-ExakitAboutWrap (Get-ExakitMarketplaceAddonDescription $addon.Id) $script:ExakitAboutWidth (" " * 32)
             }
-            $rows += @{ Id = $addon.Id; Label = "$($addon.Id) - $desc"
-                Table = ("{0,-14} {1,-14} {2}" -f $addon.Id, $advertised, $desc) }
+            # The label NAMES the row, it does not re-explain it: the full text is
+            # in the table directly above, and the checkbox layer truncates every
+            # menu row to exactly one terminal line (its redraw depends on that).
+            $rows += @{ Id = $addon.Id; Label = $addon.Id
+                Table = ("{0,-14} {1,-14} {2}" -f $addon.Id, $advertised, $cell) }
         }
     }
 
