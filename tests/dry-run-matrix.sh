@@ -168,9 +168,12 @@ if bash -c ". '$ROOT/setup/lib/common.sh'; exakit_version_newer 3.0.0 2.0.0"; th
 else
     check "version_newer(3>2)" "yes" "no"
 fi
-# One row per target, every one of them behind: the table must offer an update
-# command for each. EXAKIT_VERSION_POLICY is pinned so the harness cannot reach
-# the network, and the available versions come from the stub below.
+# One row per target, every one of them behind: each must name the version that
+# is waiting for it. The rows used to carry an `exakit update <component>`
+# command apiece; the merged `exakit version` promotes one command for the whole
+# screen instead, so what is counted here is the rows that report an update, not
+# the commands they used to print. EXAKIT_VERSION_POLICY is pinned so the harness
+# cannot reach the network, and the available versions come from the stub below.
 _stub_bin="$(mktemp -d)"
 printf '#!/bin/sh\necho "exapump 0.11.2"\n' > "$_stub_bin/exapump"
 printf '#!/bin/sh\necho 2.2.2\n' > "$_stub_bin/python"
@@ -201,7 +204,7 @@ manifest_get() {
 # The MCP version is read LIVE, so without this the fixture reads whatever MCP this
 # machine happens to have installed. The day a real install went past the advertised
 # 1.11.0, that turned the mcp row into an installed-is-newer row with an action of
-# \"none\" and quietly cost this check one of its five update commands.
+# \"none\" and quietly cost this check one of its five waiting updates.
 exakit_installed_mcp_version() { printf '%s\n' 1.10.1 ; }
 exakit_component_available() {
   case \"\$1\" in
@@ -212,9 +215,9 @@ exakit_component_available() {
     exakit) printf '%s\n' 0.3.0 ;;
   esac
 }
-exakit_print_update_check all
-" | grep -c '^  |.*exakit update [a-z]')"
-check "update_check(commands)" "5" "$update_action"
+exakit_print_version_table
+" | grep -c '^  |.* available *|')"
+check "version_table(rows_waiting)" "5" "$update_action"
 
 # The runtime is the only heavy target, and a routine `exakit update` must
 # announce it instead of stopping the database on its own.
@@ -812,8 +815,9 @@ import json
 doc = json.load(open('$ROOT/setup/help/exakit.json'))
 groups = [g for g in doc['groups'] if g['title'] == 'Keeping up to date']
 print(' '.join(groups[0]['commands']) if groups else '')" 2>/dev/null || true)"
-# update-check is deliberately absent: it is off the help screen, so the group
-# is version + update and the count below is one lower than it once was.
+# update-check is absent because the command is: it was merged into `exakit
+# version`, so the group is version + update and the count below is one lower
+# than it once was.
 for _hl in version update; do
     printf '%s' "$_upd_group" | grep -qw "$_hl" && ps_help_lines=$((ps_help_lines + 1))
 done
@@ -935,7 +939,7 @@ else
     check "mcp_update(snapshot)" "yes" "no"
 fi
 # The MCP update must judge itself by the pin in the AI client configs — what uvx
-# will actually launch, and what update-check reports as Installed — and it must be
+# will actually launch, and what `exakit version` reports as its Version — and it must be
 # the thing that rewrites those configs. A guard that read
 # components.mcp_server.version instead answered "already current" for a version no
 # client was running. Both sides carry the same two halves.
@@ -949,7 +953,7 @@ else
     check "mcp_update(live_pin_guard)" "yes" "no"
 fi
 # Same defect, same fix, for exapump: the guard must ask the binary on disk (what
-# update-check reports as Installed) rather than components.exapump.version, which is
+# `exakit version` reports) rather than components.exapump.version, which is
 # only what a previous run wrote down before proving the download. Both sides also
 # confirm the move from the binary instead of the record they just wrote.
 if grep -q 'exakit_component_current exapump' "$ROOT/setup/lib/exapump.sh" && \

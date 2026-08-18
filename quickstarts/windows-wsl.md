@@ -62,7 +62,7 @@ Then continue with the [first workflow](../demo/first-revenue-analysis.md).
 ## Keeping it current
 
 ```bash
-exakit update-check    # installed vs the versions the maintainers advertise
+exakit version         # installed vs the versions the maintainers advertise
 exakit update          # the quick ones in seconds, then it asks before touching the database
 exakit update runtime  # recreates the Nano container, on its own; the data volume is kept
 ```

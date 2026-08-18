@@ -300,7 +300,7 @@ json_tables_install() {
     # What gets installed is what the mirror release carries, so that is what
     # gets recorded. Resolving it from the mirror first (rather than trusting
     # versions.json, which moves in a follow-up pull request) keeps the recorded
-    # version equal to the artifacts on disk — otherwise update-check would see
+    # version equal to the artifacts on disk — otherwise `exakit version` would see
     # a difference that no update could ever close.
     if [ -z "${EXAKIT_JSON_TABLES_VERSION:-}" ]; then
         EXAKIT_JSON_TABLES_VERSION="$(_json_tables_mirror_version 2>/dev/null || true)"

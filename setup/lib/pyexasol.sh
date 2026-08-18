@@ -88,7 +88,7 @@ pyexasol_install() {
 
 # pyexasol_update — install the advertised version into the venv. Doubles as the
 # repair command: the install step is soft-fail, so this is what a user runs after
-# `exakit status` or `exakit update-check` reports pyexasol as missing. Asked for
+# `exakit status` or `exakit version` reports pyexasol as missing. Asked for
 # explicitly, so a failure here IS a failure.
 pyexasol_update() {
     _pyu_available="$(exakit_component_available pyexasol 2>/dev/null || true)"

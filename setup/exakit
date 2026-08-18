@@ -5,9 +5,8 @@
 #
 #   preflight           check this machine's requirements, install nothing
 #   status              show what is installed and whether it is healthy
-#   version             kit source, install date, component versions
-#   update-check [what] compare installed vs advertised versions
-#                       (all, runtime, exakit, exapump, mcp, pyexasol)
+#   version             kit source, install date, and every component's
+#                       installed version beside the advertised one
 #   update [what] [--yes]
 #                       apply the advertised versions without deleting database data.
 #                       A runtime change stops the database, so on a terminal it is
@@ -496,129 +495,27 @@ cmd_uninstall() {
     exakit_uninstall_menu
 }
 
-# _version_cell <component> <recorded> — what is on the machine now, and what the
-# kit put there when they differ. A difference is not an error: it means the component
-# was changed outside the kit (a pyexasol upgrade in its venv, an exapump build from
-# GitHub, an AI client still pinned to an older MCP server), and saying so answers
-# "why does this not match what I installed?" before it has to be asked.
-_version_cell() {
-    # The reader returns non-zero only when the component is provably ABSENT, and that
-    # verdict has to survive: swallowing it made `exakit version` print a recorded
-    # version for a deleted binary while update-check and status both said
-    # "not installed".
-    if _vc_live="$(exakit_component_current "$1" 2>/dev/null)"; then
-        :
-    else
-        printf 'not installed'
-        return 0
-    fi
-    _vc_recorded="$2"
-    if [ -z "$_vc_live" ]; then
-        printf '%s' "${_vc_recorded:-not installed}"
-    elif [ -n "$_vc_recorded" ] && [ "$_vc_live" != "$_vc_recorded" ]; then
-        printf '%s  (kit installed %s)' "$_vc_live" "$_vc_recorded"
-    else
-        printf '%s' "$_vc_live"
-    fi
-}
-
-# cmd_version — what is INSTALLED, nothing else. The comparison table belongs to
-# `exakit update-check` alone; when something newer is waiting, this command says
-# so in two lines instead of making three API calls on every run.
+# cmd_version — one screen for "what have I got, and is any of it out of date?"
+#
+# This used to be two commands. `exakit version` listed what was installed and
+# `exakit update-check` compared it against the advertised set, so answering the
+# only question either was ever asked meant running both and reading one screen
+# against the other. The Kit panel below is the part with no
+# component/version/status shape; everything else is the table in
+# exakit_print_version_table.
+# ⇄ twin: Invoke-CmdVersion in setup/exakit.ps1.
 cmd_version() {
     # Exit 4, not 0: an agent using `version` as a cheap liveness probe read a
     # success code off a machine with nothing installed.
     [ -f "$EXAKIT_MANIFEST" ] || { echo "Not installed (no manifest at $EXAKIT_MANIFEST)"; exit 4; }
-    # runtime.image is a full reference (docker.io/exasol/nano:TAG) while the live
-    # probe reports the tag alone. Compare tag with tag, or every Nano install would
-    # claim a difference that is not there.
-    _ver_runtime="$(manifest_get runtime.version 2>/dev/null || true)"
-    if [ -z "$_ver_runtime" ]; then
-        _ver_runtime="$(manifest_get runtime.image 2>/dev/null || true)"
-        case "$_ver_runtime" in *:*) _ver_runtime="${_ver_runtime##*:}" ;; esac
-    fi
-
-    # Collected as "section|label|value" first, because the three panels are
-    # padded to ONE width. Sizing each panel to its own longest line (what
-    # ui_panel_end does alone) staggers them into a staircase, and three boxes
-    # of three widths read as broken rather than as one screen.
-    _ver_rows="Kit|Version|$(exakit_component_current exakit 2>/dev/null || printf 'unknown')
-Kit|Level|$(manifest_get kit_level 2>/dev/null)
-Kit|Source|$(manifest_get kit.source 2>/dev/null)
-Kit|Installed|$(exakit_format_local_time "$(manifest_get installed_at 2>/dev/null)")
-Components|Runtime|$(manifest_get runtime.type 2>/dev/null) $(_version_cell runtime "$_ver_runtime")
-Components|exapump|$(_version_cell exapump "$(manifest_get components.exapump.version 2>/dev/null || true)")
-Components|MCP server|$(manifest_get components.mcp_server.package 2>/dev/null) $(_version_cell mcp "$(manifest_get components.mcp_server.version 2>/dev/null || true)")
-Components|pyexasol|$(_version_cell pyexasol "$(manifest_get components.pyexasol.version 2>/dev/null || true)")"
-
-    # Add-ons: every one that is installed OR installable here, so a row saying
-    # "not installed" is always one `exakit marketplace` can actually fix. An
-    # add-on this machine cannot run (no VS Code, or JSON Tables on Windows) is
-    # left out entirely rather than dangling an install that would be refused —
-    # the same filter, and so the same list, as the marketplace screen itself.
-    _ver_addon_n=0
-    _ver_pending=0
-    for _ver_addon in $(exakit_marketplace_addons 2>/dev/null | cut -d'|' -f1); do
-        [ -n "$_ver_addon" ] || continue
-        _exakit_addon_offerable "$_ver_addon" || continue
-        _ver_addon_n=$((_ver_addon_n + 1))
-        _ver_cell="$(_version_cell "$_ver_addon" "$(manifest_get "components.$(printf '%s' "$_ver_addon" | tr '-' '_').version" 2>/dev/null || true)")"
-        # Only offer the marketplace when something is actually left to install.
-        # Printing it under a fully installed list advertises an action that
-        # would show the user an empty catalogue.
-        case "$_ver_cell" in "not installed"*) _ver_pending=1 ;; esac
-        _ver_rows="$_ver_rows
-Add-ons|$_ver_addon|$_ver_cell"
-    done
-
-    # One width for every panel: the widest label+value on the whole screen.
-    _ver_w=0
-    _ver_oifs=$IFS; IFS='
-'
-    for _ver_line in $_ver_rows; do
-        _ver_v="${_ver_line#*|}"; _ver_v="${_ver_v#*|}"
-        _ver_n=$((15 + ${#_ver_v}))
-        [ "$_ver_n" -gt "$_ver_w" ] && _ver_w=$_ver_n
-    done
-    IFS=$_ver_oifs
-
-    for _ver_sec in Kit Components Add-ons; do
-        [ "$_ver_sec" != "Add-ons" ] || [ "$_ver_addon_n" -gt 0 ] || continue
-        [ "$_ver_sec" = "Kit" ] || printf '\n'
-        ui_panel_begin "$_ver_sec"
-        _ver_oifs=$IFS; IFS='
-'
-        for _ver_line in $_ver_rows; do
-            _ver_s="${_ver_line%%|*}"
-            [ "$_ver_s" = "$_ver_sec" ] || continue
-            _ver_l="${_ver_line#*|}"; _ver_l="${_ver_l%%|*}"
-            _ver_v="${_ver_line#*|}"; _ver_v="${_ver_v#*|}"
-            IFS=$_ver_oifs
-            ui_panel_line "$(printf '%-14s %-*s' "$_ver_l" $((_ver_w - 15)) "$_ver_v")"
-            _ver_oifs=$IFS; IFS='
-'
-        done
-        IFS=$_ver_oifs
-        ui_panel_end
-        if [ "$_ver_sec" = "Add-ons" ] && [ "$_ver_pending" = 1 ]; then
-            printf '  %sInstall more with: exakit marketplace%s\n' "${UI_DIM:-}" "${UI_RESET:-}"
-        fi
-    done
-    if exakit_updates_pending; then
-        # The same framed panel the connection details use, rather than three loose
-        # lines that read like an error: this is good news, and it is the only thing
-        # on this screen the reader might want to act on.
-        printf '\n'
-        ui_panel_begin "Updates available"
-        ui_panel_line "See what's new   exakit update-check"
-        ui_panel_line "Apply them       exakit update"
-        ui_panel_end
-    fi
-}
-
-cmd_update_check() {
-    [ -f "$EXAKIT_MANIFEST" ] || { echo "Not installed (no manifest at $EXAKIT_MANIFEST)"; exit 4; }
-    exakit_print_update_check "${1:-all}"
+    ui_panel_begin "Kit"
+    ui_panel_line "$(printf '%-14s %s' Version "$(exakit_component_current exakit 2>/dev/null || printf 'unknown')")"
+    ui_panel_line "$(printf '%-14s %s' Level "$(manifest_get kit_level 2>/dev/null)")"
+    ui_panel_line "$(printf '%-14s %s' Source "$(manifest_get kit.source 2>/dev/null)")"
+    ui_panel_line "$(printf '%-14s %s' Installed "$(exakit_format_local_time "$(manifest_get installed_at 2>/dev/null)")")"
+    ui_panel_end
+    printf '\n'
+    exakit_print_version_table
 }
 
 cmd_update() {
@@ -1040,9 +937,9 @@ cmd_catalog() {
 # The command's own exit status is preserved: version news must never change what
 # `exakit mcp-doctor` (or anything else) reports to a script.
 #
-# Only the commands below carry it. update-check and update render version state
-# themselves, `version` has its own always-on hint, uninstall is a farewell, and
-# help/catalog are reference screens that stay instant and clean.
+# Only the commands below carry it. `version` and `update` render version state
+# themselves, uninstall is a farewell, and help/catalog are reference screens
+# that stay instant and clean.
 _with_notice() {
     "$@"
     _wn_rc=$?
@@ -1081,7 +978,6 @@ case "${1:-help}" in
                   *) _with_notice cmd_status "$@" ;;
               esac ;;
     version|--version|-v)  cmd_version ;;
-    update-check) shift; cmd_update_check "${1:-all}" ;;
     update) shift; cmd_update "$@" ;;
     info)     shift
               case "${1:-}" in
