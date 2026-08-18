@@ -56,6 +56,16 @@ You already use AI. The hard part is trusting it with your data. This kit gives 
 
 At the end: connection details on screen, a managed runtime state under `~/.exasol-starter-kit/`, and guided MCP setup for supported clients. Time to first query: **under 2 minutes**.
 
+**Three optional add-ons the installer never installs — you pick them, any time, with `exakit marketplace`:**
+
+| | Add-on | What it does for you |
+|---|---|---|
+| 📊 | **[dash-server](https://github.com/exasol-labs/dash-server)** | Your AI builds live, query-backed dashboards on the local database; you open them in the browser |
+| 🧩 | **[Exasol&nbsp;for&nbsp;VS&nbsp;Code](https://github.com/exasol-labs/exasol-vscode)** | SQL editing and schema browsing against the local database, inside your editor |
+| 🧬 | **[JSON&nbsp;Tables](https://github.com/exasol-labs/exasol-json-tables)** | Load JSON files into Exasol as regular tables, nested documents included |
+
+Nothing here is on by default, an add-on you already have is never offered twice, and installed ones update through `exakit update` like everything else. Details: [the marketplace section below](#optional-add-ons-the-marketplace).
+
 ## Key features
 
 - 🪶 **Almost no prerequisites.** No Homebrew or Rust needed. Python 3.11+ is needed.
