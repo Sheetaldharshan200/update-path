@@ -1,0 +1,86 @@
+{
+  "schema_version": 1,
+  "id": "nano",
+  "kind": "runtime",
+  "title": "Exasol Nano (Linux / WSL / Windows runtime)",
+  "tagline": "The local Exasol database, running as a container.",
+  "role": "On Linux, WSL and Windows the kit runs Exasol Nano in Docker or Podman. macOS uses Exasol Personal natively instead. Everything above the runtime - exapump, MCP, pyexasol - is identical.",
+  "image": "exasol/nano",
+  "dsn": "127.0.0.1:8563",
+  "admin_user": "sys",
+  "installed_by": "The installer, at step 2 of 6.",
+  "requires": "Docker or Podman, running.",
+  "quickstart": [
+    {
+      "step": "Is it running?",
+      "run": "exakit status"
+    },
+    {
+      "step": "Start or stop it",
+      "run": "exakit start"
+    },
+    {
+      "step": "Read the container log",
+      "run": "exakit logs database -f"
+    }
+  ],
+  "commands": [
+    {
+      "command": "exakit start",
+      "options": "",
+      "summary": "Start the container (creating it if needed).",
+      "examples": [
+        "exakit start"
+      ]
+    },
+    {
+      "command": "exakit stop",
+      "options": "",
+      "summary": "Stop it. The data volume is kept.",
+      "examples": [
+        "exakit stop"
+      ]
+    },
+    {
+      "command": "exakit autostart",
+      "options": "[on|off]",
+      "summary": "Container restart policy.",
+      "examples": [
+        "exakit autostart on"
+      ]
+    },
+    {
+      "command": "exakit logs",
+      "options": "database [-f]",
+      "summary": "What the database container wrote.",
+      "examples": [
+        "exakit logs database -f"
+      ]
+    }
+  ],
+  "environment": [
+    {
+      "name": "EXAKIT_DB_PORT",
+      "effect": "Use an alternate host port, e.g. 8564, when 8563 is taken."
+    }
+  ],
+  "troubleshooting": [
+    {
+      "symptom": "Docker is installed but not running",
+      "remedy": "Start Docker Desktop, or run: podman machine start."
+    },
+    {
+      "symptom": "Port 8563 is already in use",
+      "remedy": "Re-run with EXAKIT_DB_PORT=8564."
+    },
+    {
+      "symptom": "Connection refused on 8563",
+      "remedy": "exakit start, then exakit status."
+    }
+  ],
+  "see_also": [
+    "personal",
+    "exakit start",
+    "exakit logs"
+  ]
+}

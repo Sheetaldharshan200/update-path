@@ -1,0 +1,61 @@
+{
+  "schema_version": 1,
+  "id": "exasol-vscode",
+  "kind": "addon",
+  "title": "Exasol for VS Code",
+  "tagline": "SQL editing and schema browsing inside VS Code.",
+  "role": "The Exasol VS Code extension, installed into VS Code itself. A copy you already installed from the VS Code Marketplace is respected and never touched.",
+  "repo": "exasol-labs/exasol-vscode",
+  "installed_by": "Only through exakit marketplace, and only on a machine that has VS Code.",
+  "quickstart": [
+    {
+      "step": "Install it",
+      "run": "EXAKIT_MARKETPLACE_ADDONS=exasol-vscode exakit marketplace"
+    },
+    {
+      "step": "Reload VS Code",
+      "run": "",
+      "note": "Then connect it with the details from exakit info."
+    }
+  ],
+  "commands": [
+    {
+      "command": "exakit marketplace",
+      "options": "",
+      "summary": "Install it.",
+      "examples": [
+        "exakit marketplace"
+      ]
+    },
+    {
+      "command": "exakit update exasol-vscode",
+      "options": "",
+      "summary": "Update the extension.",
+      "examples": [
+        "exakit update exasol-vscode"
+      ]
+    },
+    {
+      "command": "exakit info",
+      "options": "",
+      "summary": "The connection details to type into the extension.",
+      "examples": [
+        "exakit info"
+      ]
+    }
+  ],
+  "troubleshooting": [
+    {
+      "symptom": "The add-on is not listed",
+      "remedy": "VS Code was not found on this machine, so the kit does not offer it."
+    },
+    {
+      "symptom": "I already had the extension",
+      "remedy": "The kit recognises it and will not manage or re-offer it."
+    }
+  ],
+  "see_also": [
+    "exakit marketplace",
+    "exakit info"
+  ]
+}

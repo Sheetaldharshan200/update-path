@@ -63,6 +63,9 @@ for needed in \
     setup/setup-wsl.sh \
     setup/lib/ui.sh \
     setup/lib/detect.sh \
+    setup/lib/help.sh \
+    setup/help/exakit.json \
+    setup/help/exapump.json \
     setup/exakit \
     data/datasets/tpch/data/lineitem.csv
 do
