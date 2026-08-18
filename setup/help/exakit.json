@@ -5,13 +5,13 @@
   "title": "exakit",
   "tagline": "The one command that runs your local Exasol stack.",
   "role": "exakit is the control panel for the Exasol Personal Local Starter Kit: a local Exasol database, the exapump data/SQL CLI, a read-only MCP server your AI client talks to, and the pyexasol Python driver. Everything the kit installs is started, inspected, updated and removed through this one command.",
-  "repo": "krishna-exasol/update-path",
-  "docs": "https://github.com/krishna-exasol/update-path#readme",
+  "repo": "exasol-labs/exasol-personal-local-starterkit",
+  "docs": "https://github.com/exasol-labs/exasol-personal-local-starterkit#readme",
   "state_dir": "~/.exasol-starter-kit",
   "quickstart": [
     {
       "step": "Install everything",
-      "run": "curl -fsSL https://raw.githubusercontent.com/krishna-exasol/update-path/main/install.sh | sh",
+      "run": "curl -fsSL https://raw.githubusercontent.com/exasol-labs/exasol-personal-local-starterkit/main/install.sh | sh",
       "note": "Deploys the database, loads sample data, and connects your AI clients. Safe to re-run; it resumes."
     },
     {
