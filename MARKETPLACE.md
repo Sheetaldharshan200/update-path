@@ -286,9 +286,11 @@ one-liner in your add-on's GitHub About and the marketplace picks it up within a
 day (`EXAKIT_ABOUT_TTL`, default 86400s). What the kit does to that text before
 printing it is not negotiable, though — it is prose from a repository the kit
 does not control, so escape sequences and control bytes are stripped, it is
-collapsed to one line and capped, on the way into the cache. Keep the About
-short: the column is 44 characters and anything longer is truncated on a word
-boundary.
+collapsed to one line and capped, on the way into the cache. It is then shown in
+full: the Description column is 44 characters wide and folds onto as many lines
+as the text needs, so nothing is cut off. A long About costs table rows rather
+than meaning -- but the checkbox list below the table shows ids only, because the
+shared checkbox layer keeps every menu row to exactly one terminal line.
 
 Skipping this document is allowed — the row then reads
 `Details: exakit help my-tool` — but the screen is worse for it.

@@ -2727,21 +2727,50 @@ exakit_marketplace_addon_description() {
     printf 'Details: exakit help %s\n' "$1"
 }
 
-# exakit_about_fit <text> [width] — the text as one cell, truncated on a word
-# boundary. The table and the checkbox label share one width: the checkbox is a
-# single-line menu entry that cannot wrap, so wrapping the table alone would
-# split one screen into two different shapes.
-exakit_about_fit() {
-    _abt_text="$1"
-    _abt_w="${2:-$EXAKIT_ABOUT_WIDTH}"
-    case "$_abt_w" in
-        ''|*[!0-9]*) printf '%s\n' "$_abt_text"; return 0 ;;
+# exakit_about_wrap <text> [width] [continuation-indent] — the text in full,
+# folded onto as many lines as it needs.
+#
+# This is the table's renderer: an About is written for a repository page, not
+# for a 44-column cell, and truncating it threw away the half that explained
+# what the tool was for. Continuation lines carry their own indent (they are
+# printed through the same '  %s\n' as the first line), so the Description
+# column stays a column.
+#
+# Word-wrapped, never mid-word: a word longer than the width is emitted on a
+# line of its own and allowed to overhang rather than being broken.
+exakit_about_wrap() {
+    _abw_text="$1"
+    _abw_w="${2:-$EXAKIT_ABOUT_WIDTH}"
+    _abw_pad="${3:-}"
+    case "$_abw_w" in
+        ''|*[!0-9]*) printf '%s\n' "$_abw_text"; return 0 ;;
     esac
-    [ "$_abt_w" -lt 8 ] && { printf '%s\n' "$_abt_text"; return 0; }
-    [ "${#_abt_text}" -le "$_abt_w" ] && { printf '%s\n' "$_abt_text"; return 0; }
-    _abt_cut="$(printf '%s' "$_abt_text" | LC_ALL=C cut -b "1-$((_abt_w - 1))")"
-    case "$_abt_cut" in *' '*) _abt_cut="${_abt_cut% *}" ;; esac
-    printf '%s…\n' "$_abt_cut"
+    [ "$_abw_w" -lt 8 ] && { printf '%s\n' "$_abw_text"; return 0; }
+    _abw_line=""
+    _abw_first=1
+    # Unquoted on purpose: the value was sanitised to single-space-separated
+    # words on its way into the cache, so this is the word list.
+    for _abw_word in $_abw_text; do
+        if [ -z "$_abw_line" ]; then
+            _abw_line="$_abw_word"
+        elif [ "$(( ${#_abw_line} + 1 + ${#_abw_word} ))" -le "$_abw_w" ]; then
+            _abw_line="$_abw_line $_abw_word"
+        else
+            if [ "$_abw_first" = 1 ]; then
+                printf '%s\n' "$_abw_line"
+                _abw_first=0
+            else
+                printf '%s%s\n' "$_abw_pad" "$_abw_line"
+            fi
+            _abw_line="$_abw_word"
+        fi
+    done
+    [ -n "$_abw_line" ] || return 0
+    if [ "$_abw_first" = 1 ]; then
+        printf '%s\n' "$_abw_line"
+    else
+        printf '%s%s\n' "$_abw_pad" "$_abw_line"
+    fi
 }
 
 # _exakit_marketplace_warm_about — fill the cache for the rows that will show a
@@ -2988,13 +3017,21 @@ exakit_marketplace_menu() {
             # will actually DRAW one needs to resolve it: a scripted answer
             # (EXAKIT_MARKETPLACE_ADDONS) installs without a table, so an agent
             # or a CI job never pays for the lookup.
-            _mm_desc=""
+            _mm_cell=""
             if [ -z "${EXAKIT_MARKETPLACE_ADDONS:-}" ]; then
-                _mm_desc="$(exakit_about_fit "$(exakit_marketplace_addon_description "$_mm_id")")"
+                # The table carries the About IN FULL, folded onto as many lines
+                # as it needs. Nothing truncates it.
+                _mm_cell="$(exakit_about_wrap \
+                    "$(exakit_marketplace_addon_description "$_mm_id")" \
+                    "$EXAKIT_ABOUT_WIDTH" "$(ui_repeat ' ' 32)")"
             fi
-            _mm_rows+=("$(printf '%-14s %-14s %s' "$_mm_id" "${_mm_adv:-unknown}" "$_mm_desc")")
+            _mm_rows+=("$(printf '%-14s %-14s %s' "$_mm_id" "${_mm_adv:-unknown}" "$_mm_cell")")
             _mm_ids+=("$_mm_id")
-            _mm_labels+=("$_mm_id - $_mm_desc")
+            # The label NAMES the row, it does not re-explain it: the full text
+            # is in the table directly above, and _ui_fit_row would truncate a
+            # description here to keep every menu row exactly one terminal line
+            # (the redraw arithmetic depends on that, for every menu in the kit).
+            _mm_labels+=("$_mm_id")
             _mm_selectable=$((_mm_selectable + 1))
         fi
     done <<EXAKIT_MM_EOF
