@@ -7791,9 +7791,9 @@ EXAKIT_UM_PANEL_EOF
     done
     printf '\n'
     # A full uninstall has just deleted the exakit binary, so pointing at
-    # `exakit status` sends the reader to a command that no longer exists -
+    # `exakit info` sends the reader to a command that no longer exists -
     # the last word of the run being one that cannot be followed. Anything
-    # short of EVERYTHING leaves the CLI in place, and there status is exactly
+    # short of EVERYTHING leaves the CLI in place, and there info is exactly
     # the right next step.
     case " $_um_picked " in
         *" everything "*)
@@ -7801,7 +7801,7 @@ EXAKIT_UM_PANEL_EOF
             info "Install it again any time: $(exakit_install_command)"
             ;;
         *)
-            ok "Done. See where you stand with: exakit status"
+            ok "Done. See where you stand with: exakit info"
             ;;
     esac
     return 0
