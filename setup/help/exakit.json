@@ -44,7 +44,6 @@
     {
       "title": "Get started",
       "commands": [
-        "preflight",
         "guide",
         "mcp-setup",
         "data-load"
@@ -90,7 +89,6 @@
       "title": "Keeping up to date",
       "commands": [
         "version",
-        "update-check",
         "update"
       ]
     },
@@ -110,15 +108,6 @@
     }
   ],
   "commands": [
-    {
-      "command": "preflight",
-      "options": "",
-      "summary": "Check this machine's requirements; install nothing.",
-      "description": "Checks runtime, RAM, disk and ports and reports what would block an install. Changes nothing.",
-      "examples": [
-        "exakit preflight"
-      ]
-    },
     {
       "command": "status",
       "options": "[--json | -j]",
@@ -327,16 +316,6 @@
       "examples": [
         "exakit marketplace",
         "EXAKIT_MARKETPLACE_ADDONS=dash-server exakit marketplace"
-      ]
-    },
-    {
-      "command": "update-check",
-      "options": "[all|runtime|exakit|exapump|mcp|pyexasol|<add-on>|nano|personal]",
-      "summary": "What would change, and what it involves.",
-      "description": "Compares what is installed against the versions the maintainers advertise, and prints the exact command for each. The only command that prints the full table.",
-      "examples": [
-        "exakit update-check",
-        "exakit update-check exapump"
       ]
     },
     {
