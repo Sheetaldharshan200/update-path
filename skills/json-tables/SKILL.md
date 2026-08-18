@@ -81,7 +81,7 @@ So a version you see upstream may legitimately not be offered yet.
 ## Managing it
 
 ```bash
-exakit update-check json-tables
+exakit version                   # its row shows installed vs advertised
 exakit update json-tables        # also the repair command
 exakit logs json-tables
 exakit uninstall                 # selectable on its own

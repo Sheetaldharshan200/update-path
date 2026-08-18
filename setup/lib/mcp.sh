@@ -120,7 +120,7 @@ mcp_install() {
 mcp_update() {
     _latest="$(exakit_component_available mcp)"
     [ -n "$_latest" ] || die "Could not resolve the advertised ${EXAKIT_MCP_PACKAGE} version."
-    # The already-current guard reads the same thing `exakit update-check` prints in
+    # The already-current guard reads the same thing `exakit version` prints in
     # its Installed column: the pin in the AI client configs, which is the spec uvx
     # will materialise the next time a client starts. The manifest record is only
     # what a previous run WROTE DOWN, and mcp_install writes it before the client

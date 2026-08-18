@@ -68,7 +68,7 @@ exakit info                # connection details
 exakit stop                # stop the database (your data is kept)
 exakit start               # bring it back
 exakit mcp-doctor          # AI connection health check
-exakit update-check        # what is installed vs what the maintainers advertise
+exakit version             # what is installed vs what the maintainers advertise
 exakit update              # apply the updates that are waiting
 exakit uninstall           # remove everything the kit installed
 ```

@@ -597,8 +597,8 @@ check "the sandbox extensions dir is passed through" "yes" "$( (
 
 echo "an add-on that needs a host app is only offered when the app is there:"
 # No VS Code on this machine → the extension is not an option at all: no menu
-# row, no table line, nothing pending, nothing in the discovery line. The kit
-# never advertises something it cannot install here.
+# row, and no row in the `exakit version` table either. The kit never advertises
+# something it cannot install here.
 _no_code="$( (
     cover_every_addon
     exasol_vscode_code_cli() { return 1; }          # no VS Code anywhere
@@ -606,10 +606,10 @@ _no_code="$( (
     printf 'applicable=%s ' "$(_exakit_addon_applicable exasol-vscode && echo yes || echo no)"
     printf 'offerable=%s ' "$(_exakit_addon_offerable exasol-vscode && echo yes || echo no)"
     printf 'in-menu=%s ' "$(exakit_marketplace_menu 2>&1 | grep -c exasol-vscode)"
-    printf 'in-discovery=%s' "$(exakit_print_marketplace_discovery_line 2>&1 | grep -c exasol-vscode)"
+    printf 'in-version-table=%s' "$(exakit_version_table_targets 2>&1 | grep -c exasol-vscode)"
 ) )"
 check "without the host app it is hidden everywhere" \
-    "applicable=no offerable=no in-menu=0 in-discovery=0" "$_no_code"
+    "applicable=no offerable=no in-menu=0 in-version-table=0" "$_no_code"
 # With VS Code present it is a normal, selectable add-on again.
 _with_code="$( (
     exasol_vscode_code_cli() { printf '/stub/code\n'; }
@@ -1351,15 +1351,24 @@ lacks "and uploads nothing" "UPLOAD-CALLED" "$_jl_failed"
 check "a CSV still never mentions the add-on" "csv" "$(exakit_data_file_kind "$WORK/x.csv")"
 
 echo "discovery one-liners:"
-_disc_line="$(exakit_print_marketplace_discovery_line)"
-has "update-check discovery line advertises the marketplace" "exakit marketplace" "$_disc_line"
-check "and names exactly the add-ons still pending" "$( (
+# The dim "Optional add-ons are available (...)" footer is gone. It sat under the
+# table repeating a command the table's own rows already carry, so an add-on is
+# discovered where it is listed: `exakit version` gives every offerable add-on a
+# row, and an uninstalled one reads `exakit marketplace` in its Status cell.
+check "the version table lists exactly the add-ons still pending" "$( (
     exakit_marketplace_addons | cut -d'|' -f1 | while read -r _dl_id; do
         [ -n "$_dl_id" ] || continue
         _exakit_addon_offerable "$_dl_id" || continue
         _exakit_marketplace_addon_present "$_dl_id" || printf '%s\n' "$_dl_id"
-    done | paste -sd, - | sed 's/,/, /g'
-) )" "$(printf '%s' "$_disc_line" | sed -n 's/.*available (\([^)]*\)).*/\1/p')"
+    done | sort | paste -sd, -
+) )" "$( (
+    exakit_version_table_targets | while read -r _vt_id; do
+        [ -n "$_vt_id" ] || continue
+        _exakit_addon_registered "$_vt_id" || continue
+        exakit_marketplace_addon_installed "$_vt_id" && continue
+        printf '%s\n' "$_vt_id"
+    done | sort | paste -sd, -
+) )"
 has "connection panel advertises the marketplace" "exakit marketplace" "$(connection_panel 2>/dev/null)"
 
 echo "passed: $PASS, failed: $FAIL"

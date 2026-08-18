@@ -23,7 +23,7 @@
   "0.2.0": [
     "New: exakit marketplace adds dashboards, VS Code and JSON loading.",
     "New: exakit update applies the tested version set.",
-    "New: exakit update-check shows what would change first.",
+    "New: exakit version shows installed and advertised versions.",
     "The installer downloads 4x less: 27 MB down to 6.5 MB."
   ]
 }

@@ -5,9 +5,8 @@
 #
 #   preflight            check this machine's requirements, install nothing
 #   status                show what is installed and whether it is healthy
-#   version               kit source, install date, component versions
-#   update-check [what]   compare installed vs advertised versions
-#                         (all, runtime, exakit, exapump, mcp, pyexasol)
+#   version               kit source, install date, and every component's
+#                         installed version beside the advertised one
 #   update [what] [-Yes]  apply the advertised versions without deleting database
 #                         data. A runtime change stops the database, so on a
 #                         console it is offered ("stop the database and update it
@@ -832,99 +831,235 @@ function Invoke-ExakitUninstallComponent {
     }
 }
 
-# Get-ExakitVersionCell <component> <recorded> - what is on the machine now, and what
-# the kit put there when they differ. A difference is not an error: it means the
-# component was changed outside the kit (a pyexasol upgrade in its venv, an exapump
-# build from GitHub, an AI client still pinned to an older MCP server), and saying so
-# answers "why does this not match what I installed?" before it has to be asked.
-# Twin of _version_cell in setup/exakit.
-function Get-ExakitVersionCell {
-    param([Parameter(Mandatory)][string]$Component, [string]$Recorded = "")
-    # An empty answer means provably absent, and that verdict has to survive: falling
-    # back to the record made `exakit version` print a version for a deleted component
-    # while update-check and status both said "not installed".
-    $live = Get-ExakitComponentCurrent $Component
-    if (-not $live -or $live -eq "not installed") { return "not installed" }
-    if ($Recorded -and $live -ne $Recorded) { return "$live  (kit installed $Recorded)" }
-    return $live
-}
-
-# Invoke-CmdVersion - what is INSTALLED, nothing else. The comparison table
-# belongs to `exakit update-check` alone; when something newer is waiting, this
-# command says so in two lines instead of calling three APIs on every run.
+# Invoke-CmdVersion - one screen for "what have I got, and is any of it out of
+# date?"
+#
+# This used to be two commands. `exakit version` listed what was installed and
+# `exakit update-check` compared it against the advertised set, so answering the
+# only question either was ever asked meant running both and reading one screen
+# against the other. The Kit panel is the part with no component/version/status
+# shape; everything under it is the table.
+#
+# Three columns, because the third answers the question the other two raise:
+#   Component  what to name in `exakit update <component>`
+#   Version    what is on this machine right now
+#   Status     current, or the advertised version
+# The tagged version, the maintainer's severity and the action all live in
+# Status: each is only ever interesting for a row that is behind, and four
+# mostly-empty columns pushed the card past 80 columns to say nothing.
+#
+# Someone who asks explicitly gets fresh data: the TTL exists for the readers
+# that run behind other commands, not for this one.
+# Twin of cmd_version in setup/exakit and exakit_print_version_table in
+# setup/lib/common.sh.
 function Invoke-CmdVersion {
     if (-not (Test-Path $script:ManifestPath)) { Write-Host "Not installed (no manifest at $script:ManifestPath)"; exit 4 }
-    # runtime.image is a full reference (docker.io/exasol/nano:TAG) while the live
-    # probe reports the tag alone. Compare tag with tag, or every Nano install would
-    # claim a difference that is not there.
-    $runtimeRecorded = Get-ExakitManifestValue "runtime.version"
-    if (-not $runtimeRecorded) {
-        $runtimeRecorded = Get-ExakitManifestValue "runtime.image"
-        if ($runtimeRecorded -and $runtimeRecorded.Contains(":")) {
-            $runtimeRecorded = ($runtimeRecorded -split ":")[-1]
-        }
+
+    Start-ExakitPanel "Kit"
+    Write-ExakitPanelLine ("{0,-14} {1}" -f "Version",   "$(Get-ExakitComponentCurrent 'exakit')")
+    Write-ExakitPanelLine ("{0,-14} {1}" -f "Level",     "$(Get-ExakitManifestValue 'kit_level')")
+    Write-ExakitPanelLine ("{0,-14} {1}" -f "Source",    "$(Get-ExakitManifestValue 'kit.source')")
+    Write-ExakitPanelLine ("{0,-14} {1}" -f "Installed", "$(Format-ExakitLocalTime (Get-ExakitManifestValue 'installed_at'))")
+    Complete-ExakitPanel
+    Write-Host ""
+
+    if ($script:VersionPolicy -eq "manifest") {
+        Update-ExakitVersionsCache -Force | Out-Null
+        Resolve-ExakitVersionsDoc | Out-Null
     }
 
-    # Collected first, because the three panels are padded to ONE width. Sizing
-    # each panel to its own longest line (what Complete-ExakitPanel does alone)
-    # staggers them into a staircase, and three boxes of three widths read as
-    # broken rather than as one screen. Mirrors cmd_version in setup/exakit.
+    # Rows are collected before anything is drawn, so every column is measured
+    # from what it actually holds. A fixed width fits the built-in component
+    # names and nothing else: dash-server (11), json-tables (11) and
+    # exasol-vscode (13) each overflow it, and an overflowing cell pushes every
+    # column after it right ON THAT ROW ONLY - so the table lost its alignment
+    # exactly when a user had add-ons installed, and only for their rows.
     $rows = New-Object System.Collections.Generic.List[object]
-    $rows.Add(@{ S = "Kit"; L = "Version";   V = "$(Get-ExakitComponentCurrent 'exakit')" })
-    $rows.Add(@{ S = "Kit"; L = "Level";     V = "$(Get-ExakitManifestValue 'kit_level')" })
-    $rows.Add(@{ S = "Kit"; L = "Source";    V = "$(Get-ExakitManifestValue 'kit.source')" })
-    $rows.Add(@{ S = "Kit"; L = "Installed"; V = "$(Format-ExakitLocalTime (Get-ExakitManifestValue 'installed_at'))" })
-    $rows.Add(@{ S = "Components"; L = "Runtime";    V = "$(Get-RuntimeType) $(Get-ExakitVersionCell 'runtime' $runtimeRecorded)" })
-    $rows.Add(@{ S = "Components"; L = "exapump";    V = "$(Get-ExakitVersionCell 'exapump' (Get-ExakitManifestValue 'components.exapump.version'))" })
-    $rows.Add(@{ S = "Components"; L = "MCP server"; V = "$(Get-ExakitManifestValue 'components.mcp_server.package') $(Get-ExakitVersionCell 'mcp' (Get-ExakitManifestValue 'components.mcp_server.version'))" })
-    $rows.Add(@{ S = "Components"; L = "pyexasol";   V = "$(Get-ExakitVersionCell 'pyexasol' (Get-ExakitManifestValue 'components.pyexasol.version'))" })
+    $compWidth = 9
+    $verWidth = 7
+    # One counter, not three. The table used to sort what was waiting into quick,
+    # heavy and staged so it could print a different closing line for each, and
+    # the three lines said the same thing three ways. `exakit update` already
+    # knows a runtime change needs the database stopped and asks at the moment it
+    # matters; this screen only has to say that something is waiting.
+    $pending = 0
 
-    # Add-ons: every one that is installed OR installable here, so a row saying
-    # "not installed" is always one `exakit marketplace` can actually fix. An
-    # add-on this machine cannot run is left out entirely rather than dangling an
-    # install that would be refused - the same filter, and so the same list, as
-    # the marketplace screen itself.
-    $addonPending = $false
-    $addonCount = 0
+    foreach ($component in (Get-ExakitVersionTableTargets)) {
+        $actual = Get-ExakitActualTarget $component
+        $installed = Get-ExakitComponentCurrent $actual
+        if (-not $installed) { $installed = "not installed" }
+        $available = Get-ExakitComponentAvailable $actual
+        if (-not $available) { $available = "unknown" }
+        $rowNote = ""
+        $severity = Get-ExakitComponentSeverity $actual
+        $status = "current"
+
+        if (-not (Test-ExakitComponentSupported $actual)) {
+            # Nothing to offer and nothing wrong: there is simply no build for
+            # this machine, and an update command that cannot succeed must not be
+            # printed.
+            $installed = "not available"
+            $status = "-"
+            $severity = ""
+            $rowNote = "no $actual build exists for this platform"
+        } elseif ($installed -eq "not installed" -and (Get-ExakitMarketplaceAddon $actual)) {
+            # An add-on nobody has installed is not behind on anything: it is an
+            # offer. The marketplace is the only path that installs one, so that
+            # is the whole status - naming a version here would read as a pending
+            # update to something that is not on the machine.
+            $status = "exakit marketplace"
+            $severity = ""
+        } elseif ($available -eq "unknown" -or $installed -eq "unknown") {
+            $status = "inspect"
+        } elseif ($installed -eq "not installed" -and (Test-ExakitComponentHeavy $actual)) {
+            # A runtime that is not installed is not a runtime this machine wants:
+            # offering to deploy Exasol Personal onto a Nano install would be
+            # actively wrong. (A missing light component, by contrast, is exactly
+            # the repair case below.)
+            $status = "inspect"
+        } elseif ($installed -ne "not installed" -and (Test-ExakitVersionNewer -Latest $installed -Current $available)) {
+            # Installed is ahead of the published set. The kit never moves a
+            # component backwards, so there is nothing to offer: lowering a
+            # version in versions.json is not a rollback lever, and a user who
+            # upgraded a component themselves keeps what they chose.
+            #
+            # The row says only "none". Not "yours is newer than tested", which
+            # apologised for the install and made the tested set sound abandoned;
+            # not the tagged number either, which invites the reader to go looking
+            # for a way back to it. There is nothing to do, so the row says so and
+            # stops. The severity goes with it - a severity rates the advertised
+            # version, and there is nothing to recommend to someone already past it.
+            $status = "none"
+            $severity = ""
+        } elseif ($installed -ne $available) {
+            $minKit = Get-ExakitComponentMinKit $actual
+            if ($minKit -and -not (Test-ExakitMinKitSatisfied -Required $minKit)) {
+                # Waiting, but not on this reader: `exakit update` cannot apply it
+                # until the kit itself moves, so it must not be counted into the
+                # closing line that promises it can.
+                $status = "update exakit first (needs kit >= $minKit)"
+            } elseif ($installed -eq "not installed") {
+                # Not an upgrade: the component the manifest says belongs here is
+                # missing, and `exakit update` puts it back.
+                $status = "$available available (repair)"
+                $pending += 1
+            } else {
+                # No "(heavy)" or "(major)" suffix: what applying a component
+                # involves is `exakit update`'s to explain, at the point where it
+                # asks. Saying it here warned about a cost on a screen that cannot
+                # charge it, and left the Status column reading like a set of
+                # caveats rather than a set of versions.
+                $status = "$available available"
+                $pending += 1
+            }
+        }
+
+        if ($actual.Length -gt $compWidth) { $compWidth = $actual.Length }
+        if ($installed.Length -gt $verWidth) { $verWidth = $installed.Length }
+        $rows.Add(@{
+            C = $actual
+            V = $installed
+            S = (Get-ExakitStatusCell -Status $status -Severity $severity)
+            N = $rowNote
+            M = "$(Get-ExakitComponentNote $actual)"
+        })
+    }
+
+    # A card, like every other framed answer the kit gives. Complete-ExakitPanel
+    # measures with Get-ExakitVisibleLength, so the coloured severity suffix does
+    # not throw the border off the way a byte count would.
+    Start-ExakitPanel "Components"
+    Write-ExakitPanelLine ("{0} {1} {2}" -f "Component".PadRight($compWidth), "Version".PadRight($verWidth), "Status")
+    foreach ($r in $rows) {
+        Write-ExakitPanelLine ("{0} {1} {2}" -f $r.C.PadRight($compWidth), $r.V.PadRight($verWidth), $r.S)
+        Write-ExakitVersionNote $r.N
+        Write-ExakitVersionNote $r.M
+    }
+    Complete-ExakitPanel
+    Write-Host ""
+
+    # This screen just worked out the truth the long way. Retire the cached plan
+    # so the next notice cannot repeat something the table above has just
+    # contradicted.
+    if ($script:NoticePlanPath -and (Test-Path $script:NoticePlanPath)) {
+        Remove-Item -Force $script:NoticePlanPath -ErrorAction SilentlyContinue
+    }
+    Write-ExakitVersionsSourceLine
+    # One command is promoted, and it is the one that handles everything:
+    # `exakit update`. Per-component commands still work and the rows name the
+    # components, so anyone who wants one has it - but a screen that listed a
+    # command per row taught the long way round to the reader who least needed it.
+    # The add-on rows carry their own `exakit marketplace`, so the discovery line
+    # that used to repeat it here is gone too.
+    if ($pending -gt 0) { Info "Bring everything up to date with: exakit update" }
+}
+
+# Get-ExakitVersionTableTargets - every row the table shows.
+#
+# The update set (what `exakit update` would act on) plus the add-ons this
+# machine COULD install: a row saying "not installed" is only worth printing when
+# `exakit marketplace` can actually fix it, so an add-on that cannot run here is
+# left out entirely rather than dangling an install that would be refused. Same
+# filter, and so the same list, as the marketplace screen itself.
+# Twin of exakit_version_table_targets in setup/lib/common.sh.
+function Get-ExakitVersionTableTargets {
+    $targets = @(Get-ExakitUpdateTargets -Target "all")
     foreach ($addon in (Get-ExakitMarketplaceAddons)) {
         if (-not (Test-ExakitAddonOfferable $addon.Id)) { continue }
-        $recordKey = "components." + ($addon.Id -replace "-", "_") + ".version"
-        $cell = "$(Get-ExakitVersionCell $addon.Id (Get-ExakitManifestValue $recordKey))"
-        # Only offer the marketplace when something is actually left to install.
-        if ($cell -like "not installed*") { $addonPending = $true }
-        $rows.Add(@{ S = "Add-ons"; L = $addon.Id; V = $cell })
-        $addonCount += 1
+        # PRESENT, not kit-installed: a tool the user installed themselves is
+        # already on the machine, and the kit refuses to manage that copy - so a
+        # row telling them to run `exakit marketplace` for it advertises an
+        # install that would be declined.
+        if (Test-ExakitMarketplaceAddonPresent $addon.Id) { continue }
+        $targets += $addon.Id
     }
+    return $targets
+}
 
-    # One width for every panel: the widest label+value on the whole screen.
-    $w = 0
-    foreach ($r in $rows) { $n = 15 + $r.V.Length; if ($n -gt $w) { $w = $n } }
+# Get-ExakitStatusCell - the Status cell, with the maintainer's severity appended
+# when it is not the normal one.
+#
+# Only a flagged row shows a severity, so it stays the one thing on the screen
+# that draws the eye. Colour goes on last and only on the suffix:
+# Complete-ExakitPanel measures with Get-ExakitVisibleLength, so the escapes cost
+# the border nothing.
+# Twin of _exakit_status_cell in setup/lib/common.sh.
+function Get-ExakitStatusCell {
+    param([string]$Status, [string]$Severity)
+    if ($Severity -eq "critical") {
+        $suffix = "(critical)"
+        if ($script:UiFancy) { $suffix = "$($script:UiWarn)$suffix$($script:UiReset)" }
+        return "$Status $suffix"
+    }
+    if ($Severity -eq "recommended") {
+        $suffix = "(recommended)"
+        if ($script:UiFancy) { $suffix = "$($script:UiOk)$suffix$($script:UiReset)" }
+        return "$Status $suffix"
+    }
+    return $Status
+}
 
-    $first = $true
-    foreach ($sec in @("Kit", "Components", "Add-ons")) {
-        if ($sec -eq "Add-ons" -and $addonCount -eq 0) { continue }
-        if (-not $first) { Write-Host "" }
-        $first = $false
-        Start-ExakitPanel $sec
-        foreach ($r in $rows) {
-            if ($r.S -ne $sec) { continue }
-            Write-ExakitPanelLine ("{0,-14} {1}" -f $r.L, $r.V.PadRight($w - 15))
-        }
-        Complete-ExakitPanel
-        if ($sec -eq "Add-ons" -and $addonPending) {
-            Write-Host "  Install more with: exakit marketplace"
+# Write-ExakitVersionNote - one note, wrapped and indented inside the card. A
+# maintainer note is free text, and one long enough to blow the card past 80
+# columns would wrap in the terminal instead, taking the border with it. Silent
+# on an empty note, so no caller has to test first.
+# Twin of _exakit_version_note_lines in setup/lib/common.sh.
+function Write-ExakitVersionNote {
+    param([string]$Text)
+    if (-not $Text) { return }
+    $line = ""
+    foreach ($word in ($Text -split '\s+')) {
+        if (-not $word) { continue }
+        if (-not $line) {
+            $line = $word
+        } elseif (($line.Length + 1 + $word.Length) -le 68) {
+            $line = "$line $word"
+        } else {
+            Write-ExakitPanelLine "  $line"
+            $line = $word
         }
     }
-    if (Test-ExakitUpdatesPending) {
-        # The same framed panel the connection details use, rather than three loose
-        # lines that read like an error: this is good news, and it is the only thing
-        # on this screen the reader might want to act on.
-        Write-Host ""
-        Start-ExakitPanel "Updates available"
-        Write-ExakitPanelLine "See what's new   exakit update-check"
-        Write-ExakitPanelLine "Apply them       exakit update"
-        Complete-ExakitPanel
-    }
+    if ($line) { Write-ExakitPanelLine "  $line" }
 }
 
 function Get-ExakitUpdateTargets {
@@ -1414,136 +1549,6 @@ function Write-ExakitOverrideLine {
     }
 }
 
-# The padded, coloured Severity cell. Only a severity that is NOT normal shows
-# text, so a flagged row is the only thing that draws the eye. Padding happens
-# before colouring so escapes cannot break the column alignment.
-function Get-ExakitSeverityCell {
-    param([string]$Severity)
-    if ($Severity -eq "critical") {
-        $cell = "critical".PadRight(11)
-        if ($script:UiFancy) { return "$($script:UiWarn)$cell$($script:UiReset)" }
-        return $cell
-    }
-    if ($Severity -eq "recommended") {
-        $cell = "recommended".PadRight(11)
-        if ($script:UiFancy) { return "$($script:UiOk)$cell$($script:UiReset)" }
-        return $cell
-    }
-    return "-".PadRight(11)
-}
-
-# True when a NEWER version is advertised for anything (or a Component is missing
-# entirely). Cache-only under the TTL: `exakit version` consults this and has to
-# stay instant.
-function Test-ExakitUpdatesPending {
-    if ($script:VersionPolicy -ne "manifest") { return $false }
-    Update-ExakitVersionsCache | Out-Null
-    Resolve-ExakitVersionsDoc | Out-Null
-    foreach ($component in (Get-ExakitUpdateTargets -Target "all")) {
-        $actual = Get-ExakitActualTarget $component
-        $available = Get-ExakitComponentAvailable $actual
-        if (-not $available) { continue }
-        $current = Get-ExakitComponentCurrent $actual
-        # A component that is not installed at all is a repair, not a new version.
-        # `exakit status` and update-check surface it; counting it here would make
-        # `exakit version` claim "New versions are available" with nothing newer.
-        if (-not $current -or $current -eq "not installed") { continue }
-        if ($current -eq "unknown") { continue }
-        if (Test-ExakitVersionNewer -Latest $available -Current $current) { return $true }
-    }
-    return $false
-}
-
-# Invoke-CmdUpdateCheck - THE comparison table. It is the only command that
-# renders it: `exakit version` prints a short hint instead, and `exakit update`
-# prints just the work it is about to do. Someone who asks explicitly gets fresh
-# data: the TTL exists for readers that run behind other commands.
-# Twin of exakit_print_update_check in setup/lib/common.sh.
-function Invoke-CmdUpdateCheck {
-    param([string]$Target = "all")
-    if (-not (Test-Path $script:ManifestPath)) { Write-Host "Not installed (no manifest at $script:ManifestPath)"; exit 4 }
-    if (-not $Target) { $Target = "all" }
-    $targets = Get-ExakitUpdateTargets -Target $Target
-    if ($script:VersionPolicy -eq "manifest") {
-        Update-ExakitVersionsCache -Force | Out-Null
-        Resolve-ExakitVersionsDoc | Out-Null
-    }
-    Write-Host ""
-    Write-Host "  Component update check"
-    Write-Host "  ----------------------"
-    "{0,-10} {1,-17} {2,-17} {3,-11} {4}" -f "Component", "Installed", "Tagged", "Severity", "Action" | Write-Host
-    $updates = 0
-    $heavyPending = $false
-    foreach ($component in $targets) {
-        $actual = Get-ExakitActualTarget $component
-        $current = Get-ExakitComponentCurrent $actual
-        if (-not $current) { $current = "not installed" }
-        $available = Get-ExakitComponentAvailable $actual
-        if (-not $available) { $available = "unknown" }
-        $taggedCell = $available
-        $rowNote = ""
-        $action = "current"
-        if (-not (Test-ExakitComponentSupported $actual)) {
-            # Nothing to offer and nothing wrong: there is simply no build for this
-            # machine, and an update command that cannot succeed must not be printed.
-            $current = "not available"
-            $action = "-"
-            $rowNote = "no $actual build exists for this platform"
-        } elseif ($available -eq "unknown" -or $current -eq "unknown") {
-            $action = "inspect"
-        } elseif ($current -eq "not installed" -and (Test-ExakitComponentHeavy $actual)) {
-            # A runtime that is not installed is not a runtime this machine wants:
-            # offering to deploy Exasol Personal onto a Nano install would be
-            # actively wrong. (A missing light component, by contrast, is exactly
-            # the pyexasol repair case below.)
-            $action = "inspect"
-        } elseif ($current -ne "not installed" -and (Test-ExakitVersionNewer -Latest $current -Current $available)) {
-            # Installed is ahead of the published set. The kit never moves a
-            # component backwards, so there is nothing to offer: lowering a version
-            # in versions.json is not a rollback lever, and a user who upgraded a
-            # component themselves keeps what they chose. Counts toward neither the
-            # "apply them in one go" hint nor the heavy deferral, because no command
-            # belongs in this row at all.
-            #
-            # The row says only "none". The Tagged column already shows the lower
-            # number next to the installed one, so the reader can see why; adding an
-            # apology for it made the kit sound untested rather than current.
-            $action = "none"
-        } elseif ($current -ne $available) {
-            $minKit = Get-ExakitComponentMinKit $actual
-            if ($minKit -and -not (Test-ExakitMinKitSatisfied -Required $minKit)) {
-                $action = "update exakit first (needs kit >= $minKit)"
-            } else {
-                $action = "exakit update $component"
-                if (Test-ExakitComponentHeavy $actual) {
-                    $action = "$action (heavy)"
-                    $heavyPending = $true
-                } else {
-                    # Counts only what a plain `exakit update` would actually
-                    # apply: a heavy row and a kit-blocked row must not inflate the
-                    # "apply them in one go" hint below.
-                    $updates += 1
-                }
-            }
-        }
-        "{0,-10} {1,-17} {2,-17} {3} {4}" -f $actual, $current, $taggedCell,
-            (Get-ExakitSeverityCell (Get-ExakitComponentSeverity $actual)), $action | Write-Host
-        if ($rowNote) { Write-Host ("    " + $rowNote) }
-        $note = Get-ExakitComponentNote $actual
-        if ($note) { Write-Host ("    " + $note) }
-    }
-    Write-Host ""
-    # This command just worked out the truth the long way. Retire the cached plan so
-    # the next notice cannot repeat something the table above has contradicted.
-    if ($script:NoticePlanPath -and (Test-Path $script:NoticePlanPath)) {
-        Remove-Item -Force $script:NoticePlanPath -ErrorAction SilentlyContinue
-    }
-    Write-ExakitVersionsSourceLine
-    Write-ExakitMarketplaceDiscoveryLine
-    if ($updates -gt 1) { Info "Apply the quick ones in one go with: exakit update" }
-    if ($heavyPending) { Info "A runtime change stops the database - exakit update offers it on a console, or run it directly: exakit update runtime" }
-}
-
 # --- the heavy (runtime) update, offered inline instead of handed back --------
 #
 # `exakit update` used to refuse the heavy part outright: it printed "needs the
@@ -1791,14 +1796,14 @@ function Invoke-CmdUpdate {
         # moves on. An explicit single target still runs, so its updater can
         # report the real reason.
         if ($Target -eq "all" -and -not $available) {
-            Warn2 "No advertised version for $actual - skipping it. Details: exakit update-check"
+            Warn2 "No advertised version for $actual - skipping it. Details: exakit version"
             continue
         }
         # Never backwards, and this has to be settled BEFORE the heavy branch.
         # That branch gates on $current -ne $available and then continues, so it
         # used to reach the runtime offer with the installed version AHEAD of the
         # tested one and ask to stop the database for a downgrade - while
-        # `exakit update-check` rendered the same row as "none" and every light
+        # `exakit version` rendered the same row as "none" and every light
         # component said "keeping yours". Different is not behind. Asked once
         # here, for every component, so no later branch can reach an update path
         # by skipping the question.
@@ -1824,7 +1829,7 @@ function Invoke-CmdUpdate {
             continue
         }
         # Only the components this run will actually touch are reported: the work
-        # plan, not a status table. `exakit update-check` is where everything is
+        # plan, not a status table. `exakit version` is where everything is
         # listed, including what is already current.
         if ($current -and $available -and $current -eq $available) { continue }
         # The table's "update exakit first" verdict has to hold here too, or the
@@ -1899,7 +1904,7 @@ function Invoke-CmdUpdate {
         Ok "Everything is already current."
     }
     if ($deferred -gt 0) {
-        Info "See everything, including the deferred runtime change: exakit update-check"
+        Info "See everything, including the deferred runtime change: exakit version"
     }
 }
 
@@ -2289,7 +2294,6 @@ try {
         "version"      { Invoke-CmdVersion }
         "--version"    { Invoke-CmdVersion }
         "-v"           { Invoke-CmdVersion }
-        "update-check"  { Invoke-CmdUpdateCheck -Target ($RestArgs | Select-Object -First 1) }
         "update"        {
             # -y/--yes/-Yes answers the runtime offer, so it must not be mistaken
             # for the target when it is the only argument given.
@@ -2393,9 +2397,9 @@ try {
             exit 2
         }
     }
-    # Only these commands carry the update notice. update-check and update render
-    # version state themselves, `version` has its own always-on hint, uninstall is
-    # a farewell, and help/catalog are reference screens that stay instant and
+    # Only these commands carry the update notice. `version` and `update` render
+    # version state themselves, uninstall is a farewell, and help/catalog are
+    # reference screens that stay instant and
     # clean. A command that failed reaches the catch below instead, so the notice
     # never talks over an error - and $script:JsonOutput excludes `info --json`,
     # where a notice on stdout would stop the output being parseable JSON.
