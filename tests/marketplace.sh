@@ -1135,26 +1135,13 @@ check "file kinds are classified from the name" "csv parquet json json json csv 
         printf '%s ' "$(exakit_data_file_kind "$_f")"
     done | sed 's/ $//')"
 
-# Not installed and the user declines: nothing is loaded, and the run does not
-# die -- data loading is a menu the user came back to, not a one-shot script.
-_jl_declined="$( (
-    EXAKIT_MARKETPLACE_ADDONS="none"
-    json_tables_installed_version() { return 1; }
-    exapump_upload() { printf 'UPLOAD-CALLED\n'; }
-    exakit_load_local_json "$WORK/sample.json" 2>&1
-    printf 'rc=%s' "$?"
-) )"
-has "declining explains, never uploads" "not installing JSON Tables" "$_jl_declined"
-lacks "and nothing reaches the database" "UPLOAD-CALLED" "$_jl_declined"
-has "and it says why JSON needs the add-on" "JSON Tables shreds JSON" "$_jl_declined"
-
 # Not applicable on this platform: the add-on is not even offered, and the
 # reason names the platform rather than leaving the user guessing.
 _jl_unsupported="$( (
     json_tables_installed_version() { return 1; }
     json_tables_applicable() { return 1; }
     exapump_upload() { printf 'UPLOAD-CALLED\n'; }
-    exakit_load_local_json "$WORK/sample.json" 2>&1
+    exakit_load_local_json "$WORK/sample.json" "STARTER_KIT.SAMPLE" 2>&1
 ) )"
 has "an unsupported platform says so" "not available on this machine" "$_jl_unsupported"
 has "and points at what does work" "CSV and Parquet load without it" "$_jl_unsupported"
@@ -1178,16 +1165,46 @@ JTSTUBEOF
 chmod 755 "$WORK/jt-bin/exasol-json-tables"
 printf '[{"id":1}]\n' > "$WORK/sample.json"
 
+# Not installed: the engine installs itself, silently. The user asked for a
+# JSON file to be loaded -- the engine that reads one is an implementation
+# detail, so nothing is asked and no install or download step is announced.
+rm -f "$WORK/install-called"
+_jl_silent="$( (
+    EXAKIT_JSON_TABLES_BIN="$WORK/jt-bin/exasol-json-tables"
+    : > "$WORK/ready-calls"
+    # not ready on the first look, ready once the install has run
+    _exakit_json_tables_ready() {
+        printf 'x' >> "$WORK/ready-calls"
+        [ "$(wc -c < "$WORK/ready-calls" | tr -d ' ')" -gt 1 ]
+    }
+    _exakit_json_tables_load_module() { return 0; }
+    _exakit_addon_applicable() { return 0; }
+    _exakit_marketplace_install_one() { printf '%s' "$1" > "$WORK/install-called"; return 0; }
+    prompt_text() { printf 'PROMPTED '; }
+    ui_checkbox_menu() { printf 'MENU '; }
+    ui_panel_begin() { printf 'PANEL '; }
+    run_logged() { "$@" >/dev/null 2>&1; }
+    exakit_ensure_schema() { :; }
+    exapump_upload() { printf 'UPLOAD:%s ' "$2"; }
+    exakit_verify_loaded_table() { :; }
+    exakit_load_local_json "$WORK/sample.json" "STARTER_KIT.SAMPLE" 2>&1
+) )"
+check "a missing engine installs itself" "json-tables" "$(cat "$WORK/install-called" 2>/dev/null)"
+lacks "without asking the user anything" "PROMPTED" "$_jl_silent"
+lacks "and without a checkbox" "MENU" "$_jl_silent"
+lacks "and without an explanation panel" "PANEL" "$_jl_silent"
+lacks "and without narrating the install" "Installing" "$_jl_silent"
+has "and the data still lands" "UPLOAD:STARTER_KIT.SAMPLE" "$_jl_silent"
+
 _jl_one="$( (
     EXAKIT_JSON_TABLES_BIN="$WORK/jt-bin/exasol-json-tables"
     json_tables_installed_version() { printf '50d05da0f6da\n'; }
     run_logged() { "$@" >/dev/null 2>&1; }
-    prompt_text() { printf 'STARTER_KIT.SAMPLE\n'; }
     info() { :; }; ok() { :; }
     exakit_ensure_schema() { printf 'SCHEMA:%s ' "$1"; }
     exapump_upload() { printf 'UPLOAD:%s->%s ' "${1##*/}" "$2"; }
     exakit_verify_loaded_table() { printf 'VERIFY:%s' "$1"; }
-    exakit_load_local_json "$WORK/sample.json" 2>/dev/null
+    exakit_load_local_json "$WORK/sample.json" "STARTER_KIT.SAMPLE" 2>/dev/null
 ) )"
 check "one table: ingested, then loaded and verified" \
     "SCHEMA:STARTER_KIT UPLOAD:orders.parquet->STARTER_KIT.SAMPLE VERIFY:STARTER_KIT.SAMPLE" "$_jl_one"
@@ -1199,15 +1216,14 @@ _jl_many="$( (
     JT_STUB_TABLES=1; export JT_STUB_TABLES
     json_tables_installed_version() { printf '50d05da0f6da\n'; }
     run_logged() { "$@" >/dev/null 2>&1; }
-    prompt_text() { printf 'JSONDATA\n'; }
     info() { :; }; ok() { :; }
     exakit_ensure_schema() { printf 'SCHEMA:%s ' "$1"; }
     exapump_upload() { printf 'UPLOAD:%s ' "$2"; }
     exakit_verify_loaded_table() { :; }
-    exakit_load_local_json "$WORK/sample.json" 2>/dev/null
+    exakit_load_local_json "$WORK/sample.json" "JSONDATA.SAMPLE" 2>/dev/null
 ) )"
-check "every table from a nested document lands" \
-    "SCHEMA:JSONDATA UPLOAD:JSONDATA.ORDER_ITEMS UPLOAD:JSONDATA.ORDERS" \
+check "every table from a nested document lands, under the name you gave" \
+    "SCHEMA:JSONDATA UPLOAD:JSONDATA.SAMPLE_ORDER_ITEMS UPLOAD:JSONDATA.SAMPLE_ORDERS" \
     "$(printf '%s' "$_jl_many" | sed 's/ *$//')"
 
 # A failed ingest must leave the database alone and name the log.
@@ -1216,7 +1232,7 @@ _jl_failed="$( (
     json_tables_installed_version() { printf '50d05da0f6da\n'; }
     run_logged() { return 1; }
     exapump_upload() { printf 'UPLOAD-CALLED\n'; }
-    exakit_load_local_json "$WORK/sample.json" 2>&1
+    exakit_load_local_json "$WORK/sample.json" "STARTER_KIT.SAMPLE" 2>&1
     printf 'rc=%s' "$?"
 ) )"
 has "a failed ingest names the log" "exakit logs json-tables" "$_jl_failed"
