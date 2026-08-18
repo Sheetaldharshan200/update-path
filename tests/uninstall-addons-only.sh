@@ -123,12 +123,12 @@ case "$out_skip" in
 esac
 
 # 8. The closing line has to be followable. A full uninstall deletes the exakit
-#    binary, so ending the run with "See where you stand with: exakit status"
+#    binary, so ending the run with "See where you stand with: exakit info"
 #    hands the reader a command that no longer exists - as the last word of the
 #    run, with nothing after it to correct the impression.
 case "$out_all" in
-    *"exakit status"*) fail "a full uninstall still points at exakit status, which it has just deleted" ;;
-    *)                 pass "a full uninstall does not point at the command it removed" ;;
+    *"exakit info"*) fail "a full uninstall still points at exakit info, which it has just deleted" ;;
+    *)               pass "a full uninstall does not point at the command it removed" ;;
 esac
 # Matched on the sentence, not on a filename: the installer is published at an
 # exasol.com address now, and the property under test is that the reader is
@@ -137,11 +137,11 @@ case "$out_all" in
     *"Install it again any time:"*) pass "and offers the reinstall command instead" ;;
     *)                              fail "a full uninstall leaves the reader with no way back" ;;
 esac
-# Anything short of EVERYTHING leaves the CLI in place, and there status IS the
+# Anything short of EVERYTHING leaves the CLI in place, and there info IS the
 # right next step: the fix must not silence it for every scope.
 case "$out" in
-    *"exakit status"*) pass "a partial uninstall still points at exakit status" ;;
-    *)                 fail "a partial uninstall lost its next step - the CLI is still installed" ;;
+    *"exakit info"*) pass "a partial uninstall still points at exakit info" ;;
+    *)               fail "a partial uninstall lost its next step - the CLI is still installed" ;;
 esac
 
 # 9. Skills are reported per FOLDER, not per skill. Nine skills across two
