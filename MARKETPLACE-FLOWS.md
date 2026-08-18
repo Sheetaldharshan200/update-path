@@ -26,13 +26,13 @@ One add-on, from first contact to removal:
 flowchart TD
     A[User] --> B{How did they arrive?}
     B -->|Fresh installation| C[Closing offer after the install]
-    B -->|Existing kit| D[exakit update brings the marketplace,<br>then update-check and info advertise it]
+    B -->|Existing kit| D[exakit update brings the marketplace,<br>then version and info advertise it]
     C --> E[exakit marketplace]
     D --> E
     E --> F{Tool already on this machine?}
     F -->|No| G[Install: kit-managed venv,<br>launcher, validation]
     F -->|Yes| H[Shown as covered,<br>never offered twice]
-    G --> I[Joins exakit update / update-check]
+    G --> I[Joins exakit update and the exakit version table]
     I --> J[exakit uninstall sweeps it<br>with everything else]
 
     click C "#scenario-1-fresh-installation"
@@ -113,11 +113,11 @@ through the normal update mechanism. No reinstall.
 
 ```mermaid
 flowchart TD
-    A[Existing installation,<br>older kit scripts] --> B[Daily update notice or<br>exakit update-check]
+    A[Existing installation,<br>older kit scripts] --> B[Daily update notice or<br>exakit version]
     B --> C[exakit update]
     C --> D[Kit self-update: new exakit command,<br>marketplace code and add-on modules<br>arrive with the kit copy]
     D --> E[From now on:]
-    E --> F[exakit update-check footer:<br>Optional add-ons are available -<br>browse them with: exakit marketplace]
+    E --> F[exakit version table:<br>one row per add-on, an uninstalled one<br>reading exakit marketplace]
     E --> G[exakit info panel:<br>Add-ons: optional tools -<br>exakit marketplace]
     E --> H[exakit help and exakit guide<br>list the command]
     F --> I[exakit marketplace]
@@ -127,16 +127,20 @@ flowchart TD
     click I "#scenario-3-browsing-and-installing"
 ```
 
-The discovery lines are dynamic: they name what is still on offer
-(`Optional add-ons are available (dash-server) ...`) and disappear entirely
-once everything is covered. An updated kit whose user already has every tool
-never mentions the marketplace at all.
+Discovery is dynamic: `exakit version` gives a row only to an add-on this
+machine could actually install, and an installed one reads as an ordinary
+component instead. An updated kit whose user already has every tool never
+mentions the marketplace at all.
+
+The dim `Optional add-ons are available (dash-server) ...` footer under the
+table is gone. It repeated, once per screen, the command the rows already
+carry.
 
 ## Scenario 3: Browsing and installing
 
 `exakit marketplace` is one screen in the kit's established look: first the
 state of every add-on as an aligned table (the same shape `exakit
-update-check` prints), then — when anything is installable — the same
+version` prints), then — when anything is installable — the same
 tree-checkbox the data-load menu uses. The available add-ons come
 pre-selected (exactly like the data-load menu pre-selects pending datasets),
 so Enter installs them; Space toggles, and Cancel is the explicit opt-out.
@@ -193,14 +197,14 @@ Once installed, an add-on is a normal component. Nothing new to learn.
 
 ```mermaid
 flowchart TD
-    A[Add-on installed] --> B[exakit update-check]
-    B --> C[dash-server row: installed vs advertised,<br>severity, and the exact command]
+    A[Add-on installed] --> B[exakit version]
+    B --> C[dash-server row: installed version,<br>and whether a newer one is advertised]
     C --> D{Newer version advertised?}
     D -->|No| E[current - and exakit update<br>dash-server still repairs the launcher]
     D -->|Yes| F[exakit update dash-server<br>or plain exakit update]
     F --> G[New version into the venv,<br>revalidated, seconds, no downtime]
     A2[Add-on NOT installed] --> H[Not in exakit update all - the kit<br>never updates what was never picked]
-    H --> I[update-check shows only the dim<br>discovery line for it]
+    H --> I[its exakit version row reads<br>exakit marketplace]
 ```
 
 - `exakit update` (all) covers installed add-ons automatically and never
@@ -255,7 +259,7 @@ flowchart TD
 |---|---|---|
 | End of a successful interactive install | Something still on offer | The one-time offer: done and working, add tools now? |
 | End of any other install | Something still on offer | One hint line naming the command |
-| `exakit update-check` footer | Something still on offer | `Optional add-ons are available (dash-server) - browse them with: exakit marketplace` |
+| `exakit version` table | Something still on offer | A row per add-on, an uninstalled one reading `exakit marketplace` in its Status cell |
 | `exakit info` panel | Something still on offer | `Add-ons: optional tools (dashboards & more): exakit marketplace` |
 | `exakit guide`, `exakit help`, `exakit catalog` | Always | The command with a one-line description |
 | Anywhere above | Everything already present | Nothing - every mention disappears |

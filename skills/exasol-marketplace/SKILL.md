@@ -64,10 +64,9 @@ applicable* — check before concluding something is broken.
 An installed add-on becomes a **full component** of the kit:
 
 ```bash
-exakit update-check dash-server    # is a newer version advertised?
+exakit version                     # its version, and whether a newer one is advertised
 exakit update dash-server          # apply it
 exakit update                      # covers every INSTALLED add-on
-exakit version                     # add-ons report their versions here
 ```
 
 Add-ons you never picked are never touched by `exakit update`.

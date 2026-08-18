@@ -50,7 +50,7 @@ Restart your AI client, then continue with the [first workflow](../demo/first-re
 ## Keeping it current
 
 ```powershell
-exakit update-check    # installed vs the versions the maintainers advertise
+exakit version         # installed vs the versions the maintainers advertise
 exakit update          # the quick ones in seconds, then it asks before touching the database
 exakit update runtime  # recreates the Nano container, on its own; the data volume is kept
 ```

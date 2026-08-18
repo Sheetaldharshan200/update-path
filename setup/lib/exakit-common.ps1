@@ -1478,7 +1478,7 @@ function Test-ExakitVersionsCacheFresh {
 
 # Update-ExakitVersionsCache - refresh the cached document. Skips the network
 # while the cache is younger than the TTL; -Force is for the explicit
-# `exakit update-check`, which should always ask upstream.
+# `exakit version`, which should always ask upstream.
 # Returns 0 when a validated document was installed, 2 when the fetch was
 # skipped as unnecessary, 1 when nothing could be fetched.
 #
@@ -1545,7 +1545,7 @@ function Resolve-ExakitVersionsDoc {
 }
 
 # Where the answers came from: fetched | cache | baked | fallback. Shown by
-# update-check and recorded as desired.versions_source.
+# `exakit version` and recorded as desired.versions_source.
 function Get-ExakitVersionsSource {
     if (-not $script:VersionsSource) { Resolve-ExakitVersionsDoc | Out-Null }
     if (-not $script:VersionsSource) { return "fallback" }
@@ -1932,7 +1932,7 @@ function Write-ExakitNoticePlan {
 # The advertised version travels with each candidate, so this needs no document and
 # no severity lookup: probe what is installed, compare, drop whatever caught up. A
 # plan written while a component was mid-install used to keep announcing an update
-# the user had already taken, and contradicted `exakit update-check` seconds later.
+# the user had already taken, and contradicted `exakit version` seconds later.
 function Get-ExakitNoticeStillBehind {
     param([string]$Entries)
     if (-not $Entries) { return @() }
@@ -1979,7 +1979,7 @@ function Write-ExakitNoticeLines {
         # Never "run update now" for the runtime: it stops the database, so the user
         # picks the moment after seeing what it involves.
         $word = Get-ExakitNoticeWord $HeavyWorst
-        [Console]::Error.WriteLine("$dim$word update is available for $($Heavy -join ', ') - requires stopping the database, details:  exakit update-check$reset")
+        [Console]::Error.WriteLine("$dim$word update is available for $($Heavy -join ', ') - requires stopping the database, details:  exakit version$reset")
     }
     [Console]::Error.WriteLine("${dim}Silence this with EXAKIT_NO_UPDATE_NOTICE=1$reset")
     Set-ExakitNoticeShown
@@ -2082,7 +2082,7 @@ function Show-ExakitUpdateNotice {
             if ($current -eq $available) { continue }
             # Different is not the same as behind. An install that is PAST the
             # advertised version has nothing pending: the kit never moves a
-            # component backwards, so `exakit update-check` renders that row as
+            # component backwards, so `exakit version` renders that row as
             # "none" and `exakit update` says "keeping yours". Announcing an
             # update here made the three commands contradict each other, and
             # pointed the user at a command that could not do anything. Skipped
@@ -2469,13 +2469,13 @@ function Get-ExakitRepoRoot {
 function Set-ExakitReadonlyAllowlist {
     # The kit's read-only command surface. Leaving any of these out is what kept
     # the friction real: AGENTS.md tells an agent to discover commands with
-    # `exakit catalog` and to check its footing with update-check / mcp-status,
+    # `exakit catalog` and to check its footing with version / mcp-status,
     # and every one of those asked for approval while changing nothing. exapump
     # sql and every mutating command stay absent on purpose - that gate is the
     # trust model.
     $readonly = @(
         "status", "info", "version", "mcp-doctor", "logs", "catalog", "preflight",
-        "update-check", "guide", "mcp-status", "mcp-validate", "help"
+        "guide", "mcp-status", "mcp-validate", "help"
     )
     # EVERY SPELLING THE AGENT IS TOLD TO USE. A permission rule matches the
     # command text, and AGENTS.md tells agents in as many words that
@@ -3161,18 +3161,6 @@ function Test-ExakitMarketplaceHasPending {
     return $false
 }
 
-# One dim line under the update-check table while something in the marketplace
-# is still on offer. It advertises, it never acts.
-function Write-ExakitMarketplaceDiscoveryLine {
-    $pending = @()
-    foreach ($addon in Get-ExakitMarketplaceAddons) {
-        if (-not (Test-ExakitAddonOfferable $addon.Id)) { continue }
-        if (-not (Test-ExakitMarketplaceAddonPresent $addon.Id)) { $pending += $addon.Id }
-    }
-    if ($pending.Count -eq 0) { return }
-    Write-Host "    Optional add-ons are available ($($pending -join ', ')) - browse them with: exakit marketplace" -ForegroundColor DarkGray
-}
-
 # The marketplace menu body, wearing the kit's two established looks:
 #   1. the STATE, as the same aligned table Invoke-CmdUpdateCheck prints
 #      (Add-on / Status / Version / Action, one row per add-on);
@@ -3259,7 +3247,7 @@ function Show-ExakitMarketplaceMenu {
         return
     }
 
-    # The state table - same shape as the update-check table, so the two
+    # The state table - same shape as the `exakit version` table, so the two
     # screens read as one family.
     Write-Host ""
     Write-Host "  Marketplace add-ons"
@@ -3270,7 +3258,7 @@ function Show-ExakitMarketplaceMenu {
 
     $selectable = @($rows | Where-Object { $_.Id })
     if ($selectable.Count -eq 0) {
-        Info "Everything available is already covered. Updates: exakit update-check"
+        Info "Everything available is already covered. Updates: exakit version"
         return
     }
 

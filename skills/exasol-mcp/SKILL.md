@@ -129,7 +129,7 @@ kit configures **stdio**, which is what the supported clients expect.
 Update it like any other component:
 
 ```bash
-exakit update-check mcp
+exakit version    # the mcp row shows what is installed and what is advertised
 exakit update mcp
 ```
 

@@ -64,7 +64,7 @@ prompting anyway. The deny needs all three for the mirror-image reason: a rule t
 names only `exakit uninstall` is sidestepped by typing the full path.
 
 The real list covers the whole read-only surface — `status`, `info`, `version`,
-`mcp-doctor`, `logs`, `catalog`, `preflight`, `update-check`, `guide`, `mcp-status`,
+`mcp-doctor`, `logs`, `catalog`, `preflight`, `guide`, `mcp-status`,
 `mcp-validate`, `help`, plus the exact forms `exakit skills` and `exakit skills --json`
 — in each of the three spellings. `exakit skills-install` is deliberately *not*
 prefix-matched: it writes this very file, and an allowlisted command that can grant

@@ -5,7 +5,7 @@
 #   1. `exakit marketplace` (non-interactive, EXAKIT_MARKETPLACE_ADDONS)
 #      installs dash-server from its real GitHub release into a kit-managed
 #      venv, writes the launcher, and validates the HTTP control plane.
-#   2. The installed add-on joins the update flow: update-check lists it,
+#   2. The installed add-on joins the update flow: `exakit version` lists it,
 #      `exakit update dash-server` answers "already current", `exakit version`
 #      reports it, and a second marketplace run offers nothing to install.
 #   3. `exakit_uninstall_run` sweeps the venv, state and launcher.
@@ -227,7 +227,7 @@ else
         || fail "the ingest produced no Parquet"
     echo "  ok  JSON in, Parquet out, through the prebuilt engine (no Rust toolchain on this runner)"
     # And the version recorded is the mirror's own version= line, so
-    # update-check can never see an offer it cannot install.
+    # the version table can never see an offer it cannot install.
     _jt_recorded="$(
         . "$ROOT/setup/lib/common.sh" >/dev/null 2>&1
         manifest_get components.json_tables.version 2>/dev/null

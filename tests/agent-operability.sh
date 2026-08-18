@@ -220,7 +220,10 @@ check "mcp-doctor (human) exits 4 when not installed" "4" \
     "$(EXAKIT_HOME="$WORK/none" bash "$ROOT/setup/exakit" mcp-doctor >/dev/null 2>&1; echo $?)"
 check "version exits 4 when not installed" "4" \
     "$(EXAKIT_HOME="$WORK/none" bash "$ROOT/setup/exakit" version >/dev/null 2>&1; echo $?)"
-check "update-check exits 4 when not installed" "4" \
+# `exakit update-check` was merged into `exakit version`; it is not a command any
+# more, so it must answer like any other unknown one rather than lingering as a
+# hidden alias an agent could keep depending on.
+check "update-check is gone, and exits like an unknown command" "2" \
     "$(EXAKIT_HOME="$WORK/none" bash "$ROOT/setup/exakit" update-check >/dev/null 2>&1; echo $?)"
 
 echo
@@ -246,7 +249,7 @@ mkdir -p "$_surface_home"
 HOME="$_surface_home" exakit_apply_readonly_allowlist >/dev/null
 _allow="$(python3 -c "
 import json; print('\n'.join(json.load(open('$_surface_home/.claude/settings.json'))['permissions']['allow']))")"
-for _cmd in status info version mcp-doctor logs catalog preflight update-check guide mcp-status mcp-validate; do
+for _cmd in status info version mcp-doctor logs catalog preflight guide mcp-status mcp-validate; do
     has "allowlist covers exakit $_cmd" "exakit $_cmd" "$_allow"
 done
 # ...and must NOT auto-allow anything that writes, including the command that
@@ -578,7 +581,7 @@ for _shape in status mcp-doctor; do
 done
 
 echo "the documented exit codes are the real ones:"
-# THE BUG: AGENTS.md promised 0/3/4 on status, version, update-check, info --json
+# THE BUG: AGENTS.md promised 0/3/4 on status, version, info --json
 # and mcp-doctor. Measured with the database stopped: only status and mcp-doctor
 # returned 3. info --json returned 0 -- so an agent branching the way it was told
 # read "healthy" off a stopped database.
@@ -588,7 +591,7 @@ check "info --json exits 4 when nothing is installed" "4" \
     "$(EXAKIT_HOME="$WORK/none" bash "$ROOT/setup/exakit" info --json >/dev/null 2>&1; echo $?)"
 check "and still prints an object in both states" "yes" "$(
     EXAKIT_HOME="$WORK/none" bash "$ROOT/setup/exakit" info --json 2>/dev/null | python3 -m json.tool >/dev/null 2>&1 && echo yes || echo no)"
-# version/update-check report on VERSIONS, which a stopped database does not
+# `exakit version` reports on VERSIONS, which a stopped database does not
 # change. AGENTS.md must not promise a database-health code they never return.
 check "version does not fake a database-health code" "0" \
     "$(EXAKIT_HOME="$WORK/stopped" bash "$ROOT/setup/exakit" version >/dev/null 2>&1; echo $?)"
