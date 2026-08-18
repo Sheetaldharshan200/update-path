@@ -91,6 +91,7 @@ fi
 . "$_lib_dir/detect.sh"
 . "$_lib_dir/runtime-nano.sh"
 . "$_lib_dir/runtime-personal.sh"
+[ -f "$_lib_dir/help.sh" ] && . "$_lib_dir/help.sh"
 [ -f "$_lib_dir/exapump.sh" ] && . "$_lib_dir/exapump.sh"
 [ -f "$_lib_dir/mcp.sh" ] && . "$_lib_dir/mcp.sh"
 # pyexasol is an update target of its own (and its own repair command), so the
@@ -875,36 +876,36 @@ cmd_marketplace() {
 }
 
 usage() {
-    # `exakit help --all` prints the full command reference: the leading
-    # comment block (from line 2) up to the first non-comment line — no
-    # hardcoded range, so new command lines always appear instead of being
-    # silently truncated. Plain `exakit help` (and a bare `exakit`) prints
-    # only the short everyday list below, so a first-time user sees a handful
-    # of commands, not the whole surface. Mirrors PowerShell Show-ExakitUsage.
-    if [ "${1:-}" = "--all" ] || [ "${1:-}" = "-a" ]; then
-        awk 'NR > 1 { if ($0 !~ /^#/) exit; sub(/^# ?/, ""); print }' "$0"
-        return
+    # Every help screen is rendered from setup/help/*.json - see help.sh. The
+    # argument decides which: nothing for the everyday overview, --all for the
+    # full command list, a component id for its page, anything else for one
+    # command's detail. --json hands the underlying document to a script
+    # instead of drawing it, so an agent never has to scrape the screen.
+    _u_json=0
+    _u_topic=""
+    for _u_arg in "$@"; do
+        case "$_u_arg" in
+            --json|-j) _u_json=1 ;;
+            *) [ -n "$_u_topic" ] || _u_topic="$_u_arg" ;;
+        esac
+    done
+    if [ "$_u_json" -eq 1 ]; then
+        exakit_can_run_python || die "python3 is needed for --json."
+        case "$_u_topic" in
+            --all|-a|"") exakit_help_render json all ;;
+            *)           exakit_help_render json "$_u_topic" ;;
+        esac
+        return $?
     fi
-    cat <<'EOF'
-exakit — Exasol Personal Local Starter Kit
-
-Get started:
-  exakit mcp-setup     connect your AI assistant (Claude, Cursor, Codex)
-
-Everyday commands:
-  status               is the database up and healthy?
-  info                 show your connection details
-  start | stop         run or pause the database and add-on services
-  autostart [on|off]   come back automatically after a restart
-  data-load            load the sample data or your own CSV / Parquet / JSON
-  mcp-doctor           test & repair MCP config of connected AI clients
-  marketplace          optional add-ons (dashboards & more)
-
-Keeping up to date:
-  version              installed version details
-  update-check         what would change, and what it involves
-  update               apply the latest updates
-EOF
+    case "$_u_topic" in
+        --all|-a) exakit_help_render all ;;
+        "")       exakit_help_render overview ;;
+        *)        if exakit_help_is_id "$_u_topic"; then
+                      exakit_help_render component "$_u_topic"
+                  else
+                      exakit_help_render command "$_u_topic"
+                  fi ;;
+    esac
 }
 
 # cmd_info_json — the install record, verbatim, on stdout.
@@ -1013,13 +1014,11 @@ cmd_whats_new() {
     fi
 }
 
-# cmd_catalog [search] — render the searchable command catalog from the shared
-# catalog.tsv (one source of truth for both the bash and PowerShell CLIs).
+# cmd_catalog [search] - the searchable command surface, rendered from the same
+# help documents every other screen uses (setup/help/*.json). --json keeps its
+# original shape: one object whose "commands" array carries tool/command/
+# options/description, so an agent can discover the CLI without parsing ANSI.
 cmd_catalog() {
-    # --json: the command surface itself, machine-readable. Without it an agent
-    # told to "discover every command with exakit catalog" had to pattern-match
-    # ANSI-decorated prose to find out what the CLI can do — the one discovery
-    # surface with no structured form.
     _cat_json=0
     _cat_args=""
     for _cat_arg in "$@"; do
@@ -1029,93 +1028,15 @@ cmd_catalog() {
         esac
     done
     _search="$(printf '%s' "$_cat_args" | tr '[:upper:]' '[:lower:]')"
-    _catalog="$_lib_dir/catalog.tsv"
-    [ -f "$_catalog" ] || die "Catalog data not found: $_catalog"
-
     if [ "$_cat_json" -eq 1 ]; then
         exakit_can_run_python || die "python3 is needed for --json."
-        run_python - "$_catalog" "$_search" <<'EXAKIT_CATALOG_JSON_PY'
-import json, sys
-path, search = sys.argv[1], sys.argv[2]
-commands = []
-with open(path) as handle:
-    for number, line in enumerate(handle):
-        if number == 0 or not line.strip():
-            continue
-        fields = line.rstrip("\n").split("\t")
-        if len(fields) < 4:
-            continue
-        tool, command, options, description = fields[0], fields[1], fields[2], fields[3]
-        if search and search not in " ".join(fields).lower():
-            continue
-        commands.append({
-            "tool": tool,
-            "command": command,
-            "options": options,
-            "description": description,
-            "invocation": ("%s %s" % (tool, command)).strip(),
-        })
-print(json.dumps({"search": search or None, "count": len(commands),
-                  "commands": commands}, indent=2))
-EXAKIT_CATALOG_JSON_PY
-        return 0
+        exakit_help_render json "$_search"
+        return $?
     fi
-
-    if [ -t 1 ]; then
-        _cy=$'\033[36m'; _cyb=$'\033[1;36m'; _dim=$'\033[2m'; _b=$'\033[1m'; _gn=$'\033[1;32m'; _r=$'\033[0m'
-    else
-        _cy=; _cyb=; _dim=; _b=; _gn=; _r=
-    fi
-    _rule='━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━'
-
-    printf '\n  %s%s%s\n' "$_cy" "$_rule" "$_r"
-    printf '   %s▸ EXASOL%s  %s·%s  starter kit\n' "$_cyb" "$_r" "$_dim" "$_r"
-    if [ -n "$_search" ]; then
-        printf '     %scommand catalog — results for "%s"%s\n' "$_dim" "$_search" "$_r"
-    else
-        printf '     %scommand catalog · exakit · exapump · exasol%s\n' "$_dim" "$_r"
-    fi
-    printf '  %s%s%s\n\n' "$_cy" "$_rule" "$_r"
-
-    _found=0
-    for _tool in exakit exapump exasol; do
-        # Emit fields separated by US (0x1f), a non-whitespace char: `read` with
-        # a tab IFS collapses the empty options field (tab is IFS-whitespace),
-        # which would merge no-option commands onto their description line.
-        _rows="$(awk -F'\t' -v tool="$_tool" -v q="$_search" '
-            NR==1 {next}
-            $1==tool {
-                hay=tolower($1" "$2" "$3" "$4)
-                if (q=="" || index(hay,q)>0) print $2"\037"$3"\037"$4
-            }' "$_catalog")"
-        [ -z "$_rows" ] && continue
-        _found=1
-        case "$_tool" in
-            exakit)  _label='exakit   — kit lifecycle & MCP management' ;;
-            exapump) _label='exapump  — data loading CLI' ;;
-            exasol)  _label='exasol   — database & AI (MCP) bridge' ;;
-        esac
-        printf '  %s%s%s\n' "$_gn" "$_label" "$_r"
-        printf '%s\n' "$_rows" | while IFS=$(printf '\037') read -r _cmd _opt _desc; do
-            if [ "$_tool" = "exasol" ]; then _name="$_cmd"; else _name="$_tool $_cmd"; fi
-            if [ -n "$_opt" ]; then
-                printf '    %s%s%s %s%s%s\n' "$_b" "$_name" "$_r" "$_dim" "$_opt" "$_r"
-            else
-                printf '    %s%s%s\n' "$_b" "$_name" "$_r"
-            fi
-            printf '        %s\n' "$_desc"
-        done
-        printf '\n'
-    done
-
-    if [ "$_found" -eq 0 ]; then
-        printf '  %sNo commands match "%s".%s  Try: exakit catalog mcp\n\n' "$_dim" "$_search" "$_r"
-        return 0
-    fi
-    printf '  %sTip:%s exakit catalog <search>   e.g. exakit catalog data · exakit catalog mcp\n\n' "$_dim" "$_r"
+    exakit_help_render catalog "$_search"
 }
 
-# _with_notice <command...> — run a command, then let the update notice speak.
+# _with_notice <command...> - run a command, then let the update notice speak.
 # The command's own exit status is preserved: version news must never change what
 # `exakit mcp-doctor` (or anything else) reports to a script.
 #
@@ -1129,23 +1050,24 @@ _with_notice() {
     return $_wn_rc
 }
 
-# `exakit <command> --help` answers from the catalog — the same single source
-# of truth `exakit catalog` renders — so every subcommand supports the flag
-# without each one growing its own help text. Placed before the dispatch:
-# the answer must not depend on which command it is.
-if [ $# -ge 2 ]; then
+# `exakit <thing> --help` answers from the help documents - the same single
+# source of truth `exakit catalog` renders - so every subcommand AND every
+# component supports the flag without growing its own help text. Placed before
+# the dispatch: the answer must not depend on which command it is.
+#
+# `sql` is excluded on purpose: its argument is arbitrary SQL text, and a
+# statement that happens to contain --help is a query, not a request for help.
+if [ $# -ge 2 ] && [ "$1" != "sql" ]; then
     for _help_arg in "$@"; do
         case "$_help_arg" in
             --help|-h)
-                _help_cmd="$1"
-                _help_catalog="$_lib_dir/catalog.tsv"
-                if [ -f "$_help_catalog" ] && \
-                   awk -F'\t' -v c="$_help_cmd" '$1=="exakit" && ($2==c || index($2, c" ")==1) {found=1; printf "  exakit %-14s %s\n      %s\n", $2, $3, $4} END {exit !found}' "$_help_catalog"; then
-                    printf '\nFull catalog: exakit catalog %s\n' "$_help_cmd"
+                _help_topic="$1"
+                if exakit_help_is_id "$_help_topic"; then
+                    exakit_help_render component "$_help_topic"
                 else
-                    printf 'No catalog entry for %s — browse everything with: exakit catalog\n' "$_help_cmd"
+                    exakit_help_render command "$_help_topic"
                 fi
-                exit 0
+                exit $?
                 ;;
         esac
     done
@@ -1199,6 +1121,14 @@ case "${1:-help}" in
     sql)      shift; cmd_sql "$@" ;;
     logs)     shift; cmd_logs "$@" ;;
     catalog)  shift; cmd_catalog "$@" ;;
-    help|-h|--help) shift; usage "${1:-}" ;;
-    *) echo "exakit: unknown command '${1}'" >&2; usage >&2; exit 2 ;;
+    help|-h|--help) shift; usage "$@" ;;
+    *) # A component name on its own is a reasonable thing to type, and the
+       # answer is its page - not "unknown command" followed by the whole menu.
+       if exakit_help_is_id "${1}"; then
+           exakit_help_render component "${1}"
+       else
+           echo "exakit: unknown command '${1}'" >&2
+           usage >&2
+           exit 2
+       fi ;;
 esac

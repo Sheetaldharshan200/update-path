@@ -802,13 +802,24 @@ distinct="$(printf '%s\n' "$panel_widths" | LC_ALL=C sed \
     | awk 'NF { print length($0) }' | sort -u | wc -l | tr -d ' ')"
 check "panel(hyperlinked rows all one width)" "1" "$distinct"
 
-for _hl in "Keeping up to date:" "  version " "  update-check " "  update "; do
-    grep -qF "\"$_hl" "$ROOT/setup/exakit.ps1" && ps_help_lines=$((ps_help_lines + 1))
+# The update path has to reach the user from the help screen. Both CLIs now
+# render that screen from setup/help/exakit.json, so "both sides" is a property
+# of the document plus each side reading it - not of two hardcoded lists that
+# could drift. Assert all three: the document declares the group, the bash
+# screen shows it, and the PowerShell CLI renders from the same documents.
+_upd_group="$(python3 -c "
+import json
+doc = json.load(open('$ROOT/setup/help/exakit.json'))
+groups = [g for g in doc['groups'] if g['title'] == 'Keeping up to date']
+print(' '.join(groups[0]['commands']) if groups else '')" 2>/dev/null || true)"
+for _hl in version update-check update; do
+    printf '%s' "$_upd_group" | grep -qw "$_hl" && ps_help_lines=$((ps_help_lines + 1))
 done
-if printf '%s' "$short_help" | grep -q 'Keeping up to date:' && \
-   printf '%s' "$short_help" | grep -qE '^  version {2,}' && \
-   printf '%s' "$short_help" | grep -qE '^  update-check {2,}' && \
-   printf '%s' "$short_help" | grep -qE '^  update {2,}' && \
+grep -q 'Show-ExakitHelpOverview' "$ROOT/setup/exakit.ps1" && ps_help_lines=$((ps_help_lines + 1))
+if printf '%s' "$short_help" | grep -q 'Keeping up to date' && \
+   printf '%s' "$short_help" | grep -qE '^ +version {2,}' && \
+   printf '%s' "$short_help" | grep -qE '^ +update-check {2,}' && \
+   printf '%s' "$short_help" | grep -qE '^ +update {2,}' && \
    [ "$ps_help_lines" = 4 ]; then
     check "help(update_path_listed_both_sides)" "yes" "yes"
 else
@@ -898,7 +909,7 @@ if grep -q 'upgrade-kit2)  cmd_kit2_script' "$ROOT/setup/exakit" && \
    grep -q 'rollback-kit2) cmd_kit2_script' "$ROOT/setup/exakit" && \
    grep -q 'exakit_update_kit2' "$ROOT/setup/lib/common.sh" && \
    grep -q 'manifest_set kit2.version' "$ROOT/upgrade/upgrade-kit2.sh" && \
-   grep -q 'upgrade-kit2' "$ROOT/setup/lib/catalog.tsv" && \
+   grep -q 'upgrade-kit2' "$ROOT/setup/help/exakit.json" && \
    grep -q 'Write-ExakitKit2NotAvailable' "$ROOT/setup/exakit.ps1"; then
     check "kit2(cli_surface)" "yes" "yes"
 else

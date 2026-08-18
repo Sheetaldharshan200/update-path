@@ -227,9 +227,12 @@ HOME="$_HOME_SAVED"; export HOME
 echo
 echo "the CLI and the docs agree:"
 # ---------------------------------------------------------------------------
-CATALOG="$(cat "$ROOT/setup/lib/catalog.tsv")"
-has "catalog lists exakit skills"         "$(printf 'exakit\tskills\t')" "$CATALOG"
-has "catalog lists exakit skills-install" "$(printf 'exakit\tskills-install\t')" "$CATALOG"
+CATALOG="$(python3 -c "
+import json
+doc = json.load(open('$ROOT/setup/help/exakit.json'))
+print(chr(10).join(c['command'] for c in doc['commands']))")"
+has "catalog lists exakit skills"         "skills" "$CATALOG"
+has "catalog lists exakit skills-install" "skills-install" "$CATALOG"
 has "the bash CLI dispatches skills"      "skills)" "$(cat "$ROOT/setup/exakit")"
 has "the PowerShell CLI dispatches skills" '"skills"' "$(cat "$ROOT/setup/exakit.ps1")"
 
