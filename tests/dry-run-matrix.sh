@@ -902,14 +902,16 @@ if grep -q 'cmp -s "$_script_dir/exakit" "$EXAKIT_BIN_DIR/exakit"' "$ROOT/setup/
 else
     check "rerun(refreshes_stale_command)" "yes" "no"
 fi
-# The Kit 2 surface: both wrappers, the update target, the catalog rows, and the
-# Windows answer. Whether Kit 2 is ADVERTISED is a separate switch (the kit2 block
-# in versions.json) and is asserted in tests/versions-manifest.sh.
+# The Kit 2 surface: both wrappers, the update target, and the Windows answer.
+# The catalog rows are deliberately NOT part of it - Kit 2 is off the help
+# screen, so setup/help/exakit.json carries no kit2 entry to grep for. Whether
+# Kit 2 is ADVERTISED is a separate switch (the kit2 block in versions.json)
+# and is asserted in tests/versions-manifest.sh.
 if grep -q 'upgrade-kit2)  cmd_kit2_script' "$ROOT/setup/exakit" && \
    grep -q 'rollback-kit2) cmd_kit2_script' "$ROOT/setup/exakit" && \
    grep -q 'exakit_update_kit2' "$ROOT/setup/lib/common.sh" && \
    grep -q 'manifest_set kit2.version' "$ROOT/upgrade/upgrade-kit2.sh" && \
-   grep -q 'upgrade-kit2' "$ROOT/setup/help/exakit.json" && \
+   ! grep -q 'upgrade-kit2' "$ROOT/setup/help/exakit.json" && \
    grep -q 'Write-ExakitKit2NotAvailable' "$ROOT/setup/exakit.ps1"; then
     check "kit2(cli_surface)" "yes" "yes"
 else
