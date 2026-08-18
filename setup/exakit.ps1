@@ -765,13 +765,13 @@ function Show-ExakitUninstallMenu {
     foreach ($key in $picked) { Invoke-ExakitUninstallComponent -Key $key }
     Write-Host ""
     # A full uninstall has just deleted the exakit command, so pointing at
-    # `exakit status` ends the run with an instruction that cannot be followed.
+    # `exakit info` ends the run with an instruction that cannot be followed.
     # Anything short of EVERYTHING leaves the CLI in place.
     if ($picked -contains "everything") {
         Ok "Done. The kit is gone."
         Info "Install it again any time: $(Get-ExakitInstallCommand)"
     } else {
-        Ok "Done. See where you stand with: exakit status"
+        Ok "Done. See where you stand with: exakit info"
     }
 }
 
