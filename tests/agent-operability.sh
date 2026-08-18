@@ -20,6 +20,16 @@ lacks() { case "$3" in *"$2"*) check "$1" absent PRESENT ;; *) check "$1" absent
 
 WORK="$(mktemp -d)"; trap 'rm -rf "$WORK"' EXIT
 
+# The command surface now lives in setup/help/*.json (one document per
+# component plus one for the CLI), not in a TSV. This prints every command
+# name the CLI document declares, which is what the catalog assertions want.
+exakit_help_commands() {
+    python3 -c "
+import json
+doc = json.load(open('$ROOT/setup/help/exakit.json'))
+print(chr(10).join(c['command'] for c in doc['commands']))"
+}
+
 echo "status exit codes are the answer:"
 check "not installed exits 4" "4" "$(EXAKIT_HOME="$WORK/none" bash "$ROOT/setup/exakit" status >/dev/null 2>&1; echo $?)"
 has "and the JSON form says so" '"installed": false' "$(EXAKIT_HOME="$WORK/none" bash "$ROOT/setup/exakit" status --json 2>/dev/null)"
@@ -469,7 +479,7 @@ has "and says why, rather than 'what it installed is missing'" "interrupted" \
 EXAKIT_PERSONAL_DEPLOY_DIR="$_wedge/absent"
 check "a stopped deployment is still left alone" "unknown" "$(step_artifact_state runtime)"
 has "repair-runtime is a real command" "repair-runtime" "$(grep -c '^    repair-runtime)' "$ROOT/setup/exakit" >/dev/null && echo repair-runtime)"
-has "and it is in the catalog" "repair-runtime" "$(cut -f2 "$ROOT/setup/lib/catalog.tsv")"
+has "and it is in the catalog" "repair-runtime" "$(exakit_help_commands)"
 has "and the PowerShell twin exists" "Invoke-CmdRepairRuntime" "$(cat "$ROOT/setup/exakit.ps1")"
 
 echo "a removed exapump profile is repaired by re-running the installer:"
@@ -597,7 +607,7 @@ echo "the SQL path an agent is told to use names its remedy:"
 has "exakit sql exists" "cmd_sql" "$(cat "$ROOT/setup/exakit")"
 has "and routes failures through the translator" "exakit_explain_db_error" \
     "$(sed -n '/^cmd_sql()/,/^}/p' "$ROOT/setup/exakit")"
-has "and is in the catalog" "sql" "$(cut -f2 "$ROOT/setup/lib/catalog.tsv")"
+has "and is in the catalog" "sql" "$(exakit_help_commands)"
 has "the PowerShell twin exists" "Invoke-CmdSql" "$(cat "$ROOT/setup/exakit.ps1")"
 # PowerShell had NO translator at all: the Windows and Nano paths got raw engine
 # text and nothing else, making the promise macOS-only.
@@ -632,7 +642,7 @@ has "--force still reads EXAKIT_DATASETS" "EXAKIT_DATASETS" "$_dlf"
 has "and the PowerShell twin does too" "EXAKIT_DATASETS" \
     "$(sed -n '/^function Invoke-CmdDataLoad/,/^}/p' "$ROOT/setup/exakit.ps1")"
 # ...and it has to be discoverable from the CLI, not only from AGENTS.md.
-has "the catalog documents the variable" "EXAKIT_DATASETS" "$(cat "$ROOT/setup/lib/catalog.tsv")"
+has "the catalog documents the variable" "EXAKIT_DATASETS" "$(cat "$ROOT/setup/help/exakit.json")"
 
 echo "the discovery surfaces are machine-readable:"
 # THE BUG: an agent told to "discover every command with exakit catalog" had to

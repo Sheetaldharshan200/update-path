@@ -475,7 +475,10 @@ exapump_run_sql_file() {
 # exapump_upload <file> <schema.table> — load a CSV/Parquet file, logged.
 exapump_upload() {
     [ -s "$1" ] || { warn "Data file missing or empty: $1"; return 1; }
-    info "Loading $(basename "$1") into $2"
+    # EXAKIT_UPLOAD_QUIET: `exakit data-load` narrates the whole job with a
+    # single "Loading your data" spinner, so per-file chatter is noise there.
+    # The installer leaves it unset and keeps its step-by-step narration.
+    [ "${EXAKIT_UPLOAD_QUIET:-0}" = 1 ] || info "Loading $(basename "$1") into $2"
     if ! run_logged "$(exapump_cli)" upload "$1" --table "$2" -p "$EXAKIT_EXAPUMP_PROFILE"; then
         # The engine's message is in the log; translate the common faults into
         # their remedy before dying, so "Connection refused" arrives WITH
@@ -483,7 +486,7 @@ exapump_upload() {
         [ -n "${EXAKIT_LOG_FILE:-}" ] && exakit_explain_db_error "$(tail -8 "$EXAKIT_LOG_FILE" 2>/dev/null)"
         die "Upload failed: $1 -> $2 (see log)"
     fi
-    ok "$(basename "$1") loaded"
+    [ "${EXAKIT_UPLOAD_QUIET:-0}" = 1 ] || ok "$(basename "$1") loaded"
 }
 
 # exapump_count <schema.table> — row count (prints the number, empty on failure).
@@ -640,7 +643,7 @@ exakit_ensure_schema() {
     if exakit_schema_present "$_schema"; then
         return 0
     fi
-    info "Creating schema $_schema"
+    [ "${EXAKIT_UPLOAD_QUIET:-0}" = 1 ] || info "Creating schema $_schema"
     run_logged "$(exapump_cli)" sql -p "$EXAKIT_EXAPUMP_PROFILE" "CREATE SCHEMA $_schema" || \
         die "Could not create schema $_schema"
 }
@@ -652,7 +655,7 @@ exakit_verify_loaded_table() {
     if [ "$_rows" = "0" ]; then
         warn "Verified $_target, but it currently has 0 rows."
     else
-        ok "Verified $_target ($_rows rows)"
+        [ "${EXAKIT_UPLOAD_QUIET:-0}" = 1 ] || ok "Verified $_target ($_rows rows)"
     fi
     manifest_set data.last_load.verified_table "$_target"
     manifest_set data.last_load.verified_rows "$_rows"
@@ -712,90 +715,69 @@ _exakit_json_tables_load_module() {
     command -v json_tables_install >/dev/null 2>&1
 }
 
-# _exakit_json_tables_offer — the checkbox with the explanation. Returns 0 when
-# the add-on is ready to use (already installed, or installed right here), 2
-# when the user declined, 1 when it cannot be installed on this machine.
+# _exakit_json_tables_ensure - make the JSON engine usable, saying nothing.
+# A JSON file is just data the user asked to load, so the engine it needs is an
+# implementation detail: it installs with its output in the log, under the same
+# "Loading your data" spinner as the load itself. No question is asked, and no
+# download or install step is announced.
 #
-# The install is pre-selected: someone who just typed the path to a JSON file
-# has already said what they want, so Enter alone gets on with it. Declining is
-# an explicit tick, and EXAKIT_MARKETPLACE_ADDONS answers for a scripted run.
-_exakit_json_tables_offer() {
-    _jto_file="$1"
+# Returns 0 when the engine is ready, 1 when this machine cannot have it - that
+# case still speaks up, because a silent failure is worse than a loud one.
+_exakit_json_tables_ensure() {
     _exakit_json_tables_ready && return 0
 
     _exakit_json_tables_load_module || {
-        warn "This kit copy does not carry the JSON Tables module — update the kit first: exakit update exakit"
+        warn "This kit copy does not carry the JSON engine - update the kit first: exakit update exakit"
         return 1
     }
-    # Not installable here (no prebuilt engine for this platform): say so once,
-    # with the reason, instead of offering something that cannot work.
     if command -v _exakit_addon_applicable >/dev/null 2>&1 && \
        ! _exakit_addon_applicable json-tables; then
-        _jto_why="$(_exakit_addon_applicable_reason json-tables 2>/dev/null || true)"
-        warn "JSON files need the JSON Tables add-on, which is not available on this machine${_jto_why:+: $_jto_why}"
+        _jte_why="$(_exakit_addon_applicable_reason json-tables 2>/dev/null || true)"
+        warn "JSON files need an engine that is not available on this machine${_jte_why:+: $_jte_why}"
         info "CSV and Parquet load without it. Convert the file, or load it from a supported machine."
         return 1
     fi
-
-    ui_panel_begin "JSON needs one add-on"
-    ui_panel_line "File            $(ui_tilde "$_jto_file")"
-    ui_panel_line "Why             exapump loads CSV and Parquet; JSON is a nested tree"
-    ui_panel_line "The add-on      JSON Tables shreds JSON into relational tables"
-    ui_panel_line "Cost            a prebuilt download - no Rust toolchain, nothing to compile"
-    ui_panel_line "Then            this load continues automatically, into your database"
-    ui_panel_line "Later           it stays yours: exakit update json-tables / exakit uninstall"
-    ui_panel_end
-    printf '\n'
-
-    # A scripted answer wins, so agents and CI never need a TTY.
-    if [ -n "${EXAKIT_MARKETPLACE_ADDONS:-}" ]; then
-        case ",$(printf '%s' "$EXAKIT_MARKETPLACE_ADDONS" | tr '[:upper:]' '[:lower:]' | tr -d ' ')," in
-            *,none,*) info "EXAKIT_MARKETPLACE_ADDONS=none - not installing JSON Tables."; return 2 ;;
-            *,all,*|*,json-tables,*) info "EXAKIT_MARKETPLACE_ADDONS names json-tables - installing it." ;;
-            *) info "EXAKIT_MARKETPLACE_ADDONS does not name json-tables - not installing it."; return 2 ;;
-        esac
-    else
-        EXAKIT_CHECKBOX_EXCLUSIVE=2
-        ui_checkbox_menu "JSON Tables add-on" "1" \
-            "Install it now and load this file" \
-            "Cancel (load nothing)"
-        case ",$EXAKIT_CHECKBOX_SELECTION," in
-            *",2,"*|,,) info "Not installing JSON Tables. This file was not loaded."; return 2 ;;
-        esac
-    fi
-
     command -v _exakit_marketplace_install_one >/dev/null 2>&1 || {
         warn "The marketplace installer is not available in this kit build."
         return 1
     }
-    _exakit_marketplace_install_one json-tables || {
-        warn "JSON Tables could not be installed, so this JSON file was not loaded."
-        info "Everything already in the database is untouched. Retry with: exakit update json-tables"
+    if ! _exakit_marketplace_install_one json-tables >> "${EXAKIT_LOG_FILE:-/dev/null}" 2>&1; then
+        warn "The JSON engine could not be installed, so this file was not loaded."
+        info "Everything already in the database is untouched. Details: exakit logs"
         return 1
-    }
+    fi
     _exakit_json_tables_ready || {
-        warn "JSON Tables installed but its command is not usable yet - retry with: exakit data-load"
+        warn "The JSON engine installed but is not usable yet - retry with: exakit data-load"
         return 1
     }
     return 0
 }
 
-# exakit_load_local_json <path> — ingest a JSON file to Parquet with the add-on,
-# then load every table it produced. Nested JSON legitimately yields SEVERAL
-# tables, so this loads all of them rather than pretending there is only one.
+# exakit_load_local_json <path> <target> - ingest a JSON file and load what
+# comes out of it. The target is decided by the CALLER, before anything runs,
+# so JSON asks exactly what CSV and Parquet ask: one SCHEMA.TABLE, then it
+# loads. Nothing here prompts.
+#
+# Nested JSON legitimately yields SEVERAL tables. One table lands on <target>
+# exactly; several keep <target> as their shared prefix, so the name the user
+# typed still describes every table the document produced. The full list is
+# left in EXAKIT_LAST_LOAD_TARGET for the caller's closing line.
 exakit_load_local_json() {
     _jl_path="$1"
-    _exakit_json_tables_offer "$_jl_path" || return $?
+    _jl_target="$2"
+    _jl_schema="$(exakit_target_schema "$_jl_target")"
+    _jl_base="${_jl_target#*.}"
+
+    _exakit_json_tables_ensure || return 1
 
     _jl_tmp="$(mktemp -d "${TMPDIR:-/tmp}/exakit-json-load.XXXXXX")" || {
         warn "Could not create a temporary directory for the JSON ingest."
         return 1
     }
-    info "Converting JSON to Parquet with JSON Tables"
     if ! run_logged "$EXAKIT_JSON_TABLES_BIN" ingest \
             --input "$_jl_path" --output-dir "$_jl_tmp/out"; then
         rm -rf "$_jl_tmp"
-        warn "The JSON ingest failed - see: exakit logs json-tables"
+        warn "This JSON file could not be read - see: exakit logs json-tables"
         info "Nothing was loaded; the database is unchanged."
         return 1
     fi
@@ -803,46 +785,22 @@ exakit_load_local_json() {
     _jl_files="$(find "$_jl_tmp/out" -name '*.parquet' 2>/dev/null | sort)"
     if [ -z "$_jl_files" ]; then
         rm -rf "$_jl_tmp"
-        warn "The ingest produced no tables from $(ui_tilde "$_jl_path")."
+        warn "No tables came out of $(ui_tilde "$_jl_path")."
         info "Check the file is JSON or NDJSON, then retry: exakit data-load"
         return 1
     fi
     _jl_count="$(printf '%s\n' "$_jl_files" | grep -c .)"
 
-    # One table: the same SCHEMA.TABLE prompt a CSV gets, so the two read alike.
-    # Several: pick the schema once and keep the ingest's own table names, which
-    # is the only naming that can describe a nested document.
+    exakit_ensure_schema "$_jl_schema"
     if [ "$_jl_count" -eq 1 ]; then
-        _jl_default="${EXAKIT_SCHEMA:-STARTER_KIT}.$(exakit_table_name_from_path "$_jl_path")"
-        while :; do
-            _jl_target="$(prompt_text "Target table (SCHEMA.TABLE, back to return)" "$_jl_default")"
-            case "$_jl_target" in
-                b|B|back|Back|BACK) rm -rf "$_jl_tmp"; info "Returning to data loading options."; return 2 ;;
-            esac
-            exakit_validate_table_target "$_jl_target" && break
-            warn "Target table must look like SCHEMA.TABLE and use letters, numbers, or underscores."
-        done
-        _jl_target="$(exakit_upper_table_target "$_jl_target")"
-        exakit_ensure_schema "$(exakit_target_schema "$_jl_target")"
         exapump_upload "$_jl_files" "$_jl_target"
         exakit_verify_loaded_table "$_jl_target"
         _jl_loaded="$_jl_target"
     else
-        info "$_jl_count tables came out of this document"
-        while :; do
-            _jl_schema="$(prompt_text "Target schema for all $_jl_count tables (back to return)" "${EXAKIT_SCHEMA:-STARTER_KIT}")"
-            case "$_jl_schema" in
-                b|B|back|Back|BACK) rm -rf "$_jl_tmp"; info "Returning to data loading options."; return 2 ;;
-            esac
-            exakit_validate_table_target "$_jl_schema.T" && break
-            warn "Schema must use letters, numbers, or underscores."
-        done
-        _jl_schema="$(printf '%s' "$_jl_schema" | tr '[:lower:]' '[:upper:]')"
-        exakit_ensure_schema "$_jl_schema"
         _jl_loaded=""
         while IFS= read -r _jl_file; do
             [ -n "$_jl_file" ] || continue
-            _jl_table="$_jl_schema.$(exakit_table_name_from_path "$_jl_file")"
+            _jl_table="$_jl_schema.${_jl_base}_$(exakit_table_name_from_path "$_jl_file")"
             _jl_table="$(exakit_upper_table_target "$_jl_table")"
             exapump_upload "$_jl_file" "$_jl_table"
             exakit_verify_loaded_table "$_jl_table"
@@ -856,7 +814,8 @@ EXAKIT_JL_EOF
     manifest_set data.last_load.type "local_json"
     manifest_set data.last_load.target "$_jl_loaded"
     manifest_set data.last_load.source "$_jl_path"
-    ok "Loaded $(ui_tilde "$_jl_path") into $_jl_loaded"
+    EXAKIT_LAST_LOAD_TARGET="$_jl_loaded"
+    return 0
 }
 
 exakit_load_local_file() {
@@ -876,12 +835,10 @@ exakit_load_local_file() {
         [ -s "$_path" ] && break
         warn "File not found or empty: $_path"
     done
-    # JSON is not an exapump input: it goes through the JSON Tables add-on,
-    # which this offers to install and then finishes the load with.
-    if [ "$(exakit_data_file_kind "$_path")" = "json" ]; then
-        exakit_load_local_json "$_path"
-        return $?
-    fi
+    # Every file kind is asked the same two things, in the same order, before
+    # any work starts: the file, then SCHEMA.TABLE. What has to happen after
+    # that - an engine to install, a conversion to run - is this command's
+    # problem, not the user's, so none of it reaches the screen.
     _default_table="${EXAKIT_SCHEMA:-STARTER_KIT}.$(exakit_table_name_from_path "$_path")"
     while :; do
         _target="$(prompt_text "Target table (SCHEMA.TABLE, back to return)" "$_default_table")"
@@ -895,13 +852,31 @@ exakit_load_local_file() {
         warn "Target table must look like SCHEMA.TABLE and use letters, numbers, or underscores."
     done
     _target="$(exakit_upper_table_target "$_target")"
+
+    # One label, one spinner, whatever the file turns out to need.
+    EXAKIT_UPLOAD_QUIET=1
+    EXAKIT_ACTIVE_LABEL="Loading your data"
+    export EXAKIT_UPLOAD_QUIET EXAKIT_ACTIVE_LABEL
+
+    if [ "$(exakit_data_file_kind "$_path")" = "json" ]; then
+        EXAKIT_LAST_LOAD_TARGET=""
+        exakit_load_local_json "$_path" "$_target"
+        _lf_status=$?
+        EXAKIT_UPLOAD_QUIET=0
+        EXAKIT_ACTIVE_LABEL=""
+        [ "$_lf_status" -eq 0 ] || return "$_lf_status"
+        ok "Loaded $(ui_tilde "$_path") into ${EXAKIT_LAST_LOAD_TARGET:-$_target}"
+        return 0
+    fi
     exakit_ensure_schema "$(exakit_target_schema "$_target")"
     exapump_upload "$_path" "$_target"
     manifest_set data.last_load.type "local_file"
     manifest_set data.last_load.target "$_target"
     manifest_set data.last_load.source "$_path"
     exakit_verify_loaded_table "$_target"
-    ok "Loaded $_path into $_target"
+    EXAKIT_UPLOAD_QUIET=0
+    EXAKIT_ACTIVE_LABEL=""
+    ok "Loaded $(ui_tilde "$_path") into $_target"
 }
 
 exakit_load_remote_file() {
@@ -909,22 +884,35 @@ exakit_load_remote_file() {
     [ -n "$_url" ] || die "Remote URL is required."
     _name="$(basename "${_url%%\?*}")"
     [ -n "$_name" ] || _name="remote-data.csv"
-    _tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/exakit-remote-data.XXXXXX")" || die "Could not create a temporary download directory."
-    _tmp_file="$_tmp_dir/$_name"
-    info "Downloading remote data file"
-    fetch "$_url" "$_tmp_file"
-    # Same JSON routing as a local file, once it is on disk.
-    if [ "$(exakit_data_file_kind "$_tmp_file")" = "json" ]; then
-        exakit_load_local_json "$_tmp_file"
-        _rf_status=$?
-        rm -rf "$_tmp_dir"
-        [ "$_rf_status" -eq 0 ] && manifest_set data.last_load.source "$_url"
-        return "$_rf_status"
-    fi
+    # Same two questions as a local file, asked before the download starts.
     _default_table="${EXAKIT_SCHEMA:-STARTER_KIT}.$(exakit_table_name_from_path "$_name")"
     _target="$(prompt_text "Target table (SCHEMA.TABLE)" "$_default_table")"
     exakit_validate_table_target "$_target" || die "Target table must look like SCHEMA.TABLE and use letters, numbers, or underscores."
     _target="$(exakit_upper_table_target "$_target")"
+
+    _tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/exakit-remote-data.XXXXXX")" || die "Could not create a temporary download directory."
+    _tmp_file="$_tmp_dir/$_name"
+
+    # The download is part of "loading your data", not a step of its own: the
+    # spinner carries it under the same label as everything after it.
+    EXAKIT_UPLOAD_QUIET=1
+    EXAKIT_ACTIVE_LABEL="Loading your data"
+    export EXAKIT_UPLOAD_QUIET EXAKIT_ACTIVE_LABEL
+    fetch "$_url" "$_tmp_file"
+
+    if [ "$(exakit_data_file_kind "$_tmp_file")" = "json" ]; then
+        EXAKIT_LAST_LOAD_TARGET=""
+        exakit_load_local_json "$_tmp_file" "$_target"
+        _rf_status=$?
+        rm -rf "$_tmp_dir"
+        EXAKIT_UPLOAD_QUIET=0
+        EXAKIT_ACTIVE_LABEL=""
+        [ "$_rf_status" -eq 0 ] || return "$_rf_status"
+        manifest_set data.last_load.type "remote_file"
+        manifest_set data.last_load.source "$_url"
+        ok "Loaded $_url into ${EXAKIT_LAST_LOAD_TARGET:-$_target}"
+        return 0
+    fi
     exakit_ensure_schema "$(exakit_target_schema "$_target")"
     exapump_upload "$_tmp_file" "$_target"
     rm -rf "$_tmp_dir"
@@ -932,6 +920,8 @@ exakit_load_remote_file() {
     manifest_set data.last_load.target "$_target"
     manifest_set data.last_load.source "$_url"
     exakit_verify_loaded_table "$_target"
+    EXAKIT_UPLOAD_QUIET=0
+    EXAKIT_ACTIVE_LABEL=""
     ok "Loaded $_url into $_target"
 }
 

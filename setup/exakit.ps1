@@ -88,6 +88,7 @@ if (Test-Path (Join-Path $scriptDir "lib\exakit-common.ps1")) {
 if (Test-Path (Join-Path $libDir "dash-server.ps1")) { . (Join-Path $libDir "dash-server.ps1") }
 if (Test-Path (Join-Path $libDir "exasol-vscode.ps1")) { . (Join-Path $libDir "exasol-vscode.ps1") }
 if (Test-Path (Join-Path $libDir "json-tables.ps1")) { . (Join-Path $libDir "json-tables.ps1") }
+if (Test-Path (Join-Path $libDir "help.ps1")) { . (Join-Path $libDir "help.ps1") }
 
 function Get-RuntimeType { return (Get-ExakitManifestValue "runtime.type") }
 
@@ -2156,95 +2157,14 @@ function Invoke-CmdMcpRestore {
 
 function Invoke-CmdCatalog {
     param([string]$Search = "", [switch]$Json)
-    $catalogPath = Join-Path $libDir "catalog.tsv"
-    if (-not (Test-Path $catalogPath)) { Fail "Catalog data not found: $catalogPath" }
-
-    # -Json: the command surface itself, machine-readable. Without it an agent
-    # told to "discover every command with exakit catalog" had to pattern-match
-    # a decorated screen - the one discovery surface with no structured form.
+    # Rendered from the same help documents every other screen uses
+    # (setup/help/*.json - see help.ps1). -Json keeps its original shape: one
+    # object whose "commands" array carries tool/command/options/description.
     if ($Json) {
-        $q = $Search.ToLowerInvariant()
-        $commands = @()
-        foreach ($row in (Import-Csv -Path $catalogPath -Delimiter "`t")) {
-            if (-not $row.command) { continue }
-            $haystack = "$($row.tool) $($row.command) $($row.options) $($row.description)".ToLowerInvariant()
-            if ($q -and $haystack -notlike "*$q*") { continue }
-            $commands += [pscustomobject]@{
-                tool        = $row.tool
-                command     = $row.command
-                options     = $row.options
-                description = $row.description
-                invocation  = "$($row.tool) $($row.command)".Trim()
-            }
-        }
-        [pscustomobject]@{
-            search   = if ($q) { $q } else { $null }
-            count    = $commands.Count
-            commands = @($commands)
-        } | ConvertTo-Json -Depth 6
+        Show-ExakitHelpJson -Which $Search
         return
     }
-
-    # Let the box-drawing / bullet glyphs render on the Windows console, which
-    # defaults to a non-UTF-8 code page; restore the previous encoding after.
-    $prevEnc = [Console]::OutputEncoding
-    try {
-        try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch { }
-
-        $q = $Search.ToLowerInvariant()
-        $rule = "$([char]0x2501)" * 49   # heavy horizontal line
-
-        Write-Host ""
-        Write-Host "  $rule" -ForegroundColor Cyan
-        Write-Host "   $([char]0x25B8) EXASOL" -ForegroundColor Cyan -NoNewline
-        Write-Host "  $([char]0x00B7)  starter kit"
-        if ($q) {
-            Write-Host "     command catalog - results for `"$q`"" -ForegroundColor DarkGray
-        } else {
-            Write-Host "     command catalog $([char]0x00B7) exakit $([char]0x00B7) exapump $([char]0x00B7) exasol" -ForegroundColor DarkGray
-        }
-        Write-Host "  $rule" -ForegroundColor Cyan
-        Write-Host ""
-
-        $rows = Import-Csv -Path $catalogPath -Delimiter "`t"
-        $labels = [ordered]@{
-            exakit  = "exakit   - kit lifecycle & MCP management"
-            exapump = "exapump  - data loading CLI"
-            exasol  = "exasol   - database & AI (MCP) bridge"
-        }
-        $found = $false
-        foreach ($tool in $labels.Keys) {
-            $entries = @($rows | Where-Object {
-                $_.tool -eq $tool -and (
-                    -not $q -or "$($_.tool) $($_.command) $($_.options) $($_.description)".ToLowerInvariant().Contains($q)
-                )
-            })
-            if ($entries.Count -eq 0) { continue }
-            $found = $true
-            Write-Host "  $($labels[$tool])" -ForegroundColor Green
-            foreach ($e in $entries) {
-                $name = if ($tool -eq "exasol") { $e.command } else { "$tool $($e.command)" }
-                if ($e.options) {
-                    Write-Host "    $name " -ForegroundColor White -NoNewline
-                    Write-Host $e.options -ForegroundColor DarkGray
-                } else {
-                    Write-Host "    $name" -ForegroundColor White
-                }
-                Write-Host "        $($e.description)"
-            }
-            Write-Host ""
-        }
-
-        if (-not $found) {
-            Write-Host "  No commands match `"$q`".  Try: exakit catalog mcp" -ForegroundColor DarkGray
-            Write-Host ""
-            return
-        }
-        Write-Host "  Tip: " -ForegroundColor DarkGray -NoNewline
-        Write-Host "exakit catalog <search>   e.g. exakit catalog data $([char]0x00B7) exakit catalog mcp"
-    } finally {
-        try { [Console]::OutputEncoding = $prevEnc } catch { }
-    }
+    Show-ExakitHelpCatalog -Search $Search | Out-Null
 }
 
 function Invoke-CmdSkillsInstall {
@@ -2328,64 +2248,31 @@ function Invoke-CmdSql {
 }
 
 function Show-ExakitUsage {
-    param([switch]$All)
-    # `exakit help --all` prints the full command reference: every leading
-    # comment line (from line 2 on) up to the first non-comment line - avoids
-    # a hard-coded line count going stale whenever the header comment above is
-    # edited. Plain `exakit help` (and a bare `exakit`) prints only the short
-    # everyday list, so a first-time user sees a handful of commands, not the
-    # whole surface. Mirrors the bash usage() tiering.
-    #
-    # Uses a real `foreach` statement (not ForEach-Object): `break` inside a
-    # ForEach-Object script block with no enclosing loop terminates the whole
-    # calling scope, not just the loop.
-    if ($All) {
-        foreach ($line in (Get-Content $PSCommandPath | Select-Object -Skip 1)) {
-            if (-not $line.StartsWith("#")) { break }
-            Write-Host ($line -replace '^# ?', '')
-        }
+    param([string]$Topic = "", [switch]$All, [switch]$Json)
+    # Every help screen comes from setup/help/*.json - see help.ps1. Twin of
+    # usage() in the bash CLI, including -Json, which hands the underlying
+    # document to a script instead of drawing it.
+    if ($Topic -eq "--all" -or $Topic -eq "-a") { $All = $true; $Topic = "" }
+    if ($Json) {
+        if ($Topic) { Show-ExakitHelpJson -Which $Topic } else { Show-ExakitHelpJson -Which "all" }
         return
     }
-    @(
-        "exakit - Exasol Personal Local Starter Kit"
-        ""
-        "Get started:"
-        "  exakit mcp-setup     connect your AI assistant (Claude, Cursor, Codex)"
-        ""
-        "Everyday commands:"
-        "  status               is the database up and healthy?"
-        "  info                 show your connection details"
-        "  start | stop         run or pause the local database"
-        "  data-load            load the sample data or your own CSV / Parquet"
-        "  mcp-doctor           test & repair MCP config of connected AI clients"
-        "  marketplace          optional add-ons (dashboards & more)"
-        ""
-        "Keeping up to date:"
-        "  version              installed version details"
-        "  update-check         what would change, and what it involves"
-        "  update               apply the latest updates"
-    ) | ForEach-Object { Write-Host $_ }
+    if ($All) { Show-ExakitHelpAll | Out-Null; return }
+    if (-not $Topic) { Show-ExakitHelpOverview | Out-Null; return }
+    if (Test-ExakitHelpId $Topic) { Show-ExakitHelpComponent -Id $Topic | Out-Null; return }
+    Show-ExakitHelpCommand -Name $Topic | Out-Null
 }
 
-# `exakit <command> --help` answers from the catalog - the same single source
-# of truth `exakit catalog` renders. Twin of the bash pre-dispatch block.
-if ($Command -and ($RestArgs -contains "--help" -or $RestArgs -contains "-h")) {
-    $helpCatalog = Join-Path $libDir "catalog.tsv"
-    $helpFound = $false
-    if (Test-Path $helpCatalog) {
-        foreach ($row in (Import-Csv -Path $helpCatalog -Delimiter "`t")) {
-            if ($row.tool -eq "exakit" -and ($row.command -eq $Command -or $row.command.StartsWith("$Command "))) {
-                Write-Host ("  exakit {0,-14} {1}" -f $row.command, $row.options)
-                Write-Host ("      {0}" -f $row.description)
-                $helpFound = $true
-            }
-        }
-    }
-    if ($helpFound) {
-        Write-Host ""
-        Write-Host "Full catalog: exakit catalog $Command"
+# `exakit <thing> --help` answers from the help documents - the same single
+# source of truth `exakit catalog` renders - so every subcommand AND every
+# component supports the flag. Twin of the bash pre-dispatch block.
+#
+# `sql` is excluded on purpose: its argument is arbitrary SQL text.
+if ($Command -and $Command -ne "sql" -and ($RestArgs -contains "--help" -or $RestArgs -contains "-h")) {
+    if (Test-ExakitHelpId $Command) {
+        Show-ExakitHelpComponent -Id $Command | Out-Null
     } else {
-        Write-Host "No catalog entry for $Command - browse everything with: exakit catalog"
+        Show-ExakitHelpCommand -Name $Command | Out-Null
     }
     exit 0
 }
@@ -2490,7 +2377,16 @@ try {
             $catSearch = @($RestArgs | Where-Object { $_ -notin @("--json", "-j", "-Json") }) | Select-Object -First 1
             Invoke-CmdCatalog -Search $catSearch -Json:$catJson
         }
-        { $_ -in @("help", "-h", "--help") } { Show-ExakitUsage -All:($RestArgs -contains "--all" -or $RestArgs -contains "-a") }
+        { $_ -in @("help", "-h", "--help") } {
+            # First non-flag argument is the topic: a component id or a command.
+            $helpTopic = ""
+            foreach ($a in $RestArgs) {
+                if ($a -notlike "-*") { $helpTopic = $a; break }
+            }
+            Show-ExakitUsage -Topic $helpTopic `
+                -All:($RestArgs -contains "--all" -or $RestArgs -contains "-a") `
+                -Json:($RestArgs -contains "--json" -or $RestArgs -contains "-j")
+        }
         default {
             Write-Host "exakit: unknown command '$Command'" -ForegroundColor Red
             Show-ExakitUsage
