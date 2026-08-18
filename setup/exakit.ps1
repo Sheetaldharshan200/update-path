@@ -769,7 +769,7 @@ function Show-ExakitUninstallMenu {
     # Anything short of EVERYTHING leaves the CLI in place.
     if ($picked -contains "everything") {
         Ok "Done. The kit is gone."
-        Info "Install it again any time: curl -fsSL https://raw.githubusercontent.com/$script:KitRepo/main/install.sh | sh"
+        Info "Install it again any time: $(Get-ExakitInstallCommand)"
     } else {
         Ok "Done. See where you stand with: exakit status"
     }
