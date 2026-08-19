@@ -155,6 +155,12 @@ curl -s -X POST http://127.0.0.1:5100/mcp \
 
    Call four tools in order: `exasol_profile_create_local` (bind the **read-only** user — `user: mcp_readonly`, `secret_value` from `~/.exasol-starter-kit/credentials/mcp_readonly_password`, `tls_verify: false`; dashboards read, they never need `sys`), `exasol_profile_validate`, `app_scaffold_from_schema` (point it at the ingested schema/table; it introspects the columns and builds the app itself), then `app_run_healthcheck`.
 
+   **Then make it presentable — the scaffold alone is a bare ops template.** One `app_put_files` + `app_deploy_draft` pass turns it into a dashboard a human would demo:
+
+   - Push `assets/theme.css`, copied **verbatim** from the local kit copy at `~/.exasol-starter-kit/kit/templates/dash-theme.css` — KPI cards, chart cards, tab styling and a colorblind-validated chart palette (`#2a78d6` / `#eb6834` / `#1baf7a`), so no run invents its own CSS.
+   - In `app.py`, pass `assets_folder=str(Path(__file__).parent / "assets")` to the `Dash(...)` constructor. The host imports the module dynamically, so Dash's default assets lookup resolves outside the artifact and the theme is **silently never linked** without this.
+   - Replace the scaffold's placeholder business SQL with real aggregates of the ingested measures — a KPI summary row (totals, counts, a margin), a monthly trend, and one or two categorical breakdowns — and lay the page out business-first: KPI row on top, charts in `chart-card` divs inside a `chart-grid`, the scaffold's system tabs after. Format money and counts in the KPI values; keep chart series on the palette above and never a dual-axis chart.
+
 4. **Report the browser URL** (`http://127.0.0.1:<port>/apps/<app-name>`) only after the healthcheck's `data_layer` and `sql_smoke` probes pass — a `200` from the page alone does not prove the dashboard can query.
 
 ## Where things live
