@@ -2181,7 +2181,8 @@ level2_behind="$(kit2_table "$WORK/with-kit2.json" \
                                    runtime.type) printf "nano\n" ;;
                                    kit.version) printf "0.2.0\n" ;;
                                    *) return 1 ;; esac; }')"
-has "an older bundle offers the update" "exakit update kit2" "$level2_behind"
+has "an older bundle offers the update" "kit2 0.0.9 0.1.0 available" "$(row "$level2_behind" kit2)"
+has "and promotes the command that applies it" "Bring everything up to date with: exakit update" "$level2_behind"
 
 # `exakit update kit2` is only meaningful once Kit 2 is installed, and it never
 # invents assets the kit copy does not carry.
