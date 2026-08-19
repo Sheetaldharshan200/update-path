@@ -10,7 +10,8 @@
   "quickstart": [
     {
       "step": "Install it",
-      "run": "EXAKIT_MARKETPLACE_ADDONS=exasol-vscode exakit marketplace"
+      "run": "exakit marketplace",
+      "note": "Space selects Exasol for VS Code, Enter installs it."
     },
     {
       "step": "Reload VS Code",
