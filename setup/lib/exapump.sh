@@ -873,7 +873,7 @@ EXAKIT_JL_EOF
 
 exakit_load_local_file() {
     while :; do
-        _raw_path="$(prompt_text "Local CSV / Parquet / JSON file path (type back to return)")"
+        _raw_path="$(prompt_text "Local CSV / Parquet / JSON file path (type back to return)" "${EXAKIT_DATA_FILE:-}")"
         case "$_raw_path" in
             b|B|back|Back|BACK)
                 info "Returning to data loading options."
@@ -882,17 +882,24 @@ exakit_load_local_file() {
         esac
         if [ -z "$_raw_path" ]; then
             warn "Please enter a local CSV, Parquet or JSON file path, or type back to return."
+            # No tty means prompt_text returns the same default forever, so a
+            # bad or missing EXAKIT_DATA_FILE must fail instead of looping.
+            [ -n "$(_exakit_prompt_tty)" ] || return 1
             continue
         fi
         _path="$(exakit_normalize_path "$_raw_path")"
         [ -s "$_path" ] && break
         warn "File not found or empty: $_path"
+        [ -n "$(_exakit_prompt_tty)" ] || return 1
     done
     # Every file kind is asked the same two things, in the same order, before
     # any work starts: the file, then SCHEMA.TABLE. What has to happen after
     # that - an engine to install, a conversion to run - is this command's
     # problem, not the user's, so none of it reaches the screen.
     _default_table="${EXAKIT_SCHEMA:-STARTER_KIT}.$(exakit_table_name_from_path "$_path")"
+    # EXAKIT_DATA_TABLE pre-answers the target the same way the path is
+    # pre-answered — as the prompt's default, which a no-tty run keeps.
+    [ -n "${EXAKIT_DATA_TABLE:-}" ] && _default_table="$EXAKIT_DATA_TABLE"
     while :; do
         _target="$(prompt_text "Target table (SCHEMA.TABLE, back to return)" "$_default_table")"
         case "$_target" in
@@ -903,6 +910,7 @@ exakit_load_local_file() {
         esac
         exakit_validate_table_target "$_target" && break
         warn "Target table must look like SCHEMA.TABLE and use letters, numbers, or underscores."
+        [ -n "$(_exakit_prompt_tty)" ] || return 1
     done
     _target="$(exakit_upper_table_target "$_target")"
 
@@ -1339,6 +1347,15 @@ exakit_load_dataset_dir() {
 EXAKIT_DATA_LOAD_SELECTION=""
 exakit_data_load_select() {
     _dls_final_label="$1"
+    # EXAKIT_DATA_FILE mirrors the EXAKIT_DATASETS contract: naming a file IS
+    # choosing "A local CSV / Parquet / JSON file", so the menu never draws.
+    # The path (and EXAKIT_DATA_TABLE) are consumed by exakit_load_local_file
+    # as its two answers.
+    if [ -n "${EXAKIT_DATA_FILE:-}" ]; then
+        info "Loading a local file (EXAKIT_DATA_FILE)."
+        EXAKIT_DATA_LOAD_SELECTION="local"
+        return 0
+    fi
     _dls_labels=()
     _dls_ids=()
     _dls_pending_n=0

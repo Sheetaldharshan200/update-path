@@ -21,6 +21,10 @@ check() { # check <label> <expected> <actual>
 
 # shellcheck source=/dev/null
 . "$ROOT/setup/lib/common.sh"
+# shellcheck source=/dev/null
+. "$ROOT/setup/lib/exapump.sh"
+
+WORK="$(mktemp -d)"; trap 'rm -rf "$WORK"' EXIT
 
 echo "confirm_env — an env var pre-answers the question:"
 EXAKIT_TEST_ANS=1; if confirm_env EXAKIT_TEST_ANS "q" n; then r=yes; else r=no; fi
@@ -76,6 +80,44 @@ check "copilot"       "vscode_copilot" "$(exakit_parse_mcp_client_selection "cop
 check "gemini"        "gemini_cli" "$(exakit_parse_mcp_client_selection "gemini")"
 if exakit_parse_mcp_client_selection "bogus" >/dev/null 2>&1; then r=accepted; else r=rejected; fi
 check "invalid rejected" rejected "$r"
+
+echo "EXAKIT_DATA_FILE — naming a file answers the data-load menu:"
+# The var IS the choice: with it set, exakit_data_load_select must pick the
+# local-file option without drawing a menu, even with no tty at all. A revert
+# leaves the checkbox menu in charge, whose no-tty defaults are the pending
+# datasets or the opt-out — never "local".
+EXAKIT_DATA_FILE=x
+EXAKIT_DATA_LOAD_SELECTION=""
+EXAKIT_HOME="$WORK/home" exakit_data_load_select "Cancel" </dev/null >/dev/null 2>&1
+check "selection is local, no menu drawn" "local" "$EXAKIT_DATA_LOAD_SELECTION"
+unset EXAKIT_DATA_FILE
+
+echo "EXAKIT_DATA_FILE — a bad path fails instead of looping (no tty):"
+# Without a tty, prompt_text hands back the same default forever, so a
+# nonexistent EXAKIT_DATA_FILE must make exakit_load_local_file return
+# nonzero, not re-ask. The reverted behaviour is an infinite re-prompt loop,
+# so the probe runs in a background job that is killed after ~10s — a hung
+# test tells nobody anything.
+(
+    EXAKIT_DATA_FILE=/nonexistent/file.csv
+    export EXAKIT_DATA_FILE
+    exakit_load_local_file </dev/null >/dev/null 2>&1
+    echo "rc=$?" > "$WORK/local-file-rc"
+) &
+_lf_pid=$!
+_lf_n=0
+while kill -0 "$_lf_pid" 2>/dev/null && [ "$_lf_n" -lt 20 ]; do
+    sleep 0.5
+    _lf_n=$((_lf_n + 1))
+done
+if kill -0 "$_lf_pid" 2>/dev/null; then
+    kill "$_lf_pid" 2>/dev/null
+    wait "$_lf_pid" 2>/dev/null
+    check "bad EXAKIT_DATA_FILE returns nonzero promptly" "rc=1" "HUNG-KILLED-AFTER-10S"
+else
+    wait "$_lf_pid" 2>/dev/null
+    check "bad EXAKIT_DATA_FILE returns nonzero promptly" "rc=1" "$(cat "$WORK/local-file-rc" 2>/dev/null || echo "no-rc-recorded")"
+fi
 
 echo ""
 echo "noninteractive-answers: $PASS passed, $FAIL failed"
