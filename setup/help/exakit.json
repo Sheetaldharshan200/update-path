@@ -4,8 +4,8 @@
   "kind": "cli",
   "title": "exakit",
   "tagline": "The one command that runs your local Exasol stack.",
-  "repo": "exasol-labs/exasol-personal-local-starterkit",
-  "docs": "https://github.com/exasol-labs/exasol-personal-local-starterkit#readme",
+  "repo": "krishna-exasol/update-path",
+  "docs": "https://github.com/krishna-exasol/update-path#readme",
   "state_dir": "~/.exasol-starter-kit",
   "groups": [
     {

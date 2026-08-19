@@ -5,7 +5,7 @@ Goal: a local Exasol database on your machine, an AI assistant connected to it, 
 ## 1. Check your machine (optional, 10 seconds)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/exasol-labs/exasol-personal-local-starterkit/main/install.sh | EXAKIT_PREFLIGHT=1 sh
+curl -fsSL https://raw.githubusercontent.com/krishna-exasol/update-path/main/install.sh | EXAKIT_PREFLIGHT=1 sh
 ```
 
 ## 2. Install everything (one command)
@@ -13,13 +13,13 @@ curl -fsSL https://raw.githubusercontent.com/exasol-labs/exasol-personal-local-s
 **macOS / Linux / WSL:**
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/exasol-labs/exasol-personal-local-starterkit/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/krishna-exasol/update-path/main/install.sh | sh
 ```
 
 **Windows (PowerShell):**
 
 ```powershell
-irm https://raw.githubusercontent.com/exasol-labs/exasol-personal-local-starterkit/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/krishna-exasol/update-path/main/install.ps1 | iex
 ```
 
 You will see a short plan, then numbered steps: database, data, AI setup. The database is usually up in under 2 minutes. The install ends with a connection panel, and a first prompt for your AI client is copied to your clipboard.

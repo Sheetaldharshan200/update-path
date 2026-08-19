@@ -11,7 +11,7 @@ Gets you from Windows to a local Exasol database, staying entirely in **PowerShe
 ## Install (regular PowerShell, no admin needed)
 
 ```powershell
-irm https://raw.githubusercontent.com/exasol-labs/exasol-personal-local-starterkit/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/krishna-exasol/update-path/main/install.ps1 | iex
 ```
 
 What happens, in order:

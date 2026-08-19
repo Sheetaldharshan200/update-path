@@ -171,7 +171,7 @@ and update paths against real releases. It runs in either direction; set `FROM`
 to whichever slug the tree currently carries:
 
 ```bash
-FROM=exasol-labs/exasol-personal-local-starterkit
+FROM=krishna-exasol/update-path
 TO=owner/fork
 git grep -l "$FROM" -- ':!tests' ':!MAINTAINERS.md' \
   | xargs perl -pi -e "s{\Q$FROM\E}{$TO}g"
