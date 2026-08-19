@@ -1236,6 +1236,30 @@ check "an unreachable mirror advertises nothing rather than guessing" "none" "$(
     _out="$(exakit_component_latest json-tables 2>/dev/null || true)"
     [ -n "$_out" ] && printf '%s\n' "$_out" || printf 'none\n'
 ) )"
+echo "data-load's default row when every bundled dataset is in:"
+# THE BUG: with nothing left to load from the bundle, the pre-selected row was
+# the final "Cancel (load nothing)" one -- so Enter did nothing, on the one
+# screen whose only remaining purpose is to load a file of your own. The local
+# row is what should be waiting under the cursor.
+. "$ROOT/setup/lib/exapump.sh"
+_dl_probe="$WORK/dl-default-label"
+(
+    exakit_pending_datasets() { :; }          # everything already loaded
+    info() { :; }
+    ui_checkbox_menu() {                      # $1 title, $2 defaults, $3.. labels
+        _dlp_defaults="$2"; shift 2
+        eval "printf '%s' \"\${$_dlp_defaults}\"" > "$_dl_probe"
+        EXAKIT_CHECKBOX_SELECTION="$_dlp_defaults"
+    }
+    exakit_data_load_select "Cancel (load nothing)" >/dev/null 2>&1
+)
+check "the local-file row is pre-selected" "A local CSV / Parquet / JSON file" "$(cat "$_dl_probe" 2>/dev/null)"
+lacks "and Cancel is not what Enter would take" "Cancel" "$(cat "$_dl_probe" 2>/dev/null)"
+# The Windows twin builds the same menu; assert it defaults one row above the
+# final label too, rather than to the final label itself.
+has "the PowerShell twin defaults off the final row" 'Defaults @($finalIdx - 1)' \
+    "$(cat "$ROOT/setup/lib/exapump.ps1")"
+
 echo "data-load routes JSON through the add-on:"
 . "$ROOT/setup/lib/exapump.sh"
 check "file kinds are classified from the name" "csv parquet json json json csv unknown" "$(
