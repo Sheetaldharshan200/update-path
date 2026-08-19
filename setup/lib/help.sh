@@ -10,21 +10,20 @@
 # plus one for the CLI itself, so `exakit --help`, `exakit help --all`,
 # `exakit <component> --help` and `exakit catalog` all read the same data.
 #
-# WHERE THE DATA COMES FROM, IN ORDER
-#   1. the cached copy fetched from the kit repository, while it is fresh
-#   2. the copy that shipped with this kit (setup/help/)
+# WHERE THE DATA COMES FROM
 #
-# The fetch mirrors the versions.json policy exactly: https only, short
-# timeouts, validated before it is trusted, written atomically, and NEVER
-# fatal - a machine with no network renders the copy on disk and says nothing.
-# That is what makes the text correctable without shipping a kit update while
-# staying safe offline.
-
-EXAKIT_HELP_REPO="${EXAKIT_HELP_REPO:-$EXAKIT_KIT_REPO}"
-EXAKIT_HELP_URL="${EXAKIT_HELP_URL:-https://raw.githubusercontent.com/${EXAKIT_HELP_REPO}/main/setup/help}"
-EXAKIT_HELP_TTL="${EXAKIT_HELP_TTL:-86400}"
-EXAKIT_HELP_CACHE_DIR="${EXAKIT_HELP_CACHE_DIR:-$EXAKIT_CACHE_DIR/help}"
-EXAKIT_HELP_OFFLINE="${EXAKIT_HELP_OFFLINE:-0}"
+# The copy that shipped with this kit (setup/help/), and nothing else.
+#
+# It used to prefer a copy fetched from the kit repository, so the text could be
+# corrected without shipping a kit update. That traded a small benefit for a
+# confusing failure: "fetched and fresh" was treated as "better" with no
+# comparison against what shipped, so a repository BEHIND the installed kit
+# silently downgraded its own help. Someone who installed a kit whose page
+# documented a feature could be shown an older page that did not - with nothing
+# on screen to say why, and a 24-hour cache making it persist.
+#
+# Help now matches the code it was installed with, always. Correcting the text
+# means shipping it, like every other asset in the kit.
 
 # exakit_help_kit_dir - the documents that shipped with this kit copy.
 exakit_help_kit_dir() {
@@ -36,8 +35,8 @@ exakit_help_kit_dir() {
 }
 
 # exakit_help_ids - every document id this kit knows about, one per line.
-# Read from the shipped directory: the cache only ever holds ids that exist
-# here, so a stale cache can never invent a component.
+# The shipped directory IS the registry: a component exists for help purposes
+# exactly when this kit carries a document for it.
 exakit_help_ids() {
     _hi_dir="$(exakit_help_kit_dir)"
     [ -d "$_hi_dir" ] || return 1
@@ -52,116 +51,24 @@ exakit_help_is_id() {
     exakit_help_ids 2>/dev/null | grep -qx "$1"
 }
 
-# _exakit_help_valid <file> - a document is trusted only if it parses and
-# carries the id and schema_version it claims to. An unreadable or truncated
-# download must never replace a good copy.
-_exakit_help_valid() {
-    [ -s "$1" ] || return 1
-    exakit_can_run_python || return 1
-    run_python - "$1" "$2" <<'EXAKIT_HELP_VALID_PY' >/dev/null 2>&1
-import json, sys
-doc = json.load(open(sys.argv[1], encoding="utf-8"))
-assert isinstance(doc, dict)
-assert doc.get("id") == sys.argv[2]
-assert int(doc.get("schema_version", 0)) >= 1
-EXAKIT_HELP_VALID_PY
-}
-
-_exakit_help_cache_fresh() {
-    [ -f "$1" ] || return 1
-    case "$EXAKIT_HELP_TTL" in
-        ''|*[!0-9]*) return 1 ;;
-        0) return 1 ;;
-    esac
-    _hcf_mtime="$(_exakit_file_mtime "$1")"
-    case "$_hcf_mtime" in
-        ''|*[!0-9]*) return 1 ;;
-    esac
-    [ "$(( $(date +%s) - _hcf_mtime ))" -lt "$EXAKIT_HELP_TTL" ]
-}
-
-# exakit_help_fetch <id> - refresh one cached document. Silent and never fatal.
-#
-# The attempt marker is what keeps help INSTANT. Without it a repository that
-# has not published these documents yet (or any offline machine) pays a curl
-# timeout on every single run, because a failure leaves nothing behind to
-# remember it by. The marker is touched before the request, so one attempt per
-# id per TTL is made whatever the outcome - success, 404 or no network.
-exakit_help_fetch() {
-    _hf_id="$1"
-    [ "$EXAKIT_HELP_OFFLINE" = "1" ] && return 1
-    case "$EXAKIT_HELP_URL" in
-        https://*) ;;
-        *) _exakit_log_file "WARN  refusing to fetch help over a non-HTTPS URL"; return 1 ;;
-    esac
-    _hf_cache="$EXAKIT_HELP_CACHE_DIR/$_hf_id.json"
-    _hf_attempt="$EXAKIT_HELP_CACHE_DIR/.attempt-$_hf_id"
-    _exakit_help_cache_fresh "$_hf_cache" && return 2
-    _exakit_help_cache_fresh "$_hf_attempt" && return 2
-    command -v curl >/dev/null 2>&1 || return 1
-    mkdir -p "$EXAKIT_HELP_CACHE_DIR" 2>/dev/null || return 1
-    : > "$_hf_attempt" 2>/dev/null || true
-    _hf_tmp="$_hf_cache.tmp.$$"
-    if ! curl -fsSL --proto '=https' --retry 1 \
-            --connect-timeout "${EXAKIT_HELP_CONNECT_TIMEOUT:-2}" \
-            --max-time "${EXAKIT_HELP_MAX_TIME:-5}" \
-            -o "$_hf_tmp" "$EXAKIT_HELP_URL/$_hf_id.json" 2>/dev/null; then
-        rm -f "$_hf_tmp"
-        _exakit_log_file "INFO  help fetch failed for $_hf_id - using the copy on disk"
-        return 1
-    fi
-    if ! _exakit_help_valid "$_hf_tmp" "$_hf_id"; then
-        rm -f "$_hf_tmp"
-        _exakit_log_file "WARN  fetched help for $_hf_id did not validate - using the copy on disk"
-        return 1
-    fi
-    mv -f "$_hf_tmp" "$_hf_cache" 2>/dev/null || { rm -f "$_hf_tmp"; return 1; }
-    _exakit_log_file "INFO  help refreshed for $_hf_id"
-    return 0
-}
-
-# exakit_help_doc_local <id> - the best document already on disk. No network.
+# exakit_help_doc_local <id> - the document this kit shipped, or nothing.
 exakit_help_doc_local() {
-    _hdl_cache="$EXAKIT_HELP_CACHE_DIR/$1.json"
-    if [ -f "$_hdl_cache" ] && _exakit_help_valid "$_hdl_cache" "$1"; then
-        printf '%s\n' "$_hdl_cache"
-        return 0
-    fi
     _hdl_ship="$(exakit_help_kit_dir)/$1.json"
     [ -f "$_hdl_ship" ] || return 1
     printf '%s\n' "$_hdl_ship"
 }
 
-# exakit_help_doc <id> - print the path of the best document available,
-# refreshing this one from the repository first.
+# exakit_help_doc <id> - kept as the name other code calls; there is only one
+# source now, so it is the same answer.
 exakit_help_doc() {
-    _hd_id="$1"
-    _hd_cache="$EXAKIT_HELP_CACHE_DIR/$_hd_id.json"
-    _hd_ship="$(exakit_help_kit_dir)/$_hd_id.json"
-    exakit_help_fetch "$_hd_id" >/dev/null 2>&1 || true
-    if [ -f "$_hd_cache" ] && _exakit_help_valid "$_hd_cache" "$_hd_id"; then
-        printf '%s\n' "$_hd_cache"
-        return 0
-    fi
-    [ -f "$_hd_ship" ] || return 1
-    printf '%s\n' "$_hd_ship"
+    exakit_help_doc_local "$1"
 }
 
-# _exakit_help_docs_args <primary> - "id=path" for every document.
-#
-# Only <primary> - the document this screen is actually ABOUT - is refreshed
-# from the repository. Every other document is read from disk, because the
-# overview and the catalog only skim them for a tagline or a summary, and nine
-# network round trips to render one screen is not a help system anyone waits for.
+# _exakit_help_docs_args - "id=path" for every document this kit carries.
 _exakit_help_docs_args() {
-    _hda_primary="${1:-exakit}"
     exakit_help_ids 2>/dev/null | while IFS= read -r _hda_id; do
         [ -n "$_hda_id" ] || continue
-        if [ "$_hda_id" = "$_hda_primary" ]; then
-            _hda_path="$(exakit_help_doc "$_hda_id" 2>/dev/null)" || continue
-        else
-            _hda_path="$(exakit_help_doc_local "$_hda_id" 2>/dev/null)" || continue
-        fi
+        _hda_path="$(exakit_help_doc_local "$_hda_id" 2>/dev/null)" || continue
         printf '%s=%s\n' "$_hda_id" "$_hda_path"
     done
 }
@@ -186,17 +93,9 @@ exakit_help_render() {
     fi
     [ "$_hr_width" -lt 40 ] && _hr_width=80
 
-    # The screen's subject decides what gets refreshed: a component page asks
-    # for that component, everything else is about the CLI itself.
-    if [ "$_hr_mode" = "component" ] && [ -n "$_hr_arg" ]; then
-        _hr_primary="$_hr_arg"
-    else
-        _hr_primary="exakit"
-    fi
-
     # shellcheck disable=SC2046
     run_python - "$_hr_mode" "$_hr_color" "$_hr_width" "$_hr_arg" \
-        $(_exakit_help_docs_args "$_hr_primary" | tr '\n' ' ') <<'EXAKIT_HELP_RENDER_PY'
+        $(_exakit_help_docs_args | tr '\n' ' ') <<'EXAKIT_HELP_RENDER_PY'
 import json, sys, textwrap
 
 mode, color, width, arg = sys.argv[1], sys.argv[2] == "1", int(sys.argv[3]), sys.argv[4]
