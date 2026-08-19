@@ -4,42 +4,9 @@
   "kind": "cli",
   "title": "exakit",
   "tagline": "The one command that runs your local Exasol stack.",
-  "role": "exakit is the control panel for the Exasol Personal Local Starter Kit: a local Exasol database, the exapump data/SQL CLI, a read-only MCP server your AI client talks to, and the pyexasol Python driver. Everything the kit installs is started, inspected, updated and removed through this one command.",
   "repo": "exasol-labs/exasol-personal-local-starterkit",
   "docs": "https://github.com/exasol-labs/exasol-personal-local-starterkit#readme",
   "state_dir": "~/.exasol-starter-kit",
-  "quickstart": [
-    {
-      "step": "Install everything",
-      "run": "curl -fsSL https://raw.githubusercontent.com/exasol-labs/exasol-personal-local-starterkit/main/install.sh | sh",
-      "note": "Deploys the database, loads sample data, and connects your AI clients. Safe to re-run; it resumes."
-    },
-    {
-      "step": "Check it is alive",
-      "run": "exakit status",
-      "note": "Status: running means the database is up. Exit 0 running, 3 stopped, 4 not installed."
-    },
-    {
-      "step": "See how to connect",
-      "run": "exakit info",
-      "note": "DSN, users, where the credentials live."
-    },
-    {
-      "step": "Connect your AI assistant",
-      "run": "exakit mcp-setup",
-      "note": "Writes MCP config for Claude, Claude Code, Codex, Cursor, Copilot, Gemini CLI, OpenCode, Continue. Restart the client afterwards."
-    },
-    {
-      "step": "Load data",
-      "run": "exakit data-load",
-      "note": "Bundled sample datasets, or your own CSV / Parquet / JSON file."
-    },
-    {
-      "step": "Ask your first question",
-      "run": "exakit guide",
-      "note": "Walks through AI clients, SQL clients (DBeaver/DbVisualizer) and Python."
-    }
-  ],
   "groups": [
     {
       "title": "Get started",

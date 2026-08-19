@@ -223,8 +223,14 @@ function Show-ExakitHelpOverview {
     $doc = $docs["exakit"]
     if (-not $doc) { Write-Host "No help data found. Re-run the installer."; return 1 }
     Write-ExakitHelpHeader $doc.title $doc.tagline
-    Write-Host ""
-    Write-ExakitHelpWrapped -Text $doc.role -Indent "   "
+    # Both optional, and the blank line belongs to the prose rather than to the
+    # header: Write-ExakitHelpSection opens with its own blank, so emitting one
+    # here for a document that has no role leaves two.
+    # Mirrors render_overview in setup/lib/help.sh.
+    if ($doc.role) {
+        Write-Host ""
+        Write-ExakitHelpWrapped -Text $doc.role -Indent "   "
+    }
     if ($doc.quickstart) {
         Write-ExakitHelpSection "Start here"
         Write-ExakitHelpSteps $doc.quickstart
