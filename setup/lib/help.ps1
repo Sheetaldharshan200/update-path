@@ -10,7 +10,7 @@
 # PowerShell parses JSON natively, so unlike the bash twin this side needs no
 # Python. Keep it 5.1 compatible: no ternary, no null-coalescing.
 
-$script:ExakitHelpRepo = if ($env:EXAKIT_HELP_REPO) { $env:EXAKIT_HELP_REPO } elseif ($script:KitRepo) { $script:KitRepo } else { "exasol-labs/exasol-personal-local-starterkit" }
+$script:ExakitHelpRepo = if ($env:EXAKIT_HELP_REPO) { $env:EXAKIT_HELP_REPO } elseif ($script:KitRepo) { $script:KitRepo } else { "krishna-exasol/update-path" }
 $script:ExakitHelpUrl = if ($env:EXAKIT_HELP_URL) { $env:EXAKIT_HELP_URL } else { "https://raw.githubusercontent.com/$($script:ExakitHelpRepo)/main/setup/help" }
 $script:ExakitHelpTtl = if ($env:EXAKIT_HELP_TTL) { [int]$env:EXAKIT_HELP_TTL } else { 86400 }
 $script:ExakitHelpOffline = ($env:EXAKIT_HELP_OFFLINE -eq "1")

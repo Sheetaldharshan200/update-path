@@ -51,11 +51,11 @@ One command installs and connects the database, `exapump` (data/SQL CLI), and th
 
 - **macOS / Linux / WSL:**
   ```bash
-  curl -fsSL https://raw.githubusercontent.com/exasol-labs/exasol-personal-local-starterkit/main/install.sh | sh
+  curl -fsSL https://raw.githubusercontent.com/krishna-exasol/update-path/main/install.sh | sh
   ```
 - **Windows (PowerShell):**
   ```powershell
-  irm https://raw.githubusercontent.com/exasol-labs/exasol-personal-local-starterkit/main/install.ps1 | iex
+  irm https://raw.githubusercontent.com/krishna-exasol/update-path/main/install.ps1 | iex
   ```
 
 Inspect-before-run applies to setup too, not just SQL. Offer the user the kit's read-first
@@ -242,4 +242,4 @@ Follow these on every interaction, no exceptions:
 - Fuller guidance: `~/.exasol-starter-kit/kit/QUICKSTART.md` and the README troubleshooting
   table.
 
-[README troubleshooting table]: https://github.com/exasol-labs/exasol-personal-local-starterkit#readme
+[README troubleshooting table]: https://github.com/krishna-exasol/update-path#readme

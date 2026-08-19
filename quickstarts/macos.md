@@ -12,7 +12,7 @@ The install runs unattended and usually finishes in **under 2 minutes**.
 Check before you start (installs nothing):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/exasol-labs/exasol-personal-local-starterkit/main/install.sh | EXAKIT_PREFLIGHT=1 sh
+curl -fsSL https://raw.githubusercontent.com/krishna-exasol/update-path/main/install.sh | EXAKIT_PREFLIGHT=1 sh
 ```
 
 No Python on your Mac? That is fine. The installer brings its own.
@@ -20,7 +20,7 @@ No Python on your Mac? That is fine. The installer brings its own.
 ## Install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/exasol-labs/exasol-personal-local-starterkit/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/krishna-exasol/update-path/main/install.sh | sh
 ```
 
 What happens, in order:
