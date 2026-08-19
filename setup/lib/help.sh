@@ -325,8 +325,14 @@ def render_overview():
         out("No help data found. Reinstall the kit or run: exakit update exakit")
         return 1
     header(doc.get("title", "exakit"), doc.get("tagline", ""))
-    out()
-    para(doc.get("role", ""), indent="   ")
+    # Both optional, and the blank line belongs to the prose rather than to the
+    # header: section() opens with its own blank, so emitting one here for a
+    # document that has no role leaves two, and para("") would draw a line of
+    # spaces on top of that (textwrap.wrap("") is empty, and the `or [""]`
+    # fallback prints the indent).
+    if doc.get("role"):
+        out()
+        para(doc["role"], indent="   ")
 
     if doc.get("quickstart"):
         section("Start here")

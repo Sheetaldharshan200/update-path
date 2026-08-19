@@ -8083,10 +8083,16 @@ exakit_uninstall_menu() {
         # "Add-ons (kit-managed)" caption said the word twice and left the sweep
         # floating above the tree it acts on.
         #
-        # Both scope rows say what SURVIVES, not what goes: "keeps: nothing" is
-        # the plainest statement EVERYTHING can make, and it is the one fact a
-        # reader at this screen is actually weighing.
-        _um_labels+=("Add-ons only — keeps: database, data, exapump, MCP, pyexasol")
+        # Both scope rows say what SURVIVES, not what goes: that is the one
+        # fact a reader at this screen is actually weighing, and "keeps:
+        # nothing" is the plainest statement EVERYTHING can make.
+        #
+        # "keeps: starter-kit" names the thing, not its parts. The row used to
+        # list them -- database, data, exapump, MCP, pyexasol -- which is the
+        # longest line on the screen, has to be re-checked against reality every
+        # time a component is added, and asks the reader to reassemble "the kit"
+        # from five nouns to answer a question they already think of in one.
+        _um_labels+=("Add-ons only — keeps: starter-kit")
         _um_keys+=("__all_addons__")
         _um_count="$(printf '%s\n' $_um_addons | grep -c .)"
         _um_i=0

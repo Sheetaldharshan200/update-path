@@ -684,7 +684,7 @@ function Show-ExakitUninstallMenu {
         # "Add-ons (kit-managed)" caption said the word twice and left the sweep
         # floating above the tree it acts on. Both scope rows say what SURVIVES.
         # Mirrors exakit_uninstall_menu in common.sh.
-        [void]$labels.Add("Add-ons only - keeps: database, data, exapump, MCP, pyexasol")
+        [void]$labels.Add("Add-ons only - keeps: starter-kit")
         [void]$keys.Add("__all_addons__")
         for ($i = 0; $i -lt $addons.Count; $i++) {
             $conn = if ($i -eq $addons.Count - 1) { $corner } else { $tee }
