@@ -35,6 +35,9 @@
 EXAKIT_JSON_TABLES_VERSION="${EXAKIT_JSON_TABLES_VERSION:-}"
 EXAKIT_JSON_TABLES_VERSION_FALLBACK="${EXAKIT_JSON_TABLES_VERSION_FALLBACK:-41ddd51a9a33}"
 EXAKIT_JSON_TABLES_PACKAGE="${EXAKIT_JSON_TABLES_PACKAGE:-exasol-json-tables}"
+# Upstream source, used only to restore package data the wheel omits (see
+# _json_tables_restore_package_data). Not where the wheel or engine come from.
+EXAKIT_JSON_TABLES_REPO="${EXAKIT_JSON_TABLES_REPO:-exasol-labs/exasol-json-tables}"
 # The mirror release lives in the kit's own repository: the same place the kit
 # is fetched from, built by the kit's own workflow.
 EXAKIT_JSON_TABLES_MIRROR_TAG="${EXAKIT_JSON_TABLES_MIRROR_TAG:-mirror-json-tables}"
@@ -74,6 +77,54 @@ json_tables_mirror_repo() {
         */*@*) printf '%s\n' "${_jmr_src%@*}"; return 0 ;;
     esac
     printf '%s\n' "$EXAKIT_KIT_REPO"
+}
+
+# _json_tables_restore_package_data — put back data files upstream ships in
+# its source tree but does NOT declare as wheel package data, so pip never
+# installs them.
+#
+# UPSTREAM BUG (exasol-json-tables, at least through 41ddd51a9a33):
+# pyproject's packaging covers the .py modules under python/exasol_json_tables
+# but not python/exasol_json_tables/preprocessor_assets/jvs_preprocessor_lib.lua,
+# so every prebuilt wheel is missing it. `ingest` (writing Parquet) is
+# unaffected; `ingest-and-wrap` and `wrap` fail with FILE-NOT-FOUND once they
+# reach the step that installs the preprocessor into Exasol.
+#
+# Rather than ship a broken wrap step, restore any non-.py file upstream's
+# source tree has and the installed wheel lacks, fetched from the exact
+# commit the mirror release was built from. Nothing is overwritten, so a
+# fixed release simply makes this a no-op. ⇄ twin:
+# Restore-JsonTablesPackageData in json-tables.ps1. Mirrors
+# _dash_server_restore_package_data.
+_json_tables_restore_package_data() {
+    _jtp_site="$("$(json_tables_venv_python)" -c 'import exasol_json_tables, os; print(os.path.dirname(exasol_json_tables.__file__))' 2>/dev/null)"
+    [ -n "$_jtp_site" ] && [ -d "$_jtp_site" ] || return 0
+
+    _jtp_tmp="$(mktemp -d "${TMPDIR:-/tmp}/exakit-jt-data.XXXXXX")" || return 0
+    if ! ( fetch "https://github.com/$EXAKIT_JSON_TABLES_REPO/archive/$EXAKIT_JSON_TABLES_VERSION.tar.gz" \
+            "$_jtp_tmp/src.tar.gz" ) >>"${EXAKIT_LOG_FILE:-/dev/null}" 2>&1; then
+        rm -rf "$_jtp_tmp"
+        return 0
+    fi
+    ( cd "$_jtp_tmp" && tar xzf src.tar.gz ) >>"${EXAKIT_LOG_FILE:-/dev/null}" 2>&1 || {
+        rm -rf "$_jtp_tmp"; return 0; }
+    # The archive's top directory embeds the full commit sha even when
+    # EXAKIT_JSON_TABLES_VERSION is a short one, so find it rather than guess it.
+    _jtp_src="$(find "$_jtp_tmp" -mindepth 1 -maxdepth 1 -type d)/python/exasol_json_tables"
+    [ -d "$_jtp_src" ] || { rm -rf "$_jtp_tmp"; return 0; }
+
+    _jtp_restored=0
+    for _jtp_rel in $( cd "$_jtp_src" && find . -type f ! -name '*.py' | sed 's|^\./||' ); do
+        [ -f "$_jtp_site/$_jtp_rel" ] && continue
+        mkdir -p "$_jtp_site/$(dirname "$_jtp_rel")" 2>/dev/null || continue
+        cp "$_jtp_src/$_jtp_rel" "$_jtp_site/$_jtp_rel" 2>/dev/null && \
+            _jtp_restored=$((_jtp_restored + 1))
+    done
+    rm -rf "$_jtp_tmp"
+    if [ "$_jtp_restored" -gt 0 ]; then
+        info "Restored $_jtp_restored data file(s) the release does not declare as package data (upstream packaging gap; ingest-and-wrap needs them)"
+    fi
+    return 0
 }
 
 # json_tables_engine_asset — the engine built for THIS machine.
@@ -357,6 +408,7 @@ json_tables_install() {
         _json_tables_not_installed "installing $_jti_wheel_name failed (see log)"
         return 1
     fi
+    _json_tables_restore_package_data
 
     # 2. the ingest engine, prebuilt for this platform
     if ! _json_tables_fetch_verified "$_jti_asset" "$_jti_tmp/engine"; then
