@@ -647,6 +647,30 @@ has "and the PowerShell twin does too" "EXAKIT_DATASETS" \
 # ...and it has to be discoverable from the CLI, not only from AGENTS.md.
 has "the catalog documents the variable" "EXAKIT_DATASETS" "$(cat "$ROOT/setup/help/exakit.json")"
 
+echo "data-load loads a named local file without a terminal:"
+# THE BUG: the local-file option was prompt-only — an agent without a tty
+# could neither choose it nor name the file, so AGENTS.md sent agents around
+# exakit entirely. EXAKIT_DATA_FILE / EXAKIT_DATA_TABLE now answer the menu,
+# the path, and the target table — the same contract as EXAKIT_DATASETS.
+has "the menu honours EXAKIT_DATA_FILE" "EXAKIT_DATA_FILE" \
+    "$(sed -n '/^exakit_data_load_select()/,/^}/p' "$ROOT/setup/lib/exapump.sh")"
+has "the local-file loader honours it too" "EXAKIT_DATA_FILE" \
+    "$(sed -n '/^exakit_load_local_file()/,/^}/p' "$ROOT/setup/lib/exapump.sh")"
+has "and the target table" "EXAKIT_DATA_TABLE" \
+    "$(sed -n '/^exakit_load_local_file()/,/^}/p' "$ROOT/setup/lib/exapump.sh")"
+has "the PowerShell menu twin honours it" "EXAKIT_DATA_FILE" \
+    "$(sed -n '/^function Select-ExakitDataLoad/,/^}/p' "$ROOT/setup/lib/exapump.ps1")"
+has "and the PowerShell loader too" "EXAKIT_DATA_FILE" \
+    "$(sed -n '/^function Import-ExakitLocalFile/,/^}/p' "$ROOT/setup/lib/exapump.ps1")"
+has "with the target table" "EXAKIT_DATA_TABLE" \
+    "$(sed -n '/^function Import-ExakitLocalFile/,/^}/p' "$ROOT/setup/lib/exapump.ps1")"
+has "the catalog documents EXAKIT_DATA_FILE" "EXAKIT_DATA_FILE" "$(cat "$ROOT/setup/help/exakit.json")"
+has "and EXAKIT_DATA_TABLE" "EXAKIT_DATA_TABLE" "$(cat "$ROOT/setup/help/exakit.json")"
+# The runbook must stop steering agents away from data-load: that sentence
+# described the prompt-only behaviour this contract replaces.
+lacks "AGENTS.md no longer routes agents around data-load" \
+    "prompts for the path on a TTY and is skipped without one" "$(cat "$ROOT/AGENTS.md")"
+
 echo "the discovery surfaces are machine-readable:"
 # THE BUG: an agent told to "discover every command with exakit catalog" had to
 # pattern-match an ANSI-decorated screen; `exakit logs` was prose only too.
