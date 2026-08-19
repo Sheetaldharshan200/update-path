@@ -113,8 +113,10 @@ fi
 
 # 7. Both scope rows say what SURVIVES. That is the fact a reader at this screen
 #    is weighing, and "keeps: nothing" is the plainest thing EVERYTHING can say.
+#    The add-ons row names the kit rather than listing its parts, so this must
+#    not go back to enumerating components as the row's text.
 case "$out_skip" in
-    *"keeps: database"*) pass "the add-ons row says what it keeps" ;;
+    *"keeps: starter-kit"*) pass "the add-ons row says what it keeps" ;;
     *) fail "the add-ons row no longer says what survives" ;;
 esac
 case "$out_skip" in
