@@ -35,20 +35,52 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          # Prefer a real upstream RELEASE: that is the thing users mean by "a
-          # new version". A repo that does not cut releases still gets served,
-          # from the main commit. Whichever it is, `ref` is what gets built and
-          # `sha` is what gets advertised, so the two can never disagree.
+          # ONLY a released version is ever built or advertised. "v0.1" is
+          # something a user can recognise, compare and talk about; a bare
+          # commit id like 41ddd51a9a33 is not, and it silently ties every
+          # install to whatever main happened to hold that day.
+          #
+          # Two things count as a release, in order:
+          #   1. a published GitHub Release  (/releases/latest -> tag_name)
+          #   2. a plain git TAG             (/tags -> newest by commit date)
+          #
+          # The tag step matters because /releases/latest sees ONLY published
+          # Releases: a repository that ran `git tag v0.1 && git push --tags`
+          # without cutting a Release looks release-less to that endpoint, and
+          # that is exactly why builds used to be advertised as a commit id.
+          #
+          # There is deliberately NO fallback to the main commit. If upstream
+          # has cut nothing, this builds nothing and says so - an unreleased
+          # main is not a version, and shipping one as if it were is how a
+          # user ends up pinned to an arbitrary mid-development tree.
+          # Both lookups are non-fatal: `set -o pipefail` is on, so a blip in
+          # curl or jq would otherwise abort the run rather than fall through
+          # to the next source of a version.
           rel=$(curl -sSL -H "Authorization: Bearer $GH_TOKEN" \
-            "https://api.github.com/repos/$UPSTREAM/releases/latest" | jq -r '.tag_name // ""')
-          if [ -n "$rel" ] && [ "$rel" != "null" ]; then
-            sha="$rel"; ref="$rel"
-          else
-            sha=$(curl -sSL -H "Authorization: Bearer $GH_TOKEN" \
-              "https://api.github.com/repos/$UPSTREAM/commits/main" | jq -r '.sha // ""')
-            ref="$sha"
-            sha=$(printf '%s' "$sha" | cut -c1-12)
+            "https://api.github.com/repos/$UPSTREAM/releases/latest" | jq -r '.tag_name // ""') || rel=""
+          if [ -z "$rel" ] || [ "$rel" = "null" ]; then
+            # Newest tag by the date of the commit it points at - NOT the order
+            # the API happens to return, which is lexical and would make v0.10
+            # older than v0.9.
+            rel=$(curl -sSL -H "Authorization: Bearer $GH_TOKEN" \
+              "https://api.github.com/repos/$UPSTREAM/tags?per_page=100" \
+              | jq -r '.[] | "\(.name) \(.commit.url)"' \
+              | while read -r name url; do
+                  date=$(curl -sSL -H "Authorization: Bearer $GH_TOKEN" "$url" \
+                    | jq -r '.commit.committer.date // ""')
+                  [ -n "$date" ] && printf '%s\t%s\n' "$date" "$name"
+                done | sort -r | head -1 | cut -f2) || rel=""
           fi
+          if [ -z "$rel" ] || [ "$rel" = "null" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "sha=" >> "$GITHUB_OUTPUT"
+            echo "ref=" >> "$GITHUB_OUTPUT"
+            echo "::warning::$UPSTREAM has published no Release and no tag - nothing to build. Cut a release upstream, then re-run this workflow."
+            exit 0
+          fi
+          # The tag is both what gets BUILT and what gets ADVERTISED, so the
+          # artifacts and the version can never describe different code.
+          sha="$rel"; ref="$rel"
           last=$(curl -sSL -H "Authorization: Bearer $GH_TOKEN" \
             "https://api.github.com/repos/${{ github.repository }}/releases/tags/mirror-json-tables" \
             | jq -r '.body // ""' | sed -n 's/.*version=\([^ ]*\).*/\1/p') || last=""
