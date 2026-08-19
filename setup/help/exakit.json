@@ -390,18 +390,6 @@
     {
       "name": "EXAKIT_NO_UPDATE_NOTICE",
       "effect": "1 never prints the once-a-day update notice."
-    },
-    {
-      "name": "EXAKIT_HELP_URL",
-      "effect": "Where the help documents are fetched from (must be https)."
-    },
-    {
-      "name": "EXAKIT_HELP_TTL",
-      "effect": "Seconds before a cached help document is refreshed. 0 fetches every time."
-    },
-    {
-      "name": "EXAKIT_HELP_OFFLINE",
-      "effect": "1 never fetches; renders the copy that shipped with the kit."
     }
   ],
   "troubleshooting": [
