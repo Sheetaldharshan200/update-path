@@ -18,7 +18,8 @@
     },
     {
       "step": "Or install it up front",
-      "run": "EXAKIT_MARKETPLACE_ADDONS=json-tables exakit marketplace"
+      "run": "exakit marketplace",
+      "note": "Space selects JSON Tables, Enter installs it."
     }
   ],
   "commands": [
