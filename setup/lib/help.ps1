@@ -266,7 +266,7 @@ function Show-ExakitHelpOverview {
         }
     }
     Write-Host ""
-    Write-Host "  Every command also answers --help. Browse everything with: exakit catalog" -ForegroundColor DarkGray
+    Write-Host "  More detail on any command or component: exakit <component / command> --help" -ForegroundColor DarkGray
     Write-Host ""
     return 0
 }

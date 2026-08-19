@@ -371,7 +371,10 @@ def render_overview():
             out()
 
     out()
-    para("Every command also answers --help. Browse everything with: exakit catalog",
+    # Kept short enough to survive an 80-column terminal in one line: wrapping
+    # this splits "exakit <component / command>" from its "--help" and the
+    # reader is left looking at half a command.
+    para("More detail on any command or component: exakit <component / command> --help",
          indent="  %s" % DIM)
     if color:
         sys.stdout.write(R)
