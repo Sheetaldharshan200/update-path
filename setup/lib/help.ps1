@@ -352,6 +352,21 @@ function Show-ExakitHelpComponent {
                 -Label (Get-ExakitHelpInvocationWithOptions -DocId $Id -Entry $entry -Doc $doc)
         }
     }
+    # Twin of the snippets block in help.sh. Without it the Examples section -
+    # the SQL a reader needs most on the json-tables and pyexasol pages -
+    # silently vanished on Windows.
+    if ($doc.snippets) {
+        Write-ExakitHelpSection "Examples"
+        $first = $true
+        foreach ($snippet in $doc.snippets) {
+            if (-not $first) { Write-Host "" }
+            $first = $false
+            Write-Host "    $($snippet.title)"
+            foreach ($line in ($snippet.code -split "`n")) {
+                Write-Host "      $line" -ForegroundColor Cyan
+            }
+        }
+    }
     if ($doc.environment) {
         Write-ExakitHelpSection "Environment"
         foreach ($item in $doc.environment) {
