@@ -732,28 +732,46 @@ function Show-ExakitJsonUnsupported {
 }
 
 function Import-ExakitLocalFile {
+    $defaultPath = if ($env:EXAKIT_DATA_FILE) { $env:EXAKIT_DATA_FILE } else { "" }
     while ($true) {
-        $rawPath = Read-ExakitPrompt "Local CSV/Parquet file path (type back to return)" ""
+        $rawPath = Read-ExakitPrompt "Local CSV/Parquet file path (type back to return)" $defaultPath
         if ($rawPath -match '^(b|back)$') {
             Info "Returning to data loading options."
             return "back"
         }
         if (-not $rawPath) {
             Warn2 "Please enter a local CSV/Parquet file path, or type back to return."
+            # No console means Read-ExakitPrompt returns the same default
+            # forever, so a bad or missing EXAKIT_DATA_FILE must fail here
+            # instead of looping.
+            if (-not (Test-ExakitInteractive)) {
+                Fail "No local file to load - set EXAKIT_DATA_FILE to a readable CSV/Parquet file."
+            }
             continue
         }
         $path = Get-ExakitNormalizedPath $rawPath
         if ((Test-Path $path) -and (Get-Item $path).Length -gt 0) { break }
         Warn2 "File not found or empty: $path"
+        if (-not (Test-ExakitInteractive)) {
+            Fail "File not found or empty: $path"
+        }
     }
     # A JSON file cannot be loaded on Windows at all, so say so here rather
     # than after the user has picked a table for a load that cannot happen.
     if ((Get-ExakitDataFileKind $path) -eq "json") {
         Show-ExakitJsonUnsupported
+        # An unattended run (EXAKIT_DATA_FILE) has nobody to read that advice:
+        # it must FAIL, or the agent reads success off a load that never ran.
+        if (-not (Test-ExakitInteractive)) {
+            Fail "JSON files cannot be loaded on Windows - convert $path to CSV/Parquet, or load it from macOS, Linux or WSL."
+        }
         return "back"
     }
     $schema = if ($env:EXAKIT_SCHEMA) { $env:EXAKIT_SCHEMA } else { "STARTER_KIT" }
     $defaultTable = "$schema.$(Get-ExakitTableName $path)"
+    # EXAKIT_DATA_TABLE pre-answers the target the same way the path is
+    # pre-answered - as the prompt's default, which a no-console run keeps.
+    if ($env:EXAKIT_DATA_TABLE) { $defaultTable = $env:EXAKIT_DATA_TABLE }
     while ($true) {
         $target = Read-ExakitPrompt "Target table (SCHEMA.TABLE, back to return)" $defaultTable
         if ($target -match '^(b|back)$') {
@@ -762,6 +780,9 @@ function Import-ExakitLocalFile {
         }
         if (Test-ExakitTableTarget $target) { break }
         Warn2 "Target table must look like SCHEMA.TABLE and use letters, numbers, or underscores."
+        if (-not (Test-ExakitInteractive)) {
+            Fail "EXAKIT_DATA_TABLE must look like SCHEMA.TABLE and use letters, numbers, or underscores."
+        }
     }
     $target = Get-ExakitUpperTableTarget $target
 
@@ -1112,6 +1133,13 @@ function Invoke-ExakitDatasetDirLoad {
 # string array of ids ("tpch", "local") or @("none").
 function Select-ExakitDataLoad {
     param([Parameter(Mandatory)][string]$FinalLabel)
+    # EXAKIT_DATA_FILE mirrors the EXAKIT_DATASETS contract: naming a file IS
+    # choosing the local-file option, so the menu never draws. The path (and
+    # EXAKIT_DATA_TABLE) are consumed by Import-ExakitLocalFile as its answers.
+    if ($env:EXAKIT_DATA_FILE) {
+        Info "Loading a local file (EXAKIT_DATA_FILE)."
+        return @("local")
+    }
     # Three top-level choices, with the pending datasets shown upfront as a
     # small tree under a "Sample datasets" group header (see exapump.sh twin).
     $labels = New-Object 'System.Collections.Generic.List[string]'

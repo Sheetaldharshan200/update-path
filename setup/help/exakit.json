@@ -169,12 +169,15 @@
       "description": "Opens the data-loading menu: bundled datasets (tpch, energy, weather) or a local CSV / Parquet / JSON file. Every file kind asks the same two things - the file, then SCHEMA.TABLE - and JSON is shredded into tables by an engine the kit installs for you. --force reloads instead of skipping what is already there.",
       "environment": [
         "EXAKIT_DATASETS=tpch,energy,weather names exactly which bundled datasets to load",
+        "EXAKIT_DATA_FILE=/path/file.json answers the local-file question, so a run without a terminal loads that CSV / Parquet / JSON file",
+        "EXAKIT_DATA_TABLE=SCHEMA.TABLE answers the target-table question for EXAKIT_DATA_FILE (default: STARTER_KIT.<filename>)",
         "EXAKIT_SCHEMA sets the default target schema"
       ],
       "examples": [
         "exakit data-load",
         "exakit data-load --force",
-        "EXAKIT_DATASETS=tpch exakit data-load"
+        "EXAKIT_DATASETS=tpch exakit data-load",
+        "EXAKIT_DATA_FILE=./sales.json EXAKIT_DATA_TABLE=STARTER_KIT.SALES exakit data-load"
       ]
     },
     {

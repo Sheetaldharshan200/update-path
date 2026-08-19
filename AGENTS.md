@@ -30,6 +30,8 @@ Flags do not travel through a pipe, so choices are env vars. They work on all pl
 | `EXAKIT_SKIP_MCP=1` | Skip MCP client setup entirely (run `exakit mcp-setup` later) |
 | `EXAKIT_DATASETS=tpch,weather` | Which bundled datasets to load, by id: `tpch`, `energy`, `weather`. Takes precedence over `EXAKIT_LOAD_SAMPLE` |
 | `EXAKIT_LOAD_SAMPLE=0\|1` | `0` skip data loading, `1` load the bundled sample (tpch) |
+| `EXAKIT_DATA_FILE=/abs/path/data.json` | Load this local CSV / Parquet / JSON file (skips the data menu; also works standalone: `EXAKIT_DATA_FILE=... exakit data-load`) |
+| `EXAKIT_DATA_TABLE=SCHEMA.TABLE` | Target table for `EXAKIT_DATA_FILE` (default `STARTER_KIT.<FILENAME>`; a nested JSON file fans out to `<TABLE>_*` tables) |
 | `EXAKIT_MARKETPLACE_ADDONS=dash-server` | Answer the closing marketplace offer: ids csv, `all`, or `none`. Unset, a non-interactive install skips the offer with a hint |
 | `EXAKIT_REUSE_DB=0\|1` | macOS: adopt an existing database (`1`, the default) or destroy it and deploy fresh (`0`) |
 | `EXAKIT_PREFLIGHT=1` | Check machine requirements only, installs nothing (sh installer only) |
@@ -133,7 +135,7 @@ curl -fsSL https://raw.githubusercontent.com/krishna-exasol/update-path/main/ins
   EXAKIT_MCP_CLIENTS=claude EXAKIT_LOAD_SAMPLE=0 EXAKIT_MARKETPLACE_ADDONS=dash-server,json-tables sh
 ```
 
-2. **Load the JSON file directly.** `exakit data-load`'s local-file option prompts for the path on a TTY and is skipped without one, so an agent calls the add-on's CLI instead — `ingest-and-wrap` shreds the file, imports it, and installs queryable wrapper views in one command (admin credentials, because it creates schemas):
+2. **Load the JSON file directly.** `exakit data-load` loads a file unattended with `EXAKIT_DATA_FILE=<file> EXAKIT_DATA_TABLE=<SCHEMA.TABLE>` — but this recipe still calls the add-on's CLI, because `ingest-and-wrap` additionally installs the queryable wrapper views the dashboard uses: it shreds the file, imports it, and creates those views in one command (admin credentials, because it creates schemas):
 
 ```bash
 exasol-json-tables ingest-and-wrap --input <file.json> --dsn 127.0.0.1:8563 \
