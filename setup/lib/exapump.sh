@@ -774,10 +774,63 @@ exakit_load_local_json() {
         warn "Could not create a temporary directory for the JSON ingest."
         return 1
     }
+    # THE INGEST ENGINE IS LINE-ORIENTED: it reads one complete JSON document
+    # per line. A pretty-printed file - which is what almost every API, export
+    # and hand-written fixture actually looks like - fails on its first line
+    # with "Line 1: EOF while parsing an object", because line 1 is just "{".
+    #
+    # Re-flowing that onto one line changes whitespace, not data, so the kit
+    # does it rather than telling someone to reformat a file it can read
+    # perfectly well. A file that is ALREADY line-delimited is passed through
+    # untouched; one that is not JSON at all is reported as that, instead of
+    # as a parse error pointing at a line number nobody wrote.
+    _jl_input="$_jl_path"
+    _jl_norm="$_jl_tmp/normalised.json"
+    run_python - "$_jl_path" "$_jl_norm" <<'EXAKIT_JSON_NORMALISE_PY'
+import json, sys
+
+source, target = sys.argv[1], sys.argv[2]
+with open(source, encoding="utf-8-sig") as handle:
+    raw = handle.read()
+
+try:
+    document = json.loads(raw)
+except ValueError:
+    # Not one whole document. It may already be NDJSON - every non-empty line
+    # a document of its own - which is exactly what the engine wants.
+    for line in raw.splitlines():
+        if not line.strip():
+            continue
+        try:
+            json.loads(line)
+        except ValueError:
+            sys.exit(4)          # neither shape: genuinely malformed
+    sys.exit(3)                  # already line-delimited, use it as it is
+
+with open(target, "w", encoding="utf-8") as out:
+    if isinstance(document, list):
+        # A top-level array is a list of records: one per line.
+        for item in document:
+            out.write(json.dumps(item) + "\n")
+    else:
+        out.write(json.dumps(document) + "\n")
+EXAKIT_JSON_NORMALISE_PY
+    case $? in
+        0) _jl_input="$_jl_norm" ;;
+        3) ;;   # already NDJSON
+        4) rm -rf "$_jl_tmp"
+           warn "$(ui_tilde "$_jl_path") is not valid JSON."
+           info "It must be one JSON document, or NDJSON with one document per line."
+           info "Nothing was loaded; the database is unchanged."
+           return 1 ;;
+        *) ;;   # no python, or an unreadable file: let the engine have its say
+    esac
+
     if ! run_logged "$EXAKIT_JSON_TABLES_BIN" ingest \
-            --input "$_jl_path" --output-dir "$_jl_tmp/out"; then
+            --input "$_jl_input" --output-dir "$_jl_tmp/out"; then
         rm -rf "$_jl_tmp"
         warn "This JSON file could not be read - see: exakit logs json-tables"
+        info "It must be one JSON document, or NDJSON with one document per line."
         info "Nothing was loaded; the database is unchanged."
         return 1
     fi
