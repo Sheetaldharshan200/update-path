@@ -122,6 +122,39 @@ EXAKIT_MARKETPLACE_ADDONS=dash-server exakit marketplace   # ids csv, or all / n
 - After a restart, nothing needs a human if autostart is on. If it is off, `exakit start` brings the database and every service back in one command.
 - Building a NEW add-on for the marketplace is a development task, not an install step: the walkthrough with skeleton code is [MARKETPLACE.md](MARKETPLACE.md).
 
+## Recipe: install → local JSON file → live dashboard, in one unattended run
+
+The whole flow — fresh machine to a dashboard URL — needs no human and no client restart. Every step below is the non-interactive path; do not substitute interactive menus for any of them.
+
+1. **Install with both add-ons pre-answered**, in the background (see Timing above), then poll `exakit status` until `running`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/krishna-exasol/update-path/main/install.sh | \
+  EXAKIT_MCP_CLIENTS=claude EXAKIT_LOAD_SAMPLE=0 EXAKIT_MARKETPLACE_ADDONS=dash-server,json-tables sh
+```
+
+2. **Load the JSON file directly.** `exakit data-load`'s local-file option prompts for the path on a TTY and is skipped without one, so an agent calls the add-on's CLI instead — `ingest-and-wrap` shreds the file, imports it, and installs queryable wrapper views in one command (admin credentials, because it creates schemas):
+
+```bash
+exasol-json-tables ingest-and-wrap --input <file.json> --dsn 127.0.0.1:8563 \
+  --user sys --password "$(cat ~/.exasol-starter-kit/credentials/personal_sys_password)" \
+  --name <workflow_name> --no-tls --if-exists replace --json
+```
+
+The `--json` summary names the source schema it created (`EJT_<NAME>_SRC`). Explore it with read-only SQL; every ingested column is a string, so `CAST(... AS DOUBLE)` numerics before aggregating.
+
+3. **Build the dashboard through dash-server's MCP control plane** — plain JSON-RPC over HTTP to `http://127.0.0.1:5100/mcp` (read the real port from `exakit info`; no MCP client registration or restart is needed):
+
+```bash
+curl -s -X POST http://127.0.0.1:5100/mcp \
+  -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"<tool>","arguments":{...}}}'
+```
+
+   Call four tools in order: `exasol_profile_create_local` (bind the **read-only** user — `user: mcp_readonly`, `secret_value` from `~/.exasol-starter-kit/credentials/mcp_readonly_password`, `tls_verify: false`; dashboards read, they never need `sys`), `exasol_profile_validate`, `app_scaffold_from_schema` (point it at the ingested schema/table; it introspects the columns and builds the app itself), then `app_run_healthcheck`.
+
+4. **Report the browser URL** (`http://127.0.0.1:<port>/apps/<app-name>`) only after the healthcheck's `data_layer` and `sql_smoke` probes pass — a `200` from the page alone does not prove the dashboard can query.
+
 ## Where things live
 
 - State, credentials, logs: `~/.exasol-starter-kit/` (logs under `logs/`). Installer and `exakit` messages name their remedy — check there before improvising. Raw database/driver errors (through MCP tools or `exapump` directly) do NOT; translate the common ones with the table below.
