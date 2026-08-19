@@ -7742,6 +7742,20 @@ exakit_logs_show() {
 $(exakit_log_targets)
 EXAKIT_LSH_EOF
     if [ -z "$_lsh_found" ]; then
+        # A registered add-on that is simply NOT INSTALLED is not an unknown
+        # name, and saying "No log called 'dash-server'" next to a list that
+        # does not contain it leaves the reader to work out why theirs is
+        # missing. Name the actual state instead: not installed here, or not
+        # installable on this machine at all.
+        if command -v _exakit_addon_registered >/dev/null 2>&1 && \
+           _exakit_addon_registered "$_lsh_target"; then
+            if command -v _exakit_addon_applicable >/dev/null 2>&1 && \
+               ! _exakit_addon_applicable "$_lsh_target"; then
+                _lsh_why="$(_exakit_addon_applicable_reason "$_lsh_target" 2>/dev/null || true)"
+                die "$_lsh_target is not available on this machine${_lsh_why:+: $_lsh_why}"
+            fi
+            die "$_lsh_target is not installed, so it has written no log yet. Install it with: exakit marketplace"
+        fi
         _lsh_known="$(exakit_log_targets | cut -d'|' -f1 | tr '\n' ' ' | sed 's/ $//')"
         die "No log called '$_lsh_target'.${_lsh_known:+ Available: $_lsh_known}"
     fi
