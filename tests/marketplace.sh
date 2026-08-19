@@ -1273,6 +1273,75 @@ JTSTUBEOF
 chmod 755 "$WORK/jt-bin/exasol-json-tables"
 printf '[{"id":1}]\n' > "$WORK/sample.json"
 
+# THE BUG: the ingest engine reads one complete JSON document per LINE, so a
+# pretty-printed file - which is what almost every API, export and fixture
+# looks like - died on "Line 1: EOF while parsing an object" with nothing to
+# tell the reader that whitespace was the whole problem. Re-flowing it changes
+# no data, so data-load does it. These assert on the file the engine is handed.
+printf '{\n  "meta": {\n    "page": 1\n  },\n  "rows": [\n    {"id": 1}\n  ]\n}\n' > "$WORK/pretty.json"
+printf '{"id":1}\n{"id":2}\n' > "$WORK/already.ndjson"
+printf 'this is not json {{{\n' > "$WORK/broken.json"
+
+mkdir -p "$WORK/jt-probe"
+cat > "$WORK/jt-probe/exasol-json-tables" <<'JTPROBEEOF'
+#!/bin/sh
+# stub CLI: records the input it was handed, then writes one Parquet file
+_in=""; _out=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --input) _in="$2"; shift 2 ;;
+        --output-dir) _out="$2"; shift 2 ;;
+        *) shift ;;
+    esac
+done
+# One document per line is the contract; record how many lines the engine saw
+# and whether the first one parses on its own.
+printf '%s' "$(wc -l < "$_in" | tr -d ' ')" > "${JT_PROBE_LINES:-/dev/null}"
+mkdir -p "$_out"
+: > "$_out/rows.parquet"
+exit 0
+JTPROBEEOF
+chmod 755 "$WORK/jt-probe/exasol-json-tables"
+
+_jl_pretty="$( (
+    EXAKIT_JSON_TABLES_BIN="$WORK/jt-probe/exasol-json-tables"
+    JT_PROBE_LINES="$WORK/probe-lines"; export JT_PROBE_LINES
+    json_tables_installed_version() { printf '50d05da0f6da\n'; }
+    run_logged() { "$@" >/dev/null 2>&1; }
+    info() { :; }; ok() { :; }
+    exakit_ensure_schema() { :; }
+    exapump_upload() { printf 'UPLOAD:%s ' "$2"; }
+    exakit_verify_loaded_table() { :; }
+    exakit_load_local_json "$WORK/pretty.json" "STARTER_KIT.PRETTY" 2>&1
+) )"
+has "a pretty-printed file still loads" "UPLOAD:STARTER_KIT.PRETTY" "$_jl_pretty"
+check "and the engine is handed one document per line" "1" "$(cat "$WORK/probe-lines" 2>/dev/null)"
+
+_jl_nd="$( (
+    EXAKIT_JSON_TABLES_BIN="$WORK/jt-probe/exasol-json-tables"
+    JT_PROBE_LINES="$WORK/probe-lines-nd"; export JT_PROBE_LINES
+    json_tables_installed_version() { printf '50d05da0f6da\n'; }
+    run_logged() { "$@" >/dev/null 2>&1; }
+    info() { :; }; ok() { :; }
+    exakit_ensure_schema() { :; }
+    exapump_upload() { printf 'UPLOAD:%s ' "$2"; }
+    exakit_verify_loaded_table() { :; }
+    exakit_load_local_json "$WORK/already.ndjson" "STARTER_KIT.ND" 2>&1
+) )"
+check "NDJSON is passed through untouched" "2" "$(cat "$WORK/probe-lines-nd" 2>/dev/null)"
+
+_jl_broken="$( (
+    EXAKIT_JSON_TABLES_BIN="$WORK/jt-probe/exasol-json-tables"
+    json_tables_installed_version() { printf '50d05da0f6da\n'; }
+    run_logged() { "$@" >/dev/null 2>&1; }
+    exapump_upload() { printf 'UPLOAD-CALLED\n'; }
+    exakit_verify_loaded_table() { :; }
+    exakit_load_local_json "$WORK/broken.json" "STARTER_KIT.BROKEN" 2>&1
+) )"
+has "a file that is not JSON says so" "is not valid JSON" "$_jl_broken"
+has "and names the shape it wants" "one document per line" "$_jl_broken"
+lacks "and uploads nothing" "UPLOAD-CALLED" "$_jl_broken"
+
 # Not installed: the engine installs itself, silently. The user asked for a
 # JSON file to be loaded -- the engine that reads one is an implementation
 # detail, so nothing is asked and no install or download step is announced.
