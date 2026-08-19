@@ -2181,7 +2181,13 @@ level2_behind="$(kit2_table "$WORK/with-kit2.json" \
                                    runtime.type) printf "nano\n" ;;
                                    kit.version) printf "0.2.0\n" ;;
                                    *) return 1 ;; esac; }')"
-has "an older bundle offers the update" "exakit update kit2" "$level2_behind"
+# The table promotes ONE command now - "Bring everything up to date with:
+# exakit update" - instead of a per-row `exakit update <component>`. That
+# change updated the pyexasol and mcp assertions above and left this one
+# behind, asserting a command the screen deliberately no longer prints. What
+# still matters is that a bundle which is behind is visibly behind.
+has "an older bundle is shown as behind" "0.1.0" "$(row "$level2_behind" kit2)"
+lacks "and advertises no per-row command" "exakit update kit2" "$level2_behind"
 
 # `exakit update kit2` is only meaningful once Kit 2 is installed, and it never
 # invents assets the kit copy does not carry.
