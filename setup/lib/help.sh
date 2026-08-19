@@ -467,9 +467,14 @@ def render_component(key):
                      entry.get("summary") or entry.get("description", ""), pad=34)
 
     if doc.get("snippets"):
-        section("Example")
-        for snippet in doc["snippets"]:
-            out("    %s%s%s" % (DIM, snippet.get("title", ""), R))
+        # Blank line BETWEEN blocks, not after the last one: several examples
+        # run together into one wall otherwise, and the titles stop reading as
+        # headings for the code under them.
+        section("Examples")
+        for index, snippet in enumerate(doc["snippets"]):
+            if index:
+                out()
+            out("    %s%s%s" % (B, snippet.get("title", ""), R))
             for line in snippet.get("code", "").split("\n"):
                 out("      %s%s%s" % (CY, line, R))
 

@@ -1390,7 +1390,14 @@ EXAKIT_DLS_EOF
         EXAKIT_CHECKBOX_GROUP="1:2:$((_dls_pending_n + 1)):all"
     else
         info "Every bundled dataset is already loaded (reload with: exakit data-load --force)."
-        _dls_defaults="$_dls_final_idx"
+        # Pre-select the LOCAL FILE row, not the final "Cancel" one. With every
+        # bundled dataset already in, someone who typed `exakit data-load`
+        # wants to load something of their own - that is the only thing left
+        # for this screen to do. Defaulting to Cancel made Enter a no-op and
+        # asked them to move the cursor to reach the one useful row.
+        # The local row is added immediately before the final label, so it sits
+        # one index below it.
+        _dls_defaults="$((_dls_final_idx - 1))"
     fi
     EXAKIT_CHECKBOX_EXCLUSIVE="$_dls_final_idx"
     ui_checkbox_menu "Select data to load" "$_dls_defaults" "${_dls_labels[@]}"
