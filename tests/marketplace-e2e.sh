@@ -209,6 +209,17 @@ else
     [ -x "$EXAKIT_BIN_DIR/exasol-json-tables" ] || fail "no launcher was written"
     [ -x "$EXAKIT_HOME/json-tables/libexec/json_to_parquet" ] || fail "no prebuilt engine was installed"
     [ -x "$EXAKIT_HOME/json-tables/shim/cargo" ] || fail "no cargo shim was written"
+    # Regression guard: the wheel does not declare this file as package data
+    # (upstream packaging gap), so without _json_tables_restore_package_data
+    # it is silently absent and ingest-and-wrap fails later with FILE-NOT-FOUND.
+    _jt_venv_site="$(
+        . "$ROOT/setup/lib/common.sh" >/dev/null 2>&1
+        . "$ROOT/setup/lib/json-tables.sh" >/dev/null 2>&1
+        "$(json_tables_venv_python)" -c 'import exasol_json_tables, os; print(os.path.dirname(exasol_json_tables.__file__))' 2>/dev/null
+    )"
+    [ -f "$_jt_venv_site/preprocessor_assets/jvs_preprocessor_lib.lua" ] \
+        || fail "the preprocessor lua asset is missing -- ingest-and-wrap will fail with FILE-NOT-FOUND"
+    echo "  ok  the preprocessor lua asset the wheel omits was restored"
     case "$_jt_out" in
         *"Checksum verified"*) echo "  ok  artifacts were checksum-verified against the release digests" ;;
         *) fail "the install did not verify its downloads: $_jt_out" ;;
