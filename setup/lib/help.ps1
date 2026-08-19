@@ -1,19 +1,13 @@
 # help.ps1 - Windows twin of help.sh: the kit's help system, rendered from the
 # documents in setup/help/*.json rather than from hardcoded text.
 #
-# Same policy as the bash side. The data is read, in order, from:
-#   1. the cached copy fetched from the kit repository, while it is fresh
-#   2. the copy that shipped with this kit (setup/help/)
-# The fetch is https-only, validated before it is trusted, written atomically,
-# and never fatal - offline renders the copy on disk and says nothing.
+# Same policy as the bash side: the data comes from the copy that shipped with
+# this kit (setup/help/), and nothing else. Fetching a remote copy used to take
+# precedence, which let a repository BEHIND the installed kit silently
+# downgrade its own help. Help now matches the code it was installed with.
 #
 # PowerShell parses JSON natively, so unlike the bash twin this side needs no
 # Python. Keep it 5.1 compatible: no ternary, no null-coalescing.
-
-$script:ExakitHelpRepo = if ($env:EXAKIT_HELP_REPO) { $env:EXAKIT_HELP_REPO } elseif ($script:KitRepo) { $script:KitRepo } else { "krishna-exasol/update-path" }
-$script:ExakitHelpUrl = if ($env:EXAKIT_HELP_URL) { $env:EXAKIT_HELP_URL } else { "https://raw.githubusercontent.com/$($script:ExakitHelpRepo)/main/setup/help" }
-$script:ExakitHelpTtl = if ($env:EXAKIT_HELP_TTL) { [int]$env:EXAKIT_HELP_TTL } else { 86400 }
-$script:ExakitHelpOffline = ($env:EXAKIT_HELP_OFFLINE -eq "1")
 
 function Get-ExakitHelpKitDir {
     if ($script:LibDir) {
@@ -23,11 +17,8 @@ function Get-ExakitHelpKitDir {
     return (Join-Path (Join-Path $script:ExakitHome "kit") "setup\help")
 }
 
-function Get-ExakitHelpCacheDir {
-    if ($env:EXAKIT_HELP_CACHE_DIR) { return $env:EXAKIT_HELP_CACHE_DIR }
-    return (Join-Path $script:ExakitHome "cache\help")
-}
-
+# The shipped directory IS the registry: a component exists for help purposes
+# exactly when this kit carries a document for it.
 function Get-ExakitHelpIds {
     $dir = Get-ExakitHelpKitDir
     if (-not (Test-Path $dir)) { return @() }
@@ -43,62 +34,8 @@ function Test-ExakitHelpId {
     return ((Get-ExakitHelpIds) -contains $Id)
 }
 
-# A document is trusted only if it parses and carries the id it claims to.
-function Test-ExakitHelpDocument {
-    param([string]$Path, [string]$Id)
-    if (-not (Test-Path $Path)) { return $false }
-    try {
-        $doc = Get-Content -Raw -Path $Path -Encoding UTF8 | ConvertFrom-Json
-    } catch { return $false }
-    if (-not $doc) { return $false }
-    if ($doc.id -ne $Id) { return $false }
-    if (-not $doc.schema_version) { return $false }
-    return $true
-}
-
-function Update-ExakitHelpCache {
-    param([string]$Id)
-    if ($script:ExakitHelpOffline) { return $false }
-    if ($script:ExakitHelpUrl -notmatch '^https://') { return $false }
-    $cacheDir = Get-ExakitHelpCacheDir
-    $cache = Join-Path $cacheDir "$Id.json"
-    if (Test-Path $cache) {
-        $age = ((Get-Date) - (Get-Item $cache).LastWriteTime).TotalSeconds
-        if ($script:ExakitHelpTtl -gt 0 -and $age -lt $script:ExakitHelpTtl) { return $false }
-    }
-    # The attempt marker is what keeps help instant: a repository that has not
-    # published these documents yet, or a machine with no network, must not pay
-    # a request timeout on every run. Touched before the request, so one attempt
-    # per id per TTL is made whatever the outcome.
-    $attempt = Join-Path $cacheDir ".attempt-$Id"
-    if (Test-Path $attempt) {
-        $attemptAge = ((Get-Date) - (Get-Item $attempt).LastWriteTime).TotalSeconds
-        if ($script:ExakitHelpTtl -gt 0 -and $attemptAge -lt $script:ExakitHelpTtl) { return $false }
-    }
-    New-Item -ItemType Directory -Force -Path $cacheDir -ErrorAction SilentlyContinue | Out-Null
-    New-Item -ItemType File -Force -Path $attempt -ErrorAction SilentlyContinue | Out-Null
-    $tmp = "$cache.tmp"
-    try {
-        Invoke-WebRequest -Uri "$($script:ExakitHelpUrl)/$Id.json" -OutFile $tmp -UseBasicParsing -TimeoutSec 5
-    } catch {
-        Remove-Item -Force $tmp -ErrorAction SilentlyContinue
-        return $false
-    }
-    if (-not (Test-ExakitHelpDocument $tmp $Id)) {
-        Remove-Item -Force $tmp -ErrorAction SilentlyContinue
-        return $false
-    }
-    Move-Item -Force $tmp $cache -ErrorAction SilentlyContinue
-    return $true
-}
-
 function Get-ExakitHelpDocument {
-    param([string]$Id, [switch]$NoFetch)
-    if (-not $NoFetch) { Update-ExakitHelpCache -Id $Id | Out-Null }
-    $cache = Join-Path (Get-ExakitHelpCacheDir) "$Id.json"
-    if (Test-ExakitHelpDocument $cache $Id) {
-        return (Get-Content -Raw -Path $cache -Encoding UTF8 | ConvertFrom-Json)
-    }
+    param([string]$Id)
     $shipped = Join-Path (Get-ExakitHelpKitDir) "$Id.json"
     if (Test-Path $shipped) {
         try { return (Get-Content -Raw -Path $shipped -Encoding UTF8 | ConvertFrom-Json) } catch { return $null }
@@ -106,19 +43,12 @@ function Get-ExakitHelpDocument {
     return $null
 }
 
-# Get-ExakitHelpDocuments [-Primary <id>] - every document, but only <Primary>
-# (the one this screen is ABOUT) is refreshed from the repository. The others
-# are read from disk: the overview and catalog only skim them for a tagline,
-# and nine round trips to draw one screen is not a help system anyone waits for.
+# Get-ExakitHelpDocuments - every document this kit carries.
 function Get-ExakitHelpDocuments {
-    param([string]$Primary = "exakit")
+    param([string]$Primary = "")
     $map = @{}
     foreach ($id in (Get-ExakitHelpIds)) {
-        if ($id -eq $Primary) {
-            $doc = Get-ExakitHelpDocument -Id $id
-        } else {
-            $doc = Get-ExakitHelpDocument -Id $id -NoFetch
-        }
+        $doc = Get-ExakitHelpDocument -Id $id
         if ($doc) { $map[$id] = $doc }
     }
     return $map
