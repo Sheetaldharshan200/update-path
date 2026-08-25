@@ -578,6 +578,24 @@ if grep -q 'exakit_marketplace_addons()' "$ROOT/setup/lib/common.sh" && \
 else
     check "marketplace(twins)" "yes" "no"
 fi
+# The advertised-version resolver an add-on install needs, both sides. On the
+# shell side exakit_component_available lives in common.sh, so the setup script
+# and the CLI both have it. On the PowerShell side its twin,
+# Get-ExakitComponentAvailable, is defined in the CLI (setup/exakit.ps1) and the
+# SETUP script never loads the CLI — so an add-on Install-* that called it
+# directly died with a CommandNotFoundException the moment the closing
+# marketplace offer tried to install one, and every Windows add-on install
+# failed while macOS was fine. Get-ExakitAddonAdvertisedVersion is what answers
+# in both contexts; the Install-* functions must go through it.
+if grep -q 'function Get-ExakitAddonAdvertisedVersion' "$ROOT/setup/lib/exakit-common.ps1" && \
+   grep -q 'Get-ExakitAddonAdvertisedVersion -Id "exasol-vscode"' "$ROOT/setup/lib/exasol-vscode.ps1" && \
+   grep -q 'Get-ExakitAddonAdvertisedVersion -Id "dash-server"' "$ROOT/setup/lib/dash-server.ps1" && \
+   grep -q 'exakit_component_available' "$ROOT/setup/lib/common.sh"; then
+    check "marketplace(addon_version_resolver)" "yes" "yes"
+else
+    check "marketplace(addon_version_resolver)" "yes" "no"
+fi
+
 # Port ownership, both sides: a foreign listener must never read as a running
 # dash-server, and the install must settle on a port before baking one in.
 if grep -q '_dash_server_port_is_ours()' "$ROOT/setup/lib/dash-server.sh" && \

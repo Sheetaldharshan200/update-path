@@ -7927,7 +7927,13 @@ _exakit_autostart_register() {
             launchctl load "$_ar_plist" >/dev/null 2>&1
             ok "$_ar_id: starts at login ($(ui_tilde "$_ar_plist"))"
             ;;
-        linux)
+        # WSL takes the linux arm: detect_os separates the two because the
+        # INSTALLER must, but a systemd --user session is a systemd --user
+        # session. Left out, WSL fell to the catch-all and was told automatic
+        # start is "not supported on this platform" — while a WSL2 distro with
+        # systemd enabled supports it exactly as any other Linux does, and one
+        # without it is already answered, accurately, by the guard below.
+        linux|wsl)
             if ! command -v systemctl >/dev/null 2>&1 || ! systemctl --user show-environment >/dev/null 2>&1; then
                 warn "$_ar_id: this session has no systemd --user, so nothing was registered."
                 info "Start it by hand after a reboot with: exakit start"

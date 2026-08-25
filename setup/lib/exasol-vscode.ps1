@@ -149,11 +149,13 @@ function Write-ExasolVscodeNotInstalled {
 }
 
 function Install-ExasolVscode {
-    # The marketplace path runs from the exakit CLI, where the installer's
-    # version resolution has not run - resolve the advertised version here.
+    # Resolve the advertised version here: neither caller has one ready. The
+    # marketplace path runs from the exakit CLI, where the installer's version
+    # resolution has not run; the setup script's closing offer does not load the
+    # CLI at all, so Get-ExakitComponentAvailable is not even defined there.
+    # Get-ExakitAddonAdvertisedVersion answers in both.
     if (-not $script:ExasolVscodeVersion) {
-        $script:ExasolVscodeVersion = Get-ExakitComponentAvailable "exasol-vscode"
-        if (-not $script:ExasolVscodeVersion) { $script:ExasolVscodeVersion = $script:ExasolVscodeVersionFallback }
+        $script:ExasolVscodeVersion = Get-ExakitAddonAdvertisedVersion -Id "exasol-vscode" -Fallback $script:ExasolVscodeVersionFallback
     }
 
     $cli = Get-ExasolVscodeCodeCli

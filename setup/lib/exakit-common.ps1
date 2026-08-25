@@ -1703,6 +1703,48 @@ function Resolve-ExakitInstallVersions {
     Set-ExakitDesiredVersions
 }
 
+# Get-ExakitAddonAdvertisedVersion <id> [fallback] - the version a marketplace
+# add-on install should target, answerable from BOTH contexts an add-on module
+# is loaded into. Only one of them knows the version policy:
+#
+#   the CLI      setup\exakit.ps1 defines Get-ExakitComponentAvailable, which
+#                walks env override -> policy -> versions.json -> fallback.
+#   the SETUP    setup\setup-windows-docker.ps1 never loads the CLI. It
+#                sources this file, the component modules and the add-on
+#                modules, then ends on the closing marketplace offer.
+#
+# So an add-on Install-* that called Get-ExakitComponentAvailable directly died
+# with a CommandNotFoundException the moment a user picked it from that closing
+# offer - the add-on install failed on Windows for everyone taking the
+# documented one-line install. macOS and Linux never saw it: their twin,
+# exakit_component_available, lives in common.sh and is therefore always in
+# scope. This wrapper is what removes that asymmetry.
+#
+# Resolve-ExakitInstallVersions above deliberately covers no add-on (setup
+# installs none of them), so there is no pre-resolved value to lean on either.
+#
+# Twin: exakit_component_available in common.sh - which needs no wrapper, and
+# that difference is the entire reason this one exists.
+function Get-ExakitAddonAdvertisedVersion {
+    param([Parameter(Mandatory)][string]$Id, [string]$Fallback = "")
+    # CLI context: the full policy answer, exactly as before.
+    if (Get-Command Get-ExakitComponentAvailable -ErrorAction SilentlyContinue) {
+        $available = Get-ExakitComponentAvailable $Id
+        if ($available) { return $available }
+        return $Fallback
+    }
+    # Setup context: answer the way the default "manifest" policy would, out of
+    # the versions document this layer already knows how to read (setup has
+    # resolved it by now - Resolve-ExakitInstallVersions ran first). Any other
+    # policy has no network story here, so it lands on the compiled-in constant:
+    # the same version a no-network CLI install would pick.
+    if ($script:VersionPolicy -eq "manifest") {
+        $available = Get-ExakitVersionsValue -Path "components.$Id.version"
+        if ($available) { return $available }
+    }
+    return $Fallback
+}
+
 function Test-ExakitStepDone {
     param([Parameter(Mandatory)][string]$Step)
     $doc = Read-ExakitManifest

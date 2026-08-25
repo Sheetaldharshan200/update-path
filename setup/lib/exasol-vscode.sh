@@ -57,12 +57,59 @@ exasol_vscode_code_cli() {
     return 1
 }
 
+# _exasol_vscode_code_is_windows [cli] — true when the `code` we found is the
+# WINDOWS build, reached from WSL over /mnt/c interop. On a WSL box that is the
+# normal case, not an edge one: VS Code is installed on the Windows side and
+# puts its launcher on the interop PATH, so `command -v code` finds it and the
+# add-on looks perfectly applicable — right up to the last step.
+#
+# It fails there because that launcher starts a WINDOWS process, and every path
+# in its argv is parsed by Windows. The /tmp/... vsix this module just
+# downloaded arrives as C:\tmp\... and the install dies with:
+#     Error: ENOENT: no such file or directory, open 'C:\tmp\exakit-....vsix'
+# _exasol_vscode_host_path below is the translation that avoids it.
+#
+# No twin in exasol-vscode.ps1: native Windows already hands Windows paths to a
+# Windows binary, so there is nothing to translate on that side.
+_exasol_vscode_code_is_windows() {
+    _ecw_cli="${1:-}"
+    [ -n "$_ecw_cli" ] || _ecw_cli="$(exasol_vscode_code_cli 2>/dev/null || true)"
+    [ -n "$_ecw_cli" ] || return 1
+    case "$_ecw_cli" in
+        /mnt/*|*.cmd|*.exe|*.bat) return 0 ;;
+    esac
+    return 1
+}
+
+# _exasol_vscode_host_path <path> — <path> written the way the CLI that will
+# receive it reads paths. A native code CLI gets it unchanged; a Windows one
+# gets the wslpath translation, which resolves a Linux path to the UNC form
+# Windows can open (/tmp/x.vsix -> \\wsl.localhost\<distro>\tmp\x.vsix). No
+# staging copy is needed — Windows reaches into the distro over that share.
+# A translation that cannot be made returns the original, so the argument is
+# never lost: the call then fails exactly as it did before this function.
+_exasol_vscode_host_path() {
+    _evh_path="$1"
+    [ -n "$_evh_path" ] || return 0
+    if ! _exasol_vscode_code_is_windows; then
+        printf '%s\n' "$_evh_path"
+        return 0
+    fi
+    if ! command -v wslpath >/dev/null 2>&1; then
+        printf '%s\n' "$_evh_path"
+        return 0
+    fi
+    _evh_win="$(wslpath -w "$_evh_path" 2>/dev/null || true)"
+    [ -n "$_evh_win" ] || _evh_win="$_evh_path"
+    printf '%s\n' "$_evh_win"
+}
+
 # _exasol_vscode_code — run the code CLI with the optional sandbox
 # extensions-dir applied. First argument onward is the code command line.
 _exasol_vscode_code() {
     _evr_cli="$(exasol_vscode_code_cli)" || return 1
     if [ -n "$EXAKIT_EXASOL_VSCODE_EXTDIR" ]; then
-        "$_evr_cli" --extensions-dir "$EXAKIT_EXASOL_VSCODE_EXTDIR" "$@"
+        "$_evr_cli" --extensions-dir "$(_exasol_vscode_host_path "$EXAKIT_EXASOL_VSCODE_EXTDIR")" "$@"
     else
         "$_evr_cli" "$@"
     fi
@@ -249,7 +296,7 @@ exasol_vscode_install() {
             return 1
         }
         info "Installing the extension into VS Code"
-        if ! _exasol_vscode_code --install-extension "$_evi_vsix" --force \
+        if ! _exasol_vscode_code --install-extension "$(_exasol_vscode_host_path "$_evi_vsix")" --force \
                 >>"${EXAKIT_LOG_FILE:-/dev/null}" 2>&1; then
             rm -f "$_evi_vsix"
             _exasol_vscode_not_installed "code --install-extension failed (see log)"

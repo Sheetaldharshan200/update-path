@@ -142,7 +142,13 @@ json_tables_engine_asset() {
     fi
     case "$_jte_raw_os" in
         macos|Darwin|darwin) _jte_os="macos" ;;
-        linux|Linux)         _jte_os="linux" ;;
+        # WSL is Linux, and the engine published for linux is the one that runs
+        # there. detect_os reports it as its own platform because the INSTALLER
+        # needs the distinction (Docker Desktop, /mnt paths); an artifact
+        # lookup does not, so it must fold back into linux or the add-on
+        # silently disappears from the marketplace on every WSL machine.
+        # Same mapping exapump_asset_name uses.
+        linux|Linux|wsl)     _jte_os="linux" ;;
         *)                   return 1 ;;
     esac
     case "$_jte_raw_arch" in

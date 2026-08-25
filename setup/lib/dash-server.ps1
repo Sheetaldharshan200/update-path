@@ -74,12 +74,14 @@ function Write-DashServerNotInstalled {
 }
 
 function Install-DashServer {
-    # The marketplace path runs from the exakit CLI, where the installer's
-    # Resolve-ExakitInstallVersions has not run - resolve the advertised
-    # version here (env override -> policy -> versions.json -> fallback).
+    # Resolve the advertised version here (env override -> policy ->
+    # versions.json -> fallback): neither caller has one ready. The marketplace
+    # path runs from the exakit CLI, where Resolve-ExakitInstallVersions has not
+    # run; the setup script's closing offer does not load the CLI at all, so
+    # Get-ExakitComponentAvailable is not even defined there.
+    # Get-ExakitAddonAdvertisedVersion answers in both.
     if (-not $script:DashServerVersion) {
-        $script:DashServerVersion = Get-ExakitComponentAvailable "dash-server"
-        if (-not $script:DashServerVersion) { $script:DashServerVersion = $script:DashServerVersionFallback }
+        $script:DashServerVersion = Get-ExakitAddonAdvertisedVersion -Id "dash-server" -Fallback $script:DashServerVersionFallback
     }
 
     if (-not (Confirm-DashServerPort)) { return $false }

@@ -595,6 +595,45 @@ check "the sandbox extensions dir is passed through" "yes" "$( (
     grep -q -- "--extensions-dir $EXAKIT_EXASOL_VSCODE_EXTDIR" "$CODE_CALLS" && echo yes || echo no
 ) )"
 
+# On WSL the `code` on PATH is the WINDOWS build, reached over /mnt/c interop,
+# and it parses every path in its argv as a Windows path: an untranslated
+# /tmp/x.vsix arrives as C:\tmp\x.vsix and the install dies with ENOENT. Which
+# CLI we are talking to therefore decides whether a path needs translating.
+check "a native code CLI is left alone" "native" "$( (
+    exasol_vscode_code_cli() { printf '/usr/bin/code\n'; }
+    _exasol_vscode_code_is_windows && printf 'windows\n' || printf 'native\n'
+) )"
+check "a /mnt interop CLI reads as Windows" "windows" "$( (
+    exasol_vscode_code_cli() { printf '/mnt/c/Program Files/Microsoft VS Code/bin/code\n'; }
+    _exasol_vscode_code_is_windows && printf 'windows\n' || printf 'native\n'
+) )"
+check "so does a .cmd launcher" "windows" "$( (
+    exasol_vscode_code_cli() { printf '/somewhere/code.cmd\n'; }
+    _exasol_vscode_code_is_windows && printf 'windows\n' || printf 'native\n'
+) )"
+check "a native CLI gets the path verbatim" "/tmp/x.vsix" "$( (
+    exasol_vscode_code_cli() { printf '/usr/bin/code\n'; }
+    _exasol_vscode_host_path /tmp/x.vsix
+) )"
+if command -v wslpath >/dev/null 2>&1; then
+    # A real WSL host: the path must come back as something Windows can open.
+    check "on WSL a Windows CLI gets a translated path" "translated" "$( (
+        exasol_vscode_code_cli() { printf '/mnt/c/code.cmd\n'; }
+        case "$(_exasol_vscode_host_path /tmp/x.vsix)" in
+            /tmp/*) printf 'untranslated\n' ;;
+            *)      printf 'translated\n' ;;
+        esac
+    ) )"
+else
+    # Anywhere else there is nothing to translate WITH, and a best guess would
+    # be worse than none: the argument is returned untouched, so the call fails
+    # exactly as it did before rather than in some new way.
+    check "without wslpath the path is returned unchanged" "/tmp/x.vsix" "$( (
+        exasol_vscode_code_cli() { printf '/mnt/c/code.cmd\n'; }
+        _exasol_vscode_host_path /tmp/x.vsix
+    ) )"
+fi
+
 echo "an add-on that needs a host app is only offered when the app is there:"
 # No VS Code on this machine → the extension is not an option at all: no menu
 # row, and no row in the `exakit version` table either. The kit never advertises
@@ -1080,6 +1119,18 @@ check "Linux x86_64 asks for the linux-x86_64 engine" "exasol-json-tables-ingest
     "$( ( detect_os() { printf 'linux\n'; }; detect_arch() { printf 'x86_64\n'; }; json_tables_engine_asset ) )"
 check "Linux arm64 asks for the linux-aarch64 engine" "exasol-json-tables-ingest-linux-aarch64" \
     "$( ( detect_os() { printf 'linux\n'; }; detect_arch() { printf 'arm64\n'; }; json_tables_engine_asset ) )"
+# WSL IS Linux and runs the linux engine. detect_os reports it as a platform of
+# its own because the INSTALLER needs that distinction (Docker Desktop, /mnt
+# paths) — but an artifact lookup does not, and one that fails to fold it back
+# into linux hides the add-on from every WSL machine, with a "no prebuilt engine
+# for this platform" reason that is not true.
+check "WSL x86_64 asks for the linux-x86_64 engine" "exasol-json-tables-ingest-linux-x86_64" \
+    "$( ( detect_os() { printf 'wsl\n'; }; detect_arch() { printf 'x86_64\n'; }; json_tables_engine_asset ) )"
+check "WSL arm64 asks for the linux-aarch64 engine" "exasol-json-tables-ingest-linux-aarch64" \
+    "$( ( detect_os() { printf 'wsl\n'; }; detect_arch() { printf 'arm64\n'; }; json_tables_engine_asset ) )"
+check "and WSL is therefore OFFERED, not hidden" "offered" \
+    "$( ( detect_os() { printf 'wsl\n'; }; detect_arch() { printf 'x86_64\n'; }
+        json_tables_applicable && printf 'offered\n' || printf 'hidden\n' ) )"
 # An Intel Mac has no published engine and building one needs the toolchain the
 # add-on exists to avoid: it must be HIDDEN, not offered and then failed.
 check "an Intel Mac is not applicable" "hidden" \
