@@ -176,27 +176,12 @@ function Show-ExakitHelpOverview {
             Write-ExakitHelpCommand -Label $label -Summary $entry.summary -Pad 24
         }
     }
-    $others = @()
-    foreach ($key in ($docs.Keys | Sort-Object)) { if ($key -ne "exakit") { $others += $key } }
-    if ($others.Count -gt 0) {
-        # Each component names its own commands as a reader would type them. A
-        # bare list of component names told nobody what they could actually run.
-        Write-ExakitHelpSection "Components"
-        foreach ($key in $others) {
-            $sub = $docs[$key]
-            Write-Host "    $key" -NoNewline
-            Write-Host "  $($sub.tagline)" -ForegroundColor DarkGray
-            foreach ($entry in $sub.commands) {
-                $text = $entry.summary
-                if (-not $text) { $text = $entry.description }
-                Write-ExakitHelpCommand -Indent "      " -Pad 34 -Summary $text `
-                    -Label (Get-ExakitHelpInvocationWithOptions -DocId $key -Entry $entry -Doc $sub)
-            }
-            Write-Host ""
-        }
-    }
-    Write-Host ""
-    Write-Host "  More detail on any command or component: exakit <component / command> --help" -ForegroundColor DarkGray
+    # NO per-component command dump here, and no trailing pointer line. This
+    # screen is the map, not the atlas: it used to run past a screenful by
+    # printing every command of every component, which made the one thing it is
+    # for - finding the command you want - harder. The component pages moved to
+    # `exakit help --all`, which is where a reader who wants everything goes,
+    # and `exakit catalog` is already listed above under Reference.
     Write-Host ""
     return 0
 }
@@ -217,6 +202,26 @@ function Show-ExakitHelpAll {
             $seen[$name] = $true
             Write-ExakitHelpCommand -Pad 30 -Summary $entry.summary `
                 -Label (Get-ExakitHelpInvocationWithOptions -DocId "exakit" -Entry $entry -Doc $doc)
+        }
+    }
+    # The per-component command lists, which the overview no longer carries.
+    # THIS is "every command", so this is where they belong - the overview was
+    # showing more than --all did, which is backwards.
+    $others = @()
+    foreach ($key in ($docs.Keys | Sort-Object)) { if ($key -ne "exakit") { $others += $key } }
+    if ($others.Count -gt 0) {
+        Write-ExakitHelpSection "Components"
+        foreach ($key in $others) {
+            $sub = $docs[$key]
+            Write-Host "    $key" -NoNewline
+            Write-Host "  $($sub.tagline)" -ForegroundColor DarkGray
+            foreach ($entry in $sub.commands) {
+                $text = $entry.summary
+                if (-not $text) { $text = $entry.description }
+                Write-ExakitHelpCommand -Indent "      " -Pad 34 -Summary $text `
+                    -Label (Get-ExakitHelpInvocationWithOptions -DocId $key -Entry $entry -Doc $sub)
+            }
+            Write-Host ""
         }
     }
     Write-Host ""
@@ -340,13 +345,27 @@ function Get-ExakitHelpRows {
             }
             $text = $entry.summary
             if (-not $text) { $text = $entry.description }
-            $dedupe = "$tool|$command|$($entry.options)"
-            if ($seen[$dedupe]) { continue }
-            $seen[$dedupe] = $true
-            $rows += [pscustomobject]@{
+            # Dedupe on (tool, command) WITHOUT options. Keying on options too
+            # let the same command through twice whenever two documents spelled
+            # its options differently: exakit.json lists `status [--json | -j]`
+            # while dash-server.json mentions a bare `exakit status`, and the
+            # catalogue printed both. When that happens the tool's OWN document
+            # wins - a component page describing `exakit status` is contextual
+            # rephrasing, not the canonical description of the command.
+            $dedupe = "$tool|$command"
+            $row = [pscustomobject]@{
                 tool = $tool; command = $command; options = $entry.options
                 description = $text; invocation = ("$tool $command").Trim()
+                source = $key
             }
+            if ($seen.ContainsKey($dedupe)) {
+                $keptAt = $seen[$dedupe]
+                $kept = $rows[$keptAt]
+                if ($tool -eq $key -and $kept.source -ne $kept.tool) { $rows[$keptAt] = $row }
+                continue
+            }
+            $seen[$dedupe] = $rows.Count
+            $rows += $row
         }
     }
     return $rows
@@ -372,15 +391,27 @@ function Show-ExakitHelpCatalog {
         Write-Host ""
         return 1
     }
-    $current = ""
+    # GROUP by tool, do not merely break on a change of tool. The rows arrive
+    # in help-document order and nearly every component document contributes
+    # `exakit ...` commands, so a run-length break printed the "exakit" heading
+    # once per component - five times on a full install, interleaved with the
+    # component sections. Collect first, then print one section per tool.
+    $grouped = @{}
     foreach ($row in $rows) {
-        if ($row.tool -ne $current) {
-            $current = $row.tool
-            Write-ExakitHelpSection $current
+        if (-not $grouped.ContainsKey($row.tool)) { $grouped[$row.tool] = @() }
+        $grouped[$row.tool] += $row
+    }
+    $tools = @($grouped.Keys | Sort-Object)
+    if ($grouped.ContainsKey("exakit")) {       # the kit's own command first
+        $tools = @("exakit") + @($tools | Where-Object { $_ -ne "exakit" })
+    }
+    foreach ($tool in $tools) {
+        Write-ExakitHelpSection $tool
+        foreach ($row in $grouped[$tool]) {
+            $label = $row.command
+            if ($row.options) { $label = "$($row.command) $($row.options)" }
+            Write-ExakitHelpCommand -Label $label -Summary $row.description
         }
-        $label = $row.command
-        if ($row.options) { $label = "$($row.command) $($row.options)" }
-        Write-ExakitHelpCommand -Label $label -Summary $row.description
     }
     Write-Host ""
     Write-Host "  Tip: exakit catalog <search>, or exakit <component> --help for the full page." -ForegroundColor DarkGray

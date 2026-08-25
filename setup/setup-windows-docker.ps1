@@ -211,6 +211,15 @@ try {
     # is actually on offer (an add-on already on this machine is never
     # advertised). Best-effort: nothing in it may end an install that already
     # succeeded.
+    # Automatic start defaults to ON for a fresh install: the kit's promise is a
+    # database that is simply there, and leaving it off meant a reboot quietly
+    # took it away. Only applied when the manifest has no opinion yet, so
+    # `exakit autostart off` survives a re-run. Before the offer, so an add-on
+    # installed from it joins the boot set.
+    [void](Invoke-ExakitBestEffort -Component "autostart" -Repair "exakit autostart on" `
+        -Label "automatic start" `
+        -Warning "Automatic start could not be turned on." `
+        -Body { Enable-ExakitAutostartDefault })
     [void](Invoke-ExakitBestEffort -Component "marketplace" -Repair "exakit marketplace" `
         -Label "marketplace add-ons" `
         -Warning "The marketplace offer did not finish cleanly." `

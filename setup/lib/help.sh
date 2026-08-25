@@ -254,27 +254,13 @@ def render_overview():
                 continue
             cmd_line("", invocation("exakit", entry), "", entry.get("summary", ""), pad=24)
 
-    others = [key for key in sorted(docs) if key != "exakit"]
-    if others:
-        # Each component names its own commands as a reader would type them.
-        # A bare list of component names told nobody what they could actually
-        # run; "exakit <component> --help" is the deeper page, not the summary.
-        section("Components")
-        for key in others:
-            sub = docs[key]
-            out("    %s%s%s  %s%s%s" % (B, key, R, DIM, sub.get("tagline", ""), R))
-            for entry in commands_of(sub):
-                cmd_line("", invocation_with_options(key, entry), "",
-                         entry.get("summary") or entry.get("description", ""),
-                         pad=34, indent="      ")
-            out()
-
+    # NO per-component command dump here, and no trailing pointer line. This
+    # screen is the map, not the atlas: it used to run past a screenful by
+    # printing every command of every component, which made the one thing it is
+    # for - finding the command you want - harder. The component pages moved to
+    # `exakit help --all`, which is where a reader who wants everything goes,
+    # and `exakit catalog` is already listed above under Reference.
     out()
-    # Kept short enough to survive an 80-column terminal in one line: wrapping
-    # this splits "exakit <component / command>" from its "--help" and the
-    # reader is left looking at half a command.
-    para("More detail on any command or component: exakit <component / command> --help",
-         indent="  %s" % DIM)
     if color:
         sys.stdout.write(R)
     out()
@@ -303,6 +289,21 @@ def render_all():
         for entry in rest:
             cmd_line("", invocation_with_options("exakit", entry), "",
                      entry.get("summary", ""), pad=30)
+
+    # The per-component command lists, which the overview no longer carries.
+    # THIS is "every command", so this is where they belong - the overview was
+    # showing more than --all did, which is backwards.
+    others = [key for key in sorted(docs) if key != "exakit"]
+    if others:
+        section("Components")
+        for key in others:
+            sub = docs[key]
+            out("    %s%s%s  %s%s%s" % (B, key, R, DIM, sub.get("tagline", ""), R))
+            for entry in commands_of(sub):
+                cmd_line("", invocation_with_options(key, entry), "",
+                         entry.get("summary") or entry.get("description", ""),
+                         pad=34, indent="      ")
+            out()
     out()
     para("Detail for one command: exakit <command> --help", indent="  %s" % DIM)
     if color:
@@ -446,13 +447,23 @@ def catalog_rows():
                              "options": entry.get("options", ""),
                              "description": entry.get("summary") or entry.get("description", ""),
                              "source": key})
-    seen, unique = set(), []
+    # Dedupe on (tool, command) WITHOUT options. Keying on options too let the
+    # same command through twice whenever two documents spelled its options
+    # differently: exakit.json lists `status [--json | -j]` while
+    # dash-server.json mentions a bare `exakit status`, and the catalogue
+    # printed both. When that happens the tool's OWN document wins - a
+    # component page describing `exakit status` is contextual rephrasing, not
+    # the canonical description of the command.
+    at, unique = {}, []
     for row in rows:
-        key = (row["tool"], row["command"], row["options"])
-        if key in seen:
+        key = (row["tool"], row["command"])
+        if key not in at:
+            at[key] = len(unique)
+            unique.append(row)
             continue
-        seen.add(key)
-        unique.append(row)
+        kept = unique[at[key]]
+        if row["source"] == row["tool"] and kept["source"] != kept["tool"]:
+            unique[at[key]] = row
     return unique
 
 def render_catalog(search):
@@ -468,12 +479,22 @@ def render_catalog(search):
         out("  %sNo commands match \"%s\".%s  Try: exakit catalog mcp" % (DIM, search, R))
         out()
         return 1
-    current = None
+    # GROUP by tool, do not merely break on a change of tool. The rows arrive
+    # in help-document order and nearly every component document contributes
+    # `exakit ...` commands, so a run-length break printed the "exakit" heading
+    # once per component - five times on a full install, interleaved with the
+    # component sections. Collect first, then print one section per tool.
+    grouped = {}
     for row in rows:
-        if row["tool"] != current:
-            current = row["tool"]
-            section(current)
-        cmd_line("", row["command"], row["options"], row["description"], pad=26)
+        grouped.setdefault(row["tool"], []).append(row)
+    tools = sorted(grouped)
+    if "exakit" in tools:                      # the kit's own command first
+        tools.remove("exakit")
+        tools.insert(0, "exakit")
+    for tool in tools:
+        section(tool)
+        for row in grouped[tool]:
+            cmd_line("", row["command"], row["options"], row["description"], pad=26)
     out()
     para("Tip: exakit catalog <search>, or exakit <component> --help for the full page.",
          indent="  %s" % DIM)

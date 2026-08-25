@@ -982,11 +982,62 @@ function Test-ExakitDatasetLoaded {
 # match. Returns $null when the database cannot be asked, so the caller keeps
 # the manifest's answer instead of reporting an empty database.
 # twin: exakit_verified_datasets in setup/lib/exapump.sh.
+# Get-ExakitQualifiedTables - every table in the database as SCHEMA.TABLE, in
+# ONE query.
+#
+# `exakit status` verifies the bundled datasets against their marker tables.
+# Asking per table meant one exapump process per marker - process start, TLS
+# handshake, auth, query - and the bundled datasets carry seven markers between
+# them, so status took 27 SECONDS on a healthy machine. The shell side has
+# always asked once; this is the missing twin of that.
+# Returns $null when the query itself fails, which the caller must not confuse
+# with "the database has no tables".
+# Twin of the single SELECT in exakit_verified_datasets (exapump.sh).
+function Get-ExakitQualifiedTables {
+    $result = Invoke-Exapump @("sql", "-p", $script:ExapumpProfile,
+        "SELECT TABLE_SCHEMA || '.' || TABLE_NAME AS QUALIFIED FROM SYS.EXA_ALL_TABLES")
+    if (-not $result.Success) { return $null }
+    $set = @{}
+    foreach ($line in (("" + $result.Output) -split "`r?`n")) {
+        $t = $line.Trim()
+        if ($t -match '^([A-Za-z0-9_$]+)\.([A-Za-z0-9_$]+)$') { $set[$t.ToUpper()] = $true }
+    }
+    return $set
+}
+
 function Get-ExakitVerifiedDatasets {
     if (-not (Test-ExakitDbReachable)) { return $null }
+    $datasets = @(Get-ExakitBundledDatasets)
+    $present = Get-ExakitQualifiedTables
+    if ($null -eq $present) {
+        # The one query failed. Fall back to the per-table path rather than
+        # reporting an empty database off a failed lookup.
+        $loaded = @()
+        foreach ($dataset in $datasets) {
+            if (Test-ExakitDatasetLoaded $dataset) { $loaded += $dataset.Id }
+        }
+        return ,@($loaded)
+    }
     $loaded = @()
-    foreach ($dataset in (Get-ExakitBundledDatasets)) {
-        if (Test-ExakitDatasetLoaded $dataset) { $loaded += $dataset.Id }
+    foreach ($dataset in $datasets) {
+        $canonical = "data.datasets.$($dataset.Id).loaded"
+        if ($canonical -eq $dataset.Flag) { $canonical = "" }
+        # No markers declared means nothing to verify - keep the manifest's word
+        # rather than silently demoting the dataset to "not loaded".
+        if ($dataset.Markers.Count -eq 0) {
+            if ((Get-ExakitManifestValue $dataset.Flag) -eq $true) { $loaded += $dataset.Id }
+            continue
+        }
+        $schema = if ($dataset.Schema) { $dataset.Schema } elseif ($env:EXAKIT_SCHEMA) { $env:EXAKIT_SCHEMA } else { "STARTER_KIT" }
+        $all = $true
+        foreach ($table in $dataset.Markers) {
+            if (-not $present.ContainsKey(("$schema.$table").ToUpper())) { $all = $false; break }
+        }
+        # Same healing the per-table path did: BOTH keys, always, so a
+        # destroy+redeploy that left a stale "loaded" flag corrects itself.
+        Sync-ExakitDatasetFlag $dataset.Flag $all
+        Sync-ExakitDatasetFlag $canonical $all
+        if ($all) { $loaded += $dataset.Id }
     }
     return ,@($loaded)
 }

@@ -87,5 +87,11 @@ exakit_print_soft_failures
 # an interactive run whose steps all completed, and only while something is
 # actually on offer. The subshell keeps any failure inside it from ending an
 # install that already succeeded.
+# Automatic start defaults to ON for a fresh install: the kit's promise is a
+# database that is simply there, and leaving it off meant a reboot quietly
+# took it away. Only ever applied when the manifest has no opinion yet, so
+# `exakit autostart off` survives a re-run of the installer. This runs BEFORE
+# the marketplace offer so an add-on installed from it joins the boot set.
+exakit_autostart_default_on || true
 ( exakit_marketplace_offer ) || true
 info "Next: exakit status | exakit info | exakit version | exakit update | exakit help"
