@@ -114,6 +114,11 @@ function Get-ExakitInstallCommand {
     return "irm $($script:InstallUrl) | iex"
 }
 $script:VersionsTtl = 86400
+# How long a FAILED versions fetch is remembered, so a network that cannot reach
+# the manifest is asked once rather than once per command. Deliberately far
+# shorter than the TTL: a machine that comes back online should pick the
+# manifest up within minutes, not tomorrow.
+$script:VersionsRetryCooldown = if ($env:EXAKIT_VERSIONS_RETRY_COOLDOWN) { [int]$env:EXAKIT_VERSIONS_RETRY_COOLDOWN } else { 900 }
 if ($env:EXAKIT_VERSIONS_TTL -match '^[0-9]+$') { $script:VersionsTtl = [int]$env:EXAKIT_VERSIONS_TTL }
 $script:VersionsCachePath = if ($env:EXAKIT_VERSIONS_CACHE) { $env:EXAKIT_VERSIONS_CACHE } else { Join-Path $script:CacheDir "versions.json" }
 # Schema this kit understands. A document announcing a higher number is treated
@@ -1476,6 +1481,39 @@ function Test-ExakitVersionsCacheFresh {
     return ($age -lt $script:VersionsTtl)
 }
 
+# Test-ExakitVersionsAttemptRecent - did we already fail to fetch, recently?
+#
+# WITHOUT THIS, AN UNREACHABLE MANIFEST TAXES EVERY COMMAND. A failed fetch
+# writes nothing, so the cache never becomes fresh, so the next command tries
+# again and pays the full connect timeout again - and so does the one after
+# that. Measured on a corporate network where raw.githubusercontent.com is
+# filtered (21.5s to open a socket, while github.com answers instantly):
+# `exakit status` 12.7s and `exakit version` 19.3s, essentially all of it one
+# timing-out request repeated on every invocation.
+#
+# The About cache has had this since it was written; the versions cache never
+# got the same treatment. Same idea: a stamp written BEFORE the request, so the
+# question counts as asked whatever the answer turns out to be.
+# Twin of _exakit_versions_attempt_recent in common.sh.
+function Get-ExakitVersionsAttemptStamp {
+    return (Join-Path (Split-Path -Parent $script:VersionsCachePath) (".$(Split-Path -Leaf $script:VersionsCachePath).attempt"))
+}
+
+function Test-ExakitVersionsAttemptRecent {
+    # TTL 0 means "always ask", and a caller who says that must not be answered
+    # from a remembered failure. The cooldown is a cheaper form of the same
+    # caching the TTL does, so it can never outlive it.
+    if ($script:VersionsTtl -eq 0) { return $false }
+    $stamp = Get-ExakitVersionsAttemptStamp
+    if (-not (Test-Path $stamp)) { return $false }
+    try {
+        $age = ((Get-Date) - (Get-Item $stamp).LastWriteTime).TotalSeconds
+    } catch {
+        return $false
+    }
+    return ($age -lt $script:VersionsRetryCooldown)
+}
+
 # Update-ExakitVersionsCache - refresh the cached document. Skips the network
 # while the cache is younger than the TTL; -Force is for the explicit
 # `exakit version`, which should always ask upstream.
@@ -1486,17 +1524,30 @@ function Test-ExakitVersionsCacheFresh {
 # in the cache directory (same volume) and only a validated document is moved
 # into place, so a reader can never observe a half-written file.
 function Update-ExakitVersionsCache {
-    param([switch]$Force, [int]$TimeoutSec = 12)
+    # 5s, not 12: the shell twin gives up CONNECTING after
+    # EXAKIT_VERSION_LOOKUP_CONNECT_TIMEOUT (5), and Invoke-WebRequest has no
+    # separate connect timeout, so the whole request gets that budget. The
+    # document is under 2 KB - any network that can serve it does so in well
+    # under a second, and a network that cannot should not hold up a command
+    # for twelve. Measured where raw.githubusercontent.com is filtered: this is
+    # the difference between a 12s pause and a 5s one on the forced path, and
+    # the attempt stamp above removes it entirely on every other path.
+    param([switch]$Force, [int]$TimeoutSec = 5)
     if ($script:VersionsUrl -notlike "https://*") {
         Write-ExakitLog "WARN" "refusing to fetch the versions manifest over a non-HTTPS URL"
         return 1
     }
     if (-not $Force -and (Test-ExakitVersionsCacheFresh)) { return 2 }
+    # A recent failure counts as answered: see Test-ExakitVersionsAttemptRecent.
+    if (-not $Force -and (Test-ExakitVersionsAttemptRecent)) { return 2 }
     try {
         New-Item -ItemType Directory -Force -Path (Split-Path $script:VersionsCachePath -Parent) | Out-Null
     } catch {
         return 1
     }
+    # Written BEFORE the request, so a timeout or a kill still records that the
+    # question was asked.
+    try { Set-Content -Path (Get-ExakitVersionsAttemptStamp) -Value "" -ErrorAction Stop } catch { }
     $tmp = "$($script:VersionsCachePath).tmp.$PID"
     try {
         Invoke-WebRequest -Uri $script:VersionsUrl -OutFile $tmp -UseBasicParsing -TimeoutSec $TimeoutSec -UserAgent (Get-ExakitVersionsUserAgent)
@@ -2080,9 +2131,14 @@ function Set-ExakitNoticeShown {
 # warm; when it is not, this is one very short attempt that gives up almost at once.
 function Update-ExakitNoticeCache {
     if (Test-ExakitVersionsCacheFresh) { return }
-    # Two seconds, once a day, worst case - the bash twin passes the same budget to
-    # curl. Silence on failure: the notice simply does not appear.
-    try { Update-ExakitVersionsCache -Force -TimeoutSec 2 | Out-Null } catch { }
+    # NOT -Force. Forcing here walked straight past the failed-attempt stamp, so
+    # on a network that cannot reach the manifest the notice paid the timeout on
+    # every single command - which is precisely what the line above this function
+    # promises it will never do. Without -Force the stamp is honoured: one
+    # attempt, then silence until the cooldown expires.
+    # Two seconds is the budget, matching what the bash twin passes to curl.
+    # Silence on failure: the notice simply does not appear.
+    try { Update-ExakitVersionsCache -TimeoutSec 2 | Out-Null } catch { }
 }
 
 function Get-ExakitNoticeWord {
