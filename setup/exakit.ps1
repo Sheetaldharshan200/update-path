@@ -149,17 +149,26 @@ function Invoke-CmdStatus {
     if (-not (Test-Path $script:ManifestPath)) {
         Write-ExakitNotInstalledAnswer -Json:$Json
     }
+    # Each phase names what it is waiting on. The database round trip is the
+    # slow one, and "Checking the database" is a different experience from a
+    # blank line for two seconds.
     $type = Get-RuntimeType
-    $status = switch ($type) { "nano" { Get-NanoStatus } default { "unknown" } }
+    $status = Invoke-ExakitWithSpinner -Quiet:$Json -Label "Checking the database" -Body {
+        switch ($type) { "nano" { Get-NanoStatus } default { "unknown" } }
+    }
     $running = "$status".StartsWith("running")
     $steps = @(Get-ExakitManifestValue "steps_completed")
-    $datasets = @(Get-ExakitLoadedDatasets)
+    $datasets = @(Invoke-ExakitWithSpinner -Quiet:$Json -Label "Checking which datasets are loaded" -Body {
+        ,@(Get-ExakitLoadedDatasets)
+    })
     $pyexasol = Get-ExakitComponentCurrent "pyexasol"
     $services = @{}
-    foreach ($svcId in (Get-ExakitServiceIds)) {
-        if ($svcId -eq "database") { continue }
-        $services[$svcId] = (Get-ExakitServiceStatus -Id $svcId)
-    }
+    Invoke-ExakitWithSpinner -Quiet:$Json -Label "Checking the add-on services" -Body {
+        foreach ($svcId in (Get-ExakitServiceIds)) {
+            if ($svcId -eq "database") { continue }
+            $services[$svcId] = (Get-ExakitServiceStatus -Id $svcId)
+        }
+    } | Out-Null
 
     if ($Json) {
         [ordered]@{
@@ -827,8 +836,13 @@ function Invoke-CmdVersion {
     Write-Host ""
 
     if ($script:VersionPolicy -eq "manifest") {
-        Update-ExakitVersionsCache -Force | Out-Null
-        Resolve-ExakitVersionsDoc | Out-Null
+        # The one phase that can reach the network, so the one most worth
+        # narrating: on a network that cannot reach the manifest it is also the
+        # longest wait in the command.
+        Invoke-ExakitWithSpinner -Label "Checking for newer versions" -Body {
+            Update-ExakitVersionsCache -Force | Out-Null
+            Resolve-ExakitVersionsDoc | Out-Null
+        } | Out-Null
     }
 
     # Rows are collected before anything is drawn, so every column is measured
@@ -847,9 +861,14 @@ function Invoke-CmdVersion {
     # matters; this screen only has to say that something is waiting.
     $pending = 0
 
+    # Each component is probed on disk, and several of those probes start a
+    # process. Narrated per component so the reader can see it advancing
+    # rather than guessing whether it has stalled.
     foreach ($component in (Get-ExakitVersionTableTargets)) {
         $actual = Get-ExakitActualTarget $component
-        $installed = Get-ExakitComponentCurrent $actual
+        $installed = Invoke-ExakitWithSpinner -Label "Checking $actual" -Body {
+            Get-ExakitComponentCurrent $actual
+        }
         if (-not $installed) { $installed = "not installed" }
         $available = Get-ExakitComponentAvailable $actual
         if (-not $available) { $available = "unknown" }
@@ -1374,8 +1393,13 @@ function Invoke-CmdUpdate {
     }
     # An explicit update applies what is advertised RIGHT NOW.
     if ($script:VersionPolicy -eq "manifest") {
-        Update-ExakitVersionsCache -Force | Out-Null
-        Resolve-ExakitVersionsDoc | Out-Null
+        # The one phase that can reach the network, so the one most worth
+        # narrating: on a network that cannot reach the manifest it is also the
+        # longest wait in the command.
+        Invoke-ExakitWithSpinner -Label "Checking for newer versions" -Body {
+            Update-ExakitVersionsCache -Force | Out-Null
+            Resolve-ExakitVersionsDoc | Out-Null
+        } | Out-Null
     }
     Write-ExakitVersionsSourceLine
     $deferred = 0

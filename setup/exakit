@@ -163,15 +163,22 @@ cmd_status() {
     # drift apart again on the shape or the exit code of this answer.
     [ -f "$EXAKIT_MANIFEST" ] || _not_installed_answer "$_cs_json"
     _type="$(_runtime_type)"
+    # Each phase names what it is waiting on. Only drawn on a terminal, and
+    # never for --json: ui_spin_begin re-checks that at call time, and the
+    # command substitutions below capture their own stdout regardless.
+    if [ "$_cs_json" -eq 0 ]; then ui_spin_begin "Checking the database"; fi
     case "$_type" in
         nano)     _cs_db="$(nano_status)" ;;
         personal) _cs_db="$(personal_status)" ;;
         *)        _cs_db="unknown" ;;
     esac
+    if [ "$_cs_json" -eq 0 ]; then ui_spin_end; fi
     _cs_running=0
     case "$_cs_db" in running*) _cs_running=1 ;; esac
     _cs_autostart="$(manifest_get autostart.enabled 2>/dev/null || true)"
+    if [ "$_cs_json" -eq 0 ]; then ui_spin_begin "Checking which datasets are loaded"; fi
     _cs_datasets="$(exakit_loaded_datasets 2>/dev/null | tr '\n' ' ' | sed 's/ $//')"
+    if [ "$_cs_json" -eq 0 ]; then ui_spin_end; fi
     _cs_pyx="$(exakit_component_current pyexasol 2>/dev/null || true)"
 
     if [ "$_cs_json" -eq 1 ]; then
