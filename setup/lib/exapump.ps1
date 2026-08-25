@@ -1007,10 +1007,20 @@ function Get-ExakitQualifiedTables {
 }
 
 function Get-ExakitVerifiedDatasets {
-    if (-not (Test-ExakitDbReachable)) { return $null }
     $datasets = @(Get-ExakitBundledDatasets)
+    # THE TABLE LISTING IS THE REACHABILITY PROBE. Asking SELECT 1 first bought
+    # no information the listing does not already give, and doubled the cost:
+    # every exapump call is a process start, a TLS handshake and an
+    # authentication, about 2.5s on a warm machine, so `exakit status` paid ~5s
+    # where ~2.5s answers the same question. A listing that comes back proves
+    # the database is up, so the cached flag is set from here.
     $present = Get-ExakitQualifiedTables
+    if ($null -ne $present) { $script:ExakitDbReachable = $true }
     if ($null -eq $present) {
+        # Could not list: unreachable, or the query failed. Ask properly before
+        # reporting anything - an empty answer must never be mistaken for an
+        # empty database.
+        if (-not (Test-ExakitDbReachable)) { return $null }
         # The one query failed. Fall back to the per-table path rather than
         # reporting an empty database off a failed lookup.
         $loaded = @()

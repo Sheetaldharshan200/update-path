@@ -100,6 +100,11 @@ EXAKIT_VERSIONS_URL="${EXAKIT_VERSIONS_URL:-https://raw.githubusercontent.com/${
 # publishes, not to a branch of whichever repository built their copy.
 EXAKIT_INSTALL_URL="${EXAKIT_INSTALL_URL:-https://www.exasol.com/install/starter-kit.sh}"
 EXAKIT_VERSIONS_TTL="${EXAKIT_VERSIONS_TTL:-86400}"
+# How long a FAILED versions fetch is remembered, so a network that cannot
+# reach the manifest is asked once rather than once per command. Deliberately
+# far shorter than the TTL: a machine that comes back online should pick the
+# manifest up within minutes, not tomorrow.
+EXAKIT_VERSIONS_RETRY_COOLDOWN="${EXAKIT_VERSIONS_RETRY_COOLDOWN:-900}"
 EXAKIT_VERSIONS_CACHE="${EXAKIT_VERSIONS_CACHE:-$EXAKIT_CACHE_DIR/versions.json}"
 # Schema the client understands. A document that announces a higher number is
 # treated as unavailable (the resolution chain falls back) rather than guessed
@@ -1518,6 +1523,42 @@ exakit_versions_cache_fresh() {
     [ "$_vcf_age" -lt "$EXAKIT_VERSIONS_TTL" ]
 }
 
+# _exakit_versions_attempt_recent — did we already fail to fetch, recently?
+#
+# WITHOUT THIS, AN UNREACHABLE MANIFEST TAXES EVERY COMMAND. A failed fetch
+# writes nothing, so the cache never becomes fresh, so the next command tries
+# again and pays the full connect timeout again — and so does the one after
+# that. Measured on a corporate network where raw.githubusercontent.com is
+# filtered: `exakit status` 12.7s and `exakit version` 19.3s, essentially all
+# of it one timing-out request repeated on every invocation.
+#
+# The About cache has had this since it was written ("an .attempt- stamp so a
+# failure is not retried on every run"); the versions cache never got the same
+# treatment. Same idea: a stamp written BEFORE the request, so the question
+# counts as asked whatever the answer turns out to be.
+# ⇄ twin: Test-ExakitVersionsAttemptRecent in exakit-common.ps1.
+_exakit_versions_attempt_stamp() {
+    printf '%s/.%s.attempt\n' "$(dirname "$EXAKIT_VERSIONS_CACHE")" "$(basename "$EXAKIT_VERSIONS_CACHE")"
+}
+
+_exakit_versions_attempt_recent() {
+    # TTL 0 means "always ask", and a caller who says that must not be answered
+    # from a remembered failure. The cooldown is a cheaper form of the same
+    # caching the TTL does, so it can never outlive it.
+    case "$EXAKIT_VERSIONS_TTL" in
+        0) return 1 ;;
+    esac
+    _var_stamp="$(_exakit_versions_attempt_stamp)"
+    [ -f "$_var_stamp" ] || return 1
+    case "$EXAKIT_VERSIONS_RETRY_COOLDOWN" in
+        ''|*[!0-9]*) return 1 ;;
+    esac
+    _var_now="$(date +%s 2>/dev/null)" || return 1
+    _var_mtime="$(_exakit_file_mtime "$_var_stamp" 2>/dev/null)" || return 1
+    [ -n "$_var_mtime" ] || return 1
+    [ "$(( _var_now - _var_mtime ))" -lt "$EXAKIT_VERSIONS_RETRY_COOLDOWN" ]
+}
+
 # exakit_versions_update_cache [force] — refresh the cached document.
 # Skips the network while the cache is younger than the TTL; "force" is for the
 # explicit `exakit version`, which should always ask upstream.
@@ -1539,8 +1580,15 @@ exakit_versions_update_cache() {
     if [ "$_vu_force" != "force" ] && exakit_versions_cache_fresh; then
         return 2
     fi
+    # A recent failure counts as answered: see _exakit_versions_attempt_recent.
+    if [ "$_vu_force" != "force" ] && _exakit_versions_attempt_recent; then
+        return 2
+    fi
     command -v curl >/dev/null 2>&1 || return 1
     mkdir -p "$(dirname "$EXAKIT_VERSIONS_CACHE")" 2>/dev/null || return 1
+    # Written BEFORE the request, so a timeout or a kill still records that the
+    # question was asked.
+    : > "$(_exakit_versions_attempt_stamp)" 2>/dev/null || true
     _vu_tmp="$EXAKIT_VERSIONS_CACHE.tmp.$$"
     if ! curl -fsSL --proto '=https' --retry 1 \
             --connect-timeout "$EXAKIT_VERSION_LOOKUP_CONNECT_TIMEOUT" \
