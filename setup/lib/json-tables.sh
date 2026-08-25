@@ -245,14 +245,18 @@ _json_tables_mirror_wheel_name() {
         printf '%s' "$_jmw_json" | run_python -c '
 import json, sys
 doc = json.load(sys.stdin)
-for asset in doc.get("assets", []):
-    if asset["name"].endswith(".whl"):
-        print(asset["name"])
-        break
+# NEWEST wheel, not the first listed. The mirror tag is rolling and
+# accumulates assets across runs, so the release can hold several wheels at
+# once - taking the first installs an old one while the version recorded is
+# the current build, a mismatch no update could ever close.
+wheels = [a for a in doc.get("assets", []) if a.get("name", "").endswith(".whl")]
+wheels.sort(key=lambda a: a.get("created_at") or "", reverse=True)
+if wheels:
+    print(wheels[0]["name"])
 '
         return $?
     fi
-    printf '%s' "$_jmw_json" | tr ',' '\n' | sed -n 's/.*"name":"\([^"]*\.whl\)".*/\1/p' | head -1
+    printf '%s' "$_jmw_json" | tr ',' '\n' | sed -n 's/.*"name":"\([^"]*\.whl\)".*/\1/p' | sort -V | tail -1
 }
 
 # _json_tables_mirror_digest <asset> — the sha256 GitHub publishes for a

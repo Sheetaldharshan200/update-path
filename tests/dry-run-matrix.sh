@@ -596,6 +596,34 @@ else
     check "marketplace(addon_version_resolver)" "yes" "no"
 fi
 
+# JSON Tables on Windows. The add-on used to be gate-only there: upstream
+# reaches its engine solely through `subprocess.run(["cargo", "run", ...])`, and
+# CreateProcess resolves a bare name by appending .exe only — never PATHEXT — so
+# the /bin/sh cargo shim that works on macOS and Linux is invisible on Windows.
+# The answer is a COMPILED shim, built by the packaging workflow from this
+# repository. Guard every piece of that chain: without any one of them the
+# add-on is either hidden again or installs an engine nothing can reach.
+if [ -d "$ROOT/setup/shim/json-tables-cargo" ] && \
+   grep -q 'name = "cargo"' "$ROOT/setup/shim/json-tables-cargo/Cargo.toml" && \
+   grep -q 'fn is_ingest_call' "$ROOT/setup/shim/json-tables-cargo/src/main.rs" && \
+   grep -q 'json-tables-cargo/Cargo.toml' "$ROOT/.github/workflows/pkg-json-tables.yml" && \
+   grep -q 'exakit-json-tables-cargo-windows-x86_64.exe' "$ROOT/.github/workflows/pkg-json-tables.yml" && \
+   grep -q 'function Get-JsonTablesShimAsset' "$ROOT/setup/lib/json-tables.ps1" && \
+   grep -q 'function Write-JsonTablesLauncher' "$ROOT/setup/lib/json-tables.ps1" && \
+   grep -q 'function Get-JsonTablesMirrorDigest' "$ROOT/setup/lib/json-tables.ps1" && \
+   grep -q 'function Test-JsonTablesAppControl' "$ROOT/setup/lib/json-tables.ps1"; then
+    check "json-tables(windows_shim)" "yes" "yes"
+else
+    check "json-tables(windows_shim)" "yes" "no"
+fi
+# ...and that the module no longer reports itself unavailable unconditionally,
+# which is what the stub did.
+if grep -q 'return ((Get-JsonTablesEngineAsset) -ne "")' "$ROOT/setup/lib/json-tables.ps1"; then
+    check "json-tables(windows_applicable)" "yes" "yes"
+else
+    check "json-tables(windows_applicable)" "yes" "no"
+fi
+
 # Port ownership, both sides: a foreign listener must never read as a running
 # dash-server, and the install must settle on a port before baking one in.
 if grep -q '_dash_server_port_is_ours()' "$ROOT/setup/lib/dash-server.sh" && \

@@ -10,6 +10,16 @@ on:
   schedule:
     - cron: "30 7 * * *" # daily 07:30 UTC (the check job is change-gated)
   workflow_dispatch:
+    inputs:
+      force:
+        description: >-
+          Rebuild and republish even when upstream has not changed. Needed
+          whenever OUR OWN artifacts move - the Windows cargo shim lives in
+          this repository and versions independently of upstream, so without
+          this a shim fix could not reach the mirror until upstream happened
+          to cut a release.
+        type: boolean
+        default: false
 
 concurrency:
   group: pkg-json-tables
@@ -86,12 +96,18 @@ jobs:
             | jq -r '.body // ""' | sed -n 's/.*version=\([^ ]*\).*/\1/p') || last=""
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
           echo "ref=$ref" >> "$GITHUB_OUTPUT"
-          if [ -n "$sha" ] && [ "$sha" != "$last" ]; then
+          if [ "${{ github.event.inputs.force }}" = "true" ]; then
+            # Asked for explicitly. The upstream version is still whatever the
+            # tag says - this republishes the SAME upstream build with freshly
+            # built artifacts, which is exactly what a shim fix needs.
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::force requested - rebuilding and republishing json-tables $sha."
+          elif [ -n "$sha" ] && [ "$sha" != "$last" ]; then
             echo "changed=true" >> "$GITHUB_OUTPUT"
             echo "::notice::json-tables $last -> $sha - building the prebuilt artifacts."
           else
             echo "changed=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::json-tables unchanged ($sha) - skipping."
+            echo "::notice::json-tables unchanged ($sha) - skipping (re-run with force to republish)."
           fi
 
   ingest:
@@ -158,8 +174,56 @@ jobs:
           name: wheel
           path: dist/*.whl
 
+  shim:
+    # THE WINDOWS UNBLOCK. Upstream's CLI reaches its engine only through
+    # `subprocess.run(["cargo", "run", ...])`, and on Windows that goes to
+    # CreateProcess, which resolves a bare name by appending .exe ONLY - it
+    # never consults PATHEXT. So the /bin/sh `cargo` shim the kit writes on
+    # macOS and Linux is invisible there, and a .cmd or .bat would be too.
+    # The answer has to be a real executable, so we build one. The toolchain
+    # requirement lands on this runner instead of on the user, which is the
+    # whole trade this add-on exists to make.
+    #
+    # Built from THIS repository (setup/shim/json-tables-cargo), not upstream's,
+    # and rebuilt on every publish so the mirror release never ends up carrying
+    # an engine with no way to reach it.
+    needs: check
+    if: needs.check.outputs.changed == 'true'
+    name: cargo shim windows-x86_64
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: setup/shim/json-tables-cargo -> target
+          key: json-tables-cargo-shim
+      - name: Test the shim
+        # The argument-shape parsing IS the contract with upstream's CLI. It is
+        # unit-tested rather than eyeballed, and a failure here must stop the
+        # publish: a shim that mis-parses would forward the wrong argv to the
+        # engine and fail in the middle of a user's ingest.
+        run: cargo test --manifest-path setup/shim/json-tables-cargo/Cargo.toml
+      - name: Build the shim
+        run: cargo build --release --manifest-path setup/shim/json-tables-cargo/Cargo.toml --target-dir "${{ github.workspace }}/shim-target"
+      - name: Stage the shim
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir -p out
+          # The crate builds a binary literally named `cargo` - that name is
+          # what makes it findable at all - so it is renamed only for transit
+          # and put back as cargo.exe at install time.
+          bin="shim-target/release/cargo.exe"
+          test -f "$bin"
+          cp "$bin" "out/exakit-json-tables-cargo-windows-x86_64.exe"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cargo-shim-windows-x86_64
+          path: out/*
+
   publish:
-    needs: [check, ingest, wheel]
+    needs: [check, ingest, wheel, shim]
     if: needs.check.outputs.changed == 'true'
     runs-on: ubuntu-latest
     steps:
@@ -177,7 +241,9 @@ jobs:
           name: json-tables (prebuilt by CI)
           body: |
             Prebuilt JSON Tables ingest engine (all distributions) + Python wheel,
-            built once from ${{ env.UPSTREAM }} so users need no Rust/cargo.
+            built once from ${{ env.UPSTREAM }} so users need no Rust/cargo,
+            plus the compiled `cargo` shim Windows needs to reach that engine
+            (CreateProcess resolves .exe only, so a script shim cannot work there).
             version=${{ needs.check.outputs.sha }}
           files: release/*
           prerelease: true
