@@ -617,13 +617,13 @@ check "a native CLI gets the path verbatim" "/tmp/x.vsix" "$( (
 ) )"
 if command -v wslpath >/dev/null 2>&1; then
     # A real WSL host: the path must come back as something Windows can open.
-    check "on WSL a Windows CLI gets a translated path" "translated" "$( (
+    # Computed first, then matched: a `case` inside the $( ) would not parse
+    # under bash 3.2 (see the note on the drain checks above).
+    _wsl_translated="$( (
         exasol_vscode_code_cli() { printf '/mnt/c/code.cmd\n'; }
-        case "$(_exasol_vscode_host_path /tmp/x.vsix)" in
-            /tmp/*) printf 'untranslated\n' ;;
-            *)      printf 'translated\n' ;;
-        esac
+        _exasol_vscode_host_path /tmp/x.vsix
     ) )"
+    lacks "on WSL a Windows CLI gets a translated path" "/tmp/x.vsix" "$_wsl_translated"
 else
     # Anywhere else there is nothing to translate WITH, and a best guess would
     # be worse than none: the argument is returned untouched, so the call fails
@@ -633,6 +633,57 @@ else
         _exasol_vscode_host_path /tmp/x.vsix
     ) )"
 fi
+
+echo "a stdin-draining host CLI must not eat the add-on registry:"
+# The VS Code CLI reads and DRAINS whatever stdin it inherits. Every loop over
+# the add-on registry calls into the add-on modules, and the exasol-vscode row
+# asks VS Code what is installed — so with the registry on stdin, that one call
+# swallowed the rest of the loop's input and every add-on listed AFTER
+# exasol-vscode silently vanished. json-tables is last in the registry, so
+# json-tables is what disappeared, on every machine that had VS Code.
+#
+# Measured on WSL before the fix: a `while read` loop over three lines read ONE.
+# CI never caught it because a runner has no VS Code at all, so the CLI is never
+# found and never run — which is exactly why this stub exists. It reproduces the
+# drain on a machine that has no VS Code, and it fails against the old code.
+mkdir -p "$WORK/drain-bin"
+cat > "$WORK/drain-bin/code" <<'DRAINSTUBEOF'
+#!/bin/sh
+# Behave like the real thing in the one way that matters here.
+cat >/dev/null 2>&1 || true
+exit 0
+DRAINSTUBEOF
+chmod +x "$WORK/drain-bin/code"
+# The registry's LAST entry is the canary: it is the one a drain loses first.
+_drain_last="$(exakit_marketplace_addons | tail -1 | cut -d'|' -f1)"
+check "the canary is still the last registry entry" "json-tables" "$_drain_last"
+# NOTE: the result is computed first and matched with `has`, rather than with a
+# `case` inside the $( ). bash 3.2 - what macOS ships, and what this repo must
+# keep working on - mis-parses a case pattern's closing ')' inside a command
+# substitution ("syntax error near unexpected token `newline'"), which made
+# both of these read as failures on macOS only.
+_drain_targets="$( (
+    PATH="$WORK/drain-bin:$PATH"
+    exakit_version_table_targets 2>/dev/null
+) )"
+has "version-table targets survive the drain" "$_drain_last" "$_drain_targets"
+_drain_installed="$( (
+    PATH="$WORK/drain-bin:$PATH"
+    # exasol-vscode stays REAL and gets a manifest record, so its row actually
+    # runs the draining CLI - that is the whole point. Only the canary is
+    # stubbed, because its real probe verifies the venv and engine on disk and
+    # would answer "not installed" here for reasons that have nothing to do
+    # with the drain.
+    manifest_set components.exasol_vscode.version "1.7.0" >/dev/null 2>&1
+    manifest_set components.json_tables.version "v0.2" >/dev/null 2>&1
+    json_tables_installed_version() { printf 'v0.2\n'; }
+    exakit_marketplace_installed_addons 2>/dev/null
+) )"
+has "installed-addon enumeration survives the drain" "$_drain_last" "$_drain_installed"
+check "has-pending survives the drain" "yes" "$( (
+    PATH="$WORK/drain-bin:$PATH"
+    exakit_marketplace_has_pending && printf 'yes\n' || printf 'no\n'
+) )"
 
 echo "an add-on that needs a host app is only offered when the app is there:"
 # No VS Code on this machine → the extension is not an option at all: no menu

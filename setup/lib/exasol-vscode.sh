@@ -106,12 +106,24 @@ _exasol_vscode_host_path() {
 
 # _exasol_vscode_code — run the code CLI with the optional sandbox
 # extensions-dir applied. First argument onward is the code command line.
+#
+# STDIN IS CLOSED FOR THE CHILD, and that is not tidiness. The code CLI reads
+# and drains whatever stdin it inherits: called from inside a `while read`
+# loop, it swallows the rest of that loop's input. The marketplace row builder
+# is exactly such a loop — it reads the add-on registry line by line, and the
+# exasol-vscode row asks VS Code what is installed — so every add-on listed
+# AFTER exasol-vscode disappeared from the menu, silently. json-tables is last
+# in the registry, so json-tables is what vanished.
+#
+# Measured on WSL, a `while read` loop over three lines: 1 line read with this
+# call in the body, 3 with </dev/null. CI never saw it because a runner has no
+# VS Code, so exasol_vscode_code_cli fails and nothing is ever run.
 _exasol_vscode_code() {
     _evr_cli="$(exasol_vscode_code_cli)" || return 1
     if [ -n "$EXAKIT_EXASOL_VSCODE_EXTDIR" ]; then
-        "$_evr_cli" --extensions-dir "$(_exasol_vscode_host_path "$EXAKIT_EXASOL_VSCODE_EXTDIR")" "$@"
+        "$_evr_cli" --extensions-dir "$(_exasol_vscode_host_path "$EXAKIT_EXASOL_VSCODE_EXTDIR")" "$@" </dev/null
     else
-        "$_evr_cli" "$@"
+        "$_evr_cli" "$@" </dev/null
     fi
 }
 
