@@ -823,8 +823,8 @@ for _hl in version update; do
 done
 grep -q 'Show-ExakitHelpOverview' "$ROOT/setup/exakit.ps1" && ps_help_lines=$((ps_help_lines + 1))
 if printf '%s' "$short_help" | grep -q 'Keeping up to date' && \
-   printf '%s' "$short_help" | grep -qE '^ +version {2,}' && \
-   printf '%s' "$short_help" | grep -qE '^ +update {2,}' && \
+   printf '%s' "$short_help" | grep -qE '^ +exakit version {2,}' && \
+   printf '%s' "$short_help" | grep -qE '^ +exakit update {2,}' && \
    [ "$ps_help_lines" = 3 ]; then
     check "help(update_path_listed_both_sides)" "yes" "yes"
 else

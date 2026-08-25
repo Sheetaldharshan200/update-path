@@ -686,6 +686,17 @@ missing = sorted(want - names)
 print("yes" if not missing else "missing %s" % missing)
 PY
 )"
+# THE BUG: asking for an add-on's log before it is installed answered "No log
+# called 'dash-server'. Available: setup json-tables ..." - a list that does not
+# contain it, leaving the reader to work out why theirs is missing. A registered
+# add-on that is simply not installed is a state, not an unknown name.
+_log_addon="$(EXAKIT_HOME="$WORK/none" bash "$ROOT/setup/exakit" logs dash-server 2>&1 || true)"
+has "an uninstalled add-on's log says it is not installed" "is not installed" "$_log_addon"
+has "and says how to get it" "exakit marketplace" "$_log_addon"
+lacks "and does not call it an unknown name" "No log called" "$_log_addon"
+_log_bogus="$(EXAKIT_HOME="$WORK/none" bash "$ROOT/setup/exakit" logs banana 2>&1 || true)"
+has "a name that is nothing at all is still unknown" "No log called" "$_log_bogus"
+
 check "logs --json is one object even with no logs" "yes" \
     "$(EXAKIT_HOME="$WORK/none" bash "$ROOT/setup/exakit" logs --json 2>/dev/null | python3 -m json.tool >/dev/null 2>&1 && echo yes || echo no)"
 # The rows go through argv, not stdin: run_python reads the PROGRAM from stdin,

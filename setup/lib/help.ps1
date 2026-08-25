@@ -1,19 +1,13 @@
 # help.ps1 - Windows twin of help.sh: the kit's help system, rendered from the
 # documents in setup/help/*.json rather than from hardcoded text.
 #
-# Same policy as the bash side. The data is read, in order, from:
-#   1. the cached copy fetched from the kit repository, while it is fresh
-#   2. the copy that shipped with this kit (setup/help/)
-# The fetch is https-only, validated before it is trusted, written atomically,
-# and never fatal - offline renders the copy on disk and says nothing.
+# Same policy as the bash side: the data comes from the copy that shipped with
+# this kit (setup/help/), and nothing else. Fetching a remote copy used to take
+# precedence, which let a repository BEHIND the installed kit silently
+# downgrade its own help. Help now matches the code it was installed with.
 #
 # PowerShell parses JSON natively, so unlike the bash twin this side needs no
 # Python. Keep it 5.1 compatible: no ternary, no null-coalescing.
-
-$script:ExakitHelpRepo = if ($env:EXAKIT_HELP_REPO) { $env:EXAKIT_HELP_REPO } elseif ($script:KitRepo) { $script:KitRepo } else { "krishna-exasol/update-path" }
-$script:ExakitHelpUrl = if ($env:EXAKIT_HELP_URL) { $env:EXAKIT_HELP_URL } else { "https://raw.githubusercontent.com/$($script:ExakitHelpRepo)/main/setup/help" }
-$script:ExakitHelpTtl = if ($env:EXAKIT_HELP_TTL) { [int]$env:EXAKIT_HELP_TTL } else { 86400 }
-$script:ExakitHelpOffline = ($env:EXAKIT_HELP_OFFLINE -eq "1")
 
 function Get-ExakitHelpKitDir {
     if ($script:LibDir) {
@@ -23,11 +17,8 @@ function Get-ExakitHelpKitDir {
     return (Join-Path (Join-Path $script:ExakitHome "kit") "setup\help")
 }
 
-function Get-ExakitHelpCacheDir {
-    if ($env:EXAKIT_HELP_CACHE_DIR) { return $env:EXAKIT_HELP_CACHE_DIR }
-    return (Join-Path $script:ExakitHome "cache\help")
-}
-
+# The shipped directory IS the registry: a component exists for help purposes
+# exactly when this kit carries a document for it.
 function Get-ExakitHelpIds {
     $dir = Get-ExakitHelpKitDir
     if (-not (Test-Path $dir)) { return @() }
@@ -43,62 +34,8 @@ function Test-ExakitHelpId {
     return ((Get-ExakitHelpIds) -contains $Id)
 }
 
-# A document is trusted only if it parses and carries the id it claims to.
-function Test-ExakitHelpDocument {
-    param([string]$Path, [string]$Id)
-    if (-not (Test-Path $Path)) { return $false }
-    try {
-        $doc = Get-Content -Raw -Path $Path -Encoding UTF8 | ConvertFrom-Json
-    } catch { return $false }
-    if (-not $doc) { return $false }
-    if ($doc.id -ne $Id) { return $false }
-    if (-not $doc.schema_version) { return $false }
-    return $true
-}
-
-function Update-ExakitHelpCache {
-    param([string]$Id)
-    if ($script:ExakitHelpOffline) { return $false }
-    if ($script:ExakitHelpUrl -notmatch '^https://') { return $false }
-    $cacheDir = Get-ExakitHelpCacheDir
-    $cache = Join-Path $cacheDir "$Id.json"
-    if (Test-Path $cache) {
-        $age = ((Get-Date) - (Get-Item $cache).LastWriteTime).TotalSeconds
-        if ($script:ExakitHelpTtl -gt 0 -and $age -lt $script:ExakitHelpTtl) { return $false }
-    }
-    # The attempt marker is what keeps help instant: a repository that has not
-    # published these documents yet, or a machine with no network, must not pay
-    # a request timeout on every run. Touched before the request, so one attempt
-    # per id per TTL is made whatever the outcome.
-    $attempt = Join-Path $cacheDir ".attempt-$Id"
-    if (Test-Path $attempt) {
-        $attemptAge = ((Get-Date) - (Get-Item $attempt).LastWriteTime).TotalSeconds
-        if ($script:ExakitHelpTtl -gt 0 -and $attemptAge -lt $script:ExakitHelpTtl) { return $false }
-    }
-    New-Item -ItemType Directory -Force -Path $cacheDir -ErrorAction SilentlyContinue | Out-Null
-    New-Item -ItemType File -Force -Path $attempt -ErrorAction SilentlyContinue | Out-Null
-    $tmp = "$cache.tmp"
-    try {
-        Invoke-WebRequest -Uri "$($script:ExakitHelpUrl)/$Id.json" -OutFile $tmp -UseBasicParsing -TimeoutSec 5
-    } catch {
-        Remove-Item -Force $tmp -ErrorAction SilentlyContinue
-        return $false
-    }
-    if (-not (Test-ExakitHelpDocument $tmp $Id)) {
-        Remove-Item -Force $tmp -ErrorAction SilentlyContinue
-        return $false
-    }
-    Move-Item -Force $tmp $cache -ErrorAction SilentlyContinue
-    return $true
-}
-
 function Get-ExakitHelpDocument {
-    param([string]$Id, [switch]$NoFetch)
-    if (-not $NoFetch) { Update-ExakitHelpCache -Id $Id | Out-Null }
-    $cache = Join-Path (Get-ExakitHelpCacheDir) "$Id.json"
-    if (Test-ExakitHelpDocument $cache $Id) {
-        return (Get-Content -Raw -Path $cache -Encoding UTF8 | ConvertFrom-Json)
-    }
+    param([string]$Id)
     $shipped = Join-Path (Get-ExakitHelpKitDir) "$Id.json"
     if (Test-Path $shipped) {
         try { return (Get-Content -Raw -Path $shipped -Encoding UTF8 | ConvertFrom-Json) } catch { return $null }
@@ -106,25 +43,45 @@ function Get-ExakitHelpDocument {
     return $null
 }
 
-# Get-ExakitHelpDocuments [-Primary <id>] - every document, but only <Primary>
-# (the one this screen is ABOUT) is refreshed from the repository. The others
-# are read from disk: the overview and catalog only skim them for a tagline,
-# and nine round trips to draw one screen is not a help system anyone waits for.
+# Get-ExakitHelpDocuments - every document this kit carries.
 function Get-ExakitHelpDocuments {
-    param([string]$Primary = "exakit")
+    param([string]$Primary = "")
     $map = @{}
     foreach ($id in (Get-ExakitHelpIds)) {
-        if ($id -eq $Primary) {
-            $doc = Get-ExakitHelpDocument -Id $id
-        } else {
-            $doc = Get-ExakitHelpDocument -Id $id -NoFetch
-        }
+        $doc = Get-ExakitHelpDocument -Id $id
         if ($doc) { $map[$id] = $doc }
     }
     return $map
 }
 
 # --- rendering --------------------------------------------------------------
+
+# Every binary the kit documents. A command whose first word is one of these is
+# already spelled out ("exakit start" on the runtime page); anything else is a
+# bare subcommand and gets its document's prefix put in front. Twin of
+# KNOWN_TOOLS / invocation() in help.sh.
+$script:ExakitHelpKnownTools = @("exakit", "exapump", "exasol", "dash-server",
+    "exasol-json-tables", "exasol-mcp-server", "exasol-mcp-server-http")
+
+function Get-ExakitHelpInvocation {
+    param([string]$DocId, $Entry, $Doc)
+    $command = ""
+    if ($Entry.command) { $command = ([string]$Entry.command).Trim() }
+    $parts = $command -split '\s+'
+    if ($parts.Count -gt 0 -and $script:ExakitHelpKnownTools -contains $parts[0]) {
+        return $command
+    }
+    $prefix = $DocId
+    if ($Doc -and $Doc.invocation_prefix) { $prefix = $Doc.invocation_prefix }
+    return ("$prefix $command").Trim()
+}
+
+function Get-ExakitHelpInvocationWithOptions {
+    param([string]$DocId, $Entry, $Doc)
+    $label = Get-ExakitHelpInvocation -DocId $DocId -Entry $Entry -Doc $Doc
+    if ($Entry.options) { $label = "$label $($Entry.options)" }
+    return $label
+}
 
 function Write-ExakitHelpWrapped {
     param([string]$Text, [string]$Indent = "    ", [string]$First = $null)
@@ -170,13 +127,13 @@ function Write-ExakitHelpSection {
 }
 
 function Write-ExakitHelpCommand {
-    param([string]$Label, [string]$Summary, [int]$Pad = 26)
+    param([string]$Label, [string]$Summary, [int]$Pad = 26, [string]$Indent = "    ")
     if ($Label.Length -le $Pad -and $Summary) {
-        Write-Host ("    " + $Label.PadRight($Pad)) -ForegroundColor Green -NoNewline
+        Write-Host ($Indent + $Label.PadRight($Pad)) -ForegroundColor Green -NoNewline
         Write-Host " $Summary"
     } else {
-        Write-Host "    $Label" -ForegroundColor Green
-        if ($Summary) { Write-ExakitHelpWrapped -Text $Summary -Indent "      " }
+        Write-Host "$Indent$Label" -ForegroundColor Green
+        if ($Summary) { Write-ExakitHelpWrapped -Text $Summary -Indent ($Indent + "  ") }
     }
 }
 
@@ -208,24 +165,38 @@ function Show-ExakitHelpOverview {
         Write-ExakitHelpSection "Start here"
         Write-ExakitHelpSteps $doc.quickstart
     }
-    $summary = @{}
-    foreach ($entry in $doc.commands) { $summary[$entry.command] = $entry.summary }
+    $byName = @{}
+    foreach ($entry in $doc.commands) { $byName[$entry.command] = $entry }
     foreach ($group in $doc.groups) {
         Write-ExakitHelpSection $group.title
         foreach ($name in $group.commands) {
-            Write-ExakitHelpCommand -Label $name -Summary $summary[$name] -Pad 22
+            $entry = $byName[$name]
+            if (-not $entry) { continue }
+            $label = Get-ExakitHelpInvocation -DocId "exakit" -Entry $entry -Doc $doc
+            Write-ExakitHelpCommand -Label $label -Summary $entry.summary -Pad 24
         }
     }
     $others = @()
     foreach ($key in ($docs.Keys | Sort-Object)) { if ($key -ne "exakit") { $others += $key } }
     if ($others.Count -gt 0) {
-        Write-ExakitHelpSection "Components  (exakit <component> --help)"
+        # Each component names its own commands as a reader would type them. A
+        # bare list of component names told nobody what they could actually run.
+        Write-ExakitHelpSection "Components"
         foreach ($key in $others) {
-            Write-ExakitHelpCommand -Label $key -Summary $docs[$key].tagline -Pad 22
+            $sub = $docs[$key]
+            Write-Host "    $key" -NoNewline
+            Write-Host "  $($sub.tagline)" -ForegroundColor DarkGray
+            foreach ($entry in $sub.commands) {
+                $text = $entry.summary
+                if (-not $text) { $text = $entry.description }
+                Write-ExakitHelpCommand -Indent "      " -Pad 34 -Summary $text `
+                    -Label (Get-ExakitHelpInvocationWithOptions -DocId $key -Entry $entry -Doc $sub)
+            }
+            Write-Host ""
         }
     }
     Write-Host ""
-    Write-Host "  Every command also answers --help. Browse everything with: exakit catalog" -ForegroundColor DarkGray
+    Write-Host "  More detail on any command or component: exakit <component / command> --help" -ForegroundColor DarkGray
     Write-Host ""
     return 0
 }
@@ -244,9 +215,8 @@ function Show-ExakitHelpAll {
             $entry = $byName[$name]
             if (-not $entry -or $seen[$name]) { continue }
             $seen[$name] = $true
-            $label = $name
-            if ($entry.options) { $label = "$name $($entry.options)" }
-            Write-ExakitHelpCommand -Label $label -Summary $entry.summary
+            Write-ExakitHelpCommand -Pad 30 -Summary $entry.summary `
+                -Label (Get-ExakitHelpInvocationWithOptions -DocId "exakit" -Entry $entry -Doc $doc)
         }
     }
     Write-Host ""
@@ -306,11 +276,25 @@ function Show-ExakitHelpComponent {
     if ($doc.commands) {
         Write-ExakitHelpSection "Commands"
         foreach ($entry in $doc.commands) {
-            $label = $entry.command
-            if ($entry.options) { $label = "$($entry.command) $($entry.options)" }
             $text = $entry.summary
             if (-not $text) { $text = $entry.description }
-            Write-ExakitHelpCommand -Label $label -Summary $text
+            Write-ExakitHelpCommand -Pad 34 -Summary $text `
+                -Label (Get-ExakitHelpInvocationWithOptions -DocId $Id -Entry $entry -Doc $doc)
+        }
+    }
+    # Twin of the snippets block in help.sh. Without it the Examples section -
+    # the SQL a reader needs most on the json-tables and pyexasol pages -
+    # silently vanished on Windows.
+    if ($doc.snippets) {
+        Write-ExakitHelpSection "Examples"
+        $first = $true
+        foreach ($snippet in $doc.snippets) {
+            if (-not $first) { Write-Host "" }
+            $first = $false
+            Write-Host "    $($snippet.title)"
+            foreach ($line in ($snippet.code -split "`n")) {
+                Write-Host "      $line" -ForegroundColor Cyan
+            }
         }
     }
     if ($doc.environment) {

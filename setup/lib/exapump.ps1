@@ -1172,8 +1172,13 @@ function Select-ExakitDataLoad {
             -GroupParent 1 -GroupFirst 2 -GroupLast ($pending.Count + 1) -GroupMode "all"
     } else {
         Info "Every bundled dataset is already loaded (reload with: exakit data-load -Force)."
+        # Pre-select the LOCAL FILE row, not the final "Cancel" one: with every
+        # bundled dataset already in, loading something of your own is the only
+        # thing left for this screen to do, and defaulting to Cancel made Enter
+        # a no-op. The local row sits one index below the final label.
+        # Twin of exakit_data_load_select in exapump.sh.
         $selection = Read-ExakitCheckboxMenu -Title "Select data to load" -Options $labels.ToArray() `
-            -Defaults @($finalIdx) -ExclusiveIndex $finalIdx
+            -Defaults @($finalIdx - 1) -ExclusiveIndex $finalIdx
     }
     if ($selection -contains $finalIdx) { return @("none") }
     $chosen = @($selection | Where-Object { $_ -lt $finalIdx } | ForEach-Object { $ids[$_ - 1] } | Where-Object { $_ -ne "__group__" })
