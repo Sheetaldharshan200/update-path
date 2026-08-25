@@ -1802,6 +1802,30 @@ function Enable-ExakitAutostartDefault {
     if ($any) { Info "Everything the kit runs comes back automatically after a restart." }
 }
 
+# Invoke-ExakitWithSpinner <label> <body> - run a slow phase behind the kit's
+# spinner, so a command never sits there silent.
+#
+# `exakit status`, `info` and `version` all have to ask something slow before
+# they can print anything: a database round trip, a container probe, sometimes
+# the network. Until now they showed nothing at all until the answer arrived,
+# so a two-second wait was indistinguishable from a hang - the reader has no
+# way to tell "working" from "stuck". The install path has used this spinner
+# for its steps since it was written; the read commands never adopted it.
+#
+# Start-ExakitSpinner is already gated on $script:UiFancy, so it draws nothing
+# when output is redirected, piped or NO_COLOR is set. -Quiet is the extra gate
+# for the --json forms: those write a document to stdout and must never have a
+# frame land in the middle of it, terminal or not.
+#
+# Always stopped in a finally, so an exception cannot leave the cursor hidden.
+# Twin of exakit_with_spinner in setup/exakit.
+function Invoke-ExakitWithSpinner {
+    param([Parameter(Mandatory)][string]$Label, [Parameter(Mandatory)][scriptblock]$Body, [switch]$Quiet)
+    if ($Quiet -or $script:JsonOutput) { return (& $Body) }
+    Start-ExakitSpinner $Label
+    try { return (& $Body) } finally { Stop-ExakitSpinner }
+}
+
 function Get-ExakitAddonAdvertisedVersion {
     param([Parameter(Mandatory)][string]$Id, [string]$Fallback = "")
     # Get-ExakitComponentAvailable walks env override -> policy ->

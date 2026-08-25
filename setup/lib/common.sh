@@ -8126,6 +8126,33 @@ exakit_autostart_enable() {
 # yet: a user who ran `exakit autostart off` has said no, and that answer is
 # recorded as false and must survive every later run of the installer.
 # ⇄ twin: Enable-ExakitAutostartDefault in exakit-common.ps1.
+# exakit_with_spinner <label> <command...> — run a slow phase behind the kit's
+# spinner, so a command never sits there silent.
+#
+# `exakit status`, `info` and `version` all have to ask something slow before
+# they can print anything: a database round trip, a container probe, sometimes
+# the network. They used to show nothing at all until the answer arrived, so a
+# two-second wait was indistinguishable from a hang — the reader has no way to
+# tell "working" from "stuck". The install path has used this spinner for its
+# steps since it was written; the read commands never adopted it.
+#
+# ui_spin_begin re-checks `-t 1` at call time, so nothing is drawn when stdout
+# is a pipe or a file — which is also what keeps a frame out of the middle of
+# a --json document.
+#
+# The command's own stdout is left alone: only the spinner writes to the
+# terminal, and it clears its line before this returns. The exit status is the
+# command's, so callers can still branch on it.
+# ⇄ twin: Invoke-ExakitWithSpinner in exakit-common.ps1.
+exakit_with_spinner() {
+    _ws_label="$1"; shift
+    ui_spin_begin "$_ws_label"
+    "$@"
+    _ws_rc=$?
+    ui_spin_end
+    return "$_ws_rc"
+}
+
 exakit_autostart_default_on() {
     case "$(manifest_get autostart.enabled 2>/dev/null || true)" in
         true|false) return 0 ;;
