@@ -1725,6 +1725,32 @@ function Resolve-ExakitInstallVersions {
 #
 # Twin: exakit_component_available in common.sh - which needs no wrapper, and
 # that difference is the entire reason this one exists.
+# Enable-ExakitAutostartDefault - turn automatic start ON for a FRESH install.
+#
+# The kit exists to give someone a database that is simply there; leaving it off
+# by default meant a reboot silently took it away and the next command failed
+# with a connection error. Only ever applied when the manifest has no opinion
+# yet: a user who ran `exakit autostart off` has said no, that answer is
+# recorded as false, and it must survive every later run of the installer.
+#
+# This lives HERE rather than in the CLI because the installer is what needs it,
+# and setup-windows-docker.ps1 does not load setup\exakit.ps1. It therefore uses
+# only what the setup context has: the container's own restart policy from
+# nano.ps1. Per-service login entries are the CLI's business (`exakit autostart
+# on`), and an add-on installed later registers itself through the marketplace.
+# Twin of exakit_autostart_default_on in common.sh.
+function Enable-ExakitAutostartDefault {
+    $existing = Get-ExakitManifestValue "autostart.enabled"
+    if ($existing -is [bool]) { return }        # the user has already answered
+    $any = $false
+    if ((Get-ExakitManifestValue "runtime.type") -eq "nano" -and
+        (Get-Command Set-NanoRestartPolicy -ErrorAction SilentlyContinue)) {
+        if (Set-NanoRestartPolicy -Policy "always") { $any = $true }
+    }
+    Set-ExakitManifestValue "autostart.enabled" $any
+    if ($any) { Info "Everything the kit runs comes back automatically after a restart." }
+}
+
 function Get-ExakitAddonAdvertisedVersion {
     param([Parameter(Mandatory)][string]$Id, [string]$Fallback = "")
     # CLI context: the full policy answer, exactly as before.
@@ -3233,7 +3259,7 @@ function Show-ExakitMarketplaceMenu {
             elseif (Get-Command $addon.VersionFn -ErrorAction SilentlyContinue) { $ver = & $addon.VersionFn }
             if (-not $ver) { $ver = "?" }
             $rows += @{ Id = $null; Label = "$($addon.Id) - already installed"
-                Table = ("{0,-14} {1,-14} {2}" -f $addon.Id, $ver, "Installed. Update: exakit update $($addon.Id)") }
+                Table = ("{0,-14} {1,-14} {2}" -f $addon.Id, $ver, "Installed") }
         } elseif (Test-ExakitAddonSystemPresent $addon.Id) {
             # The user already has the tool from somewhere else - covered, and
             # the kit does not manage it.
@@ -3243,8 +3269,18 @@ function Show-ExakitMarketplaceMenu {
             $rows += @{ Id = $null; Label = "$($addon.Id) - not in this kit copy"
                 Table = ("{0,-14} {1,-14} {2}" -f $addon.Id, "-", "Not in this kit copy. Run: exakit update exakit") }
         } else {
-            $advertised = ""
-            if (Get-Command Get-ExakitComponentAvailable -ErrorAction SilentlyContinue) { $advertised = Get-ExakitComponentAvailable $addon.Id }
+            # Get-ExakitComponentAvailable lives in the CLI (setup\exakit.ps1)
+            # and NOWHERE else. The closing offer during a fresh install runs
+            # from setup-windows-docker.ps1, which never loads the CLI, so this
+            # used to fall straight through to "unknown" for every row - the
+            # version column was blank exactly where a first-time user reads it.
+            # Get-ExakitAddonAdvertisedVersion answers in both contexts.
+            $fallback = ""
+            if ($addon.FallbackVar) {
+                $fv = Get-Variable -Name $addon.FallbackVar -Scope Script -ErrorAction SilentlyContinue
+                if ($fv) { $fallback = "" + $fv.Value }
+            }
+            $advertised = Get-ExakitAddonAdvertisedVersion -Id $addon.Id -Fallback $fallback
             if (-not $advertised) { $advertised = "unknown" }
             # Only an installable row shows a description, and only a run that
             # will actually DRAW one resolves it: a scripted answer
@@ -3289,18 +3325,29 @@ function Show-ExakitMarketplaceMenu {
         return
     }
 
-    # The state table - same shape as the `exakit version` table, so the two
-    # screens read as one family.
+    # The state table, drawn with the SAME panel `exakit version` uses so every
+    # table in the kit reads as one family. The glyphs come from the ui palette
+    # (rounded where the terminal supports it, ASCII where it does not); nothing
+    # here may contain a box character of its own - every .ps1 but ui.ps1 has to
+    # stay pure ASCII, or PowerShell 5.1 reads it in the legacy codepage.
+    $selectable = @($rows | Where-Object { $_.Id })
+    # The last column is named for what it actually carries. With nothing left
+    # to install every row is a state, so it is a Status column; while anything
+    # is still installable the column carries the add-on's description.
+    $lastCol = if ($selectable.Count -eq 0) { "Status" } else { "Description" }
     Write-Host ""
-    Write-Host "  Marketplace add-ons"
-    Write-Host ("  " + ("-" * 74))
-    Write-Host ("  {0,-14} {1,-14} {2}" -f "Add-on", "Version", "Description")
-    foreach ($row in $rows) { Write-Host ("  " + $row.Table) }
+    Start-ExakitPanel "Marketplace add-ons"
+    Write-ExakitPanelLine ("{0,-14} {1,-14} {2}" -f "Add-on", "Version", $lastCol)
+    foreach ($row in $rows) {
+        # A description cell is folded onto continuation lines upstream; each
+        # one has to become its own panel line or the border breaks.
+        foreach ($line in ($row.Table -split "`r?`n")) { Write-ExakitPanelLine $line }
+    }
+    Complete-ExakitPanel
     Write-Host ""
 
-    $selectable = @($rows | Where-Object { $_.Id })
     if ($selectable.Count -eq 0) {
-        Info "Everything available is already covered. Updates: exakit version"
+        Info "Everything available is already covered."
         return
     }
 
@@ -3375,6 +3422,24 @@ function Invoke-ExakitMarketplaceApply {
         if ($installed) {
             if ($addon.ValidateFn -and (Get-Command $addon.ValidateFn -ErrorAction SilentlyContinue)) {
                 try { & $addon.ValidateFn } catch { Warn2 "$id validation reported: $_" }
+            }
+            # A service add-on joins the boot set the moment it is installed, so
+            # nobody has to remember a second command. Register-ExakitAutostart
+            # is CLI-only, so this is skipped in the setup context - the flag is
+            # already on by then and `exakit autostart on` covers the rest.
+            # Twin of the same block in _exakit_marketplace_install_one.
+            if ((Get-ExakitManifestValue "autostart.enabled") -eq $true -and
+                $addon.PSObject.Properties["AutostartFn"] -and
+                (Get-Command Register-ExakitAutostart -ErrorAction SilentlyContinue)) {
+                try { [void](Register-ExakitAutostart -Id $id) } catch { }
+            }
+            # ...and it is STARTED now. Registering for boot is not the same as
+            # running: on Windows nothing starts until the next login, so
+            # `exakit status` reported the add-on just installed as "stopped".
+            if ($addon.PSObject.Properties["StartFn"] -and
+                (Get-Command $addon.StartFn -ErrorAction SilentlyContinue)) {
+                try { [void](& $addon.StartFn) }
+                catch { Warn2 "$id installed but did not start - start it with: exakit start" }
             }
             Ok "$id installed - it now updates with: exakit update (or exakit update $id)"
         } else {

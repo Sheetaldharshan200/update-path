@@ -525,7 +525,8 @@ _covered_out="$( (
     exakit_marketplace_menu 2>&1
 ) )"
 has "no selectable rows -> covered list, no menu" "Everything available is already" "$_covered_out"
-has "the covered list shows the install" "Installed. Update:" "$_covered_out"
+has "the covered list shows the install" "Installed" "$_covered_out"
+lacks "and does not advertise the update command at them" "Update: exakit update" "$_covered_out"
 has "a system install reads as covered, not managed" "on this system" "$_covered_out"
 rm -rf "$EXAKIT_HOME/dash-server-venv"
 
@@ -1307,7 +1308,10 @@ check "a manually installed add-on reads as present" "present" "$( (
 ) )"
 check "the menu says so instead of offering an install" "on this system" "$( (
     PATH="$WORK/manual-bin:$PATH"
-    exakit_marketplace_menu 2>/dev/null | grep '^ *json-tables' | grep -o 'on this system' | head -1
+    # The row sits inside a panel now, so strip whatever border precedes it -
+    # ASCII here, since a redirected run is always in plain mode - before
+    # anchoring on the id.
+    exakit_marketplace_menu 2>/dev/null | sed 's/^[^A-Za-z]*//' | grep '^json-tables' | grep -o 'on this system' | head -1
 ) )"
 check "and it cannot be selected" "not-selectable" "$( (
     PATH="$WORK/manual-bin:$PATH"

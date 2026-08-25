@@ -371,15 +371,22 @@ function Disable-ExakitAutostart {
 }
 
 function Show-ExakitAutostart {
+    # The same panel every other table in the kit uses, so the screens read as
+    # one family. Box glyphs come from the ui palette - never spelled here,
+    # because every .ps1 but ui.ps1 must stay pure ASCII.
     Write-Host ""
-    Write-Host "  Automatic start after a restart"
-    Write-Host "  -------------------------------"
-    # Indented to the title, matching exakit_autostart_print in common.sh.
-    Write-Host ("  {0,-14} {1}" -f "Service", "Status")
+    # The name column is MEASURED, not assumed: service ids come from the
+    # registry and an add-on may be added with a longer one. Twin of the _ap_w
+    # walk in exakit_autostart_print.
+    $w = 7
+    foreach ($id in (Get-ExakitServiceIds)) { if ($id.Length -gt $w) { $w = $id.Length } }
+    Start-ExakitPanel "Automatic start after a restart"
+    Write-ExakitPanelLine (("{0,-$w}  {1}") -f "Service", "Status")
     foreach ($id in (Get-ExakitServiceIds)) {
         $state = if (Test-ExakitAutostartRegistered -Id $id) { "yes" } else { "no" }
-        Write-Host ("  {0,-14} {1}" -f $id, $state)
+        Write-ExakitPanelLine (("{0,-$w}  {1}") -f $id, $state)
     }
+    Complete-ExakitPanel
     Write-Host ""
     Info "Turn it on with: exakit autostart on   -   off with: exakit autostart off"
 }

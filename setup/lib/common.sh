@@ -2966,6 +2966,15 @@ _exakit_marketplace_install_one() {
        command -v "$(_exakit_addon_fn "$1" autostart_command)" >/dev/null 2>&1; then
         _exakit_autostart_register "$1" || true
     fi
+    # ...and it is STARTED now. Registering for boot is not the same as running:
+    # on Linux and Windows nothing starts until the next login, so `exakit
+    # status` reported the add-on the user had just installed as "stopped".
+    # Best-effort, and only for an add-on that declares a start hook.
+    _mi_start="$(_exakit_addon_fn "$1" start)"
+    if command -v "$_mi_start" >/dev/null 2>&1; then
+        "$_mi_start" >/dev/null 2>&1 || \
+            warn "$1 installed but did not start — start it with: exakit start"
+    fi
     return 0
 }
 
@@ -3003,7 +3012,7 @@ exakit_marketplace_menu() {
         # menu is ever drawn and the table is then the only output.
         if exakit_marketplace_addon_installed "$_mm_id"; then
             _mm_ver="$(exakit_component_current "$_mm_id" 2>/dev/null || true)"
-            _mm_rows+=("$(printf '%-14s %-14s %s' "$_mm_id" "${_mm_ver:-?}" "Installed. Update: exakit update $_mm_id")")
+            _mm_rows+=("$(printf '%-14s %-14s %s' "$_mm_id" "${_mm_ver:-?}" "Installed")")
             _mm_ids+=("__disabled__"); _mm_labels+=("$_mm_id - already installed")
         elif _exakit_addon_system_present "$_mm_id"; then
             # The user already has the tool from somewhere else: covered, and
@@ -3086,20 +3095,34 @@ EXAKIT_MM_EOF
         return $?
     fi
 
-    # The state table — same shape as the `exakit version` table, so the two
-    # screens read as one family.
-    printf '\n  Marketplace add-ons\n'
-    printf '  %s\n' "$(ui_repeat '-' 74)"
-    printf '  %-14s %-14s %s\n' "Add-on" "Version" "Description"
+    # The state table, drawn with the SAME panel `exakit version` uses so every
+    # table in the kit reads as one family. The glyphs come from the ui palette
+    # (rounded where the terminal supports it, ASCII where it does not), so
+    # nothing here spells a box character itself.
+    #
+    # The last column is named for what it actually carries: with nothing left
+    # to install every row is a state, so it is a Status column; while anything
+    # is still installable the column carries the add-on's description.
+    if [ "$_mm_selectable" -eq 0 ]; then
+        _mm_lastcol="Status"
+    else
+        _mm_lastcol="Description"
+    fi
+    printf '\n'
+    ui_panel_begin "Marketplace add-ons"
+    ui_panel_line "$(printf '%-14s %-14s %s' "Add-on" "Version" "$_mm_lastcol")"
     _mm_i=0
     while [ "$_mm_i" -lt "${#_mm_rows[@]}" ]; do
-        printf '  %s\n' "${_mm_rows[$_mm_i]}"
+        # A description cell is already folded onto continuation lines; the
+        # panel splits the buffer on newlines, so it lands correctly as-is.
+        ui_panel_line "${_mm_rows[$_mm_i]}"
         _mm_i=$((_mm_i + 1))
     done
+    ui_panel_end
     printf '\n'
 
     if [ "$_mm_selectable" -eq 0 ]; then
-        info "Everything available is already covered. Updates: exakit version"
+        info "Everything available is already covered."
         return 0
     fi
 
@@ -8044,6 +8067,22 @@ exakit_autostart_enable() {
     else
         manifest_set autostart.enabled false
     fi
+    return 0
+}
+
+# exakit_autostart_default_on — turn automatic start ON for a FRESH install.
+#
+# The kit exists to give someone a database that is simply there; leaving it off
+# by default meant a reboot silently took it away and the next command failed
+# with a connection error. Only ever applied when the manifest has no opinion
+# yet: a user who ran `exakit autostart off` has said no, and that answer is
+# recorded as false and must survive every later run of the installer.
+# ⇄ twin: Enable-ExakitAutostartDefault in exakit-common.ps1.
+exakit_autostart_default_on() {
+    case "$(manifest_get autostart.enabled 2>/dev/null || true)" in
+        true|false) return 0 ;;
+    esac
+    exakit_autostart_enable
     return 0
 }
 
