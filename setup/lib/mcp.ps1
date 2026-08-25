@@ -1135,12 +1135,9 @@ function Update-McpClientPins {
     Show-McpSetupSummary $resultJson
     # Confirm from the configs, not from the record: Install-Mcp already wrote the
     # record, so only the live pin can say whether the clients actually moved.
-    # The reader lives in setup/exakit.ps1, which is not dot-sourced by the
-    # installer entry point - skip the confirmation there rather than failing.
-    $pin = ""
-    if (Get-Command Get-ExakitInstalledMcpVersion -ErrorAction SilentlyContinue) {
-        $pin = Get-ExakitInstalledMcpVersion
-    }
+    # The reader used to be CLI-only, so this was skipped during an install;
+    # it is in the shared layer now and the confirmation runs in both.
+    $pin = Get-ExakitInstalledMcpVersion
     if ($pin -and $pin -ne $script:McpVersion) {
         Warn2 "An AI client is still pinned to $($script:McpPackage)@$pin - see exakit mcp-doctor."
         return $false

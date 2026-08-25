@@ -243,11 +243,12 @@ function Set-ExapumpManifest {
 # Silence is left alone deliberately: Get-ExakitComponentCurrent answers nothing only
 # when there is no binary at all, and a correction invented from silence would be
 # worse than the record. That reader lives in setup/exakit.ps1, which the installer
-# entry point does not dot-source, so the confirmation is skipped there rather than
-# failing - the same treatment Update-McpClientPins gives its own pin re-read.
+# entry point. That skip is gone: Get-ExakitComponentCurrent is in the shared
+# layer now, so the confirmation runs during an install too - which is where a
+# version that does not match what was just installed is most worth hearing
+# about.
 # Twin of exapump_confirm_installed_version in setup/lib/exapump.sh.
 function Confirm-ExapumpInstalledVersion {
-    if (-not (Get-Command Get-ExakitComponentCurrent -ErrorAction SilentlyContinue)) { return $true }
     $live = Get-ExakitComponentCurrent "exapump"
     if (-not $live) { return $true }
     if ($live -eq $script:ExapumpVersion) { return $true }

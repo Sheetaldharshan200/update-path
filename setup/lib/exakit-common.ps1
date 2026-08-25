@@ -1753,21 +1753,19 @@ function Enable-ExakitAutostartDefault {
 
 function Get-ExakitAddonAdvertisedVersion {
     param([Parameter(Mandatory)][string]$Id, [string]$Fallback = "")
-    # CLI context: the full policy answer, exactly as before.
-    if (Get-Command Get-ExakitComponentAvailable -ErrorAction SilentlyContinue) {
-        $available = Get-ExakitComponentAvailable $Id
-        if ($available) { return $available }
-        return $Fallback
-    }
-    # Setup context: answer the way the default "manifest" policy would, out of
-    # the versions document this layer already knows how to read (setup has
-    # resolved it by now - Resolve-ExakitInstallVersions ran first). Any other
-    # policy has no network story here, so it lands on the compiled-in constant:
-    # the same version a no-network CLI install would pick.
-    if ($script:VersionPolicy -eq "manifest") {
-        $available = Get-ExakitVersionsValue -Path "components.$Id.version"
-        if ($available) { return $available }
-    }
+    # Get-ExakitComponentAvailable walks env override -> policy ->
+    # versions.json and returns empty when it cannot tell. This adds the one
+    # thing an add-on needs on top: the module's own compiled-in constant as
+    # the last resort, so an install never renders "unknown" or refuses to
+    # proceed because a version lookup came back blank.
+    #
+    # There used to be a Get-Command guard here, because
+    # Get-ExakitComponentAvailable was defined only in the CLI while this is
+    # also called during an install. The guard is gone: that function lives in
+    # this file now (see the shared-layer section at the bottom) and is in
+    # scope for both callers.
+    $available = Get-ExakitComponentAvailable $Id
+    if ($available) { return $available }
     return $Fallback
 }
 
@@ -2105,14 +2103,10 @@ function Show-ExakitUpdateNotice {
     try { if ([Console]::IsErrorRedirected) { return } } catch { return }
     if (-not (Test-Path $script:ManifestPath)) { return }
     if (-not (Test-ExakitNoticeDue)) { return }
-    # The component readers live in setup/exakit.ps1; the notice is only ever
-    # hooked from that dispatcher, but never assume it when the library is used
-    # on its own (the installer dot-sources it too).
-    if (-not (Get-Command Get-ExakitComponentAvailable -ErrorAction SilentlyContinue)) { return }
-    # Both notice paths now compare versions, and that comparison also lives in
-    # the dispatcher. Named in the same gate so a library-only load returns
-    # quietly rather than throwing into the catch below.
-    if (-not (Get-Command Test-ExakitVersionNewer -ErrorAction SilentlyContinue)) { return }
+    # (The two gates that used to stand here checked whether the component
+    # readers existed at all, because they lived in the CLI and the installer
+    # does not load it. They are in the shared layer now, so there is nothing
+    # left to check. The notice is still only ever hooked from the dispatcher.)
 
     try {
         if (Test-ExakitNoticePlanFresh) {
@@ -3133,13 +3127,14 @@ function Get-ExakitMarketplaceAddon {
 # KIT-MANAGED install only: the component answers for itself
 # (Get-ExakitComponentCurrent probes the actual install and returns nothing
 # for a provably absent one). This is what gates the update flow - the kit
-# only ever updates what it manages. Get-ExakitComponentCurrent lives in
-# exakit.ps1; the setup script reaches the module probe directly instead.
+# only ever updates what it manages. Get-ExakitComponentCurrent is the
+# canonical probe and is in scope for the installer too, so both callers now
+# get the same answer; the module probe below remains the fallback for an
+# add-on the version reader cannot speak for.
 function Test-ExakitMarketplaceAddonInstalled {
     param([Parameter(Mandatory)][string]$Id)
-    if (Get-Command Get-ExakitComponentCurrent -ErrorAction SilentlyContinue) {
-        return [bool](Get-ExakitComponentCurrent $Id)
-    }
+    $current = Get-ExakitComponentCurrent $Id
+    if ($current) { return $true }
     $addon = Get-ExakitMarketplaceAddon $Id
     if ($addon -and (Get-Command $addon.VersionFn -ErrorAction SilentlyContinue)) {
         return [bool](& $addon.VersionFn)
@@ -3254,9 +3249,8 @@ function Show-ExakitMarketplaceMenu {
         # not simply available, because the all-covered path returns before the
         # menu is ever drawn and the table is then the only output.
         if (Test-ExakitMarketplaceAddonInstalled $addon.Id) {
-            $ver = ""
-            if (Get-Command Get-ExakitComponentCurrent -ErrorAction SilentlyContinue) { $ver = Get-ExakitComponentCurrent $addon.Id }
-            elseif (Get-Command $addon.VersionFn -ErrorAction SilentlyContinue) { $ver = & $addon.VersionFn }
+            $ver = Get-ExakitComponentCurrent $addon.Id
+            if (-not $ver -and (Get-Command $addon.VersionFn -ErrorAction SilentlyContinue)) { $ver = & $addon.VersionFn }
             if (-not $ver) { $ver = "?" }
             $rows += @{ Id = $null; Label = "$($addon.Id) - already installed"
                 Table = ("{0,-14} {1,-14} {2}" -f $addon.Id, $ver, "Installed") }
@@ -3424,13 +3418,14 @@ function Invoke-ExakitMarketplaceApply {
                 try { & $addon.ValidateFn } catch { Warn2 "$id validation reported: $_" }
             }
             # A service add-on joins the boot set the moment it is installed, so
-            # nobody has to remember a second command. Register-ExakitAutostart
-            # is CLI-only, so this is skipped in the setup context - the flag is
-            # already on by then and `exakit autostart on` covers the rest.
+            # nobody has to remember a second command. This used to be skipped
+            # during an install, because Register-ExakitAutostart was CLI-only -
+            # which is exactly why an add-on installed from the closing offer
+            # never joined the boot set. It is in the shared layer now, so the
+            # install path registers it like the CLI always did.
             # Twin of the same block in _exakit_marketplace_install_one.
             if ((Get-ExakitManifestValue "autostart.enabled") -eq $true -and
-                $addon.PSObject.Properties["AutostartFn"] -and
-                (Get-Command Register-ExakitAutostart -ErrorAction SilentlyContinue)) {
+                $addon.PSObject.Properties["AutostartFn"]) {
                 try { [void](Register-ExakitAutostart -Id $id) } catch { }
             }
             # ...and it is STARTED now. Registering for boot is not the same as
@@ -3565,4 +3560,455 @@ function Show-ExakitConnectionPanel {
     }
     Complete-ExakitPanel
     Write-Host ""
+}
+
+
+# ===========================================================================
+# Version resolution, update targets and autostart
+# ===========================================================================
+#
+# THESE LIVE HERE, NOT IN THE CLI, AND THAT IS THE WHOLE POINT.
+#
+# The kit runs its PowerShell in two contexts:
+#
+#   the CLI      setup\exakit.ps1 - dot-sources this file, then the component
+#                and add-on modules, then dispatches a command.
+#   the INSTALL  setup\setup-windows-docker.ps1 - dot-sources this file and
+#                the same modules, and NEVER loads the CLI.
+#
+# Anything defined in the CLI is therefore invisible during an install. That
+# asymmetry produced the same bug three times in one week, each time somewhere
+# a first-time user was looking:
+#
+#   * Install-ExasolVscode / Install-DashServer called Get-ExakitComponentAvailable
+#     and died with CommandNotFoundException the moment the closing marketplace
+#     offer tried to install an add-on - every Windows add-on install failed.
+#   * The marketplace table resolved the same function for its Version column
+#     and printed "unknown" for every row on a fresh install.
+#   * Invoke-ExakitMarketplaceApply could not register autostart at all, because
+#     Register-ExakitAutostart was CLI-only, so a freshly installed service
+#     add-on never joined the boot set.
+#
+# The shell side has none of this: common.sh holds these functions and every
+# entry point sources it, so `exakit_component_available` is simply always in
+# scope. This section is that same arrangement for PowerShell.
+#
+# tests/dry-run-matrix.sh has a `powershell(no_cli_only_leak)` guard that
+# recomputes the leak set and fails if a function the shared layer or a module
+# calls is defined only in the CLI. If you are reading this because that guard
+# failed: move the function here rather than adding another
+# `Get-Command ... -ErrorAction SilentlyContinue` guard around the call.
+# ===========================================================================
+
+# exakit_update_actual_target equivalent: "runtime" names whichever runtime is
+# actually installed.
+function Get-ExakitActualTarget {
+    param([string]$Component)
+    if ($Component -eq "runtime") {
+        $type = Get-RuntimeType
+        if ($type) { return $type }
+    }
+    return $Component
+}
+
+function Get-ExakitAutostartEntryPath {
+    param([Parameter(Mandatory)][string]$Id)
+    return (Join-Path (Get-ExakitStartupDir) "com.exasol.exakit.$Id.cmd")
+}
+
+# Get-ExakitComponentAvailable - the version this kit would install NOW, under the
+# policy in force. That is the promise the Tagged column makes, so each policy
+# answers from the same place its install path would:
+#   env override  the version the user asked for
+#   manifest      versions.json
+#   latest        a live upstream lookup
+#   anything else the compiled-in *Fallback variable
+# $null/"" means "cannot tell", which the table reports as unknown.
+function Get-ExakitComponentAvailable {
+    param([string]$Component)
+    $override = Get-ExakitComponentEnvOverride $Component
+    if ($override) { return $override }
+    if ($script:VersionPolicy -eq "latest") { return (Get-ExakitComponentLatest $Component) }
+    if ($script:VersionPolicy -ne "manifest") { return (Get-ExakitComponentFallback $Component) }
+    $block = Get-ExakitComponentBlock $Component
+    if (-not $block) { return "" }
+    $value = Get-ExakitVersionsValue -Path "$block.version"
+    if ($value) { return $value }
+    # A marketplace add-on can be newer than the published manifest (the kit
+    # copy carrying it ships before the advertised set catches up): its
+    # module's own fallback constant answers instead of "unknown" - the same
+    # version the marketplace install would actually install.
+    if (Get-ExakitMarketplaceAddon $Component) { return (Get-ExakitComponentFallback $Component) }
+    return ""
+}
+
+# Get-ExakitComponentBlock - where this Component lives in versions.json. One
+# mapping serves version, severity, note and min_kit_version.
+function Get-ExakitComponentBlock {
+    param([string]$Component)
+    switch ($Component) {
+        "exakit" { return "kit" }
+        "kit2" { return "kit2" }
+        { $_ -in @("exapump", "mcp", "pyexasol", "nano", "personal") } { return "components.$Component" }
+        "runtime" {
+            if ((Get-RuntimeType) -eq "nano") { return "components.nano" }
+            if ((Get-RuntimeType) -eq "personal") { return "components.personal" }
+            return $null
+        }
+        default {
+            # Every marketplace add-on lives at components.<id> by convention.
+            if (Get-ExakitMarketplaceAddon $Component) { return "components.$Component" }
+            return $null
+        }
+    }
+    return $null
+}
+
+function Get-ExakitComponentCurrent {
+    param([string]$Component)
+    switch ($Component) {
+        "exakit" {
+            # kit.version is written by the installer; the kit.source parse is the
+            # fallback for installs made before that, and the kit copy's own
+            # manifest is the last resort (kit.source is usually "<repo>@main",
+            # which is a branch, not a version).
+            $version = Get-ExakitManifestValue "kit.version"
+            if ($version) { return $version }
+            $src = Get-ExakitManifestValue "kit.source"
+            if ($src -and $src.Contains("@") -and -not $src.EndsWith("@main")) { return ($src -split "@")[-1] }
+            $bundled = Get-ExakitKitBundledVersion
+            if ($bundled) { return $bundled }
+            return "unknown"
+        }
+        "exapump" {
+            # What is on disk wins over what was recorded: someone may have replaced
+            # the binary by hand, and an update check must compare against the thing
+            # that actually runs. Provably absent beats a stale record, so a missing
+            # binary reports nothing and the table offers the reinstall.
+            $bin = Get-ExakitManifestValue "components.exapump.path"
+            if (-not $bin -or -not (Test-Path $bin)) {
+                $found = Get-Command exapump -ErrorAction SilentlyContinue
+                if ($found) { $bin = $found.Source } else { $bin = "" }
+            }
+            if (-not $bin -or -not (Test-Path $bin)) { return "" }
+            $live = Get-ExakitProbedVersion -Command $bin -Arguments @("--version")
+            if ($live) { return $live }
+            return (Get-ExakitManifestValue "components.exapump.version")
+        }
+        "mcp" {
+            # What the clients are pinned to is what will actually run; the record is
+            # the fallback when no client is configured or the module is absent.
+            $live = Get-ExakitInstalledMcpVersion
+            if ($live) { return $live }
+            return (Get-ExakitManifestValue "components.mcp_server.version")
+        }
+        "pyexasol" {
+            $python = Get-ExakitManifestValue "components.pyexasol.python"
+            if (-not $python -or -not (Test-Path $python)) {
+                $python = Join-Path $script:ExakitHome "pyexasol-venv\Scripts\python.exe"
+            }
+            if (-not (Test-Path $python)) { return "" }
+            $live = Get-ExakitProbedVersion -Command $python `
+                -Arguments @("-c", "import pyexasol; print(pyexasol.__version__)") -Raw
+            if ($live) { return $live }
+            return (Get-ExakitManifestValue "components.pyexasol.version")
+        }
+        "nano" {
+            # The tag on the container beats the record: someone may have recreated
+            # it by hand, and an interrupted update can leave the record ahead of
+            # what is really running.
+            #
+            # Unlike exapump and pyexasol, a probe that cannot answer NEVER reports
+            # absence here. A closed Docker Desktop is an ordinary, temporary state,
+            # and flipping the runtime row to "inspect" every time would be noise.
+            # Whether the runtime exists at all is `exakit status`'s question, and it
+            # asks the engine directly.
+            $live = ""
+            try {
+                $engine = Get-NanoEngine
+                if ($engine -and $engine -ne "none") {
+                    Resolve-NanoNames
+                    $out = Invoke-ExakitBounded -FilePath $engine `
+                        -Arguments @("container", "inspect", "-f", "{{.Config.Image}}", $script:NanoContainer) `
+                        -TimeoutSeconds $(if ($env:EXAKIT_ENGINE_PROBE_TIMEOUT) { [int]$env:EXAKIT_ENGINE_PROBE_TIMEOUT } else { 8 })
+                    if ($out) { $out = ($out -split "`n" | Select-Object -First 1) }
+                    if ($out -and ("" + $out).Contains(":")) { $live = (("" + $out).Trim() -split ":")[-1] }
+                }
+            } catch { }
+            if ($live) { return $live }
+            $image = Get-ExakitManifestValue "runtime.image"
+            if ($image -and $image.Contains(":")) { return ($image -split ":")[-1] }
+            return ""
+        }
+        "runtime" {
+            if ((Get-RuntimeType) -eq "nano") { return (Get-ExakitComponentCurrent "nano") }
+            if ((Get-RuntimeType) -eq "personal") { return (Get-ExakitComponentCurrent "personal") }
+            return ""
+        }
+        # The launcher is a different axis from the runtime (see
+        # exakit_installed_personal_version in common.sh): the record is the answer.
+        "personal" {
+            if ((Get-RuntimeType) -eq "personal") { return (Get-ExakitManifestValue "runtime.version") }
+            return ""
+        }
+        default {
+            # Marketplace add-ons: the module's own probe is the authority (it
+            # asks the actual install and returns nothing for a provably absent
+            # one, so a stale manifest record can never claim "installed").
+            $addon = Get-ExakitMarketplaceAddon $Component
+            if (-not $addon) { return "" }
+            if (Get-Command $addon.VersionFn -ErrorAction SilentlyContinue) {
+                $live = & $addon.VersionFn
+                if ($live) { return $live }
+                return ""
+            }
+            return (Get-ExakitManifestValue ("components." + ($Component -replace "-", "_") + ".version"))
+        }
+    }
+}
+
+# Get-ExakitComponentEnvOverride - the version the user asked for by hand, if any.
+# Same precedence as the install path: an explicit EXAKIT_*_VERSION /
+# EXAKIT_NANO_TAG outranks the manifest and any upstream lookup, so
+# `$env:EXAKIT_EXAPUMP_VERSION="0.11.2"; exakit update exapump` installs exactly
+# that (still through the confirmation gate, and still verified - the digest chain
+# falls back to the release API when the version is not the advertised one).
+function Get-ExakitComponentEnvOverride {
+    param([string]$Component)
+    $component = $Component
+    if ($component -eq "runtime") { $component = Get-RuntimeType }
+    switch ($component) {
+        "exapump" { return $env:EXAKIT_EXAPUMP_VERSION }
+        "mcp" { return $env:EXAKIT_MCP_VERSION }
+        "pyexasol" { return $env:EXAKIT_PYEXASOL_VERSION }
+        "nano" { return $env:EXAKIT_NANO_TAG }
+        "personal" { return $env:EXAKIT_PERSONAL_VERSION }
+        default {
+            # Marketplace add-ons name their override in the registry.
+            $addon = Get-ExakitMarketplaceAddon $component
+            if ($addon) { return [Environment]::GetEnvironmentVariable($addon.EnvVar) }
+        }
+    }
+    return ""
+}
+
+# The last-known-good constant for a Component: what a no-network install picks.
+function Get-ExakitComponentFallback {
+    param([string]$Component)
+    $component = $Component
+    if ($component -eq "runtime") { $component = Get-RuntimeType }
+    switch ($component) {
+        "exapump" { return $script:ExapumpVersionFallback }
+        "mcp" { return $script:McpVersionFallback }
+        "pyexasol" { return $script:PyexasolVersionFallback }
+        "nano" { return $script:NanoTagFallback }
+        # The kit's own version is not one of the constants: it comes from the copy
+        # on disk, which is exactly what is installed.
+        "exakit" { return (Get-ExakitKitBundledVersion) }
+        default {
+            # Marketplace add-ons: the module defines the constant the registry
+            # names (empty when the module is not loaded).
+            $addon = Get-ExakitMarketplaceAddon $component
+            if ($addon) {
+                $var = Get-Variable -Scope Script -Name $addon.FallbackVar -ErrorAction SilentlyContinue
+                if ($var) { return $var.Value }
+            }
+        }
+    }
+    return ""
+}
+
+# Get-ExakitComponentLatest - the newest version upstream publishes. The
+# implementation behind EXAKIT_VERSION_POLICY=latest; under the default manifest
+# policy nothing calls it, which keeps `exakit version` off the network.
+function Get-ExakitComponentLatest {
+    param([string]$Component)
+    switch ($Component) {
+        "exakit" { return (Get-ExakitLatestGithubRelease $script:KitRepo) }
+        "exapump" { return (Get-ExakitLatestGithubRelease $script:ExapumpRepo) }
+        "mcp" { return (Get-ExakitLatestPypiVersion $script:McpPackage) }
+        "pyexasol" { return (Get-ExakitLatestPypiVersion $script:PyexasolPackage) }
+        "nano" { return (Get-ExakitLatestDockerTag) }
+        "personal" { return (Get-ExakitLatestGithubRelease "exasol/exasol-personal") }
+        "runtime" {
+            if ((Get-RuntimeType) -eq "nano") { return (Get-ExakitComponentLatest "nano") }
+            if ((Get-RuntimeType) -eq "personal") { return (Get-ExakitComponentLatest "personal") }
+            return ""
+        }
+        default {
+            # Marketplace add-ons declare their upstream in versions.json:
+            # repo -> a GitHub release, package -> PyPI. No per-add-on arm.
+            if (-not (Get-ExakitMarketplaceAddon $Component)) { return "" }
+            $repo = Get-ExakitVersionsValue -Path "components.$Component.repo"
+            if ($repo) { return (Get-ExakitLatestGithubRelease $repo) }
+            $package = Get-ExakitVersionsValue -Path "components.$Component.package"
+            if ($package) { return (Get-ExakitLatestPypiVersion $package) }
+            return ""
+        }
+    }
+}
+
+# normal | recommended | critical (absent means normal).
+function Get-ExakitComponentSeverity {
+    param([string]$Component)
+    if (-not (Test-ExakitManifestMetadataApplies $Component)) { return "normal" }
+    $block = Get-ExakitComponentBlock $Component
+    if (-not $block) { return "normal" }
+    $value = Get-ExakitVersionsValue -Path "$block.severity"
+    if ($value -eq "recommended" -or $value -eq "critical") { return $value }
+    return "normal"
+}
+
+# Get-ExakitInstalledMcpVersion - the MCP server is never "installed": uvx
+# materialises it per launch. What exists on the machine is the SPEC pinned into each
+# AI client config, and that is what runs the next time a client connects. The
+# adapters own where those configs live, so the paths come from the kit's own status
+# operation rather than a second copy of that knowledge. When clients disagree the
+# oldest pin is the answer here; the per-client picture belongs to mcp-doctor, which
+# names each client whose managed entry is no longer the one the kit would write, and
+# mcp-doctor re-writes those entries from the current definition.
+# Twin of exakit_installed_mcp_version in setup/lib/common.sh.
+function Get-ExakitInstalledMcpVersion {
+    if (-not (Get-Command Invoke-McpOperationCli -ErrorAction SilentlyContinue)) { return "" }
+    try {
+        $json = Invoke-McpOperationCli -Operation "status" -Clients @(
+            "claude_desktop", "claude_code", "cursor", "codex",
+            "vscode_copilot", "gemini_cli", "opencode", "continue")
+        if (-not $json) { return "" }
+        $doc = $json | ConvertFrom-Json
+        $pins = @{}
+        foreach ($artifact in @($doc.artifacts)) {
+            if (-not $artifact.path -or -not (Test-Path $artifact.path)) { continue }
+            $body = Get-Content $artifact.path -Raw -ErrorAction SilentlyContinue
+            if (-not $body) { continue }
+            foreach ($m in [regex]::Matches($body, 'exasol-mcp-server@([0-9][0-9A-Za-z._+-]*)')) {
+                $pins[$m.Groups[1].Value] = $true
+            }
+        }
+        if ($pins.Count -eq 0) { return "" }
+        # The OLDEST pin, not the set: this value is compared against the advertised
+        # version, and a comma-joined list is not a version. The oldest is the weakest
+        # link - the client that would launch the most outdated server. Which client is
+        # stale belongs to `exakit mcp-doctor`, which prints per-client state already.
+        $sorted = $pins.Keys | Sort-Object { [regex]::Replace($_, '\d+', { param($m) $m.Value.PadLeft(12, '0') }) }
+        return ($sorted | Select-Object -First 1)
+    } catch {
+        return ""
+    }
+}
+
+# Get-ExakitProbedVersion - run a command that reports its own version and return
+# just the version. -Raw when the output IS the version (a python one-liner);
+# otherwise the first version-shaped token is taken out of a line like
+# "exapump 0.11.2". Empty on any failure, so the caller can fall back to the record.
+function Get-ExakitProbedVersion {
+    param(
+        [Parameter(Mandatory)][string]$Command,
+        [string[]]$Arguments = @(),
+        [switch]$Raw
+    )
+    $previous = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = "Continue"
+        $out = (& $Command @Arguments 2>$null | Select-Object -First 1)
+        if ($LASTEXITCODE -ne 0 -and -not $out) { return "" }
+        $out = ("" + $out).Trim()
+        if (-not $out) { return "" }
+        if ($Raw) {
+            if ($out -match '^[A-Za-z0-9._+-]+$') { return $out }
+            return ""
+        }
+        $match = [regex]::Match($out, '[0-9]+\.[0-9]+[0-9A-Za-z._+-]*')
+        if ($match.Success) { return $match.Value }
+        return ""
+    } catch {
+        return ""
+    } finally {
+        $ErrorActionPreference = $previous
+    }
+}
+
+function Get-ExakitStartupDir {
+    if ($env:EXAKIT_STARTUP_DIR) { return $env:EXAKIT_STARTUP_DIR }
+    return (Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs\Startup")
+}
+
+function Get-ExakitUpdateTargets {
+    param([string]$Target = "all")
+    switch ($Target) {
+        "all" {
+            # Marketplace add-ons join the routine update set only once they
+            # are installed: `exakit update all` must never install a tool the
+            # user did not pick from `exakit marketplace`.
+            return @(@("exakit", "runtime", "exapump", "mcp", "pyexasol") + (Get-ExakitMarketplaceInstalledAddons))
+        }
+        { $_ -in @("runtime", "database", "db") } { return @("runtime") }
+        { $_ -in @("nano", "personal", "exakit", "exapump", "mcp", "pyexasol", "kit2") } { return @($Target) }
+        default {
+            # Any registered marketplace add-on is a valid explicit target.
+            if (Get-ExakitMarketplaceAddon $Target) { return @($Target) }
+            Fail "Unknown update target: $Target"
+        }
+    }
+}
+
+function Get-RuntimeType { return (Get-ExakitManifestValue "runtime.type") }
+
+function Register-ExakitAutostart {
+    param([Parameter(Mandatory)][string]$Id)
+    if ($Id -eq "database") {
+        # The container's own restart policy is what survives a reboot.
+        if ((Get-RuntimeType) -eq "nano") {
+            if (Set-NanoRestartPolicy -Policy "always") {
+                Ok "database: the container restarts with Docker"
+                return $true
+            }
+            return $false
+        }
+        return $false
+    }
+    $addon = Get-ExakitMarketplaceAddon $Id
+    if (-not ($addon -and $addon.PSObject.Properties["AutostartFn"] -and
+              (Get-Command $addon.AutostartFn -ErrorAction SilentlyContinue))) { return $false }
+    $command = & $addon.AutostartFn
+    if (-not $command) { return $false }
+    $dir = Get-ExakitStartupDir
+    if (-not (Test-Path $dir)) {
+        New-Item -ItemType Directory -Force -Path $dir | Out-Null
+    }
+    $entry = Get-ExakitAutostartEntryPath -Id $Id
+    $lines = @(
+        "@echo off",
+        "rem Starts $Id at login - written by the Exasol Personal Local Starter Kit.",
+        "rem Remove it with: exakit autostart off",
+        "start `"`" /min $command"
+    )
+    Set-Content -Path $entry -Value ($lines -join "`r`n") -Encoding Ascii
+    Ok "$Id`: starts at login ($entry)"
+    return $true
+}
+
+# True for changes that stop the database. Intrinsic to the Component, so it
+# lives in code rather than in the manifest.
+function Test-ExakitComponentHeavy {
+    param([string]$Component)
+    return ($Component -in @("runtime", "nano", "personal"))
+}
+
+# The severity, note and min_kit_version below describe the ADVERTISED set. Under
+# `latest` policy the versions on offer come from upstream instead, so pairing
+# them with the maintainers' commentary would be actively misleading ("0.12.0 is
+# the tested build" next to an available 9.9.9). Report nothing there.
+function Test-ExakitManifestMetadataApplies {
+    param([string]$Component)
+    if ($script:VersionPolicy -ne "manifest") { return $false }
+    return (-not (Get-ExakitComponentEnvOverride $Component))
+}
+
+function Test-ExakitVersionNewer {
+    param([string]$Latest, [string]$Current)
+    if (-not $Latest -or -not $Current -or $Latest -eq $Current) { return $false }
+    $lk = [regex]::Replace($Latest.TrimStart("v"), '\d+', { param($m) $m.Value.PadLeft(12, '0') })
+    $ck = [regex]::Replace($Current.TrimStart("v"), '\d+', { param($m) $m.Value.PadLeft(12, '0') })
+    return ([string]::CompareOrdinal($lk, $ck) -gt 0)
 }

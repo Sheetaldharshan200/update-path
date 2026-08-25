@@ -624,6 +624,66 @@ else
     check "json-tables(windows_applicable)" "yes" "no"
 fi
 
+# The PowerShell shared layer must be SELF-SUFFICIENT for an install.
+#
+# setup/exakit.ps1 is the CLI. setup/setup-windows-docker.ps1 is the installer,
+# and it dot-sources setup/lib/exakit-common.ps1 plus the component and add-on
+# modules — never the CLI. So a function defined only in the CLI is invisible
+# during an install, and calling it there dies with CommandNotFoundException.
+#
+# That asymmetry produced the same bug three times in one week, each time in
+# front of a first-time user: every Windows add-on install failing at the
+# closing offer, the marketplace table printing "unknown" for every version,
+# and a freshly installed service add-on never joining the boot set. The shell
+# side cannot have this class of bug — common.sh holds these functions and
+# every entry point sources it.
+#
+# This recomputes the leak set: functions DEFINED in the CLI and REFERENCED by
+# a file the installer loads. It must be empty. The fix for a failure here is
+# to MOVE the function into exakit-common.ps1, not to wrap the call in another
+# `Get-Command ... -ErrorAction SilentlyContinue`.
+if command -v python3 >/dev/null 2>&1; then
+    _ps_leak="$(python3 - "$ROOT" <<'LEAKEOF'
+import io, os, re, sys, glob
+root = sys.argv[1]
+
+def defs(path):
+    with io.open(path, encoding="utf-8", errors="replace") as fh:
+        return set(re.findall(r'(?im)^\s*function\s+([A-Za-z][\w-]*)', fh.read()))
+
+cli = os.path.join(root, "setup", "exakit.ps1")
+shared = os.path.join(root, "setup", "lib", "exakit-common.ps1")
+modules = [p for p in glob.glob(os.path.join(root, "setup", "lib", "*.ps1"))
+           if os.path.basename(p) not in ("exakit-common.ps1", "ui.ps1")]
+
+cli_funcs = defs(cli)
+elsewhere = defs(shared) | defs(os.path.join(root, "setup", "lib", "ui.ps1"))
+for m in modules:
+    elsewhere |= defs(m)
+cli_only = cli_funcs - elsewhere
+
+loaded = [shared] + modules + [os.path.join(root, "setup", "setup-windows-docker.ps1")]
+leaked = set()
+for path in loaded:
+    if not os.path.exists(path):
+        continue
+    with io.open(path, encoding="utf-8", errors="replace") as fh:
+        text = re.sub(r'(?m)^\s*#.*$', '', fh.read())
+    for fn in cli_only:
+        if re.search(r'(?<![\w-])' + re.escape(fn) + r'(?![\w-])', text):
+            leaked.add(fn)
+print(" ".join(sorted(leaked)))
+LEAKEOF
+)"
+    if [ -z "$_ps_leak" ]; then
+        check "powershell(no_cli_only_leak)" "yes" "yes"
+    else
+        check "powershell(no_cli_only_leak)" "yes" "no ($_ps_leak)"
+    fi
+else
+    echo "  SKIP  powershell(no_cli_only_leak) — no python3 on this machine"
+fi
+
 # Port ownership, both sides: a foreign listener must never read as a running
 # dash-server, and the install must settle on a port before baking one in.
 if grep -q '_dash_server_port_is_ours()' "$ROOT/setup/lib/dash-server.sh" && \
@@ -663,7 +723,7 @@ if grep -q 'exakit_service_ids()' "$ROOT/setup/lib/common.sh" && \
    grep -q 'dash_server_autostart_command()' "$ROOT/setup/lib/dash-server.sh" && \
    grep -q 'autostart) shift; _with_notice cmd_autostart' "$ROOT/setup/exakit" && \
    grep -q 'function Get-ExakitServiceIds' "$ROOT/setup/exakit.ps1" && \
-   grep -q 'function Register-ExakitAutostart' "$ROOT/setup/exakit.ps1" && \
+   grep -q 'function Register-ExakitAutostart' "$ROOT/setup/lib/exakit-common.ps1" && \
    grep -q 'function Enable-ExakitAutostart' "$ROOT/setup/exakit.ps1" && \
    grep -q 'function Get-DashServerStatus' "$ROOT/setup/lib/dash-server.ps1" && \
    grep -q 'function Start-DashServer' "$ROOT/setup/lib/dash-server.ps1" && \
@@ -916,7 +976,7 @@ if grep -q 'exakit_run_bounded' "$ROOT/setup/lib/common.sh" && \
    grep -q '_detect_engine_probe docker info' "$ROOT/setup/lib/detect.sh" && \
    grep -q 'Invoke-ExakitBounded' "$ROOT/setup/lib/exakit-common.ps1" && \
    grep -q 'Invoke-ExakitBounded' "$ROOT/setup/lib/nano.ps1" && \
-   grep -q 'Invoke-ExakitBounded' "$ROOT/setup/exakit.ps1" && \
+   ! grep -q 'Start-Process.*docker' "$ROOT/setup/exakit.ps1" && \
    grep -q '\$info\.Arguments = ' "$ROOT/setup/lib/exakit-common.ps1" && \
    ! grep -qE '\$info\.ArgumentList' "$ROOT/setup/lib/exakit-common.ps1"; then
     check "engine_probe(bounded_both_sides)" "yes" "yes"
