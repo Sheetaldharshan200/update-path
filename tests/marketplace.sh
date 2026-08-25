@@ -617,13 +617,13 @@ check "a native CLI gets the path verbatim" "/tmp/x.vsix" "$( (
 ) )"
 if command -v wslpath >/dev/null 2>&1; then
     # A real WSL host: the path must come back as something Windows can open.
-    check "on WSL a Windows CLI gets a translated path" "translated" "$( (
+    # Computed first, then matched: a `case` inside the $( ) would not parse
+    # under bash 3.2 (see the note on the drain checks above).
+    _wsl_translated="$( (
         exasol_vscode_code_cli() { printf '/mnt/c/code.cmd\n'; }
-        case "$(_exasol_vscode_host_path /tmp/x.vsix)" in
-            /tmp/*) printf 'untranslated\n' ;;
-            *)      printf 'translated\n' ;;
-        esac
+        _exasol_vscode_host_path /tmp/x.vsix
     ) )"
+    lacks "on WSL a Windows CLI gets a translated path" "/tmp/x.vsix" "$_wsl_translated"
 else
     # Anywhere else there is nothing to translate WITH, and a best guess would
     # be worse than none: the argument is returned untouched, so the call fails
@@ -657,14 +657,17 @@ chmod +x "$WORK/drain-bin/code"
 # The registry's LAST entry is the canary: it is the one a drain loses first.
 _drain_last="$(exakit_marketplace_addons | tail -1 | cut -d'|' -f1)"
 check "the canary is still the last registry entry" "json-tables" "$_drain_last"
-check "version-table targets survive the drain" "present" "$( (
+# NOTE: the result is computed first and matched with `has`, rather than with a
+# `case` inside the $( ). bash 3.2 - what macOS ships, and what this repo must
+# keep working on - mis-parses a case pattern's closing ')' inside a command
+# substitution ("syntax error near unexpected token `newline'"), which made
+# both of these read as failures on macOS only.
+_drain_targets="$( (
     PATH="$WORK/drain-bin:$PATH"
-    case "$(exakit_version_table_targets 2>/dev/null)" in
-        *"$_drain_last"*) printf 'present\n' ;;
-        *)                printf 'MISSING\n' ;;
-    esac
+    exakit_version_table_targets 2>/dev/null
 ) )"
-check "installed-addon enumeration survives the drain" "yes" "$( (
+has "version-table targets survive the drain" "$_drain_last" "$_drain_targets"
+_drain_installed="$( (
     PATH="$WORK/drain-bin:$PATH"
     # exasol-vscode stays REAL and gets a manifest record, so its row actually
     # runs the draining CLI - that is the whole point. Only the canary is
@@ -674,11 +677,9 @@ check "installed-addon enumeration survives the drain" "yes" "$( (
     manifest_set components.exasol_vscode.version "1.7.0" >/dev/null 2>&1
     manifest_set components.json_tables.version "v0.2" >/dev/null 2>&1
     json_tables_installed_version() { printf 'v0.2\n'; }
-    case "$(exakit_marketplace_installed_addons 2>/dev/null)" in
-        *"$_drain_last"*) printf 'yes\n' ;;
-        *)                printf 'no\n' ;;
-    esac
+    exakit_marketplace_installed_addons 2>/dev/null
 ) )"
+has "installed-addon enumeration survives the drain" "$_drain_last" "$_drain_installed"
 check "has-pending survives the drain" "yes" "$( (
     PATH="$WORK/drain-bin:$PATH"
     exakit_marketplace_has_pending && printf 'yes\n' || printf 'no\n'
