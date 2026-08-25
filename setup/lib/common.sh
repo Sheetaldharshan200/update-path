@@ -2480,6 +2480,14 @@ exakit_component_current() {
 # states in its About, and the copies drifted: the wording differed between the
 # shell registry, the PowerShell registry and setup/help/<id>.json, and nothing
 # noticed. exakit_marketplace_addon_description reads the About instead.
+# EVERY LOOP OVER THIS REGISTRY READS IT ON FILE DESCRIPTOR 3, NOT STDIN.
+# The row builders call into the add-on modules, and an add-on module runs
+# whatever tool it is about. The VS Code CLI reads and drains the stdin it
+# inherits, so with the registry on stdin it swallowed the rest of the loop's
+# input and every add-on listed after exasol-vscode vanished from the menu -
+# json-tables is last, so json-tables is what disappeared, silently, on any
+# machine that had VS Code. Reading on fd 3 makes that class of bug
+# impossible here no matter what a future add-on shells out to.
 exakit_marketplace_addons() {
     printf '%s\n' "dash-server|dash-server (AI dashboard host)"
     printf '%s\n' "exasol-vscode|Exasol for VS Code (editor extension)"
@@ -2504,9 +2512,12 @@ _exakit_addon_registered() {
     case "$1" in
         ''|*[!a-z0-9-]*) return 1 ;;
     esac
-    exakit_marketplace_addons | while IFS='|' read -r _ar_id _ar_label; do
-        [ "$_ar_id" = "$1" ] && printf 'yes\n' && break
-    done | grep -q yes
+    while IFS='|' read -r _ar_id _ar_label <&3; do
+        [ "$_ar_id" = "$1" ] && return 0
+    done 3<<EXAKIT_AR_EOF
+$(exakit_marketplace_addons)
+EXAKIT_AR_EOF
+    return 1
 }
 
 # ---------------------------------------------------------------------------
@@ -2780,13 +2791,15 @@ exakit_about_wrap() {
 # now?") before the table exists, so the requests land while the user is reading
 # two sentences of prose rather than in front of a half-drawn table.
 _exakit_marketplace_warm_about() {
-    exakit_marketplace_addons | cut -d'|' -f1 | while read -r _mw_id; do
+    while read -r _mw_id <&3; do
         [ -n "$_mw_id" ] || continue
         _exakit_addon_offerable "$_mw_id" || continue
         _exakit_marketplace_addon_present "$_mw_id" && continue
         exakit_marketplace_addon_available "$_mw_id" || continue
         _exakit_about_fetch "$_mw_id" >/dev/null 2>&1 || true
-    done
+    done 3<<EXAKIT_MW_EOF
+$(exakit_marketplace_addons | cut -d'|' -f1)
+EXAKIT_MW_EOF
     return 0
 }
 
@@ -2908,10 +2921,12 @@ _exakit_marketplace_addon_present() {
 # exakit_marketplace_installed_addons — ids of the add-ons present on this
 # machine. This is what folds them into `exakit update all` / `exakit version`.
 exakit_marketplace_installed_addons() {
-    exakit_marketplace_addons | while IFS='|' read -r _ma_id _ma_label; do
+    while IFS='|' read -r _ma_id _ma_label <&3; do
         [ -n "$_ma_id" ] || continue
         exakit_marketplace_addon_installed "$_ma_id" && printf '%s\n' "$_ma_id"
-    done
+    done 3<<EXAKIT_MA_EOF
+$(exakit_marketplace_addons)
+EXAKIT_MA_EOF
     return 0
 }
 
@@ -2919,11 +2934,14 @@ exakit_marketplace_installed_addons() {
 # this machine yet (neither kit-managed nor a system install). Drives the
 # discovery one-liners and the closing offer.
 exakit_marketplace_has_pending() {
-    [ -n "$(exakit_marketplace_addons | while IFS='|' read -r _mp_id _mp_label; do
+    [ -n "$(while IFS='|' read -r _mp_id _mp_label <&3; do
         [ -n "$_mp_id" ] || continue
         _exakit_addon_offerable "$_mp_id" || continue
         _exakit_marketplace_addon_present "$_mp_id" || printf '%s\n' "$_mp_id"
-    done)" ]
+    done 3<<EXAKIT_MP_EOF
+$(exakit_marketplace_addons)
+EXAKIT_MP_EOF
+)" ]
 }
 
 # _exakit_marketplace_install_one <id> — install + validate one add-on. The
@@ -2969,7 +2987,7 @@ exakit_marketplace_menu() {
     _mm_labels=()
     _mm_rows=()
     _mm_selectable=0
-    while IFS='|' read -r _mm_id _mm_label; do
+    while IFS='|' read -r _mm_id _mm_label <&3; do
         [ -n "$_mm_id" ] || continue
         # Not applicable here and not installed: it is not an option on this
         # machine, so it is not shown at all — no row, no table line.
@@ -3018,7 +3036,7 @@ exakit_marketplace_menu() {
             _mm_labels+=("$_mm_id")
             _mm_selectable=$((_mm_selectable + 1))
         fi
-    done <<EXAKIT_MM_EOF
+    done 3<<EXAKIT_MM_EOF
 $(exakit_marketplace_addons)
 EXAKIT_MM_EOF
 
@@ -3884,7 +3902,7 @@ _exakit_version_note_lines() {
 # marketplace screen itself.
 exakit_version_table_targets() {
     exakit_update_targets all
-    exakit_marketplace_addons | cut -d'|' -f1 | while read -r _vtt_id; do
+    while read -r _vtt_id <&3; do
         [ -n "$_vtt_id" ] || continue
         _exakit_addon_offerable "$_vtt_id" || continue
         # PRESENT, not kit-installed: a tool the user installed themselves is
@@ -3894,7 +3912,9 @@ exakit_version_table_targets() {
         # so the two screens agree about what is still on offer.
         _exakit_marketplace_addon_present "$_vtt_id" && continue
         printf '%s\n' "$_vtt_id"
-    done
+    done 3<<EXAKIT_VTT_EOF
+$(exakit_marketplace_addons | cut -d'|' -f1)
+EXAKIT_VTT_EOF
 }
 
 # exakit_version_installed_cell <component> — the Version cell: the version that
