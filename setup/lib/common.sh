@@ -8166,7 +8166,6 @@ exakit_autostart_enable() {
     done
     if [ "$_ae_any" = 1 ]; then
         manifest_set autostart.enabled true
-        info "Everything the kit runs comes back automatically after a restart."
     else
         manifest_set autostart.enabled false
     fi
