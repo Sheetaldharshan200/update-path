@@ -1359,7 +1359,12 @@ _dl_probe="$WORK/dl-default-label"
     }
     exakit_data_load_select "Cancel (load nothing)" >/dev/null 2>&1
 )
-check "the local-file row is pre-selected" "A local CSV / Parquet / JSON file" "$(cat "$_dl_probe" 2>/dev/null)"
+# The expected value is the label VERBATIM, and it moves when the label moves:
+# the folder-loading work widened this row to ", or a folder of them" and left
+# the assertion behind, which is what turned main red. Kept as an equality
+# check rather than loosened to a prefix - this is the row the menu pre-selects
+# and the wording is worth pinning.
+check "the local-file row is pre-selected" "A local CSV / Parquet / JSON file, or a folder of them" "$(cat "$_dl_probe" 2>/dev/null)"
 lacks "and Cancel is not what Enter would take" "Cancel" "$(cat "$_dl_probe" 2>/dev/null)"
 # The Windows twin builds the same menu; assert it defaults one row above the
 # final label too, rather than to the final label itself.
