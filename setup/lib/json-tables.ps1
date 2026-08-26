@@ -220,7 +220,11 @@ function Get-JsonTablesVerifiedAsset {
     $url = Get-JsonTablesMirrorAssetUrl -Asset $Asset
     Info "Downloading $Asset"
     try {
-        Invoke-WebRequest -UseBasicParsing -TimeoutSec 300 -Uri $url -OutFile $Destination
+        # Animated: the download is the longest silent stretch of this install.
+        # Twin of fetch_quiet on the shell side.
+        [void](Invoke-ExakitWithSpinner -Label "Downloading $Asset" -Body {
+            Invoke-WebRequest -UseBasicParsing -TimeoutSec 300 -Uri $url -OutFile $Destination
+        })
     } catch {
         Warn2 "Download failed: $url ($_)"
         return $false
@@ -391,7 +395,9 @@ function Restore-JsonTablesPackageData {
     $url = "https://raw.githubusercontent.com/$repo/main/python/exasol_json_tables/preprocessor_assets/jvs_preprocessor_lib.lua"
     try {
         New-Item -ItemType Directory -Force -Path (Split-Path -Parent $asset) | Out-Null
-        Invoke-WebRequest -UseBasicParsing -TimeoutSec 60 -Uri $url -OutFile $asset
+        [void](Invoke-ExakitWithSpinner -Label "Restoring the JSON Tables preprocessor asset" -Body {
+            Invoke-WebRequest -UseBasicParsing -TimeoutSec 60 -Uri $url -OutFile $asset
+        })
         Info "Restored 1 data file the release does not declare as package data (upstream packaging gap; ingest-and-wrap needs it)"
     } catch {
         # Not fatal: plain `ingest` works without it.

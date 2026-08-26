@@ -3487,15 +3487,31 @@ function Invoke-ExakitMarketplaceApply {
         if (-not $addon) { continue }
         Info "Installing add-on: $id"
         $installed = $false
+        # Every silent stretch of an add-on install already animates, because
+        # Invoke-ExakitLogged starts the spinner. What it did NOT have was a
+        # truthful label: ExakitActiveLabel is set by Begin-ExakitStep, and
+        # add-ons are installed after the last numbered step (or from `exakit
+        # marketplace`, with no step at all), so a long install animated under
+        # the previous step's title, or under the bare word "working". Name what
+        # is actually running. Twin of the same block in
+        # _exakit_marketplace_install_one (common.sh).
+        $prevLabel = $script:ExakitActiveLabel
         try {
+            $script:ExakitActiveLabel = "Installing $id"
             $installed = & $addon.InstallFn
         } catch {
             Warn2 "$id installer reported: $_"
             $installed = $false
+        } finally {
+            $script:ExakitActiveLabel = $prevLabel
         }
         if ($installed) {
             if ($addon.ValidateFn -and (Get-Command $addon.ValidateFn -ErrorAction SilentlyContinue)) {
-                try { & $addon.ValidateFn } catch { Warn2 "$id validation reported: $_" }
+                try {
+                    $script:ExakitActiveLabel = "Validating $id"
+                    & $addon.ValidateFn
+                } catch { Warn2 "$id validation reported: $_" }
+                finally { $script:ExakitActiveLabel = $prevLabel }
             }
             # A service add-on joins the boot set the moment it is installed, so
             # nobody has to remember a second command. This used to be skipped

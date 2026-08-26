@@ -428,5 +428,6 @@ jobs:
       # `unittest discover` -- tests/ is not an importable package.)
       - run: python3 tests/test_sample_data_schema.py
       - run: bash tests/reap-orphan-daemon.sh
+      - run: bash tests/deploy-progress.sh
       # Dry run only without EXAKIT_SMOKE_FULL=1: no install, no database.
       - run: bash tests/smoke-test.sh

@@ -101,8 +101,8 @@ _json_tables_restore_package_data() {
     [ -n "$_jtp_site" ] && [ -d "$_jtp_site" ] || return 0
 
     _jtp_tmp="$(mktemp -d "${TMPDIR:-/tmp}/exakit-jt-data.XXXXXX")" || return 0
-    if ! ( fetch "https://github.com/$EXAKIT_JSON_TABLES_REPO/archive/$EXAKIT_JSON_TABLES_VERSION.tar.gz" \
-            "$_jtp_tmp/src.tar.gz" ) >>"${EXAKIT_LOG_FILE:-/dev/null}" 2>&1; then
+    if ! fetch_quiet "https://github.com/$EXAKIT_JSON_TABLES_REPO/archive/$EXAKIT_JSON_TABLES_VERSION.tar.gz" \
+            "$_jtp_tmp/src.tar.gz"; then
         rm -rf "$_jtp_tmp"
         return 0
     fi
@@ -298,8 +298,7 @@ for asset in doc.get("assets", []):
 _json_tables_fetch_verified() {
     _jfv_asset="$1"
     _jfv_dest="$2"
-    if ! ( fetch "$(_json_tables_mirror_asset_url "$_jfv_asset")" "$_jfv_dest" ) \
-            >>"${EXAKIT_LOG_FILE:-/dev/null}" 2>&1; then
+    if ! fetch_quiet "$(_json_tables_mirror_asset_url "$_jfv_asset")" "$_jfv_dest"; then
         return 1
     fi
     _jfv_expected="$(_json_tables_mirror_digest "$_jfv_asset" 2>/dev/null || true)"

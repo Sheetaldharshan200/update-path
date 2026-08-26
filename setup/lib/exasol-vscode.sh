@@ -272,8 +272,8 @@ exasol_vscode_install() {
             return 1
         }
         info "Downloading Exasol for VS Code v${EXAKIT_EXASOL_VSCODE_VERSION} ($_evi_asset)"
-        # fetch dies on failure; the subshell keeps that soft here.
-        if ! ( fetch "$_evi_url" "$_evi_tmp" ) >>"${EXAKIT_LOG_FILE:-/dev/null}" 2>&1; then
+        # fetch_quiet keeps the failure soft and the download animated.
+        if ! fetch_quiet "$_evi_url" "$_evi_tmp"; then
             rm -f "$_evi_tmp"
             _exasol_vscode_not_installed "the download failed (see log): $_evi_url"
             return 1
@@ -308,8 +308,11 @@ exasol_vscode_install() {
             return 1
         }
         info "Installing the extension into VS Code"
-        if ! _exasol_vscode_code --install-extension "$(_exasol_vscode_host_path "$_evi_vsix")" --force \
-                >>"${EXAKIT_LOG_FILE:-/dev/null}" 2>&1; then
+        # run_logged rather than a bare redirect: `code --install-extension`
+        # takes tens of seconds with nothing to show for it, and run_logged is
+        # the one hook that animates a silent command. Same logfile either way.
+        if ! run_logged _exasol_vscode_code --install-extension \
+                "$(_exasol_vscode_host_path "$_evi_vsix")" --force; then
             rm -f "$_evi_vsix"
             _exasol_vscode_not_installed "code --install-extension failed (see log)"
             return 1
