@@ -885,13 +885,13 @@ wn_box_placement() { # wn_box_placement <file> <panel-call> <box-call>
 }
 check "whats_new_box(order_macos)" "panel,box,next" \
     "$(wn_box_placement "$ROOT/setup/setup-macos.sh" \
-        'connection_panel' 'exakit_print_whats_new_box "$KIT_ROOT"')"
+        'connection_summary' 'exakit_print_whats_new_box "$KIT_ROOT"')"
 check "whats_new_box(order_wsl)" "panel,box,next" \
     "$(wn_box_placement "$ROOT/setup/setup-wsl.sh" \
-        'connection_panel' 'exakit_print_whats_new_box "$KIT_ROOT"')"
+        'connection_summary' 'exakit_print_whats_new_box "$KIT_ROOT"')"
 check "whats_new_box(order_windows)" "panel,box,next" \
     "$(wn_box_placement "$ROOT/setup/setup-windows-docker.ps1" \
-        'Show-ExakitConnectionPanel' 'Write-ExakitWhatsNewBox -KitRoot')"
+        'Show-ExakitConnectionSummary' 'Write-ExakitWhatsNewBox -KitRoot')"
 # The short help is the only command list most people ever read: a bare `exakit`,
 # `exakit help` and any unknown command all print it, while the full reference is
 # behind `--all`. Staying current has to be visible there, or the update path

@@ -663,44 +663,39 @@ function Get-McpClientStates {
 
 $script:McpClientLabels = @{ claude_desktop = "Claude"; claude_code = "Claude Code (CLI)"; cursor = "Cursor"; codex = "Codex"; vscode_copilot = "GitHub Copilot"; gemini_cli = "Gemini CLI"; opencode = "OpenCode"; continue = "Continue" }
 
+# Show-McpSetupSummary - what MCP setup did, in the fewest lines that still tell
+# the reader everything they have to act on.
+#
+# This was a twenty-line panel: a Mode row, a Meaning row explaining the Mode
+# row, a Status row, and one File: row per client. None of that is actionable,
+# and every word of it is one `exakit mcp-status` away. What IS actionable - the
+# clients configured, the plaintext-credential warning, and the per-client
+# "restart it like this" lines, which differ per client - stays, as plain lines
+# rather than boxed rows. Twin of exakit_print_mcp_setup_summary in common.sh.
 function Show-McpSetupSummary {
     param([Parameter(Mandatory)][string]$ResultJson)
     $doc = $ResultJson | ConvertFrom-Json
     $clients = @($doc.selected_clients) | ForEach-Object { if ($script:McpClientLabels.ContainsKey($_)) { $script:McpClientLabels[$_] } else { $_ } }
-    # Same rounded panel as the install plan / connection details (ui.ps1).
-    Write-Host ""
-    Start-ExakitPanel "MCP setup summary"
-    Write-ExakitPanelLine "Mode:     managed"
-    Write-ExakitPanelLine "Meaning:  wrote managed MCP entries into the selected client config files"
-    Write-ExakitPanelLine "Clients:  $(if ($clients) { $clients -join ', ' } else { 'none' })"
-    Write-ExakitPanelLine "Status:   $($doc.status)"
-    foreach ($artifact in @($doc.artifacts)) {
-        $label = if ($script:McpClientLabels.ContainsKey($artifact.client)) { $script:McpClientLabels[$artifact.client] } else { $artifact.client }
-        Write-ExakitPanelLine "File:     $label -> $($artifact.path)"
+    if ($clients) { $clientList = ($clients -join ', ') } else { $clientList = "no clients" }
+    if ("$($doc.status)".StartsWith("success")) {
+        Ok "MCP configured for $clientList"
+    } else {
+        Warn2 "MCP setup finished as '$($doc.status)' for $clientList"
     }
     # A client whose own config file could not be used is skipped on its own;
-    # the other clients are still configured, so name it here instead of
-    # leaving a silent gap in the File: list. Twin of the Skipped: lines in
-    # exakit_print_mcp_setup_summary (common.sh).
+    # the other clients are still configured, so name it rather than leave a
+    # silent gap.
     $skippedClients = @()
     if ($doc.details -and $doc.details.skipped_clients) { $skippedClients = @($doc.details.skipped_clients) }
     foreach ($skipped in $skippedClients) {
         $skippedLabel = if ($script:McpClientLabels.ContainsKey($skipped.client)) { $script:McpClientLabels[$skipped.client] } else { $skipped.client }
         $reason = $skipped.reason
         if (-not $reason) { $reason = "unknown reason" }
-        Write-ExakitPanelLine "Skipped:  $skippedLabel -> $reason"
+        Warn2 "Skipped ${skippedLabel}: $reason"
     }
-    if (@($doc.findings).Count -gt 0) {
-        Write-ExakitPanelLine ""
-        Write-ExakitPanelLine "Notes:"
-        foreach ($f in @($doc.findings)) { Write-ExakitPanelLine "- $($f.message)" }
-    }
-    if (@($doc.next_actions).Count -gt 0) {
-        Write-ExakitPanelLine ""
-        Write-ExakitPanelLine "Next:"
-        foreach ($a in @($doc.next_actions)) { Write-ExakitPanelLine "- $($a.message)" }
-    }
-    Complete-ExakitPanel
+    foreach ($f in @($doc.findings)) { if ($f.message) { Warn2 "$($f.message)" } }
+    foreach ($a in @($doc.next_actions)) { if ($a.message) { Info "$($a.message)" } }
+    Info "Config file paths and per-client state: exakit mcp-status"
 }
 
 function Show-McpReadyPanel {
@@ -715,32 +710,40 @@ function Show-McpReadyPanel {
     if (-not $mcpCommand) { $mcpCommand = "uvx" }
     $tls = Get-ExakitManifestValue "runtime.tls"
 
-    Write-Host ""
-    Start-ExakitPanel "MCP is ready"
-    Write-ExakitPanelLine "Server name:   exasol"
-    Write-ExakitPanelLine "How it runs:   your AI client starts it on demand over stdio"
-    Write-ExakitPanelLine "Command:       $mcpCommand $mcpPackage@$mcpVersion"
-    Write-ExakitPanelLine "Database:      $(if ($dsn) { $dsn } else { 'unknown' })"
-    Write-ExakitPanelLine "DB user:       $(if ($mcpUser) { $mcpUser } else { 'mcp_readonly' }) (read-only)"
-    if ($tls -eq "self-signed") { Write-ExakitPanelLine "TLS:           local self-signed certificate accepted for 127.0.0.1" }
-    Write-ExakitPanelLine "Managed state: $script:McpDir"
-    Complete-ExakitPanel
-    Info "Config files updated - restart the selected client now."
-    Info "After the restart, look for an MCP server named: exasol"
-    Write-Host ""
-    Start-ExakitPanel "First prompt to try in your AI client"
-    Write-ExakitPanelLine """Use the exasol MCP server connected to my local Exasol database."
-    Write-ExakitPanelLine "List the available schemas and tables first. Then answer my"
-    Write-ExakitPanelLine "questions with read-only SQL only, show me the SQL before you run"
-    Write-ExakitPanelLine "it, and do not create, update, or delete anything."""
-    Complete-ExakitPanel
-    # Best-effort: put the prompt straight on the clipboard so the first thing
-    # the user does in their AI client is just paste. Silent when unavailable.
+    # An eight-row panel of reference values became one line. The command, the
+    # package version and the managed-state directory are what `exakit
+    # mcp-status` is for; what the reader needs here is that the server exists,
+    # what it is called, and that it reaches the database read-only. The whole
+    # panel still goes to the logfile, so nothing is unrecoverable.
+    if ($script:LogFile) {
+        "DATA  MCP command: $mcpCommand $mcpPackage@$mcpVersion" | Add-Content -Path $script:LogFile
+        "DATA  MCP managed state: $script:McpDir" | Add-Content -Path $script:LogFile
+        "DATA  MCP TLS: $tls" | Add-Content -Path $script:LogFile
+    }
+    if ($dsn) { $dsnShown = $dsn } else { $dsnShown = "unknown" }
+    if ($mcpUser) { $userShown = $mcpUser } else { $userShown = "mcp_readonly" }
+    Ok "MCP server 'exasol' - $dsnShown as $userShown (read-only), started by your AI client on demand"
+
+    # The prompt is only PRINTED when it could not be handed over: on the
+    # clipboard it is four lines nobody has to read, and off a console (an
+    # agent, CI) the clipboard is not ours to take, so the text is the only way
+    # to pass it on. Never both.
     $firstPrompt = 'Use the exasol MCP server connected to my local Exasol database. List the available schemas and tables first. Then answer my questions with read-only SQL only, show me the SQL before you run it, and do not create, update, or delete anything.'
-    try {
-        Set-Clipboard -Value $firstPrompt
-        Ok "This prompt is copied to your clipboard - paste it after restarting your client."
-    } catch { }
+    $copied = $false
+    if (Test-ExakitInteractive) {
+        try { Set-Clipboard -Value $firstPrompt; $copied = $true } catch { $copied = $false }
+    }
+    if ($copied) {
+        Ok "A first prompt for your AI client is on your clipboard - paste it after the restart."
+    } else {
+        Write-Host ""
+        Start-ExakitPanel "First prompt to try in your AI client"
+        Write-ExakitPanelLine """Use the exasol MCP server connected to my local Exasol database."
+        Write-ExakitPanelLine "List the available schemas and tables first. Then answer my"
+        Write-ExakitPanelLine "questions with read-only SQL only, show me the SQL before you run"
+        Write-ExakitPanelLine "it, and do not create, update, or delete anything."""
+        Complete-ExakitPanel
+    }
 }
 
 function Show-McpOperationSummary {
@@ -994,7 +997,7 @@ function Invoke-McpSetup {
         Info "Check them with 'exakit mcp-status'; new clients appear here once installed."
         return $true
     }
-    [void]$menuLabels.Add("Skip for now (no MCP client changes)")
+    [void]$menuLabels.Add("Skip")
     $skipIdx = $menuLabels.Count
     # Pre-select every pending client - never a disabled row, never Skip.
     $defaults = @()

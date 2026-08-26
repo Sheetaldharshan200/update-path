@@ -46,19 +46,19 @@ PRELUDE=". '$ROOT/setup/lib/ui.sh' 2>/dev/null; ui_detect 2>/dev/null
 
 # 1. Either/or: two selectable rows and an exclusive index.
 out="$(render "$PRELUDE
-EXAKIT_CHECKBOX_EXCLUSIVE=2 ui_checkbox_menu 'Browse it now?' '1' \
-    'Yes, open the marketplace' 'No, maybe later'")"
+EXAKIT_CHECKBOX_EXCLUSIVE=2 ui_checkbox_menu 'Explore ?' '1' \
+    'Yes' 'No'")"
 case "$out" in
     *"Space to select"*) pass "an either/or menu says 'Space to select'" ;;
     *"Space to toggle"*) fail "an either/or menu still says 'Space to toggle' - Space chooses there, it does not toggle" ;;
     *)                   fail "an either/or menu drew no keyboard hint at all" ;;
 esac
 
-# 2. Multi-select with an exclusive Cancel row: Space really does toggle the
+# 2. Multi-select with an exclusive Skip row: Space really does toggle the
 #    add-on rows, so the wording must NOT change here.
 out="$(render "$PRELUDE
 EXAKIT_CHECKBOX_EXCLUSIVE=3 ui_checkbox_menu 'Select add-ons to install' '1' \
-    'dash-server' 'json-tables' 'Cancel (install nothing)'")"
+    'dash-server' 'json-tables' 'Skip'")"
 case "$out" in
     *"Space to toggle"*) pass "a multi-select with an exclusive row keeps 'Space to toggle'" ;;
     *"Space to select"*) fail "a real multi-select now says 'Space to select' - Space toggles there, the fix is too broad" ;;

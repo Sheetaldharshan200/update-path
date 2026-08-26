@@ -5,11 +5,11 @@
 # The checkbox widget's group parent has two modes (see the spec comment on
 # _ui_checkbox_apply_group in common.sh): "any" leaves the parent checked while
 # ANY child is checked, "all" checks it only while EVERY child is. Every menu
-# whose parent row reads as a select-all summary ("Available add-ons", "Sample
-# datasets") must use "all". Under "any" a menu with one of three children
+# whose parent row IS the select-all ("Select All", above the add-ons or the
+# bundled datasets) must use "all". Under "any" a menu with one of three children
 # ticked renders
 #
-#     [x] Available add-ons
+#     [x] Select All
 #     [ ] |- dash-server ...
 #     [ ] |- exasol-vscode ...
 #     [x] `- json-tables ...

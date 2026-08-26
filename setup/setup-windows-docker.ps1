@@ -198,7 +198,7 @@ try {
         -Body { Request-ExakitSkillsInstallOffer })
 
     Ok "Setup complete"
-    Show-ExakitConnectionPanel
+    Show-ExakitConnectionSummary
     # Only when the kit version moved during this run, and never able to fail it:
     # every reader inside degrades to silence.
     Write-ExakitWhatsNewBox -KitRoot $KitRoot

@@ -969,7 +969,7 @@ function Select-ExakitBulkFormats {
         [void]$labels.Add("$(Get-ExakitBulkLabel $kinds[$i]) ($count $unit)")
         [void]$defaults.Add($i + 1)
     }
-    [void]$labels.Add("Cancel (load nothing)")
+    [void]$labels.Add("Skip")
     $finalIdx = $labels.Count
     $selection = Read-ExakitCheckboxMenu `
         -Title "This folder has more than one format - which do you want to load?" `
@@ -1652,7 +1652,7 @@ function Select-ExakitDataLoad {
         # this file has no BOM, so Windows PowerShell 5.1 reads it as ANSI and
         # raw glyph bytes break the parse of the whole script.
         $tee = $script:UiTee; $corner = $script:UiCorner
-        [void]$labels.Add("Sample datasets"); [void]$ids.Add("__group__")
+        [void]$labels.Add("Select All"); [void]$ids.Add("__group__")
         for ($i = 0; $i -lt $pending.Count; $i++) {
             if ($i -eq $pending.Count - 1) { $conn = $corner } else { $conn = $tee }
             [void]$labels.Add("$conn $($pending[$i].Label)")
@@ -1687,7 +1687,7 @@ function Show-ExakitDataLoadMenu {
     if (-not (Get-ExakitManifestValue "components.exapump.profile")) {
         Fail "No exapump connection profile is recorded - re-run the installer, then retry."
     }
-    $chosen = Select-ExakitDataLoad -FinalLabel "Cancel (load nothing)"
+    $chosen = Select-ExakitDataLoad -FinalLabel "Skip"
     if ($chosen -contains "none") {
         Info "Data loading cancelled."
         return
@@ -1765,7 +1765,7 @@ function Request-ExakitDataLoadOffer {
     # local-file option and an explicit skip. Non-interactive installs keep
     # the pre-selected defaults.
     Info "The database is ready for data. Loading data now lets MCP validate against real tables."
-    $chosen = Select-ExakitDataLoad -FinalLabel "Skip for now (no dataset loading)"
+    $chosen = Select-ExakitDataLoad -FinalLabel "Skip"
     if ($chosen -contains "none") {
         Info "Skipping data loading. Run it any time with: exakit data-load"
         return
