@@ -352,6 +352,24 @@ ui_progress() {
     fi
 }
 
+# ui_bar <pct> [width] — the bar on its own, as a STRING.
+#
+# ui_progress above owns a whole line and redraws it. This one owns nothing: it
+# is for embedding a bar inside a label somebody else paints — the dataset load
+# hands it to run_logged's spinner, so the animation, the bar, the percentage
+# and the current file are one line instead of four competing for it.
+# ⇄ twin: Get-ExakitBar in ui.ps1.
+ui_bar() {
+    _uib_w="${2:-20}"
+    _uib_filled=$(( $1 * _uib_w / 100 ))
+    [ "$_uib_filled" -gt "$_uib_w" ] && _uib_filled="$_uib_w"
+    [ "$_uib_filled" -lt 0 ] && _uib_filled=0
+    printf '%s%s%s%s%s' \
+        "${UI_ACCENT:-}" "$(ui_repeat "${UI_BAR_FULL:-#}" "$_uib_filled")" \
+        "${UI_DIM:-}" "$(ui_repeat "${UI_BAR_EMPTY:-.}" $((_uib_w - _uib_filled)))" \
+        "${UI_RESET:-}"
+}
+
 # --- direct-invocation render entry points ----------------------------------
 # When this file is EXECUTED (not sourced), it exposes render helpers so a
 # POSIX-sh caller (install.sh, which can't source a bash lib) can reuse this
