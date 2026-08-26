@@ -20,7 +20,10 @@
 #   start                 start the local database and every add-on service
 #   stop                  stop them again
 #   autostart [on|off]    whether everything comes back after a restart
-#   data-load [-Force]    open focused data loading options; -Force reloads bundled sample data
+#   data-load [-Force|<path>]
+#                         open focused data loading options; a file path loads that
+#                         file, a FOLDER path bulk-loads every CSV/Parquet file in
+#                         it (one table each); -Force reloads bundled datasets
 #   mcp-setup             permanently configure MCP in supported AI clients
 #   mcp-doctor [clients]  check MCP config, connectivity, and managed state
 #   mcp-status [clients]  show managed MCP state for the supported AI clients
@@ -1730,10 +1733,26 @@ function Invoke-CmdLogs {
 }
 
 function Invoke-CmdDataLoad {
-    param([string]$ForceFlag = "")
+    param([string]$Argument = "")
     Assert-ExakitInstalled
-    if ($ForceFlag -and $ForceFlag -ne "-Force" -and $ForceFlag -ne "--force") {
-        Fail "Unknown option '$ForceFlag' for data-load (only -Force/--force is supported)."
+    # data-load takes either -Force or a PATH. A path names what to load without
+    # walking the menu to type it in - and a folder path is the bulk load: every
+    # CSV/Parquet file in it, one table each. Twin of cmd_data_load in exakit.
+    $ForceFlag = ""
+    $loadPath = ""
+    if ($Argument) {
+        if ($Argument -eq "-Force" -or $Argument -eq "--force") {
+            $ForceFlag = $Argument
+        } elseif ($Argument.StartsWith("-")) {
+            Fail "Unknown option '$Argument' for data-load (pass -Force, or a file or folder path)."
+        } else {
+            $loadPath = Get-ExakitNormalizedPath $Argument
+            if (-not (Test-Path $loadPath)) { Fail "No such file or folder: $Argument" }
+            # Naming a path IS choosing the local-file row, which is exactly what
+            # EXAKIT_DATA_FILE already means - so one contract covers the
+            # argument and the variable, and the menu never draws for either.
+            $env:EXAKIT_DATA_FILE = $loadPath
+        }
     }
     Initialize-ExakitLogging
     # Loading data needs a database that answers - a stopped one used to make
@@ -1959,7 +1978,7 @@ try {
             Invoke-CmdRepairRuntime -Yes:([bool]($RestArgs -contains "--yes" -or $RestArgs -contains "-y" -or $RestArgs -contains "-Yes"))
         }
         "autostart"    { Invoke-CmdAutostart -Action (($RestArgs | Select-Object -First 1)) }
-        "data-load"    { Invoke-CmdDataLoad -ForceFlag ($RestArgs | Select-Object -First 1) }
+        "data-load"    { Invoke-CmdDataLoad -Argument ($RestArgs | Select-Object -First 1) }
         "mcp-setup"    { Invoke-CmdMcpSetup }
         "mcp-doctor"   {
             # Diagnosis order: a stopped database is diagnosed as exactly that

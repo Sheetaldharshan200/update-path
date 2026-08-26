@@ -560,7 +560,7 @@ function Invoke-ExapumpSqlFile {
 $script:ExakitUploadQuiet = $false
 
 function Invoke-ExapumpUpload {
-    param([Parameter(Mandatory)][string]$Path, [Parameter(Mandatory)][string]$Target)
+    param([Parameter(Mandatory)][string]$Path, [Parameter(Mandatory)][string]$Target, [switch]$Soft)
     if (-not (Test-Path $Path) -or (Get-Item $Path).Length -eq 0) {
         Warn2 "Data file missing or empty: $Path"
         return $false
@@ -570,6 +570,11 @@ function Invoke-ExapumpUpload {
     if (-not $result.Success) {
         Write-ExapumpOutput -Output $result.Output
         Show-ExakitDbErrorRemedy $result.Output
+        # -Soft: a bulk folder load must not lose the other thirty-nine files to
+        # one bad one. Fail() exits the whole PROCESS here - PowerShell has no
+        # subshell to contain it, which is how the bash twin keeps this soft - so
+        # a caller that means to carry on asks for a return value instead.
+        if ($Soft) { return $false }
         Fail "Upload failed: $Path -> $Target (see log)"
     }
     if (-not $script:ExakitUploadQuiet) { Ok "$(Split-Path $Path -Leaf) loaded" }
@@ -735,13 +740,13 @@ function Show-ExakitJsonUnsupported {
 function Import-ExakitLocalFile {
     $defaultPath = if ($env:EXAKIT_DATA_FILE) { $env:EXAKIT_DATA_FILE } else { "" }
     while ($true) {
-        $rawPath = Read-ExakitPrompt "Local CSV/Parquet file path (type back to return)" $defaultPath
+        $rawPath = Read-ExakitPrompt "Local CSV/Parquet file - or a folder of them (type back to return)" $defaultPath
         if ($rawPath -match '^(b|back)$') {
             Info "Returning to data loading options."
             return "back"
         }
         if (-not $rawPath) {
-            Warn2 "Please enter a local CSV/Parquet file path, or type back to return."
+            Warn2 "Please enter a local CSV/Parquet file, a folder of them, or type back to return."
             # No console means Read-ExakitPrompt returns the same default
             # forever, so a bad or missing EXAKIT_DATA_FILE must fail here
             # instead of looping.
@@ -751,6 +756,10 @@ function Import-ExakitLocalFile {
             continue
         }
         $path = Get-ExakitNormalizedPath $rawPath
+        # A FOLDER is a bulk load: every data file in it, one table each. It is
+        # answered by the same prompt (and the same EXAKIT_DATA_FILE) as a single
+        # file, because "here is my data" is the same request either way.
+        if (Test-Path $path -PathType Container) { return (Import-ExakitLocalFolder -Path $path) }
         if ((Test-Path $path) -and (Get-Item $path).Length -gt 0) { break }
         Warn2 "File not found or empty: $path"
         if (-not (Test-ExakitInteractive)) {
@@ -803,6 +812,310 @@ function Import-ExakitLocalFile {
         $script:ExakitActiveLabel = ""
     }
     Ok "Loaded $path into $target"
+}
+
+# --- bulk folder load --------------------------------------------------------
+# Twin of the bulk folder load in exapump.sh. One folder in, every data file in
+# it loaded, one table per file. The folder is read at its TOP LEVEL only:
+# subfolders are never descended into and hidden files are left alone, so a
+# directory of exports loads without dragging in a nested archive\, the images
+# beside the data, or a desktop.ini.
+
+# Get-ExakitBulkFileKind - Get-ExakitDataFileKind, minus .txt.
+#
+# Naming one file says "this is my data, whatever it is called", and .txt is a
+# reasonable CSV there. Scanning a folder says nothing of the kind: a README.txt
+# beside the exports is not a table, and loading one as CSV would be a silent
+# surprise rather than a service. Twin of exakit_bulk_file_kind.
+function Get-ExakitBulkFileKind {
+    param([Parameter(Mandatory)][string]$Path)
+    $name = (Split-Path $Path -Leaf).ToLowerInvariant()
+    if ($name -match '\.txt(\.(gz|bz2|zst|xz))?$') { return "unknown" }
+    return (Get-ExakitDataFileKind $Path)
+}
+
+# Get-ExakitBulkFolderPlan <dir> - the plan for a folder, one string per
+# top-level file, in the order the files will load:
+#
+#   load|<kind>|<table>|<path>          kind: csv | parquet | json
+#   skip|<reason>|<detail>|<path>       reason: unsupported | empty | json-unsupported
+#                                             | duplicate-content | duplicate-table
+#
+# For a skipped duplicate, <detail> names the file it duplicates. Two kinds of
+# duplicate are refused, because both silently lose data: byte-identical files
+# would load the same rows into two tables, and two names that resolve to the
+# SAME table would have the second overwrite the first.
+#
+# JSON is reported as json-unsupported here rather than loaded: this kit has no
+# prebuilt ingest engine for Windows (see Get-JsonTablesApplicableReason), which
+# is the same answer Import-ExakitLocalFile gives for a single JSON file.
+#
+# Files are ordered by ORDINAL bytes, not by the machine's culture, so which of
+# two duplicates wins is the same answer on every machine - the twin sorts with
+# LC_ALL=C for exactly that reason.
+function Get-ExakitBulkFolderPlan {
+    param([Parameter(Mandatory)][string]$Path)
+    $names = @(Get-ChildItem -Path $Path -File -ErrorAction SilentlyContinue |
+        ForEach-Object { $_.Name })
+    if ($names.Count -gt 1) { [Array]::Sort($names, [StringComparer]::Ordinal) }
+
+    $plan = New-Object 'System.Collections.Generic.List[string]'
+    $keptPaths  = New-Object 'System.Collections.Generic.List[string]'
+    $keptTables = New-Object 'System.Collections.Generic.List[string]'
+    $keptSizes  = New-Object 'System.Collections.Generic.List[long]'
+    $keptHashes = New-Object 'System.Collections.Generic.List[string]'
+
+    foreach ($name in $names) {
+        $full = Join-Path $Path $name
+        $table = Get-ExakitTableName $full
+        $kind = Get-ExakitBulkFileKind $full
+        if ($kind -eq "unknown") { [void]$plan.Add("skip|unsupported||$full"); continue }
+        if ($kind -eq "json")    { [void]$plan.Add("skip|json-unsupported||$full"); continue }
+        $size = (Get-Item $full).Length
+        if ($size -le 0) { [void]$plan.Add("skip|empty||$full"); continue }
+
+        $hash = ""
+        $dupe = ""
+        $reason = ""
+        for ($i = 0; $i -lt $keptPaths.Count; $i++) {
+            if ($keptTables[$i] -eq $table) {
+                $dupe = $keptPaths[$i]; $reason = "duplicate-table"; break
+            }
+            if ($keptSizes[$i] -eq $size) {
+                # Hash only what could actually match: same-size files are the
+                # only candidates, so a folder of differently sized exports is
+                # never read twice just to prove they differ.
+                if (-not $hash) { $hash = (Get-FileHash -Algorithm SHA256 -Path $full).Hash.ToLowerInvariant() }
+                if (-not $keptHashes[$i]) {
+                    $keptHashes[$i] = (Get-FileHash -Algorithm SHA256 -Path $keptPaths[$i]).Hash.ToLowerInvariant()
+                }
+                if ($keptHashes[$i] -eq $hash) {
+                    $dupe = $keptPaths[$i]; $reason = "duplicate-content"; break
+                }
+            }
+        }
+        if ($dupe) {
+            [void]$plan.Add("skip|$reason|$(Split-Path $dupe -Leaf)|$full")
+            continue
+        }
+        [void]$keptPaths.Add($full)
+        [void]$keptTables.Add($table)
+        [void]$keptSizes.Add($size)
+        [void]$keptHashes.Add($hash)
+        [void]$plan.Add("load|$kind|$table|$full")
+    }
+    return $plan.ToArray()
+}
+
+# Get-ExakitBulkKindsPresent <plan> - the loadable kinds in the plan, in the
+# order the format menu shows them.
+function Get-ExakitBulkKindsPresent {
+    param([string[]]$Plan)
+    $found = New-Object 'System.Collections.Generic.List[string]'
+    foreach ($kind in @("csv", "parquet", "json")) {
+        if ($Plan | Where-Object { $_.StartsWith("load|$kind|") }) { [void]$found.Add($kind) }
+    }
+    return $found.ToArray()
+}
+
+# Get-ExakitBulkLabel <kind> - the format's name as the menu says it.
+function Get-ExakitBulkLabel {
+    param([Parameter(Mandatory)][string]$Kind)
+    switch ($Kind) {
+        "csv"     { return "CSV" }
+        "parquet" { return "Parquet" }
+        "json"    { return "JSON" }
+        default   { return $Kind }
+    }
+}
+
+# Select-ExakitBulkFormats <plan> - which formats to load, returned as an array
+# of kinds (empty = cancel).
+#
+# Only asked when the folder actually holds more than one loadable format: with
+# a single format there is nothing to choose, and a menu whose every answer is
+# the same answer is just a keystroke. EXAKIT_DATA_FORMATS pre-answers it for an
+# unattended run, the same way EXAKIT_DATASETS pre-answers the dataset menu.
+function Select-ExakitBulkFormats {
+    param([string[]]$Plan)
+    $kinds = @(Get-ExakitBulkKindsPresent $Plan)
+
+    if ($env:EXAKIT_DATA_FORMATS) {
+        $chosen = New-Object 'System.Collections.Generic.List[string]'
+        foreach ($raw in ($env:EXAKIT_DATA_FORMATS -split ',')) {
+            $want = $raw.Trim().ToLowerInvariant()
+            if (-not $want) { continue }
+            if ($want -eq "pq") { $want = "parquet" }
+            if ($want -eq "ndjson" -or $want -eq "jsonl") { $want = "json" }
+            if ($kinds -contains $want) {
+                if (-not ($chosen -contains $want)) { [void]$chosen.Add($want) }
+            } else {
+                Warn2 "No $(Get-ExakitBulkLabel $want) files in this folder (EXAKIT_DATA_FORMATS)."
+            }
+        }
+        return $chosen.ToArray()
+    }
+
+    if ($kinds.Count -le 1) { return $kinds }
+
+    $labels = New-Object 'System.Collections.Generic.List[string]'
+    $defaults = New-Object 'System.Collections.Generic.List[int]'
+    for ($i = 0; $i -lt $kinds.Count; $i++) {
+        $count = @($Plan | Where-Object { $_.StartsWith("load|$($kinds[$i])|") }).Count
+        if ($count -eq 1) { $unit = "file" } else { $unit = "files" }
+        [void]$labels.Add("$(Get-ExakitBulkLabel $kinds[$i]) ($count $unit)")
+        [void]$defaults.Add($i + 1)
+    }
+    [void]$labels.Add("Cancel (load nothing)")
+    $finalIdx = $labels.Count
+    $selection = Read-ExakitCheckboxMenu `
+        -Title "This folder has more than one format - which do you want to load?" `
+        -Options $labels.ToArray() -Defaults $defaults.ToArray() -ExclusiveIndex $finalIdx
+    if ($selection -contains $finalIdx) { return @() }
+    return @($selection | Where-Object { $_ -ge 1 -and $_ -lt $finalIdx } | ForEach-Object { $kinds[$_ - 1] })
+}
+
+# Show-ExakitBulkPlan - what is about to happen, and what will not. Duplicates
+# are named one by one, because being skipped is a surprise worth explaining;
+# files of other kinds are counted, because a folder of exports beside two
+# hundred images should not print two hundred lines.
+function Show-ExakitBulkPlan {
+    param([string[]]$Plan, [string[]]$Chosen, [string]$Schema, [string]$Path)
+    Info "From $Path into ${Schema}:"
+    foreach ($row in $Chosen) {
+        $parts = $row.Split('|', 3)
+        Write-Host ("      {0}{1}{2} {3} {4}->{5} {6}.{7}" -f $script:UiDim, $script:UiBullet, $script:UiReset,
+            (Split-Path $parts[2] -Leaf), $script:UiDim, $script:UiReset, $Schema, $parts[1])
+    }
+    foreach ($row in ($Plan | Where-Object { $_.StartsWith("skip|duplicate") })) {
+        $parts = $row.Split('|', 4)
+        if ($parts[1] -eq "duplicate-content") { $why = "identical to $($parts[2])" }
+        else { $why = "same target table as $($parts[2])" }
+        Write-Host ("      {0}! {1} skipped ({2}){3}" -f $script:UiDim,
+            (Split-Path $parts[3] -Leaf), $why, $script:UiReset)
+    }
+    $json = @($Plan | Where-Object { $_.StartsWith("skip|json-unsupported|") }).Count
+    if ($json -gt 0) {
+        $why = ""
+        if (Get-Command Get-JsonTablesApplicableReason -ErrorAction SilentlyContinue) {
+            $why = Get-JsonTablesApplicableReason
+        }
+        if ($why) { Warn2 "$json JSON file(s) skipped: $why" }
+        else { Warn2 "$json JSON file(s) skipped: no ingest engine is available on this machine." }
+        Info "CSV and Parquet load without it. Load the JSON files from macOS, Linux or WSL."
+    }
+    $other = @($Plan | Where-Object { $_.StartsWith("skip|unsupported|") }).Count
+    if ($other -gt 0) {
+        Write-Host ("      {0}{1} file(s) of other kinds ignored{2}" -f $script:UiDim, $other, $script:UiReset)
+    }
+    $empty = @($Plan | Where-Object { $_.StartsWith("skip|empty|") }).Count
+    if ($empty -gt 0) {
+        Write-Host ("      {0}{1} empty file(s) ignored{2}" -f $script:UiDim, $empty, $script:UiReset)
+    }
+}
+
+# Import-ExakitLocalFolder <dir> - load every data file in one folder.
+#
+# The schema is asked once, not once per file: a folder is one job, and its
+# tables are named after the files (sales.csv -> SALES). Returns "back" when the
+# user backs out, "failed" when something failed, "" when everything asked for
+# was loaded. Twin of exakit_load_local_folder.
+function Import-ExakitLocalFolder {
+    param([Parameter(Mandatory)][string]$Path)
+    $plan = @(Get-ExakitBulkFolderPlan -Path $Path)
+    $loadable = @($plan | Where-Object { $_.StartsWith("load|") })
+    if ($loadable.Count -eq 0) {
+        $json = @($plan | Where-Object { $_.StartsWith("skip|json-unsupported|") }).Count
+        if ($json -gt 0) {
+            Show-ExakitBulkPlan -Plan $plan -Chosen @() -Schema "" -Path $Path
+        } else {
+            Warn2 "No CSV or Parquet files in $Path."
+            Info "Only the folder itself is read - subfolders and files of other kinds are left alone."
+        }
+        return "failed"
+    }
+
+    $formats = @(Select-ExakitBulkFormats $plan)
+    if ($formats.Count -eq 0) {
+        Info "Nothing selected - no files were loaded."
+        return "back"
+    }
+    $chosen = @($loadable | Where-Object { $formats -contains $_.Split('|', 3)[1] } |
+        ForEach-Object { $_.Substring(5) })
+    if ($chosen.Count -eq 0) {
+        Info "Nothing selected - no files were loaded."
+        return "back"
+    }
+
+    # One schema for the whole folder, asked once.
+    if ($env:EXAKIT_SCHEMA) { $schema = $env:EXAKIT_SCHEMA } else { $schema = "STARTER_KIT" }
+    while ($true) {
+        $schema = Read-ExakitPrompt "Target schema for all $($chosen.Count) file(s) (back to return)" $schema
+        if ($schema -match '^(b|back)$') {
+            Info "Returning to data loading options."
+            return "back"
+        }
+        if ($schema -match '^[A-Za-z0-9_]+$') { break }
+        Warn2 "Schema must use letters, numbers or underscores."
+        if (-not (Test-ExakitInteractive)) { return "failed" }
+    }
+    $schema = $schema.ToUpperInvariant()
+
+    Show-ExakitBulkPlan -Plan $plan -Chosen $chosen -Schema $schema -Path $Path
+    if (-not (Confirm-ExakitEnvPrompt -EnvName "EXAKIT_BULK_CONFIRM" `
+            -Question "Load these $($chosen.Count) file(s) into $schema?" -DefaultYes $true)) {
+        Info "Nothing was loaded."
+        return "back"
+    }
+
+    Confirm-ExakitSchemaExists $schema | Out-Null
+    $script:ExakitUploadQuiet = $true
+    $done = 0
+    $failed = 0
+    $i = 0
+    try {
+        foreach ($row in $chosen) {
+            $i++
+            $parts = $row.Split('|', 3)
+            $file = $parts[2]
+            $target = "$schema.$($parts[1])"
+            # The spinner names the file it is actually on, and how far through
+            # the folder it is - a forty-file load must never animate under one
+            # label.
+            $script:ExakitActiveLabel = "Loading $(Split-Path $file -Leaf) ($i/$($chosen.Count))"
+            # @(...)[-1]: the function writes its progress with Write-Host, but
+            # taking the LAST emitted value keeps the boolean even if a helper
+            # underneath it ever starts writing to the pipeline.
+            $uploaded = $false
+            try {
+                $uploaded = [bool](@(Invoke-ExapumpUpload $file $target -Soft)[-1])
+            } catch {
+                $uploaded = $false
+            }
+            if ($uploaded) {
+                Ok "$(Split-Path $file -Leaf) -> $target"
+                $done++
+            } else {
+                Warn2 "$(Split-Path $file -Leaf) could not be loaded (see log) - the rest of the folder continues."
+                $failed++
+            }
+        }
+    } finally {
+        $script:ExakitUploadQuiet = $false
+        $script:ExakitActiveLabel = ""
+    }
+
+    Set-ExakitManifestValue "data.last_load.type" "local_folder"
+    Set-ExakitManifestValue "data.last_load.source" $Path
+    Set-ExakitManifestValue "data.last_load.target" $schema
+    Set-ExakitManifestValue "data.last_load.files" $done
+
+    if ($failed -gt 0) {
+        Warn2 "Loaded $done of $($chosen.Count) file(s) into $schema; $failed failed (see log)."
+        return "failed"
+    }
+    Ok "Loaded $done file(s) into $schema"
+    return ""
 }
 
 function Import-ExakitRemoteFile {
@@ -1224,7 +1537,7 @@ function Select-ExakitDataLoad {
             [void]$ids.Add($pending[$i].Id)
         }
     }
-    [void]$labels.Add("A local CSV/Parquet file"); [void]$ids.Add("local")
+    [void]$labels.Add("A local CSV/Parquet file, or a folder of them"); [void]$ids.Add("local")
     [void]$labels.Add($FinalLabel);                [void]$ids.Add("none")
     $finalIdx = $labels.Count
     if ($pending.Count -gt 0) {

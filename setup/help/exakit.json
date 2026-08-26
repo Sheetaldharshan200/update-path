@@ -164,20 +164,25 @@
     },
     {
       "command": "data-load",
-      "options": "[--force | -Force]",
-      "summary": "Load sample data or your own file.",
-      "description": "Opens the data-loading menu: bundled datasets (tpch, energy, weather) or a local CSV / Parquet / JSON file. Every file kind asks the same two things - the file, then SCHEMA.TABLE - and JSON is shredded into tables by an engine the kit installs for you. --force reloads instead of skipping what is already there.",
+      "options": "[--force | -Force] [<file-or-folder>]",
+      "summary": "Load sample data, one file, or a whole folder.",
+      "description": "Opens the data-loading menu: bundled datasets (tpch, energy, weather) or your own data. Name a path to skip the menu. A FILE asks the same two things whatever its kind - the file, then SCHEMA.TABLE - and JSON is shredded into tables by an engine the kit installs for you. A FOLDER is a bulk load: every CSV / Parquet / JSON file at its top level, one table each named after the file, asking for the schema once. Subfolders are not scanned, files of other kinds are ignored, and duplicates - byte-identical files, or two names that resolve to the same table - are skipped with the reason. When the folder holds more than one format you are asked which to load. --force reloads bundled datasets instead of skipping what is already there. JSON is macOS, Linux and WSL only; on Windows a folder's JSON files are listed as skipped.",
       "environment": [
         "EXAKIT_DATASETS=tpch,energy,weather names exactly which bundled datasets to load",
-        "EXAKIT_DATA_FILE=/path/file.json answers the local-file question, so a run without a terminal loads that CSV / Parquet / JSON file",
-        "EXAKIT_DATA_TABLE=SCHEMA.TABLE answers the target-table question for EXAKIT_DATA_FILE (default: STARTER_KIT.<filename>)",
-        "EXAKIT_SCHEMA sets the default target schema"
+        "EXAKIT_DATA_FILE=/path/file.json or /path/folder answers the local-data question, so a run without a terminal loads that file or folder",
+        "EXAKIT_DATA_TABLE=SCHEMA.TABLE answers the target-table question for a single EXAKIT_DATA_FILE (default: STARTER_KIT.<filename>)",
+        "EXAKIT_DATA_FORMATS=csv,parquet,json answers the which-formats question for a folder load (default: every format found)",
+        "EXAKIT_SCHEMA sets the default target schema",
+        "EXAKIT_BULK_CONFIRM=1 answers the confirmation before a folder load (default: yes without a terminal)"
       ],
       "examples": [
         "exakit data-load",
+        "exakit data-load ~/exports",
+        "exakit data-load ./sales.csv",
         "exakit data-load --force",
         "EXAKIT_DATASETS=tpch exakit data-load",
-        "EXAKIT_DATA_FILE=./sales.json EXAKIT_DATA_TABLE=STARTER_KIT.SALES exakit data-load"
+        "EXAKIT_DATA_FILE=./sales.json EXAKIT_DATA_TABLE=STARTER_KIT.SALES exakit data-load",
+        "EXAKIT_DATA_FILE=~/exports EXAKIT_DATA_FORMATS=csv,parquet EXAKIT_SCHEMA=SALES exakit data-load"
       ]
     },
     {

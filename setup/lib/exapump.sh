@@ -873,7 +873,7 @@ EXAKIT_JL_EOF
 
 exakit_load_local_file() {
     while :; do
-        _raw_path="$(prompt_text "Local CSV / Parquet / JSON file path (type back to return)" "${EXAKIT_DATA_FILE:-}")"
+        _raw_path="$(prompt_text "Local CSV / Parquet / JSON file — or a folder of them (type back to return)" "${EXAKIT_DATA_FILE:-}")"
         case "$_raw_path" in
             b|B|back|Back|BACK)
                 info "Returning to data loading options."
@@ -881,13 +881,17 @@ exakit_load_local_file() {
                 ;;
         esac
         if [ -z "$_raw_path" ]; then
-            warn "Please enter a local CSV, Parquet or JSON file path, or type back to return."
+            warn "Please enter a local CSV, Parquet or JSON file, a folder of them, or type back to return."
             # No tty means prompt_text returns the same default forever, so a
             # bad or missing EXAKIT_DATA_FILE must fail instead of looping.
             [ -n "$(_exakit_prompt_tty)" ] || return 1
             continue
         fi
         _path="$(exakit_normalize_path "$_raw_path")"
+        # A FOLDER is a bulk load: every data file in it, one table each. It is
+        # answered by the same prompt (and the same EXAKIT_DATA_FILE) as a
+        # single file, because "here is my data" is the same request either way.
+        [ -d "$_path" ] && { exakit_load_local_folder "$_path"; return $?; }
         [ -s "$_path" ] && break
         warn "File not found or empty: $_path"
         [ -n "$(_exakit_prompt_tty)" ] || return 1
@@ -938,6 +942,331 @@ exakit_load_local_file() {
     EXAKIT_UPLOAD_QUIET=0
     EXAKIT_ACTIVE_LABEL=""
     ok "Loaded $(ui_tilde "$_path") into $_target"
+}
+
+# --- bulk folder load --------------------------------------------------------
+# One folder in, every data file in it loaded, one table per file. The folder is
+# read at its TOP LEVEL only: subfolders are never descended into and dotfiles
+# are left alone, so a directory of exports loads without dragging in a nested
+# archive/, a .DS_Store, or the images sitting next to the data.
+
+# exakit_bulk_file_kind <path> — exakit_data_file_kind, minus .txt.
+#
+# Naming one file says "this is my data, whatever it is called", and .txt is a
+# reasonable CSV there. Scanning a folder says nothing of the kind: a README.txt
+# or LICENSE.txt beside the exports is not a table, and loading one as CSV would
+# be a silent surprise rather than a service. Everything else is unchanged, so a
+# file that loads on its own loads in bulk.
+exakit_bulk_file_kind() {
+    case "$(printf '%s' "${1##*/}" | tr '[:upper:]' '[:lower:]')" in
+        *.txt|*.txt.gz|*.txt.bz2|*.txt.zst|*.txt.xz) printf 'unknown\n' ;;
+        *) exakit_data_file_kind "$1" ;;
+    esac
+}
+
+# exakit_bulk_scan_folder <dir> — the plan for a folder, one line per top-level
+# file, in the order the files will load:
+#
+#   load|<kind>|<table>|<path>          kind: csv | parquet | json
+#   skip|<reason>|<detail>|<path>       reason: unsupported | empty
+#                                             | duplicate-content | duplicate-table
+#
+# For a skipped duplicate, <detail> names the file it duplicates. Two kinds of
+# duplicate are refused, because both silently lose data:
+#
+#   * byte-identical files — the same rows would land in two tables under two
+#     names, and nothing on screen would say they were the same data;
+#   * two names that resolve to the SAME table (sales.csv beside sales.parquet,
+#     or 2024-sales.csv beside 2024_sales.csv) — the second load would overwrite
+#     the first, and only the second would be reported.
+#
+# The first file in alphabetical order wins. Content is compared by hash only
+# between files of identical BYTE SIZE, so a folder of differently sized exports
+# is never read twice just to prove they differ.
+exakit_bulk_scan_folder() {
+    _bsf_dir="$1"
+    _bsf_paths=()
+    _bsf_tables=()
+    _bsf_sizes=()
+    _bsf_hashes=()
+    _bsf_n=0
+    # Byte order (LC_ALL=C), not the machine's collation: which of two
+    # duplicates wins has to be the same answer on every machine, and en_US
+    # folds punctuation while C does not -- so sales.csv beside sales_copy.csv
+    # picked a different winner on macOS than in CI.
+    _bsf_names="$(for _bsf_f in "$_bsf_dir"/*; do
+        # Not a regular file: a subfolder, a broken symlink, or the unexpanded
+        # glob of an empty directory.
+        [ -f "$_bsf_f" ] || continue
+        printf '%s\n' "${_bsf_f##*/}"
+    done | LC_ALL=C sort)"
+    while IFS= read -r _bsf_name; do
+        [ -n "$_bsf_name" ] || continue
+        _bsf_f="$_bsf_dir/$_bsf_name"
+        _bsf_table="$(exakit_table_name_from_path "$_bsf_f")"
+        if [ "$(exakit_bulk_file_kind "$_bsf_f")" = "unknown" ]; then
+            printf 'skip|unsupported||%s\n' "$_bsf_f"
+            continue
+        fi
+        if [ ! -s "$_bsf_f" ]; then
+            printf 'skip|empty||%s\n' "$_bsf_f"
+            continue
+        fi
+        _bsf_size="$(wc -c < "$_bsf_f" | tr -d ' ')"
+        _bsf_hash=""
+        _bsf_dupe=""
+        _bsf_reason=""
+        _bsf_i=0
+        while [ "$_bsf_i" -lt "$_bsf_n" ]; do
+            if [ "${_bsf_tables[$_bsf_i]}" = "$_bsf_table" ]; then
+                _bsf_dupe="${_bsf_paths[$_bsf_i]}"
+                _bsf_reason="duplicate-table"
+                break
+            fi
+            if [ "${_bsf_sizes[$_bsf_i]}" = "$_bsf_size" ]; then
+                [ -n "$_bsf_hash" ] || _bsf_hash="$(sha256_of "$_bsf_f")"
+                if [ -z "${_bsf_hashes[$_bsf_i]}" ]; then
+                    _bsf_hashes[$_bsf_i]="$(sha256_of "${_bsf_paths[$_bsf_i]}")"
+                fi
+                if [ "${_bsf_hashes[$_bsf_i]}" = "$_bsf_hash" ]; then
+                    _bsf_dupe="${_bsf_paths[$_bsf_i]}"
+                    _bsf_reason="duplicate-content"
+                    break
+                fi
+            fi
+            _bsf_i=$((_bsf_i + 1))
+        done
+        if [ -n "$_bsf_dupe" ]; then
+            printf 'skip|%s|%s|%s\n' "$_bsf_reason" "$(basename "$_bsf_dupe")" "$_bsf_f"
+            continue
+        fi
+        _bsf_paths[$_bsf_n]="$_bsf_f"
+        _bsf_tables[$_bsf_n]="$_bsf_table"
+        _bsf_sizes[$_bsf_n]="$_bsf_size"
+        _bsf_hashes[$_bsf_n]="$_bsf_hash"
+        _bsf_n=$((_bsf_n + 1))
+        printf 'load|%s|%s|%s\n' "$(exakit_bulk_file_kind "$_bsf_f")" "$_bsf_table" "$_bsf_f"
+    done <<EXAKIT_BULK_SCAN_EOF
+$_bsf_names
+EXAKIT_BULK_SCAN_EOF
+}
+
+# exakit_bulk_kinds_present <plan> — the loadable kinds in the plan, one per
+# line, in the order the format menu shows them.
+exakit_bulk_kinds_present() {
+    for _bkp_kind in csv parquet json; do
+        if printf '%s\n' "$1" | grep -q "^load|$_bkp_kind|"; then
+            printf '%s\n' "$_bkp_kind"
+        fi
+    done
+    return 0
+}
+
+# exakit_bulk_label <kind> — the format's name as the menu says it.
+exakit_bulk_label() {
+    case "$1" in
+        csv)     printf 'CSV\n' ;;
+        parquet) printf 'Parquet\n' ;;
+        json)    printf 'JSON\n' ;;
+        *)       printf '%s\n' "$1" ;;
+    esac
+}
+
+# exakit_bulk_select_formats <plan> — which formats to load.
+#
+# Only asked when the folder actually holds more than one loadable format:
+# with a single format there is nothing to choose, and a menu whose every answer
+# is the same answer is just a keystroke. EXAKIT_DATA_FORMATS pre-answers it for
+# an unattended run, the same way EXAKIT_DATASETS pre-answers the dataset menu.
+# Sets EXAKIT_BULK_FORMATS to a comma-separated list, or "none" to cancel.
+exakit_bulk_select_formats() {
+    _bsl_kinds="$(exakit_bulk_kinds_present "$1")"
+    _bsl_n=0
+    for _bsl_k in $_bsl_kinds; do _bsl_n=$((_bsl_n + 1)); done
+
+    if [ -n "${EXAKIT_DATA_FORMATS:-}" ]; then
+        EXAKIT_BULK_FORMATS=""
+        for _bsl_want in $(printf '%s' "$EXAKIT_DATA_FORMATS" | tr ',' ' ' | tr '[:upper:]' '[:lower:]'); do
+            case "$_bsl_want" in
+                pq) _bsl_want=parquet ;;
+                ndjson|jsonl) _bsl_want=json ;;
+            esac
+            case " $(printf '%s' "$_bsl_kinds" | tr '\n' ' ') " in
+                *" $_bsl_want "*) EXAKIT_BULK_FORMATS="${EXAKIT_BULK_FORMATS:+$EXAKIT_BULK_FORMATS,}$_bsl_want" ;;
+                *) warn "No $(exakit_bulk_label "$_bsl_want") files in this folder (EXAKIT_DATA_FORMATS)." ;;
+            esac
+        done
+        [ -n "$EXAKIT_BULK_FORMATS" ] || EXAKIT_BULK_FORMATS="none"
+        return 0
+    fi
+
+    if [ "$_bsl_n" -le 1 ]; then
+        EXAKIT_BULK_FORMATS="$(printf '%s' "$_bsl_kinds" | tr '\n' ',' | sed 's/,$//')"
+        [ -n "$EXAKIT_BULK_FORMATS" ] || EXAKIT_BULK_FORMATS="none"
+        return 0
+    fi
+
+    _bsl_labels=()
+    _bsl_ids=()
+    _bsl_defaults=""
+    _bsl_i=0
+    for _bsl_k in $_bsl_kinds; do
+        _bsl_i=$((_bsl_i + 1))
+        _bsl_count="$(printf '%s\n' "$1" | grep -c "^load|$_bsl_k|")"
+        _bsl_labels+=("$(exakit_bulk_label "$_bsl_k") ($_bsl_count file$([ "$_bsl_count" = 1 ] || printf 's'))")
+        _bsl_ids+=("$_bsl_k")
+        _bsl_defaults="${_bsl_defaults:+$_bsl_defaults,}$_bsl_i"
+    done
+    _bsl_labels+=("Cancel (load nothing)")
+    _bsl_final=$((_bsl_i + 1))
+    EXAKIT_CHECKBOX_EXCLUSIVE="$_bsl_final"
+    ui_checkbox_menu "This folder has more than one format — which do you want to load?" \
+        "$_bsl_defaults" "${_bsl_labels[@]}"
+    case ",$EXAKIT_CHECKBOX_SELECTION," in
+        *",$_bsl_final,"*) EXAKIT_BULK_FORMATS="none"; return 0 ;;
+    esac
+    EXAKIT_BULK_FORMATS=""
+    for _bsl_idx in $(printf '%s' "$EXAKIT_CHECKBOX_SELECTION" | tr ',' ' '); do
+        [ "$_bsl_idx" -ge 1 ] && [ "$_bsl_idx" -lt "$_bsl_final" ] || continue
+        EXAKIT_BULK_FORMATS="${EXAKIT_BULK_FORMATS:+$EXAKIT_BULK_FORMATS,}${_bsl_ids[$((_bsl_idx - 1))]}"
+    done
+    [ -n "$EXAKIT_BULK_FORMATS" ] || EXAKIT_BULK_FORMATS="none"
+    return 0
+}
+
+# exakit_load_local_folder <dir> — load every data file in one folder.
+#
+# The schema is asked once, not once per file: a folder is one job, and its
+# tables are named after the files (sales.csv -> SALES). Returns 2 when the user
+# backs out, 1 when something failed, 0 when everything asked for was loaded.
+exakit_load_local_folder() {
+    _blf_dir="$1"
+    _blf_plan="$(exakit_bulk_scan_folder "$_blf_dir")"
+
+    _blf_loadable="$(printf '%s\n' "$_blf_plan" | grep -c '^load|' || true)"
+    if [ "$_blf_loadable" -eq 0 ]; then
+        warn "No CSV, Parquet or JSON files in $(ui_tilde "$_blf_dir")."
+        info "Only the folder itself is read — subfolders and files of other kinds are left alone."
+        return 1
+    fi
+
+    exakit_bulk_select_formats "$_blf_plan"
+    if [ "$EXAKIT_BULK_FORMATS" = "none" ]; then
+        info "Nothing selected — no files were loaded."
+        return 2
+    fi
+    # One grep, not a case inside $( ): bash 3.2 -- the shell every macOS user
+    # runs this with -- mis-parses a case pattern inside a command substitution
+    # and silently returns the script text instead of the output. `bash -n` does
+    # not catch it, because the substitution is only parsed when it expands.
+    # The alternation is built from a fixed set of kinds, never from user input.
+    _blf_re="^load\\|($(printf '%s' "$EXAKIT_BULK_FORMATS" | tr ',' '|'))\\|"
+    _blf_chosen="$(printf '%s\n' "$_blf_plan" | grep -E "$_blf_re" | cut -d'|' -f2-)"
+    _blf_n="$(printf '%s\n' "$_blf_chosen" | grep -c '.' || true)"
+    [ "$_blf_n" -gt 0 ] || { info "Nothing selected — no files were loaded."; return 2; }
+
+    # One schema for the whole folder, asked once.
+    _blf_schema="${EXAKIT_SCHEMA:-STARTER_KIT}"
+    while :; do
+        _blf_schema="$(prompt_text "Target schema for all $_blf_n file(s) (back to return)" "$_blf_schema")"
+        case "$_blf_schema" in
+            b|B|back|Back|BACK) info "Returning to data loading options."; return 2 ;;
+            ""|*[!A-Za-z0-9_]*)
+                warn "Schema must use letters, numbers or underscores."
+                [ -n "$(_exakit_prompt_tty)" ] || return 1
+                ;;
+            *) break ;;
+        esac
+    done
+    _blf_schema="$(printf '%s' "$_blf_schema" | tr '[:lower:]' '[:upper:]')"
+
+    exakit_bulk_print_plan "$_blf_plan" "$_blf_chosen" "$_blf_schema" "$_blf_dir"
+    confirm_env EXAKIT_BULK_CONFIRM "Load these $_blf_n file(s) into $_blf_schema?" y || {
+        info "Nothing was loaded."
+        return 2
+    }
+
+    exakit_ensure_schema "$_blf_schema"
+    EXAKIT_UPLOAD_QUIET=1
+    export EXAKIT_UPLOAD_QUIET
+    _blf_done=0
+    _blf_failed=0
+    _blf_i=0
+    while IFS='|' read -r _blf_kind _blf_table _blf_path; do
+        [ -n "$_blf_path" ] || continue
+        _blf_i=$((_blf_i + 1))
+        _blf_target="$_blf_schema.$_blf_table"
+        # The spinner names the file it is actually on, and how far through the
+        # folder it is — a forty-file load must never animate under one label.
+        EXAKIT_ACTIVE_LABEL="Loading $(basename "$_blf_path") ($_blf_i/$_blf_n)"
+        export EXAKIT_ACTIVE_LABEL
+        if [ "$_blf_kind" = "json" ]; then
+            EXAKIT_LAST_LOAD_TARGET=""
+            if exakit_load_local_json "$_blf_path" "$_blf_target"; then
+                ok "$(basename "$_blf_path") -> ${EXAKIT_LAST_LOAD_TARGET:-$_blf_target}"
+                _blf_done=$((_blf_done + 1))
+            else
+                warn "$(basename "$_blf_path") could not be loaded (see log) — the rest of the folder continues."
+                _blf_failed=$((_blf_failed + 1))
+            fi
+            continue
+        fi
+        # exapump_upload dies on failure; the subshell keeps that soft, so one
+        # bad file in forty does not end the job.
+        if ( exapump_upload "$_blf_path" "$_blf_target" ); then
+            ok "$(basename "$_blf_path") -> $_blf_target"
+            _blf_done=$((_blf_done + 1))
+        else
+            warn "$(basename "$_blf_path") could not be loaded (see log) — the rest of the folder continues."
+            _blf_failed=$((_blf_failed + 1))
+        fi
+    done <<EXAKIT_BULK_LOAD_EOF
+$_blf_chosen
+EXAKIT_BULK_LOAD_EOF
+    EXAKIT_UPLOAD_QUIET=0
+    EXAKIT_ACTIVE_LABEL=""
+
+    manifest_set data.last_load.type "local_folder"
+    manifest_set data.last_load.source "$_blf_dir"
+    manifest_set data.last_load.target "$_blf_schema"
+    manifest_set data.last_load.files "$_blf_done"
+
+    if [ "$_blf_failed" -gt 0 ]; then
+        warn "Loaded $_blf_done of $_blf_n file(s) into $_blf_schema; $_blf_failed failed (see log)."
+        return 1
+    fi
+    ok "Loaded $_blf_done file(s) into $_blf_schema"
+    return 0
+}
+
+# exakit_bulk_print_plan <plan> <chosen> <schema> <dir> — what is about to
+# happen, and what will not. Duplicates are named one by one, because being
+# skipped is a surprise worth explaining; files of other kinds are counted,
+# because a folder of exports beside two hundred images should not print two
+# hundred lines.
+exakit_bulk_print_plan() {
+    info "From $(ui_tilde "$4") into $3:"
+    printf '%s\n' "$2" | while IFS='|' read -r _bpp_kind _bpp_table _bpp_path; do
+        [ -n "$_bpp_path" ] || continue
+        printf '      %s%s%s %s %s->%s %s.%s\n' \
+            "${UI_DIM:-}" "${UI_BULLET:--}" "${UI_RESET:-}" \
+            "$(basename "$_bpp_path")" "${UI_DIM:-}" "${UI_RESET:-}" "$3" "$_bpp_table"
+    done
+    printf '%s\n' "$1" | grep '^skip|duplicate' | while IFS='|' read -r _bpp_v _bpp_reason _bpp_of _bpp_path; do
+        case "$_bpp_reason" in
+            duplicate-content) _bpp_why="identical to $_bpp_of" ;;
+            *)                 _bpp_why="same target table as $_bpp_of" ;;
+        esac
+        printf '      %s! %s skipped (%s)%s\n' \
+            "${UI_DIM:-}" "$(basename "$_bpp_path")" "$_bpp_why" "${UI_RESET:-}"
+    done
+    _bpp_other="$(printf '%s\n' "$1" | grep -c '^skip|unsupported|' || true)"
+    _bpp_empty="$(printf '%s\n' "$1" | grep -c '^skip|empty|' || true)"
+    [ "$_bpp_other" -gt 0 ] && printf '      %s%s file(s) of other kinds ignored%s\n' \
+        "${UI_DIM:-}" "$_bpp_other" "${UI_RESET:-}"
+    [ "$_bpp_empty" -gt 0 ] && printf '      %s%s empty file(s) ignored%s\n' \
+        "${UI_DIM:-}" "$_bpp_empty" "${UI_RESET:-}"
+    return 0
 }
 
 exakit_load_remote_file() {
@@ -1390,7 +1719,7 @@ EXAKIT_DLS_EOF
             _dls_i=$((_dls_i + 1))
         done
     fi
-    _dls_labels+=("A local CSV / Parquet / JSON file"); _dls_ids+=("local")
+    _dls_labels+=("A local CSV / Parquet / JSON file, or a folder of them"); _dls_ids+=("local")
     _dls_labels+=("$_dls_final_label");        _dls_ids+=("none")
     _dls_final_idx="${#_dls_labels[@]}"
     if [ "$_dls_pending_n" -gt 0 ]; then
