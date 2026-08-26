@@ -1,0 +1,212 @@
+#!/usr/bin/env bash
+# bulk-folder-load.sh — proves `exakit data-load <folder>`: what a folder scan
+# picks up, what it refuses, and what actually reaches the database.
+#
+#   bash tests/bulk-folder-load.sh
+#
+# The upload layer is stubbed, so this runs with no database, no network and no
+# exapump binary: what is under test is the scan, the duplicate rules, the
+# format selection and the per-file loop, not the engine underneath them.
+
+set -u
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+PASS=0
+FAIL=0
+
+check() { # check <label> <expected> <actual>
+    if [ "$2" = "$3" ]; then
+        PASS=$((PASS + 1)); printf '  ok   %s = %s\n' "$1" "$3"
+    else
+        FAIL=$((FAIL + 1)); printf '  FAIL %s: expected %s, got %s\n' "$1" "$2" "$3"
+    fi
+}
+
+has() { # has <label> <needle> <haystack>
+    case "$3" in *"$2"*) check "$1" "present" "present" ;; *) check "$1" "present" "MISSING" ;; esac
+}
+
+lacks() { # lacks <label> <needle> <haystack>
+    case "$3" in *"$2"*) check "$1" "absent" "PRESENT" ;; *) check "$1" "absent" "absent" ;; esac
+}
+
+WORK="$(mktemp -d)"
+trap 'rm -rf "$WORK"' EXIT
+
+# Same isolation rule as the other suites: common.sh derives its paths at source
+# time, so the kit home and HOME are redirected before it is read.
+EXAKIT_HOME="$WORK/home"
+EXAKIT_BIN_DIR="$WORK/bin"
+HOME="$WORK/fake-home"
+export HOME
+mkdir -p "$EXAKIT_HOME" "$EXAKIT_BIN_DIR" "$HOME"
+
+# shellcheck source=/dev/null
+. "$ROOT/setup/lib/ui.sh"
+# shellcheck source=/dev/null
+. "$ROOT/setup/lib/common.sh"
+# shellcheck source=/dev/null
+. "$ROOT/setup/lib/exapump.sh"
+
+EXAKIT_LOG_FILE="$WORK/test.log"
+: > "$EXAKIT_LOG_FILE"
+
+# A folder shaped like a real export directory: two formats, both kinds of
+# duplicate, a subfolder, a dotfile, an image, a readme and an empty file.
+D="$WORK/exports"
+mkdir -p "$D/archive"
+printf 'a,b\n1,2\n'  > "$D/sales.csv"
+printf 'a,b\n1,2\n'  > "$D/sales_copy.csv"    # byte-identical to sales.csv
+printf 'x,y\n9,8\n'  > "$D/customers.csv"
+printf 'PAR1\n'      > "$D/orders.parquet"
+printf 'zzz\n'       > "$D/orders.pq"         # same target table as orders.parquet
+printf '{"k":1}\n'   > "$D/events.json"
+printf 'png\n'       > "$D/logo.png"
+printf 'readme\n'    > "$D/README.txt"
+: > "$D/empty.csv"
+printf 'nested\n'    > "$D/archive/old.csv"
+printf 'hidden\n'    > "$D/.hidden.csv"
+
+PLAN="$(exakit_bulk_scan_folder "$D")"
+
+printf '\n== the scan takes the data files and nothing else ==\n'
+
+check "loadable files found" "4" "$(printf '%s\n' "$PLAN" | grep -c '^load|')"
+has "csv is loadable"     "load|csv|SALES|"        "$PLAN"
+has "another csv"         "load|csv|CUSTOMERS|"    "$PLAN"
+has "parquet is loadable" "load|parquet|ORDERS|"   "$PLAN"
+has "json is loadable"    "load|json|EVENTS|"      "$PLAN"
+
+lacks "a subfolder is never descended into" "archive/old.csv" "$PLAN"
+lacks "a dotfile is left alone"             ".hidden.csv"     "$PLAN"
+has "an image is ignored"    "skip|unsupported||$D/logo.png"   "$PLAN"
+# .txt is a fine CSV when someone names the file, and never a table when a
+# folder is scanned: a README beside the exports is not data.
+has "a README.txt is ignored" "skip|unsupported||$D/README.txt" "$PLAN"
+has "an empty file is ignored" "skip|empty||$D/empty.csv"       "$PLAN"
+
+printf '\n== both kinds of duplicate are refused, with the reason ==\n'
+
+has "a byte-identical copy is skipped" "skip|duplicate-content|sales.csv|$D/sales_copy.csv" "$PLAN"
+has "a same-table name is skipped"     "skip|duplicate-table|orders.parquet|$D/orders.pq"   "$PLAN"
+# Which of the two wins must be the same answer on every machine: the scan
+# orders by bytes (LC_ALL=C), not by the machine's collation, which folds
+# punctuation on macOS and does not in CI.
+has "the first in byte order wins" "load|csv|SALES|$D/sales.csv" "$PLAN"
+
+printf '\n== formats: asked only when there is a choice ==\n'
+
+check "kinds present, in menu order" "csv parquet json" \
+    "$(exakit_bulk_kinds_present "$PLAN" | tr '\n' ' ' | sed 's/ $//')"
+
+# One format in the folder: nothing to ask, and the answer is that format.
+ONE="$WORK/one"; mkdir -p "$ONE"
+printf 'a\n1\n' > "$ONE/only.csv"
+exakit_bulk_select_formats "$(exakit_bulk_scan_folder "$ONE")"
+check "a single-format folder asks nothing" "csv" "$EXAKIT_BULK_FORMATS"
+
+EXAKIT_DATA_FORMATS="csv,json" exakit_bulk_select_formats "$PLAN"
+check "EXAKIT_DATA_FORMATS answers the menu" "csv,json" "$EXAKIT_BULK_FORMATS"
+EXAKIT_DATA_FORMATS="pq,jsonl" exakit_bulk_select_formats "$PLAN"
+check "extension aliases resolve" "parquet,json" "$EXAKIT_BULK_FORMATS"
+# Not in $( ): the function reports through EXAKIT_BULK_FORMATS, which a
+# command substitution's subshell would throw away. The warning is on stderr.
+EXAKIT_DATA_FORMATS="parquet,avro" exakit_bulk_select_formats "$PLAN" 2>"$WORK/fmt.err"
+has "a format the folder lacks is called out" "No avro files in this folder" "$(cat "$WORK/fmt.err")"
+check "...and the rest still load" "parquet" "$EXAKIT_BULK_FORMATS"
+
+printf '\n== the loop loads every chosen file, one table each ==\n'
+
+# Stub the layer below: this suite is about the folder flow, not the engine.
+LOADED="$WORK/loaded"
+: > "$LOADED"
+FAIL_ON=""
+exakit_ensure_schema()  { printf 'schema %s\n' "$1" >> "$LOADED"; return 0; }
+exapump_upload()        {
+    if [ -n "$FAIL_ON" ] && [ "$(basename "$1")" = "$FAIL_ON" ]; then return 1; fi
+    printf 'upload %s -> %s\n' "$(basename "$1")" "$2" >> "$LOADED"; return 0
+}
+exakit_load_local_json() {
+    EXAKIT_LAST_LOAD_TARGET="$2"
+    printf 'json %s -> %s\n' "$(basename "$1")" "$2" >> "$LOADED"; return 0
+}
+manifest_set()          { printf 'manifest %s=%s\n' "$1" "$2" >> "$LOADED"; return 0; }
+
+EXAKIT_BULK_CONFIRM=1
+export EXAKIT_BULK_CONFIRM
+EXAKIT_DATA_FORMATS=""
+OUT="$(exakit_load_local_folder "$D" 2>&1)"
+RC=$?
+LOG="$(cat "$LOADED")"
+check "a clean folder load succeeds" "0" "$RC"
+check "every eligible file loaded" "4" "$(grep -cE '^(upload|json) ' "$LOADED")"
+has "the schema is created once" "schema STARTER_KIT" "$LOG"
+has "csv -> its own table"     "upload sales.csv -> STARTER_KIT.SALES"          "$LOG"
+has "parquet -> its own table" "upload orders.parquet -> STARTER_KIT.ORDERS"    "$LOG"
+has "json goes through the JSON path" "json events.json -> STARTER_KIT.EVENTS"  "$LOG"
+lacks "the skipped duplicate never loads" "sales_copy.csv" "$LOG"
+has "the folder is recorded" "manifest data.last_load.type=local_folder" "$LOG"
+has "the file count is recorded" "manifest data.last_load.files=4" "$LOG"
+has "the summary counts them" "Loaded 4 file(s) into STARTER_KIT" "$OUT"
+
+# This is also the guard for a bash 3.2 trap: filtering the plan with a `case`
+# inside $( ) returns the script's own text instead of the matches on the shell
+# every macOS user runs, and `bash -n` does not catch it. A wrong filter shows
+# up here as the wrong number of loads.
+lacks "the filter returns matches, not script text" "esac" "$LOG"
+
+printf '\n== one bad file does not end the job ==\n'
+
+: > "$LOADED"
+FAIL_ON="orders.parquet"
+OUT="$(exakit_load_local_folder "$D" 2>&1)"
+RC=$?
+check "a failed file is reported" "1" "$RC"
+check "the other three still loaded" "3" "$(grep -cE '^(upload|json) ' "$LOADED")"
+has "the failure names the file" "orders.parquet could not be loaded" "$OUT"
+has "and the rest are counted" "Loaded 3 of 4 file(s)" "$OUT"
+FAIL_ON=""
+
+printf '\n== choosing formats narrows what loads ==\n'
+
+: > "$LOADED"
+OUT="$(EXAKIT_DATA_FORMATS=csv exakit_load_local_folder "$D" 2>&1)"
+check "only the chosen format loads" "2" "$(grep -c '^upload ' "$LOADED")"
+lacks "parquet stayed out" "orders.parquet" "$(cat "$LOADED")"
+lacks "json stayed out"    "events.json"    "$(cat "$LOADED")"
+
+printf '\n== a folder with nothing to load says so ==\n'
+
+EMPTY="$WORK/empty-dir"; mkdir -p "$EMPTY/sub"
+printf 'x\n' > "$EMPTY/notes.md"
+: > "$LOADED"
+OUT="$(exakit_load_local_folder "$EMPTY" 2>&1)"
+RC=$?
+check "an ineligible folder fails" "1" "$RC"
+has "and explains the rule" "No CSV, Parquet or JSON files in" "$OUT"
+check "nothing was loaded" "0" "$(grep -c . "$LOADED")"
+
+printf '\n== the same prompt takes a file or a folder ==\n'
+
+: > "$LOADED"
+OUT="$(EXAKIT_DATA_FILE="$D" exakit_load_local_file 2>&1)"
+check "a folder path routes to the bulk load" "4" "$(grep -cE '^(upload|json) ' "$LOADED")"
+
+: > "$LOADED"
+OUT="$(EXAKIT_DATA_FILE="$D/customers.csv" EXAKIT_DATA_TABLE="STARTER_KIT.CUSTOMERS" \
+    exakit_load_local_file 2>&1)"
+check "a file path still loads one file" "1" "$(grep -c '^upload ' "$LOADED")"
+has "...into the table it was given" "upload customers.csv -> STARTER_KIT.CUSTOMERS" "$(cat "$LOADED")"
+
+printf '\n== the CLI takes the path too ==\n'
+
+CLI="$(cat "$ROOT/setup/exakit")"
+has "data-load accepts a path argument" '_dl_path="$1"' "$CLI"
+has "a path pre-answers the local-data question" 'EXAKIT_DATA_FILE="$_dl_norm"' "$CLI"
+has "a missing path is refused" 'No such file or folder' "$CLI"
+HELP="$(cat "$ROOT/setup/help/exakit.json")"
+has "the help documents a folder" "or a folder" "$HELP"
+has "the help documents the format variable" "EXAKIT_DATA_FORMATS" "$HELP"
+
+printf '\n%s: %d passed, %d failed\n' "$(basename "$0")" "$PASS" "$FAIL"
+[ "$FAIL" -eq 0 ]

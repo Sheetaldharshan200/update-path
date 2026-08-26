@@ -429,5 +429,6 @@ jobs:
       - run: python3 tests/test_sample_data_schema.py
       - run: bash tests/reap-orphan-daemon.sh
       - run: bash tests/deploy-progress.sh
+      - run: bash tests/bulk-folder-load.sh
       # Dry run only without EXAKIT_SMOKE_FULL=1: no install, no database.
       - run: bash tests/smoke-test.sh

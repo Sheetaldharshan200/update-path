@@ -25,7 +25,10 @@
 #                       DESTRUCTIVE — the deployment is replaced and its data
 #                       is gone, bundled datasets are reloaded afterwards
 #   autostart [on|off]  whether everything comes back after a restart
-#   data-load [--force] open focused data loading options; --force reloads bundled sample data
+#   data-load [--force|<path>]
+#                       open focused data loading options; a file path loads that
+#                       file, a FOLDER path bulk-loads every CSV/Parquet/JSON file
+#                       in it (one table each); --force reloads bundled datasets
 #   sql '<statement>' [--write]
 #                       run one SQL statement and translate the error into a
 #                       remedy; reads only unless --write. Uses the ADMIN
@@ -578,17 +581,33 @@ cmd_logs() {
 
 cmd_data_load() {
     _require_install
+    # data-load takes either --force or a PATH. A path names what to load
+    # without walking the menu to type it in -- and a folder path is the bulk
+    # load: every CSV/Parquet/JSON file in it, one table each.
+    _dl_force=""
+    _dl_path=""
     case "${1:-}" in
-        ""|--force) ;;
-        *) reject "Unknown option '$1' for data-load (only --force is supported)." ;;
+        "")      ;;
+        --force) _dl_force="--force" ;;
+        -*)      reject "Unknown option '$1' for data-load (pass --force, or a file or folder path)." ;;
+        *)       _dl_path="$1" ;;
     esac
     command -v exakit_load_sample_data >/dev/null 2>&1 || \
         die "The exapump data-loading module is not available in this kit build."
+    if [ -n "$_dl_path" ]; then
+        _dl_norm="$(exakit_normalize_path "$_dl_path")"
+        [ -e "$_dl_norm" ] || die "No such file or folder: $_dl_path"
+        # Naming a path IS choosing the local-file row, which is exactly what
+        # EXAKIT_DATA_FILE already means -- so one contract covers the argument
+        # and the variable, and the menu never draws for either.
+        EXAKIT_DATA_FILE="$_dl_norm"
+        export EXAKIT_DATA_FILE
+    fi
     exakit_init_logging
     # Loading data needs a database that answers — a stopped one used to make
     # the dataset checks silently trust the manifest and the load itself fail.
     exakit_ensure_runtime_running deploy
-    if [ "${1:-}" = "--force" ]; then
+    if [ -n "$_dl_force" ]; then
         _kit_root="$(exakit_repo_root)" || \
             die "Could not find the kit's sql/ and data/ files to load."
         # EXAKIT_DATASETS names WHICH datasets; --force says "reload them even
