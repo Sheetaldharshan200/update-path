@@ -300,8 +300,8 @@ class LoadWiringTests(unittest.TestCase):
         opt-out reads 'Skip for now' (install mode) rather than 'Cancel'."""
         common = COMMON_LIB.read_text(encoding="utf-8")
         exapump_ps1 = EXAPUMP_PS1.read_text(encoding="utf-8")
-        self.assertIn('exakit_data_load_select "Skip for now (no data loading)"', common)
-        self.assertIn('Select-ExakitDataLoad -FinalLabel "Skip for now (no data loading)"', exapump_ps1)
+        self.assertIn('exakit_data_load_select "Skip for now (no dataset loading)"', common)
+        self.assertIn('Select-ExakitDataLoad -FinalLabel "Skip for now (no dataset loading)"', exapump_ps1)
 
     def test_local_file_data_load_can_return_to_menu(self) -> None:
         local_file_blocks = (

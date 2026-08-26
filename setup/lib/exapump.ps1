@@ -1542,7 +1542,7 @@ function Select-ExakitDataLoad {
     $finalIdx = $labels.Count
     if ($pending.Count -gt 0) {
         $defaults = @(1..($pending.Count + 1))   # group row + every dataset
-        $selection = Read-ExakitCheckboxMenu -Title "Select data to load" -Options $labels.ToArray() `
+        $selection = Read-ExakitCheckboxMenu -Title "Select dataset to load" -Options $labels.ToArray() `
             -Defaults $defaults -ExclusiveIndex $finalIdx `
             -GroupParent 1 -GroupFirst 2 -GroupLast ($pending.Count + 1) -GroupMode "all"
     } else {
@@ -1552,7 +1552,7 @@ function Select-ExakitDataLoad {
         # thing left for this screen to do, and defaulting to Cancel made Enter
         # a no-op. The local row sits one index below the final label.
         # Twin of exakit_data_load_select in exapump.sh.
-        $selection = Read-ExakitCheckboxMenu -Title "Select data to load" -Options $labels.ToArray() `
+        $selection = Read-ExakitCheckboxMenu -Title "Select dataset to load" -Options $labels.ToArray() `
             -Defaults @($finalIdx - 1) -ExclusiveIndex $finalIdx
     }
     if ($selection -contains $finalIdx) { return @("none") }
@@ -1643,7 +1643,7 @@ function Request-ExakitDataLoadOffer {
     # local-file option and an explicit skip. Non-interactive installs keep
     # the pre-selected defaults.
     Info "The database is ready for data. Loading data now lets MCP validate against real tables."
-    $chosen = Select-ExakitDataLoad -FinalLabel "Skip for now (no data loading)"
+    $chosen = Select-ExakitDataLoad -FinalLabel "Skip for now (no dataset loading)"
     if ($chosen -contains "none") {
         Info "Skipping data loading. Run it any time with: exakit data-load"
         return

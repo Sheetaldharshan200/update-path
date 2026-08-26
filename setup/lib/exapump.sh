@@ -1746,7 +1746,7 @@ EXAKIT_DLS_EOF
         _dls_defaults="$((_dls_final_idx - 1))"
     fi
     EXAKIT_CHECKBOX_EXCLUSIVE="$_dls_final_idx"
-    ui_checkbox_menu "Select data to load" "$_dls_defaults" "${_dls_labels[@]}"
+    ui_checkbox_menu "Select dataset to load" "$_dls_defaults" "${_dls_labels[@]}"
     case ",$EXAKIT_CHECKBOX_SELECTION," in
         *",$_dls_final_idx,"*)
             EXAKIT_DATA_LOAD_SELECTION="none"

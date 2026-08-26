@@ -6793,7 +6793,7 @@ exakit_maybe_offer_data_load() {
     # datasets that are not loaded yet are offered, plus the local-file option
     # and an explicit skip. Each load runs in a subshell so a die() inside the
     # loading flow never aborts the surrounding install.
-    exakit_data_load_select "Skip for now (no data loading)"
+    exakit_data_load_select "Skip for now (no dataset loading)"
     if [ "$EXAKIT_DATA_LOAD_SELECTION" = "none" ]; then
         info "Skipping data loading. Run it any time with: exakit data-load"
         return 0
