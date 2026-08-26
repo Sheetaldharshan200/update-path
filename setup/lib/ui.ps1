@@ -216,6 +216,21 @@ $script:UiSpinPs = $null
 $script:UiSpinRs = $null
 $script:UiSpinFlag = $null
 
+# Write-ExakitRule - a dim full-width divider, with a blank line either side.
+#
+# For the seam between two parts of a run: the install is finished and something
+# else is being asked. Sized to the console so it reads as a break rather than as
+# content. Twin of ui_rule in ui.sh.
+function Write-ExakitRule {
+    $width = 76
+    try { $width = [Console]::WindowWidth - 4 } catch { $width = 76 }
+    if ($width -gt 76) { $width = 76 }
+    if ($width -lt 8) { $width = 8 }
+    Write-Host ""
+    Write-Host ("  {0}{1}{2}" -f $script:UiDim, ($script:UiHr * $width), $script:UiReset)
+    Write-Host ""
+}
+
 function Start-ExakitSpinner([string]$Label) {
     if (-not $script:UiFancy) { return }
     try {

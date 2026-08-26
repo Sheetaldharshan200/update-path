@@ -164,14 +164,27 @@ function Write-ExakitLog([string]$Level, [string]$Msg) {
 # colour still works even if ANSI/VT could not be enabled.
 # One gutter under a step header: actions/results indent to the same column, so
 # a step's children read as one group (mirrors ui.sh's info/ok/warn/error).
+# ExakitQuietDetail - a caller is narrating a whole job on ONE line (an add-on
+# install), so the steps underneath report to the LOGFILE instead of the screen.
+# Gated here rather than at every call site: the chatter comes from a dozen
+# places in four modules, and a gate per line is a gate somebody forgets. Warn2
+# and Write-ExakitError are deliberately NOT gated - a job that says nothing
+# while it works must still say something when it goes wrong.
+# Twin of EXAKIT_QUIET_DETAIL in common.sh.
+$script:ExakitQuietDetail = $false
+
 function Info([string]$Msg) {
-    if ($script:UiFancy) { Write-Host ("    {0}{1}{2} {3}" -f $script:UiDim, $script:UiBullet, $script:UiReset, $Msg) }
-    else { Write-Host ("    {0} {1}" -f $script:UiBullet, $Msg) }
+    if (-not $script:ExakitQuietDetail) {
+        if ($script:UiFancy) { Write-Host ("    {0}{1}{2} {3}" -f $script:UiDim, $script:UiBullet, $script:UiReset, $Msg) }
+        else { Write-Host ("    {0} {1}" -f $script:UiBullet, $Msg) }
+    }
     Write-ExakitLog "INFO" $Msg
 }
 function Ok([string]$Msg) {
-    if ($script:UiFancy) { Write-Host ("      {0}{1}{2} {3}" -f $script:UiOk, $script:UiTick, $script:UiReset, $Msg) }
-    else { Write-Host ("      {0} {1}" -f $script:UiTick, $Msg) -ForegroundColor Green }
+    if (-not $script:ExakitQuietDetail) {
+        if ($script:UiFancy) { Write-Host ("      {0}{1}{2} {3}" -f $script:UiOk, $script:UiTick, $script:UiReset, $Msg) }
+        else { Write-Host ("      {0} {1}" -f $script:UiTick, $Msg) -ForegroundColor Green }
+    }
     Write-ExakitLog "OK" $Msg
 }
 function Warn2([string]$Msg) {
@@ -3480,6 +3493,22 @@ function Show-ExakitMarketplaceMenu {
     Invoke-ExakitMarketplaceApply -Ids $picked
 }
 
+# Set-ExakitAddonProgress <id> <pct> <phase> - the add-on install's one line of
+# progress. Prints nothing itself: it sets the label the spinner is about to
+# draw, so the animation, the bar, the percentage and the phase share one line.
+# Twin of _exakit_addon_progress in common.sh.
+function Set-ExakitAddonProgress {
+    param(
+        [Parameter(Mandatory)][string]$Id, [Parameter(Mandatory)][int]$Pct,
+        [Parameter(Mandatory)][string]$Phase
+    )
+    $script:ExakitActiveLabel = ("{0} {1} {2}{3,3}%{4} {5}" -f $Id, (Get-ExakitBar -Pct $Pct),
+        $script:UiBold, $Pct, $script:UiReset, $Phase)
+    # A spinner already on screen reads its label live from a synchronized
+    # hashtable, so a phase that moves the bar mid-flight is picked up.
+    if ($script:UiSpinFlag) { try { $script:UiSpinFlag.Label = $script:ExakitActiveLabel } catch { } }
+}
+
 # Install each picked add-on in turn. One failure does not strand the rest.
 function Invoke-ExakitMarketplaceApply {
     param([Parameter(Mandatory)][string[]]$Ids)
@@ -3497,23 +3526,30 @@ function Invoke-ExakitMarketplaceApply {
         # the previous step's title, or under the bare word "working". Name what
         # is actually running. Twin of the same block in
         # _exakit_marketplace_install_one (common.sh).
+        # Installing three add-ons printed fifty lines: a venv, a pip resolve, a
+        # download, a checksum, a launcher, a package-data repair and a
+        # validation probe, each announcing itself twice. None of it is
+        # something the person who ticked three boxes can act on, and all of it
+        # is in the logfile. ExakitQuietDetail routes it there; the progress line
+        # is the narration. The percentages are milestone positions weighted by
+        # where the TIME goes - fetching and installing is nearly all of it -
+        # not a step count.
         $prevLabel = $script:ExakitActiveLabel
+        $prevQuiet = $script:ExakitQuietDetail
         try {
-            $script:ExakitActiveLabel = "Installing $id"
+            $script:ExakitQuietDetail = $true
+            Set-ExakitAddonProgress -Id $id -Pct 0 -Phase "installing"
             $installed = & $addon.InstallFn
         } catch {
             Warn2 "$id installer reported: $_"
             $installed = $false
-        } finally {
-            $script:ExakitActiveLabel = $prevLabel
         }
         if ($installed) {
             if ($addon.ValidateFn -and (Get-Command $addon.ValidateFn -ErrorAction SilentlyContinue)) {
                 try {
-                    $script:ExakitActiveLabel = "Validating $id"
+                    Set-ExakitAddonProgress -Id $id -Pct 65 -Phase "validating"
                     & $addon.ValidateFn
                 } catch { Warn2 "$id validation reported: $_" }
-                finally { $script:ExakitActiveLabel = $prevLabel }
             }
             # A service add-on joins the boot set the moment it is installed, so
             # nobody has to remember a second command. This used to be skipped
@@ -3531,11 +3567,18 @@ function Invoke-ExakitMarketplaceApply {
             # `exakit status` reported the add-on just installed as "stopped".
             if ($addon.PSObject.Properties["StartFn"] -and
                 (Get-Command $addon.StartFn -ErrorAction SilentlyContinue)) {
+                Set-ExakitAddonProgress -Id $id -Pct 90 -Phase "starting"
                 try { [void](& $addon.StartFn) }
                 catch { Warn2 "$id installed but did not start - start it with: exakit start" }
             }
-            Ok "$id installed - it now updates with: exakit update (or exakit update $id)"
+            # The add-on's own panel already carries an "Update  exakit update
+            # <id>" row, so the result line does not repeat it twice.
+            $script:ExakitQuietDetail = $prevQuiet
+            $script:ExakitActiveLabel = $prevLabel
+            Ok "$id installed"
         } else {
+            $script:ExakitQuietDetail = $prevQuiet
+            $script:ExakitActiveLabel = $prevLabel
             Warn2 "$id did not finish installing - retry with: exakit marketplace (or exakit update $id)"
             $failed += 1
         }
@@ -3581,6 +3624,9 @@ function Request-ExakitMarketplaceOffer {
     # come pre-selected, so Enter installs them and Skip still backs out).
     Write-Host ""
     Ok "Your starter kit is ready to use."
+    # The install is over; what follows is a different question. A rule with air
+    # around it is the seam, so the offer does not read as one more install step.
+    Write-ExakitRule
     Info "Supercharge starterkit with exasol add-ons"
     $gate = Read-ExakitCheckboxMenu -Title "Explore ?" `
         -Options @("Yes", "No") `

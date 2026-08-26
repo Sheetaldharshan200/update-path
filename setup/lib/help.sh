@@ -246,12 +246,25 @@ def render_overview():
         out()
 
     by_name = {c.get("command"): c for c in commands_of(doc)}
+    # First group wins, exactly as render_all already does. A command that reads
+    # naturally in two groups (mcp-setup belongs to both "Get started" and "AI
+    # clients") was printed twice, so the one screen whose whole job is "find the
+    # command you want" answered the same question in two places. The section
+    # header is held back until a row actually survives, so a group whose every
+    # command was already listed does not leave an empty heading behind.
+    seen = set()
     for group in doc.get("groups", []):
-        section(group.get("title", ""))
+        rows = []
         for name in group.get("commands", []):
             entry = by_name.get(name)
-            if not entry:
+            if not entry or name in seen:
                 continue
+            seen.add(name)
+            rows.append(entry)
+        if not rows:
+            continue
+        section(group.get("title", ""))
+        for entry in rows:
             cmd_line("", invocation("exakit", entry), "", entry.get("summary", ""), pad=24)
 
     # NO per-component command dump here, and no trailing pointer line. This
