@@ -464,12 +464,15 @@ exapump_validate_connection() {
 # exapump_run_sql_file <file> [description] — execute a SQL file, logged.
 exapump_run_sql_file() {
     [ -s "$1" ] || { warn "SQL file missing or empty: $1"; return 1; }
-    info "Running ${2:-$(basename "$1")}"
+    # EXAKIT_UPLOAD_QUIET covers this the same way it covers exapump_upload: a
+    # caller narrating a whole job on one line does not want "Running x" / "x
+    # done" for each of its scripts underneath. The failure path is never quiet.
+    [ "${EXAKIT_UPLOAD_QUIET:-0}" = 1 ] || info "Running ${2:-$(basename "$1")}"
     if ! run_logged "$(exapump_cli)" sql -p "$EXAKIT_EXAPUMP_PROFILE" < "$1"; then
         [ -n "${EXAKIT_LOG_FILE:-}" ] && exakit_explain_db_error "$(tail -8 "$EXAKIT_LOG_FILE" 2>/dev/null)"
         die "SQL file failed: $1 (see log)"
     fi
-    ok "${2:-$(basename "$1")} done"
+    [ "${EXAKIT_UPLOAD_QUIET:-0}" = 1 ] || ok "${2:-$(basename "$1")} done"
 }
 
 # exapump_upload <file> <schema.table> — load a CSV/Parquet file, logged.
@@ -500,6 +503,30 @@ exapump_count() {
     _sql="SELECT 'EXAKIT_RC[' || CAST(COUNT(*) AS VARCHAR(40)) || ']' AS EXAKIT_RC FROM $1"
     "$(exapump_cli)" sql -p "$EXAKIT_EXAPUMP_PROFILE" "$_sql" 2>/dev/null | \
         grep -oE 'EXAKIT_RC\[[0-9]+\]' | head -1 | tr -dc '0-9'
+}
+
+# exakit_group_digits <n> — 173745 -> 173,745. Worth the sed: the row total is
+# the one number in a dataset's result line that a reader compares against what
+# they were expecting.
+exakit_group_digits() {
+    printf '%s' "$1" | sed -e :a -e 's/\(.*[0-9]\)\([0-9]\{3\}\)/\1,\2/;ta'
+}
+
+# _exakit_dataset_progress <id> <done> <total> <label> — the dataset load's one
+# line of progress.
+#
+# It prints nothing itself. It sets EXAKIT_ACTIVE_LABEL, which is what
+# run_logged hands to the spinner for the step that is about to run — so the
+# braille animation, the bar, the percentage and the file being loaded right now
+# are ONE line that repaints itself, instead of four kinds of output competing
+# for the screen. Off a terminal the spinner draws nothing and there is
+# deliberately no output between a dataset's opening line and its result.
+# ⇄ twin: Set-ExakitDatasetProgress in exapump.ps1.
+_exakit_dataset_progress() {
+    _dp_pct=0
+    [ "$3" -gt 0 ] 2>/dev/null && _dp_pct=$(( $2 * 100 / $3 ))
+    [ "$_dp_pct" -gt 100 ] && _dp_pct=100
+    EXAKIT_ACTIVE_LABEL="$1 $(ui_bar "$_dp_pct") ${UI_BOLD:-}$(printf '%3s' "$_dp_pct")%${UI_RESET:-} $4"
 }
 
 exapump_record_manifest() {
@@ -1581,6 +1608,32 @@ exakit_load_dataset_dir() {
 
     info "Loading the '$_ld_id' dataset into schema $_ld_schema"
 
+    # ONE line for the whole dataset, not one line per file. Loading three
+    # bundled datasets used to print about a hundred and thirty lines — every
+    # CSV twice, every script twice, eighteen rows of verification CSV and a
+    # row-count panel per dataset — and none of it is something the person
+    # waiting for a database can act on.
+    #
+    # The steps are counted up front, so the percentage is a real fraction of
+    # the work rather than a guess: the schema script, one per CSV, the load
+    # statements, the verification, and the row count at the end.
+    # EXAKIT_UPLOAD_QUIET silences the narration underneath; the progress line
+    # IS the narration now (see _exakit_dataset_progress). Nothing is lost —
+    # every suppressed line still goes to the logfile, including the per-table
+    # row counts, and a FAILED verification still prints in full.
+    _ld_csv_n=0
+    for _ld_csv in "$_ld_dir"/data/*.csv; do
+        [ -s "$_ld_csv" ] && _ld_csv_n=$((_ld_csv_n + 1))
+    done
+    _ld_total=$((1 + _ld_csv_n + 1))                 # schema + files + row count
+    [ -s "$_ld_dir/02_load_data.sql" ] && _ld_total=$((_ld_total + 1))
+    [ -s "$_ld_dir/03_verify_setup.sql" ] && _ld_total=$((_ld_total + 1))
+    _ld_step=0
+    _ld_t0="$(date +%s 2>/dev/null || echo 0)"
+    EXAKIT_UPLOAD_QUIET=1
+    export EXAKIT_UPLOAD_QUIET
+    _exakit_dataset_progress "$_ld_id" "$_ld_step" "$_ld_total" "creating schema $_ld_schema"
+
     # Schema script is OPTIONAL: exapump infers column types and creates the
     # table itself when none exists, so a dataset can ship as bare CSVs. The
     # script exists to pin exact types/precision and primary keys. When one is
@@ -1603,28 +1656,49 @@ exakit_load_dataset_dir() {
     for _ld_csv in "$_ld_dir"/data/*.csv; do
         [ -s "$_ld_csv" ] || continue
         _ld_table="$(basename "$_ld_csv" .csv | tr '[:lower:]' '[:upper:]')"
+        _ld_step=$((_ld_step + 1))
+        _exakit_dataset_progress "$_ld_id" "$_ld_step" "$_ld_total" "$(basename "$_ld_csv")"
         exapump_upload "$_ld_csv" "$_ld_schema.$_ld_table"
         _ld_tables="$_ld_tables $_ld_table"
     done
 
     if [ -s "$_ld_dir/02_load_data.sql" ]; then
+        _ld_step=$((_ld_step + 1))
+        _exakit_dataset_progress "$_ld_id" "$_ld_step" "$_ld_total" "running load statements"
         exapump_run_sql_file "$_ld_dir/02_load_data.sql" "$_ld_id load statements (02_load_data.sql)"
     fi
 
     if [ -s "$_ld_dir/03_verify_setup.sql" ]; then
-        info "Verification ($_ld_id 03_verify_setup.sql):"
+        _ld_step=$((_ld_step + 1))
+        _exakit_dataset_progress "$_ld_id" "$_ld_step" "$_ld_total" "verifying"
         _ld_verify="$(mktemp "${TMPDIR:-/tmp}/exakit-verify.XXXXXX")" || \
             die "Could not create a temporary file for verification output."
+        # Not run_logged: the output is the answer, so it is captured rather than
+        # logged away. The spinner is started by hand for the same reason.
+        ui_spin_begin "$EXAKIT_ACTIVE_LABEL"
         "$(exapump_cli)" sql -p "$EXAKIT_EXAPUMP_PROFILE" < "$_ld_dir/03_verify_setup.sql" \
             > "$_ld_verify" 2>> "${EXAKIT_LOG_FILE:-/dev/null}"
         _ld_verify_status=$?
-        exakit_stream_foreign < "$_ld_verify"
+        ui_spin_end
+        # Every check goes to the logfile whatever the outcome; they reach the
+        # SCREEN only when one of them failed. Eighteen rows of "OK, 0 orphaned
+        # row(s)" say nothing the result line does not already say — a FAIL row
+        # says everything, so that is the case worth printing.
+        [ -n "${EXAKIT_LOG_FILE:-}" ] && cat "$_ld_verify" >> "$EXAKIT_LOG_FILE"
         # Grade on the STATUS column value ",FAIL," — not the bare word. The
         # verify SQL is full of the literal string (its header comment and every
         # "CASE … ELSE 'FAIL' END" clause), so matching bare FAIL would fail a
         # dataset even when every row reads OK. A real failing check emits an
         # unquoted STATUS column (check_name,FAIL,detail). Mirrors exapump.ps1.
         if [ "$_ld_verify_status" -ne 0 ] || grep -q ',FAIL,' "$_ld_verify"; then
+            EXAKIT_UPLOAD_QUIET=0
+            EXAKIT_ACTIVE_LABEL=""
+            error "Verification failed for dataset '$_ld_id':"
+            # Printed, not streamed: exakit_stream_foreign would log these lines
+            # a second time, and they are already in the logfile above.
+            while IFS= read -r _ld_vline; do
+                printf '      %s%s %s%s\n' "${UI_DIM:-}" "${UI_VB:-|}" "$_ld_vline" "${UI_RESET:-}" >&2
+            done < "$_ld_verify"
             rm -f "$_ld_verify"
             die "Verification failed for dataset '$_ld_id' — see ${EXAKIT_LOG_FILE:-the log}. Data is loaded but not marked ready; fix the underlying issue and re-run with --force."
         fi
@@ -1637,15 +1711,28 @@ exakit_load_dataset_dir() {
     for _ld_marker in $_ld_markers; do
         case " $_ld_tables " in *" $_ld_marker "*) ;; *) _ld_tables="$_ld_tables $_ld_marker" ;; esac
     done
+    # The per-table numbers still go to the logfile, exactly as before; what
+    # changed is that they no longer take a ten-line panel on screen per
+    # dataset. Their totals land in the result line instead, which is the part
+    # a reader actually checks against what they expected.
+    _ld_step=$((_ld_step + 1))
+    _exakit_dataset_progress "$_ld_id" "$_ld_step" "$_ld_total" "counting rows"
+    _ld_tables_n=0
+    _ld_rows_total=0
+    _ld_rows_known=1
     if [ -n "$_ld_tables" ]; then
-        ui_panel_begin "Row counts"
+        ui_spin_begin "$EXAKIT_ACTIVE_LABEL"
         for _ld_table in $_ld_tables; do
             _ld_rows="$(exapump_count "$_ld_schema.$_ld_table")"
-            _ld_row_line="$(printf '%-30s %s rows' "$_ld_schema.$_ld_table" "${_ld_rows:-?}")"
-            ui_panel_line "$_ld_row_line"
-            _exakit_log_file "DATA  $_ld_row_line"
+            _ld_tables_n=$((_ld_tables_n + 1))
+            if [ -n "$_ld_rows" ]; then
+                _ld_rows_total=$((_ld_rows_total + _ld_rows))
+            else
+                _ld_rows_known=0
+            fi
+            _exakit_log_file "DATA  $(printf '%-30s %s rows' "$_ld_schema.$_ld_table" "${_ld_rows:-?}")"
         done
-        ui_panel_end
+        ui_spin_end
     fi
 
     manifest_set "$_ld_flag" true
@@ -1655,7 +1742,17 @@ exakit_load_dataset_dir() {
     _ld_canonical="data.datasets.${_ld_id}.loaded"
     [ "$_ld_flag" = "$_ld_canonical" ] || manifest_set "$_ld_canonical" true
     manifest_set data.last_load.source "dataset:$_ld_id"
-    ok "Dataset '$_ld_id' loaded and verified"
+    EXAKIT_UPLOAD_QUIET=0
+    EXAKIT_ACTIVE_LABEL=""
+    _ld_elapsed=$(( $(date +%s 2>/dev/null || echo 0) - _ld_t0 ))
+    [ "$_ld_elapsed" -ge 0 ] 2>/dev/null || _ld_elapsed=0
+    _ld_result="Dataset '$_ld_id' loaded and verified"
+    if [ "$_ld_tables_n" -gt 0 ]; then
+        _ld_result="$_ld_result — $_ld_tables_n table$([ "$_ld_tables_n" = 1 ] || printf 's')"
+        [ "$_ld_rows_known" = 1 ] && \
+            _ld_result="$_ld_result, $(exakit_group_digits "$_ld_rows_total") rows"
+    fi
+    ok "$_ld_result (${_ld_elapsed}s)"
 }
 
 # exakit_data_load_select <final_label> — dynamic checkbox over the data

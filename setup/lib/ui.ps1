@@ -273,6 +273,22 @@ function Write-ExakitProgress([int]$Current, [int]$Total, [string]$Label = "") {
     }
 }
 
+# Get-ExakitBar <pct> [width] - the bar on its own, as a STRING.
+#
+# Write-ExakitProgress above owns a whole line and redraws it. This one owns
+# nothing: it is for embedding a bar inside a label somebody else paints - the
+# dataset load hands it to the spinner, so the animation, the bar, the
+# percentage and the current file are one line instead of four competing for it.
+# Twin of ui_bar in ui.sh.
+function Get-ExakitBar {
+    param([int]$Pct, [int]$Width = 20)
+    $filled = [int]($Pct * $Width / 100)
+    if ($filled -gt $Width) { $filled = $Width }
+    if ($filled -lt 0) { $filled = 0 }
+    return ("{0}{1}{2}{3}{4}" -f $script:UiAccent, ($script:UiBarFull * $filled),
+        $script:UiDim, ($script:UiBarEmpty * ($Width - $filled)), $script:UiReset)
+}
+
 # Render the install banner + plan (used by install.ps1 after download).
 function Write-ExakitInstallPlan {
     param([string]$Platform, [string]$Database, [string]$KitDir, [string]$StateDir)

@@ -538,7 +538,10 @@ function Invoke-ExapumpSqlFile {
         Warn2 "SQL file missing or empty: $Path"
         return $false
     }
-    Info "Running $Description"
+    # ExakitUploadQuiet covers this the same way it covers Invoke-ExapumpUpload:
+    # a caller narrating a whole job on one line does not want "Running x" / "x
+    # done" for each of its scripts underneath. The failure path is never quiet.
+    if (-not $script:ExakitUploadQuiet) { Info "Running $Description" }
     $result = Invoke-ExapumpSqlFileCapture $Path
     if (-not $result.Success) {
         Write-ExapumpOutput -Output $result.Output
@@ -548,7 +551,7 @@ function Invoke-ExapumpSqlFile {
         Show-ExakitDbErrorRemedy $result.Output
         Fail "SQL file failed: $Path (see log)"
     }
-    Ok "$Description done"
+    if (-not $script:ExakitUploadQuiet) { Ok "$Description done" }
     return $true
 }
 
@@ -1382,6 +1385,52 @@ function Invoke-ExakitDatasetLoad {
 # Invoke-ExakitDatasetDirLoad - generic pipeline for a directory-based bundled
 # dataset: schema script, bulk files, optional transform, optional verify,
 # then record the manifest flag. Mirrors exakit_load_dataset_dir in exapump.sh.
+# Get-ExakitGroupedDigits <n> - 173745 -> 173,745. Worth doing: the row total is
+# the one number in a dataset's result line that a reader compares against what
+# they were expecting. Invariant culture, so the separator does not follow the
+# machine's locale. Twin of exakit_group_digits in exapump.sh.
+function Get-ExakitGroupedDigits {
+    param([Parameter(Mandatory)][long]$Value)
+    return $Value.ToString("N0", [System.Globalization.CultureInfo]::InvariantCulture)
+}
+
+# Set-ExakitDatasetProgress - the dataset load's one line of progress.
+#
+# It prints nothing itself. It sets ExakitActiveLabel, which is what the spinner
+# draws for the step that is about to run - so the braille animation, the bar,
+# the percentage and the file being loaded right now are ONE line that repaints
+# itself, instead of four kinds of output competing for the screen. Off a
+# console the spinner draws nothing and there is deliberately no output between
+# a dataset's opening line and its result.
+# Twin of _exakit_dataset_progress in exapump.sh.
+function Set-ExakitDatasetProgress {
+    param(
+        [Parameter(Mandatory)][string]$Id, [Parameter(Mandatory)][int]$Done,
+        [Parameter(Mandatory)][int]$Total, [Parameter(Mandatory)][string]$Label
+    )
+    $pct = 0
+    if ($Total -gt 0) { $pct = [int]($Done * 100 / $Total) }
+    if ($pct -gt 100) { $pct = 100 }
+    $script:ExakitActiveLabel = ("{0} {1} {2}{3,3}%{4} {5}" -f $Id, (Get-ExakitBar -Pct $pct),
+        $script:UiBold, $pct, $script:UiReset, $Label)
+    # A spinner already on screen reads its label live from a synchronized
+    # hashtable, so a step that moves the bar mid-flight is picked up.
+    if ($script:UiSpinFlag) { try { $script:UiSpinFlag.Label = $script:ExakitActiveLabel } catch { } }
+}
+
+# Invoke-ExakitDatasetStep - run one step of a dataset load under the progress
+# line. The bash twin gets the animation for free, because run_logged starts the
+# spinner itself; the exapump wrapper on this side does not, so each step asks.
+function Invoke-ExakitDatasetStep {
+    param(
+        [Parameter(Mandatory)][string]$Id, [Parameter(Mandatory)][int]$Done,
+        [Parameter(Mandatory)][int]$Total, [Parameter(Mandatory)][string]$Label,
+        [Parameter(Mandatory)][scriptblock]$Body
+    )
+    Set-ExakitDatasetProgress -Id $Id -Done $Done -Total $Total -Label $Label
+    return (Invoke-ExakitWithSpinner -Label $script:ExakitActiveLabel -Body $Body)
+}
+
 function Invoke-ExakitDatasetDirLoad {
     param([Parameter(Mandatory)][string]$KitRoot, [Parameter(Mandatory)][string]$Id, [switch]$Force)
     $dir = Join-Path $KitRoot "data\datasets\$Id"
@@ -1418,12 +1467,42 @@ function Invoke-ExakitDatasetDirLoad {
     }
     Info "Loading the '$Id' dataset into schema $schema"
 
+    # ONE line for the whole dataset, not one line per file. Loading three
+    # bundled datasets used to print about a hundred and thirty lines - every
+    # CSV twice, every script twice, eighteen rows of verification CSV and a
+    # row-count panel per dataset - and none of it is something the person
+    # waiting for a database can act on.
+    #
+    # The steps are counted up front, so the percentage is a real fraction of
+    # the work rather than a guess: the schema script, one per CSV, the load
+    # statements, the verification, and the row count at the end.
+    # ExakitUploadQuiet silences the narration underneath; the progress line IS
+    # the narration now (see Set-ExakitDatasetProgress). Nothing is lost - every
+    # suppressed line still goes to the logfile, including the per-table row
+    # counts, and a FAILED verification still prints in full.
+    $schemaSql = Join-Path $dir "01_create_schema.sql"
+    $loadSql = Join-Path $dir "02_load_data.sql"
+    $verifySql = Join-Path $dir "03_verify_setup.sql"
+    $csvFiles = @(Get-ChildItem -Path (Join-Path $dir "data\*.csv") -ErrorAction SilentlyContinue |
+        Where-Object { $_.Length -gt 0 })
+    $total = 1 + $csvFiles.Count + 1                 # schema + files + row count
+    if ((Test-Path $loadSql) -and (Get-Item $loadSql).Length -gt 0) { $total++ }
+    if ((Test-Path $verifySql) -and (Get-Item $verifySql).Length -gt 0) { $total++ }
+    $step = 0
+    $started = Get-Date
+    $script:ExakitUploadQuiet = $true
+    $tableCount = 0
+    $rowTotal = [long]0
+    $rowsKnown = $true
+    try {
+
     # Schema script is OPTIONAL: exapump infers column types and creates the
     # table itself when none exists; the script exists to pin exact types and
     # primary keys. Verify the DDL really landed and re-run once if not.
-    $schemaSql = Join-Path $dir "01_create_schema.sql"
     if ((Test-Path $schemaSql) -and (Get-Item $schemaSql).Length -gt 0) {
-        Invoke-ExapumpSqlFile $schemaSql "$Id schema (01_create_schema.sql)" | Out-Null
+        Invoke-ExakitDatasetStep -Id $Id -Done $step -Total $total -Label "creating schema $schema" -Body {
+            Invoke-ExapumpSqlFile $schemaSql "$Id schema (01_create_schema.sql)"
+        } | Out-Null
         if (-not (Test-ExapumpSchemaPresent $schema.ToUpper())) {
             Warn2 "Schema $schema is not present after creation - re-running the schema script"
             Invoke-ExapumpSqlFile $schemaSql "$Id schema (re-run)" | Out-Null
@@ -1432,33 +1511,49 @@ function Invoke-ExakitDatasetDirLoad {
             }
         }
     } else {
-        $result = Invoke-Exapump @("sql", "-p", $script:ExapumpProfile, "CREATE SCHEMA IF NOT EXISTS $($schema.ToUpper())")
-        if (-not $result.Success) { Fail "Could not create schema $schema." }
+        Invoke-ExakitDatasetStep -Id $Id -Done $step -Total $total -Label "creating schema $schema" -Body {
+            $r = Invoke-Exapump @("sql", "-p", $script:ExapumpProfile, "CREATE SCHEMA IF NOT EXISTS $($schema.ToUpper())")
+            if (-not $r.Success) { Fail "Could not create schema $schema." }
+        } | Out-Null
     }
 
-    foreach ($csv in (Get-ChildItem -Path (Join-Path $dir "data\*.csv") -ErrorAction SilentlyContinue)) {
-        if ($csv.Length -eq 0) { continue }
+    foreach ($csv in $csvFiles) {
         $table = [System.IO.Path]::GetFileNameWithoutExtension($csv.Name).ToUpper()
-        Invoke-ExapumpUpload $csv.FullName "$schema.$table" | Out-Null
+        $step++
+        $csvPath = $csv.FullName
+        $csvTarget = "$schema.$table"
+        Invoke-ExakitDatasetStep -Id $Id -Done $step -Total $total -Label $csv.Name -Body {
+            Invoke-ExapumpUpload $csvPath $csvTarget
+        } | Out-Null
     }
 
-    $loadSql = Join-Path $dir "02_load_data.sql"
     if ((Test-Path $loadSql) -and (Get-Item $loadSql).Length -gt 0) {
-        Invoke-ExapumpSqlFile $loadSql "$Id load statements (02_load_data.sql)" | Out-Null
+        $step++
+        Invoke-ExakitDatasetStep -Id $Id -Done $step -Total $total -Label "running load statements" -Body {
+            Invoke-ExapumpSqlFile $loadSql "$Id load statements (02_load_data.sql)"
+        } | Out-Null
     }
 
-    $verifySql = Join-Path $dir "03_verify_setup.sql"
     if ((Test-Path $verifySql) -and (Get-Item $verifySql).Length -gt 0) {
-        Info "Verification ($Id 03_verify_setup.sql):"
-        $result = Invoke-ExapumpSqlFileCapture $verifySql
-        Write-ExapumpOutput -Output $result.Output
+        $step++
+        $result = Invoke-ExakitDatasetStep -Id $Id -Done $step -Total $total -Label "verifying" -Body {
+            Invoke-ExapumpSqlFileCapture $verifySql
+        }
         # Grade on the STATUS *column value* ",FAIL," - not the bare word. The
         # verify SQL is full of the literal string (the header comment "a 'FAIL'
         # row means..." and 17 "CASE ... ELSE 'FAIL' END" clauses), and exapump
         # echoes that text back, so matching bare "FAIL" fails a dataset even
         # when every row reads OK. A real failing check emits an unquoted STATUS
         # column (check_name,FAIL,detail); OK rows and the echoed SQL never do.
+        #
+        # Every check is in the logfile whatever the outcome (the capture writes
+        # it there); they reach the SCREEN only when one of them failed.
+        # Eighteen rows of "OK, 0 orphaned row(s)" say nothing the result line
+        # does not already say - a FAIL row says everything.
         if (-not $result.Success -or $result.Output -match ",FAIL,") {
+            $script:ExakitUploadQuiet = $false
+            $script:ExakitActiveLabel = ""
+            Write-ExapumpOutput -Output $result.Output -Header "Verification failed for dataset '$Id':"
             Fail "Verification failed for dataset '$Id' - see the log. Data is loaded but not marked ready; fix the underlying issue and re-run with -Force."
         }
     }
@@ -1479,15 +1574,34 @@ function Invoke-ExakitDatasetDirLoad {
             }
         }
     }
+    # The per-table numbers still go to the logfile, exactly as before; what
+    # changed is that they no longer take a ten-line panel on screen per
+    # dataset. Their totals land in the result line instead, which is the part a
+    # reader actually checks against what they expected.
     if ($tables.Count -gt 0) {
-        Start-ExakitPanel "Row counts"
-        foreach ($t in $tables) {
-            $rows = Get-ExapumpRowCount "$schema.$t"
-            $line = "{0,-30} {1} rows" -f "$schema.$t", $(if ($rows) { $rows } else { "?" })
-            Write-ExakitPanelLine $line
-            if ($script:LogFile) { "DATA  $line" | Add-Content -Path $script:LogFile }
+        $step++
+        $tableList = $tables
+        $schemaName = $schema
+        $counted = Invoke-ExakitDatasetStep -Id $Id -Done $step -Total $total -Label "counting rows" -Body {
+            $acc = New-Object 'System.Collections.Generic.List[string]'
+            foreach ($t in $tableList) {
+                $rows = Get-ExapumpRowCount "$schemaName.$t"
+                if ($rows) { $shown = $rows } else { $shown = "?" }
+                $line = "{0,-30} {1} rows" -f "$schemaName.$t", $shown
+                if ($script:LogFile) { "DATA  $line" | Add-Content -Path $script:LogFile }
+                [void]$acc.Add("$shown")
+            }
+            return $acc.ToArray()
         }
-        Complete-ExakitPanel
+        foreach ($value in @($counted)) {
+            $tableCount++
+            if ($value -eq "?") { $rowsKnown = $false } else { $rowTotal += [long]$value }
+        }
+    }
+
+    } finally {
+        $script:ExakitUploadQuiet = $false
+        $script:ExakitActiveLabel = ""
     }
 
     Set-ExakitManifestValue $flag $true
@@ -1497,7 +1611,15 @@ function Invoke-ExakitDatasetDirLoad {
     $canonicalFlag = "data.datasets.$Id.loaded"
     if ($flag -ne $canonicalFlag) { Set-ExakitManifestValue $canonicalFlag $true }
     Set-ExakitManifestValue "data.last_load.source" "dataset:$Id"
-    Ok "Dataset '$Id' loaded and verified"
+    $elapsed = [int]((Get-Date) - $started).TotalSeconds
+    if ($elapsed -lt 0) { $elapsed = 0 }
+    $resultLine = "Dataset '$Id' loaded and verified"
+    if ($tableCount -gt 0) {
+        if ($tableCount -eq 1) { $unit = "table" } else { $unit = "tables" }
+        $resultLine = "$resultLine - $tableCount $unit"
+        if ($rowsKnown) { $resultLine = "$resultLine, $(Get-ExakitGroupedDigits $rowTotal) rows" }
+    }
+    Ok "$resultLine (${elapsed}s)"
 }
 
 # Select-ExakitDataLoad <final_label> - dynamic checkbox over the data
