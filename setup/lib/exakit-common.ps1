@@ -1799,7 +1799,6 @@ function Enable-ExakitAutostartDefault {
         if (Set-NanoRestartPolicy -Policy "always") { $any = $true }
     }
     Set-ExakitManifestValue "autostart.enabled" $any
-    if ($any) { Info "Everything the kit runs comes back automatically after a restart." }
 }
 
 # Invoke-ExakitWithSpinner <label> <body> - run a slow phase behind the kit's

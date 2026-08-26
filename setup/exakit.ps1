@@ -329,7 +329,6 @@ function Enable-ExakitAutostart {
         if (Register-ExakitAutostart -Id $id) { $any = $true }
     }
     Set-ExakitManifestValue "autostart.enabled" $any
-    if ($any) { Info "Everything the kit runs comes back automatically after a restart." }
 }
 
 function Disable-ExakitAutostart {
