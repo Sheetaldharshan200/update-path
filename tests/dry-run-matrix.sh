@@ -684,6 +684,32 @@ else
     echo "  SKIP  powershell(no_cli_only_leak) — no python3 on this machine"
 fi
 
+# A GENERATED .cmd MUST NOT PUT A BRACKETED if-BLOCK AROUND TEXT IT DOES NOT
+# CONTROL.
+#
+# cmd parses `if ( ... )` by scanning for the closing paren and does not care
+# that the one it finds sits inside an echo. The dash-server launcher printed
+# "already running: http://127.0.0.1:5100 (MCP: /mcp)" inside such a block, so
+# the ")" in "(MCP: /mcp)" closed it early: the first echo was swallowed and the
+# two lines meant to be conditional - the State line and `exit /b 0` - ran
+# UNCONDITIONALLY. The launcher exited 0 every time WITHOUT STARTING THE SERVER,
+# on a fresh install and on `exakit start` alike, leaving a log with exactly one
+# line in it that read as if all was well.
+#
+# The shape is the fix: `goto` has no body to terminate, so no punctuation in
+# any of those lines can break the control flow again. Escaping the parens would
+# have fixed that one message and left the trap set for the next edit.
+#
+# Guarded by shape, not by message: any bracketed `if ... (` in the launcher
+# generator is the hazard, whatever it happens to print today.
+if grep -q 'if errorlevel 1 goto exakit_dash_start' "$ROOT/setup/lib/dash-server.ps1" && \
+   grep -q ':exakit_dash_start' "$ROOT/setup/lib/dash-server.ps1" && \
+   ! grep -qE '"if (not )?errorlevel [0-9]+ \("' "$ROOT/setup/lib/dash-server.ps1"; then
+    check "dash-server(launcher_no_bracket_block)" "yes" "yes"
+else
+    check "dash-server(launcher_no_bracket_block)" "yes" "no"
+fi
+
 # Port ownership, both sides: a foreign listener must never read as a running
 # dash-server, and the install must settle on a port before baking one in.
 if grep -q '_dash_server_port_is_ours()' "$ROOT/setup/lib/dash-server.sh" && \
