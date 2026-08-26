@@ -3806,10 +3806,19 @@ exakit_update_kit2() {
 # that run behind other commands, not for this one.
 # ⇄ twin: Invoke-CmdVersion in setup/exakit.ps1.
 exakit_print_version_table() {
+    # Everything down to the table itself is GATHERING, and on a cold cache or a
+    # slow network it is the longest part of `exakit version` — the screen sat
+    # silent right after the Kit box, which is where it was reported. Narrated
+    # in two phases so the reader can see which one is taking the time.
+    # ui_spin_begin draws nothing unless stdout is a terminal, so a piped or
+    # captured run is unchanged.
     if [ "${EXAKIT_VERSION_POLICY:-manifest}" = "manifest" ]; then
+        ui_spin_begin "Checking for newer versions"
         exakit_versions_update_cache force >/dev/null 2>&1 || true
         exakit_versions_resolve_doc >/dev/null 2>&1 || true
+        ui_spin_end
     fi
+    ui_spin_begin "Checking installed components"
     # One parallel array per column, not one packed string per row. The packed
     # form needs a delimiter, and the tab it used was the wrong one: `set -- $row`
     # collapses runs of IFS *whitespace*, so a row whose severity cell was empty
@@ -3912,6 +3921,7 @@ exakit_print_version_table() {
     # A card, like every other framed answer the kit gives. ui_panel_end measures
     # with _ui_visible_len, so the coloured severity suffix does not throw the
     # border off the way a byte count would.
+    ui_spin_end
     ui_panel_begin "Components"
     ui_panel_line "$(printf '%-*s %-*s %s' "$_uc_cw" "Component" "$_uc_vw" "Version" "Status")"
     _uc_i=0

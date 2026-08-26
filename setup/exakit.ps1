@@ -864,7 +864,15 @@ function Invoke-CmdVersion {
     # Each component is probed on disk, and several of those probes start a
     # process. Narrated per component so the reader can see it advancing
     # rather than guessing whether it has stalled.
-    foreach ($component in (Get-ExakitVersionTableTargets)) {
+    # Get-ExakitVersionTableTargets decides which rows exist, and deciding that
+    # probes each add-on for whether it is present at all - which for the VS
+    # Code extension means asking VS Code. It runs BEFORE the per-component
+    # spinners below, so without this the screen sat silent right after the Kit
+    # box, which is exactly where it was reported.
+    $versionTargets = Invoke-ExakitWithSpinner -Label "Working out which components to check" -Body {
+        ,@(Get-ExakitVersionTableTargets)
+    }
+    foreach ($component in $versionTargets) {
         $actual = Get-ExakitActualTarget $component
         $installed = Invoke-ExakitWithSpinner -Label "Checking $actual" -Body {
             Get-ExakitComponentCurrent $actual
