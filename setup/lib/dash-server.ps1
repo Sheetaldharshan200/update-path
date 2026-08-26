@@ -197,12 +197,28 @@ function Write-DashServerLauncher {
         "rem   exakit update dash-server"
         "rem Already up? dash-server's consumption coordinator is single-process, so"
         "rem a second copy dies on a traceback that reads like a crash. It is not one."
+        # A JUMP, NOT A PARENTHESISED BLOCK - and that is the whole bug this
+        # shape exists to avoid.
+        #
+        # cmd parses a bracketed `if ( ... )` body by scanning for the closing
+        # paren, and it does not care that the one it finds is inside an echo.
+        # The message below ends in "(MCP: /mcp)", so the ")" in it closed the
+        # block early: the first echo was swallowed, and the two lines meant to
+        # be conditional - the State line and `exit /b 0` - ran UNCONDITIONALLY.
+        # The launcher therefore exited 0 every single time without ever
+        # starting the server, on a fresh install and on `exakit start` alike.
+        # The only trace was a dash-server.log holding exactly one line, the
+        # State line, which reads like the server started and said nothing.
+        #
+        # Escaping the parens would fix today's message and leave the trap set
+        # for whoever edits it next. `goto` has no body to terminate, so no
+        # punctuation in any of these lines can break the control flow again.
         "curl -s -o NUL -m 2 http://127.0.0.1:$($script:DashServerPort)/mcp >NUL 2>&1"
-        "if not errorlevel 1 ("
-        "  echo dash-server is already running: http://127.0.0.1:$($script:DashServerPort) (MCP: /mcp)"
-        "  echo State: exakit status   Logs: exakit logs dash-server -f   Stop: exakit stop"
-        "  exit /b 0"
-        ")"
+        "if errorlevel 1 goto exakit_dash_start"
+        "echo dash-server is already running: http://127.0.0.1:$($script:DashServerPort) (MCP: /mcp)"
+        "echo State: exakit status   Logs: exakit logs dash-server -f   Stop: exakit stop"
+        "exit /b 0"
+        ":exakit_dash_start"
         "if not defined DASH_SERVER_INSTANCE_PATH set `"DASH_SERVER_INSTANCE_PATH=$instance`""
     )
     if ($dsn -and $user -and $pwfile) {
