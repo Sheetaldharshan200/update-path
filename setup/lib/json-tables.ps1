@@ -465,6 +465,12 @@ function Test-JsonTables {
         if ($code -eq 0 -and $parquet.Count -gt 0) {
             Ok "Ingest works: JSON in, Parquet out"
             Set-ExakitManifestValue "components.json_tables.validated" $true
+            # See the note on Write-DashServerUsagePanel: a marketplace
+            # install is not where a reference card belongs.
+            if ($script:ExakitQuietDetail) {
+                Write-ExakitLog "DATA" "json-tables: exasol-json-tables ingest --input <file.json>"
+                return
+            }
             Start-ExakitPanel "JSON Tables"
             Write-ExakitPanelLine "Run it          exasol-json-tables --help"
             Write-ExakitPanelLine "Ingest JSON     exasol-json-tables ingest --input <file.json>"
@@ -481,6 +487,12 @@ function Test-JsonTables {
 }
 
 # The venv, the engine, the shim, the launcher and the manifest record.
+# Get-JsonTablesSummary - the one fact worth a place on the result line.
+# Optional registry hook (SummaryFn); twin of json_tables_summary.
+function Get-JsonTablesSummary {
+    return "load JSON with: exasol-json-tables ingest --input <file.json>"
+}
+
 function Uninstall-JsonTables {
     param([switch]$DryRun)
     foreach ($path in @($script:JsonTablesVenv, $script:JsonTablesHome, (Get-JsonTablesBin))) {

@@ -2970,6 +2970,7 @@ function Get-ExakitMarketplaceAddons {
             StopFn      = "Stop-DashServer"
             AutostartFn = "Get-DashServerAutostartCommand"
             LogFn       = "Get-DashServerLogPath"
+            SummaryFn   = "Get-DashServerSummary"
             EnvVar      = "EXAKIT_DASH_SERVER_VERSION"
             FallbackVar = "DashServerVersionFallback"
         },
@@ -2983,6 +2984,7 @@ function Get-ExakitMarketplaceAddons {
             UninstallFn = "Uninstall-ExasolVscode"
             ApplicableFn = "Test-ExasolVscodeApplicable"
             ReasonFn     = "Get-ExasolVscodeApplicableReason"
+            SummaryFn    = "Get-ExasolVscodeSummary"
             EnvVar      = "EXAKIT_EXASOL_VSCODE_VERSION"
             FallbackVar = "ExasolVscodeVersionFallback"
         },
@@ -2996,6 +2998,7 @@ function Get-ExakitMarketplaceAddons {
             UninstallFn = "Uninstall-JsonTables"
             ApplicableFn = "Test-JsonTablesApplicable"
             ReasonFn     = "Get-JsonTablesApplicableReason"
+            SummaryFn    = "Get-JsonTablesSummary"
             LogFn        = "Get-JsonTablesLogPath"
             EnvVar      = "EXAKIT_JSON_TABLES_VERSION"
             FallbackVar = "JsonTablesVersionFallback"
@@ -3575,7 +3578,15 @@ function Invoke-ExakitMarketplaceApply {
             # <id>" row, so the result line does not repeat it twice.
             $script:ExakitQuietDetail = $prevQuiet
             $script:ExakitActiveLabel = $prevLabel
-            Ok "$id installed"
+            # SummaryFn is OPTIONAL: the one fact worth carrying out of an
+            # install whose reference panel is now log-only. Twin of the
+            # <id>_summary hook in _exakit_marketplace_apply (common.sh).
+            $note = ""
+            if ($addon.PSObject.Properties["SummaryFn"] -and
+                (Get-Command $addon.SummaryFn -ErrorAction SilentlyContinue)) {
+                try { $note = "$(& $addon.SummaryFn)" } catch { $note = "" }
+            }
+            if ($note) { Ok "$id installed - $note" } else { Ok "$id installed" }
         } else {
             $script:ExakitQuietDetail = $prevQuiet
             $script:ExakitActiveLabel = $prevLabel
@@ -3633,7 +3644,7 @@ function Request-ExakitMarketplaceOffer {
         -Defaults @(1) -ExclusiveIndex 2
     if ($gate -contains 1) {
         try { Show-ExakitMarketplaceMenu } catch { Warn2 "The marketplace did not finish cleanly: $_" }
-        Info "Browse again any time with: exakit marketplace"
+        Info "Browse again: exakit marketplace  |  how to use one: exakit help <add-on>"
     } else {
         Info "Maybe later - browse any time with: exakit marketplace"
     }

@@ -575,13 +575,29 @@ _dash_server_report_ui() {
     return 0
 }
 
+# The panel is the add-on's reference card, and a marketplace install is not
+# where a reference card belongs: three of them in a row is thirty lines a
+# reader has to scroll past to reach "installed". Under EXAKIT_QUIET_DETAIL the
+# rows go to the logfile and the one fact worth keeping reaches the result line
+# through <id>_summary; `exakit help <id>` has all of it, and more, any time.
 _dash_server_print_usage() {
+    if [ "${EXAKIT_QUIET_DETAIL:-0}" = 1 ]; then
+        _exakit_log_file "DATA  dash-server: http://127.0.0.1:$EXAKIT_DASH_SERVER_PORT (mcp: /mcp)"
+        return 0
+    fi
     ui_panel_begin "dash-server"
     ui_panel_line "Start it        dash-server"
     ui_panel_line "Dashboards      http://127.0.0.1:$EXAKIT_DASH_SERVER_PORT"
     ui_panel_line "MCP endpoint    http://127.0.0.1:$EXAKIT_DASH_SERVER_PORT/mcp"
     ui_panel_line "Update          exakit update dash-server"
     ui_panel_end
+}
+
+# dash_server_summary — the one fact worth a place on the result line. Optional
+# hook, resolved generically by _exakit_addon_fn like install/validate/start.
+dash_server_summary() {
+    _dash_server_resolve_port 2>/dev/null || true
+    printf 'dashboards at http://127.0.0.1:%s\n' "$EXAKIT_DASH_SERVER_PORT"
 }
 
 # ---------------------------------------------------------------------------

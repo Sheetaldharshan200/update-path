@@ -3360,7 +3360,7 @@ exakit_marketplace_offer() {
     case ",$EXAKIT_CHECKBOX_SELECTION," in
         *",1,"*)
             exakit_marketplace_menu || true
-            info "Browse again any time with: exakit marketplace"
+            info "Browse again: exakit marketplace  ·  how to use one: exakit help <add-on>"
             ;;
         *)
             info "Maybe later — browse any time with: exakit marketplace"
@@ -3376,7 +3376,16 @@ _exakit_marketplace_apply() {
     for _mp_id in $(printf '%s' "$1" | tr ',' ' '); do
         info "Installing add-on: $_mp_id"
         if _exakit_marketplace_install_one "$_mp_id"; then
-            ok "$_mp_id installed"
+            # <id>_summary is an OPTIONAL hook: the one fact worth carrying out
+            # of an install whose reference panel is now log-only. Resolved
+            # generically, so a new add-on gets it by defining the function and
+            # nothing here has to learn its name.
+            _mp_note=""
+            _mp_summary_fn="$(_exakit_addon_fn "$_mp_id" summary)"
+            if command -v "$_mp_summary_fn" >/dev/null 2>&1; then
+                _mp_note="$("$_mp_summary_fn" 2>/dev/null || true)"
+            fi
+            ok "$_mp_id installed${_mp_note:+ — $_mp_note}"
         else
             warn "$_mp_id did not finish installing — retry with: exakit marketplace (or exakit update $_mp_id)"
             _mp_status=1

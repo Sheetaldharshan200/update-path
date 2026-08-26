@@ -240,11 +240,23 @@ function Test-ExasolVscode {
     }
     Set-ExakitManifestValue "components.exasol_vscode.validated" $true
     Ok "Exasol for VS Code answers: $($script:ExasolVscodeExtId)@$live"
+    # See the note on Write-DashServerUsagePanel: a marketplace install is not
+    # where a reference card belongs.
+    if ($script:ExakitQuietDetail) {
+        Write-ExakitLog "DATA" "exasol-vscode: the Exasol view appears in VS Code's activity bar"
+        return
+    }
     Start-ExakitPanel "Exasol for VS Code"
     Write-ExakitPanelLine "Open VS Code    the Exasol view appears in the activity bar"
     Write-ExakitPanelLine "Connect it      DSN and credentials: exakit info"
     Write-ExakitPanelLine "Update          exakit update exasol-vscode"
     Complete-ExakitPanel
+}
+
+# Get-ExasolVscodeSummary - the one fact worth a place on the result line.
+# Optional registry hook (SummaryFn); twin of exasol_vscode_summary.
+function Get-ExasolVscodeSummary {
+    return "the Exasol view appears in VS Code's activity bar"
 }
 
 # Remove the KIT-MANAGED extension from VS Code through VS Code's own CLI,
