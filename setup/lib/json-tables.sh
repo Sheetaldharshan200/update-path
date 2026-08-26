@@ -582,13 +582,28 @@ json_tables_validate() {
     return 0
 }
 
+# The panel is the add-on's reference card, and a marketplace install is not
+# where a reference card belongs: three of them in a row is thirty lines a
+# reader has to scroll past to reach "installed". Under EXAKIT_QUIET_DETAIL the
+# rows go to the logfile and the one fact worth keeping reaches the result line
+# through <id>_summary; `exakit help <id>` has all of it, and more, any time.
 _json_tables_print_usage() {
+    if [ "${EXAKIT_QUIET_DETAIL:-0}" = 1 ]; then
+        _exakit_log_file "DATA  json-tables: exasol-json-tables ingest --input <file.json>"
+        return 0
+    fi
     ui_panel_begin "JSON Tables"
     ui_panel_line "Run it          exasol-json-tables --help"
     ui_panel_line "Ingest JSON     exasol-json-tables ingest --input <file.json>"
     ui_panel_line "Engine          $(ui_tilde "$(json_tables_engine_path)")"
     ui_panel_line "Update          exakit update json-tables"
     ui_panel_end
+}
+
+# json_tables_summary — the one fact worth a place on the result line. Optional
+# hook, resolved generically by _exakit_addon_fn like install/validate/start.
+json_tables_summary() {
+    printf 'load JSON with: exasol-json-tables ingest --input <file.json>\n'
 }
 
 # json_tables_uninstall [dry] — the venv, the engine, the shim, the launcher

@@ -343,12 +343,24 @@ exasol_vscode_validate() {
     fi
     manifest_set components.exasol_vscode.validated true
     ok "Exasol for VS Code answers: ${EXAKIT_EXASOL_VSCODE_EXT_ID}@${_evv_live}"
+    # See the note on _dash_server_print_usage: a marketplace install is not
+    # where a reference card belongs.
+    if [ "${EXAKIT_QUIET_DETAIL:-0}" = 1 ]; then
+        _exakit_log_file "DATA  exasol-vscode: the Exasol view appears in VS Code's activity bar"
+        return 0
+    fi
     ui_panel_begin "Exasol for VS Code"
     ui_panel_line "Open VS Code    the Exasol view appears in the activity bar"
     ui_panel_line "Connect it      DSN and credentials: exakit info"
     ui_panel_line "Update          exakit update exasol-vscode"
     ui_panel_end
     return 0
+}
+
+# exasol_vscode_summary — the one fact worth a place on the result line.
+# Optional hook, resolved generically by _exakit_addon_fn.
+exasol_vscode_summary() {
+    printf "the Exasol view appears in VS Code's activity bar\n"
 }
 
 # exasol_vscode_uninstall [dry] — remove the KIT-MANAGED extension from VS

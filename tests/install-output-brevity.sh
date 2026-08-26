@@ -302,9 +302,10 @@ has "the screen is not left silent" "still speaking" "$LOUD"
 
 printf '\n== the result line does not repeat the panel ==\n'
 
-has "one word for the outcome" 'ok "$_mp_id installed"' "$COMMON"
+# The outcome is the id plus, at most, the add-on's own one-line summary.
+has "one line for the outcome" 'ok "$_mp_id installed${_mp_note:+' "$COMMON"
 lacks "no doubled update hint" 'installed — it now updates with: exakit update (or exakit update' "$COMMON"
-has "...on Windows too"        'Ok "$id installed"'      "$COMMON_PS1"
+has "...on Windows too"        'Ok "$id installed - $note"' "$COMMON_PS1"
 
 printf '\n== the PowerShell twin gates at the same sink ==\n'
 
@@ -336,6 +337,66 @@ check "no heading with nothing under it" "" "$(printf '%s\n' "$HELP_OUT" | awk '
     END { if (heading != "" && rows == 0) print heading }')"
 has "the --all view dedupes too" "if not entry or name in seen" "$(cat "$ROOT/setup/lib/help.sh")"
 has "and so does its twin"       'if (-not $entry -or $seen[$name]) { continue }' "$(cat "$ROOT/setup/lib/help.ps1")"
+
+printf '\n== a reference card is not part of an add-on install ==\n'
+
+# The add-on modules are sourced here, not stubbed: what is under test is that
+# each one's real panel steps aside under the quiet flag.
+# shellcheck source=/dev/null
+. "$ROOT/setup/lib/dash-server.sh"
+# shellcheck source=/dev/null
+. "$ROOT/setup/lib/json-tables.sh"
+# shellcheck source=/dev/null
+. "$ROOT/setup/lib/exasol-vscode.sh"
+
+: > "$EXAKIT_LOG_FILE"
+PANEL_QUIET="$(EXAKIT_QUIET_DETAIL=1 _dash_server_print_usage 2>&1)"
+check "the dash-server panel steps aside" "" "$PANEL_QUIET"
+has "...leaving its address in the log" "dash-server: http://127.0.0.1:" "$(cat "$EXAKIT_LOG_FILE")"
+PANEL_LOUD="$(_dash_server_print_usage 2>&1)"
+has "and it still prints outside an install" "MCP endpoint" "$PANEL_LOUD"
+
+: > "$EXAKIT_LOG_FILE"
+JT_QUIET="$(EXAKIT_QUIET_DETAIL=1 _json_tables_print_usage 2>&1)"
+check "the JSON Tables panel steps aside" "" "$JT_QUIET"
+has "...leaving its command in the log" "exasol-json-tables ingest" "$(cat "$EXAKIT_LOG_FILE")"
+has "and it still prints outside an install" "Ingest JSON" "$(_json_tables_print_usage 2>&1)"
+
+# The VS Code panel lives inside its validate function rather than a printer of
+# its own, so the gate is asserted at the source.
+has "the VS Code panel is gated too" \
+    'if [ "${EXAKIT_QUIET_DETAIL:-0}" = 1 ]; then
+        _exakit_log_file "DATA  exasol-vscode:' "$(cat "$ROOT/setup/lib/exasol-vscode.sh")"
+
+printf '\n== ...but its one useful fact rides out on the result line ==\n'
+
+EXAKIT_DASH_SERVER_PORT=5100
+has "dash-server names its address"  "http://127.0.0.1:5100" "$(dash_server_summary)"
+has "json-tables names its command"  "exasol-json-tables ingest" "$(json_tables_summary)"
+has "exasol-vscode names where to look" "activity bar" "$(exasol_vscode_summary)"
+
+# The hook is OPTIONAL and resolved generically: no add-on id appears in the
+# apply loop, so a new add-on gets this by defining the function and nothing in
+# common.sh has to learn its name.
+has "the hook is resolved by name"   '_mp_summary_fn="$(_exakit_addon_fn "$_mp_id" summary)"' "$COMMON"
+has "and only used when it exists"   'command -v "$_mp_summary_fn" >/dev/null 2>&1' "$COMMON"
+has "the result line carries it"     'ok "$_mp_id installed${_mp_note:+ — $_mp_note}"' "$COMMON"
+has "one pointer for the detail"     "how to use one: exakit help <add-on>" "$COMMON"
+
+printf '\n== the PowerShell twin does the same ==\n'
+
+DS_PS1="$(cat "$ROOT/setup/lib/dash-server.ps1")"
+JT_PS1="$(cat "$ROOT/setup/lib/json-tables.ps1")"
+VS_PS1="$(cat "$ROOT/setup/lib/exasol-vscode.ps1")"
+has "dash-server gates its panel"   'if ($script:ExakitQuietDetail) {' "$DS_PS1"
+has "json-tables gates its panel"   'if ($script:ExakitQuietDetail) {' "$JT_PS1"
+has "exasol-vscode gates its panel" 'if ($script:ExakitQuietDetail) {' "$VS_PS1"
+has "dash-server has a summary"     'function Get-DashServerSummary'     "$DS_PS1"
+has "json-tables has a summary"     'function Get-JsonTablesSummary'     "$JT_PS1"
+has "exasol-vscode has a summary"   'function Get-ExasolVscodeSummary'   "$VS_PS1"
+check "all three are registered" "3" "$(printf '%s\n' "$COMMON_PS1" | grep -cE 'SummaryFn *= *"')"
+has "the apply loop reads the hook" '$addon.PSObject.Properties["SummaryFn"]' "$COMMON_PS1"
+has "and only when it resolves"     'Get-Command $addon.SummaryFn -ErrorAction SilentlyContinue' "$COMMON_PS1"
 
 printf '\n%s: %d passed, %d failed\n' "$(basename "$0")" "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

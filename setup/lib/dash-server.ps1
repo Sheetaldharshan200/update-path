@@ -457,13 +457,29 @@ function Test-DashServerHttpAnswers {
     }
 }
 
+# The panel is the add-on's reference card, and a marketplace install is not
+# where a reference card belongs: three of them in a row is thirty lines a reader
+# has to scroll past to reach "installed". Under ExakitQuietDetail the rows go to
+# the logfile and the one fact worth keeping reaches the result line through
+# SummaryFn; `exakit help <id>` has all of it, and more, any time.
+# Twin of _dash_server_print_usage in dash-server.sh.
 function Write-DashServerUsagePanel {
+    if ($script:ExakitQuietDetail) {
+        Write-ExakitLog "DATA" "dash-server: http://127.0.0.1:$($script:DashServerPort) (mcp: /mcp)"
+        return
+    }
     Start-ExakitPanel "dash-server"
     Write-ExakitPanelLine "Start it        dash-server"
     Write-ExakitPanelLine "Dashboards      http://127.0.0.1:$($script:DashServerPort)"
     Write-ExakitPanelLine "MCP endpoint    http://127.0.0.1:$($script:DashServerPort)/mcp"
     Write-ExakitPanelLine "Update          exakit update dash-server"
     Complete-ExakitPanel
+}
+
+# Get-DashServerSummary - the one fact worth a place on the result line.
+# Optional registry hook (SummaryFn); twin of dash_server_summary.
+function Get-DashServerSummary {
+    return "dashboards at http://127.0.0.1:$($script:DashServerPort)"
 }
 
 # ---------------------------------------------------------------------------
