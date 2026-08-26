@@ -251,8 +251,8 @@ _dash_server_restore_package_data() {
     [ -n "$_drp_site" ] && [ -d "$_drp_site" ] || return 0
 
     _drp_tmp="$(mktemp -d "${TMPDIR:-/tmp}/exakit-ds-data.XXXXXX")" || return 0
-    if ! ( fetch "$(dash_server_release_url "$EXAKIT_DASH_SERVER_VERSION")" "$_drp_tmp/src.tar.gz" ) \
-            >>"${EXAKIT_LOG_FILE:-/dev/null}" 2>&1; then
+    if ! fetch_quiet "$(dash_server_release_url "$EXAKIT_DASH_SERVER_VERSION")" \
+            "$_drp_tmp/src.tar.gz"; then
         rm -rf "$_drp_tmp"
         return 0
     fi

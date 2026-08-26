@@ -362,8 +362,12 @@ function Restore-DashServerPackageData {
     try {
         $tarball = Join-Path $tmp "src.tar.gz"
         try {
-            Invoke-WebRequest -Uri (Get-DashServerReleaseUrl -Version $script:DashServerVersion) `
-                -OutFile $tarball -UseBasicParsing -TimeoutSec 120 -ErrorAction Stop
+            # Animated: this fetch runs after "Installing dash-server" with
+            # nothing else on screen. Twin of fetch_quiet on the shell side.
+            [void](Invoke-ExakitWithSpinner -Label "Fetching the dash-server release files" -Body {
+                Invoke-WebRequest -Uri (Get-DashServerReleaseUrl -Version $script:DashServerVersion) `
+                    -OutFile $tarball -UseBasicParsing -TimeoutSec 120 -ErrorAction Stop
+            })
         } catch { return }
         & tar -xzf $tarball -C $tmp 2>$null
         if ($LASTEXITCODE -ne 0) { return }

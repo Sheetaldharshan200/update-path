@@ -343,6 +343,150 @@ personal_reap_orphan_daemon() {
     return 0
 }
 
+# --- deployment progress ----------------------------------------------------
+# `exasol install local` narrates itself in structured JSON and then prints a
+# forty-line connection overview -- none of which the person waiting for a
+# database can act on, and all of whose useful parts the kit restates in its own
+# closing panel. So the stream is consumed rather than shown: each line is
+# matched against the launcher's own milestone messages, and one line is redrawn
+# in place with a bar, a percentage and the phase in plain English.
+#
+# Nothing is lost by hiding it. Every raw line still goes to the logfile exactly
+# as before; a copy is kept so a FAILED deploy can print the launcher's own last
+# words instead of only a log path; and the launcher's EULA notice -- the one
+# part of that output the user genuinely must see -- is replayed afterwards, in
+# the launcher's own words rather than a copy of them that could go stale.
+
+# _personal_deploy_milestone <line> — "<pct>|<phase>" for a line that marks
+# progress, nothing for any other line.
+#
+# The strings are the launcher's own log messages, matched as plain substrings
+# rather than as JSON so that a switch to text logging keeps working. An
+# unrecognised line simply does not move the bar, which is what makes a launcher
+# release that renames a message degrade to a slower-looking bar instead of to a
+# wrong one. The percentages are milestone positions, not a measured fraction of
+# the work: the bar moves only when the launcher has actually reached the next
+# stage, and the elapsed counter -- which ticks every second whatever the
+# launcher is doing -- is what says "still alive" in between.
+_personal_deploy_milestone() {
+    case "$1" in
+        *"validating presets"*)                    printf '5|Preparing the deployment' ;;
+        *"extracting preset files"*)               printf '10|Preparing the deployment' ;;
+        *"successfully initialized deployment"*)   printf '20|Preparing the deployment' ;;
+        *"fetching resource"*|*"found resource in cache"*)
+                                                   printf '35|Fetching the Exasol runtime' ;;
+        *"starting deployment"*)                   printf '45|Starting the database' ;;
+        *"waiting for database to start"*)         printf '65|Waiting for the database to start' ;;
+        *"installing script language container"*)  printf '80|Installing the script language container' ;;
+        *"no installation steps defined"*)         printf '90|Finishing up' ;;
+        *"Completed deploying"*)                   printf '100|Deployed' ;;
+    esac
+}
+
+# _personal_deploy_paint <pct> <phase> <elapsed-seconds> — the progress line, in
+# the same bar/percentage shape as ui_progress but indented to sit under the
+# step's own lines. Local to this file on purpose: Exasol Personal is macOS-only,
+# so this is not part of the shared visual layer ui.ps1 mirrors.
+_personal_deploy_paint() {
+    _pdp_w=20
+    _pdp_filled=$(( $1 * _pdp_w / 100 ))
+    [ "$_pdp_filled" -gt "$_pdp_w" ] && _pdp_filled="$_pdp_w"
+    printf '\r      %s%s%s%s%s %s%3s%%%s %s %s(%ss)%s\033[K' \
+        "${UI_ACCENT:-}" "$(ui_repeat "${UI_BAR_FULL:-#}" "$_pdp_filled")" \
+        "${UI_DIM:-}" "$(ui_repeat "${UI_BAR_EMPTY:-.}" $((_pdp_w - _pdp_filled)))" "${UI_RESET:-}" \
+        "${UI_BOLD:-}" "$1" "${UI_RESET:-}" "$2" \
+        "${UI_DIM:-}" "$3" "${UI_RESET:-}"
+}
+
+# _personal_deploy_animate <state-file> <t0> — redraw the progress line five
+# times a second from whatever the collector last wrote, so the elapsed counter
+# keeps moving through the launcher's long silences (13s between messages on a
+# warm cache, minutes on a cold one).
+#
+# It runs in the UI layer's single spinner slot (_UI_SPIN_PID), so the
+# installer's existing EXIT trap -- which calls ui_spin_end and
+# ui_restore_cursor -- stops it and gives the cursor back if the run is
+# interrupted or dies mid-deploy. Only one animation is ever on screen, so the
+# slot is free while this runs.
+_personal_deploy_animate() {
+    while :; do
+        _pda_state=""
+        read -r _pda_state < "$1" 2>/dev/null || true
+        # A read that caught the file mid-write has no phase yet: skip the frame
+        # rather than paint a half-written one.
+        case "$_pda_state" in
+            *"|"*)
+                _pda_now="$(date +%s 2>/dev/null || echo 0)"
+                _personal_deploy_paint "${_pda_state%%|*}" "${_pda_state#*|}" \
+                    "$(( _pda_now - $2 ))"
+                ;;
+        esac
+        sleep 0.2
+    done
+}
+
+# _personal_deploy_collect <state-file> <tail-file> <notice-file> — consume the
+# launcher's output: log every line, keep the tail, keep the EULA notice, and
+# turn the lines that mean something into progress. It runs on the right-hand
+# side of the pipe, so everything it learns has to be handed back through files.
+_personal_deploy_collect() {
+    _pdc_pct=0
+    _pdc_phase=""
+    _pdc_shown=""
+    while IFS= read -r _pdc_line || [ -n "$_pdc_line" ]; do
+        [ -n "${EXAKIT_LOG_FILE:-}" ] && printf '%s\n' "$_pdc_line" >> "$EXAKIT_LOG_FILE"
+        printf '%s\n' "$_pdc_line" >> "$2"
+        case "$_pdc_line" in
+            *"End User License Agreement"*|*"terms-and-conditions"*)
+                printf '%s\n' "$_pdc_line" >> "$3" ;;
+        esac
+        _pdc_hit="$(_personal_deploy_milestone "$_pdc_line")"
+        [ -n "$_pdc_hit" ] || continue
+        # Monotonic: a message arriving out of the expected order never rewinds
+        # the bar, and a repeated one never redraws it.
+        [ "${_pdc_hit%%|*}" -gt "$_pdc_pct" ] 2>/dev/null || continue
+        _pdc_pct="${_pdc_hit%%|*}"
+        _pdc_phase="${_pdc_hit#*|}"
+        printf '%s|%s\n' "$_pdc_pct" "$_pdc_phase" > "$1"
+        # Nothing is animating (piped, CI, NO_COLOR, a dumb terminal): one plain
+        # logged line per phase, rather than a line that redraws nothing.
+        if [ "${EXAKIT_DEPLOY_LIVE:-0}" != 1 ] && [ "$_pdc_phase" != "$_pdc_shown" ]; then
+            info "$_pdc_phase"
+            _pdc_shown="$_pdc_phase"
+        fi
+    done
+}
+
+# _personal_deploy_print_tail <file> — the launcher's own last words, in the dim
+# gutter foreign output has always used here. A failed deploy used to leave the
+# whole stream on screen; now that the stream is consumed, the end of it is what
+# has to survive, or a failure would be left with nothing but a log path.
+_personal_deploy_print_tail() {
+    [ -s "$1" ] || return 0
+    foreign_note "last lines from the exasol launcher"
+    tail -n 12 "$1" | while IFS= read -r _pdt_line; do
+        printf '      %s%s %s%s\n' "${UI_DIM:-}" "${UI_VB:-|}" "$_pdt_line" "${UI_RESET:-}"
+    done
+}
+
+# _personal_deploy_print_notice <file> — replay the launcher's EULA notice. It is
+# the one part of the hidden output the user must still see, and it is replayed
+# verbatim so this kit never states licence terms in words of its own.
+_personal_deploy_print_notice() {
+    [ -s "$1" ] || return 0
+    _pdn_first=1
+    while IFS= read -r _pdn_line; do
+        [ -n "$_pdn_line" ] || continue
+        if [ "$_pdn_first" = 1 ]; then
+            info "$_pdn_line"
+            _pdn_first=0
+        else
+            printf '      %s%s%s\n' "${UI_DIM:-}" "$_pdn_line" "${UI_RESET:-}"
+            _exakit_log_file "INFO  $_pdn_line"
+        fi
+    done < "$1"
+}
+
 # personal_deploy_local — run the local deployment. This is the long step
 # (usually under 2 minutes); output stays visible and is logged.
 personal_deploy_local() {
@@ -402,13 +546,44 @@ personal_deploy_local() {
 
     info "Deploying Exasol Personal locally — super quick !"
     push_rollback "$(personal_cli) destroy --remove --auto-approve || true"
-    # The launcher prints its own (verbose) output; contain it in a dim gutter so
-    # it reads as "not ours", while the full text still lands in the log.
-    foreign_note "exasol launcher output"
-    "$(personal_cli)" install local 2>&1 | exakit_stream_foreign
+
+    # The launcher's output is consumed, not shown -- see the progress helpers
+    # above. Three files carry what the pipeline learns back out of it: the live
+    # phase, the tail to print if it fails, and the EULA notice to replay if it
+    # succeeds.
+    _deploy_tmp="$(mktemp -d "${TMPDIR:-/tmp}/exakit-deploy.XXXXXX")" || \
+        die "Could not create a temporary directory for the deployment."
+    _deploy_state="$_deploy_tmp/state"
+    _deploy_tail="$_deploy_tmp/tail"
+    _deploy_notice="$_deploy_tmp/notice"
+    printf '0|Preparing the deployment\n' > "$_deploy_state"
+    : > "$_deploy_tail"
+    : > "$_deploy_notice"
+    _deploy_t0="$(date +%s 2>/dev/null || echo 0)"
+
+    # Live only on an interactive fancy terminal, checked here rather than at
+    # load time so a redrawing line can never leak into a capture or a log.
+    EXAKIT_DEPLOY_LIVE=0
+    if [ "${UI_FANCY:-0}" = 1 ] && [ -t 1 ]; then
+        EXAKIT_DEPLOY_LIVE=1
+        printf '\033[?25l'                       # hide cursor; ui_spin_end restores it
+        _personal_deploy_animate "$_deploy_state" "$_deploy_t0" &
+        _UI_SPIN_PID=$!
+    fi
+    "$(personal_cli)" install local 2>&1 | \
+        _personal_deploy_collect "$_deploy_state" "$_deploy_tail" "$_deploy_notice"
     _deploy_rc=${PIPESTATUS[0]}
-    foreign_note "launcher finished"
-    [ "$_deploy_rc" -eq 0 ] || die "Local deployment failed. Re-running the installer retries it safely."
+    ui_spin_end
+    EXAKIT_DEPLOY_LIVE=0
+
+    if [ "$_deploy_rc" -ne 0 ]; then
+        _personal_deploy_print_tail "$_deploy_tail"
+        rm -rf "$_deploy_tmp"
+        die "Local deployment failed. Re-running the installer retries it safely."
+    fi
+    ok "Exasol Personal deployed locally ($(( $(date +%s 2>/dev/null || echo 0) - _deploy_t0 ))s)"
+    _personal_deploy_print_notice "$_deploy_notice"
+    rm -rf "$_deploy_tmp"
 
     personal_wait_ready
     personal_record_manifest
@@ -416,15 +591,21 @@ personal_deploy_local() {
 
 personal_wait_ready() {
     info "Checking deployment health"
+    # This probe is silent for five seconds a try, up to thirty tries. Animate
+    # it: the step that just stopped showing the launcher's chatter must not
+    # then end on a still screen.
+    ui_spin_begin "Waiting for the database to answer"
     _tries=0
     while [ "$_tries" -lt 30 ]; do
         if port_in_use "$EXAKIT_PERSONAL_PORT" && "$(personal_cli)" info >/dev/null 2>&1; then
+            ui_spin_end
             ok "Deployment is reachable"
             return 0
         fi
         sleep 5
         _tries=$((_tries + 1))
     done
+    ui_spin_end
     die "Deployment does not respond to 'exasol info'. Check: $(personal_cli) info"
 }
 

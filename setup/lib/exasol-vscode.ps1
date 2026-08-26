@@ -172,7 +172,11 @@ function Install-ExasolVscode {
         $vsix = Join-Path ([System.IO.Path]::GetTempPath()) ("exakit-" + [guid]::NewGuid().ToString() + ".vsix")
         Info "Downloading Exasol for VS Code v$($script:ExasolVscodeVersion) ($asset)"
         try {
-            Invoke-WebRequest -UseBasicParsing -TimeoutSec 300 -Uri $url -OutFile $vsix
+            # Animated: the download is the longest silent stretch of this
+            # install. Twin of fetch_quiet on the shell side.
+            [void](Invoke-ExakitWithSpinner -Label "Downloading $asset" -Body {
+                Invoke-WebRequest -UseBasicParsing -TimeoutSec 300 -Uri $url -OutFile $vsix
+            })
         } catch {
             Remove-Item -Force -ErrorAction SilentlyContinue $vsix
             return (Write-ExasolVscodeNotInstalled "the download failed: $url ($_)")

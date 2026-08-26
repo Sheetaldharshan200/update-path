@@ -3003,9 +3003,24 @@ _exakit_marketplace_install_one() {
         warn "The $1 module is not part of this kit copy — update the kit first: exakit update exakit"
         return 1
     }
-    "$_mi_install" || return 1
+    # Every silent stretch of an add-on install — creating the venv, resolving
+    # and installing from PyPI, downloading an extension — already animates,
+    # because run_logged and fetch start the spinner. What they did NOT have was
+    # a truthful label: EXAKIT_ACTIVE_LABEL is set by begin_step, and add-ons are
+    # installed after the last numbered step (or from `exakit marketplace`, with
+    # no step at all), so a two-minute install animated under the previous step's
+    # title, or under the bare word "working". Name what is actually running.
+    # Twin of the same block in Invoke-ExakitMarketplaceApply (exakit-common.ps1).
+    _mi_prev_label="${EXAKIT_ACTIVE_LABEL:-}"
+    EXAKIT_ACTIVE_LABEL="Installing $1"
+    "$_mi_install"
+    _mi_rc=$?
+    EXAKIT_ACTIVE_LABEL="$_mi_prev_label"
+    [ "$_mi_rc" -eq 0 ] || return 1
     if command -v "$_mi_validate" >/dev/null 2>&1; then
+        EXAKIT_ACTIVE_LABEL="Validating $1"
         "$_mi_validate" || true
+        EXAKIT_ACTIVE_LABEL="$_mi_prev_label"
     fi
     # A service add-on joins the boot set the moment it is installed, so the
     # user does not have to remember a second command after saying yes. On
@@ -4905,6 +4920,26 @@ fetch() {
         printf '      %s%s a version override (EXAKIT_*_VERSION) may point at a missing release.%s\n' "${UI_DIM:-}" "${UI_VB:-|}" "${UI_RESET:-}" >&2
         die "Could not download $(basename "$_dest")"
     fi
+}
+
+# fetch_quiet <url> <dest-file>
+# A fetch whose chatter goes to the logfile and whose failure is soft: it
+# returns non-zero where fetch would die.
+#
+# Callers used to write this themselves as `( fetch ... ) >> "$LOG" 2>&1`, which
+# silenced more than it meant to: ui_spin_begin animates only while stdout is a
+# terminal, so redirecting the subshell sent the SPINNER to the logfile too and
+# every add-on download sat on screen as a still line for as long as it took.
+# Starting the spinner out here, before the redirect, is what gives those
+# downloads their "something is happening" back. Clearing _UI_SPIN_PID inside
+# the subshell matters just as much: fetch ends with its own ui_spin_end, and
+# with the parent's pid still visible it would kill this spinner on the way in.
+fetch_quiet() {
+    ui_spin_begin "${EXAKIT_ACTIVE_LABEL:-downloading $(basename "$2")}"
+    ( _UI_SPIN_PID=''; fetch "$1" "$2" ) >>"${EXAKIT_LOG_FILE:-/dev/null}" 2>&1
+    _fq_rc=$?
+    ui_spin_end
+    return "$_fq_rc"
 }
 
 # sha256_of <file>
