@@ -3609,15 +3609,33 @@ function Request-ExakitSkillsInstallOffer {
 # connection_panel equivalent - printed at the end of setup and via `exakit info`.
 function Show-ExakitConnectionPanel {
     if (-not (Test-Path $script:ManifestPath)) { Warn2 "No installation found ($script:ManifestPath missing)"; return }
-    $type    = Get-ExakitManifestValue "runtime.type"
-    $dsn     = Get-ExakitManifestValue "runtime.dsn"
-    $user    = Get-ExakitManifestValue "runtime.user"
-    $pwFile  = Get-ExakitManifestValue "runtime.password_file"
-    $mcpUser = Get-ExakitManifestValue "components.mcp_server.connection.user"
-    $mcpPwf  = Get-ExakitManifestValue "components.mcp_server.connection.password_file"
-    $exapumpPath    = Get-ExakitManifestValue "components.exapump.path"
-    $exapumpProfile = Get-ExakitManifestValue "components.exapump.profile"
-    $mcpConfigs     = Get-ExakitManifestValue "components.mcp_server.configs"
+    # Gathered behind the spinner, printed after it stops. `exakit info` showed
+    # nothing at all until the whole panel was ready, which on a slow machine
+    # reads as a hang - the same complaint status had before it was narrated.
+    # The spinner draws nothing when output is redirected, so the install's use
+    # of this panel and any piped run are unaffected.
+    $panel = Invoke-ExakitWithSpinner -Label "Reading your connection details" -Body {
+        [pscustomobject]@{
+            type    = Get-ExakitManifestValue "runtime.type"
+            dsn     = Get-ExakitManifestValue "runtime.dsn"
+            user    = Get-ExakitManifestValue "runtime.user"
+            pwFile  = Get-ExakitManifestValue "runtime.password_file"
+            mcpUser = Get-ExakitManifestValue "components.mcp_server.connection.user"
+            mcpPwf  = Get-ExakitManifestValue "components.mcp_server.connection.password_file"
+            exapumpPath    = Get-ExakitManifestValue "components.exapump.path"
+            exapumpProfile = Get-ExakitManifestValue "components.exapump.profile"
+            mcpConfigs     = Get-ExakitManifestValue "components.mcp_server.configs"
+        }
+    }
+    $type    = $panel.type
+    $dsn     = $panel.dsn
+    $user    = $panel.user
+    $pwFile  = $panel.pwFile
+    $mcpUser = $panel.mcpUser
+    $mcpPwf  = $panel.mcpPwf
+    $exapumpPath    = $panel.exapumpPath
+    $exapumpProfile = $panel.exapumpProfile
+    $mcpConfigs     = $panel.mcpConfigs
 
     Write-Host ""
     Start-ExakitPanel "Connection details"
