@@ -752,8 +752,10 @@ has "and the PowerShell twin creates it" "WorkflowsDir" \
     "$(sed -n '/^function Initialize-ExakitManifest/,/^}/p' "$ROOT/setup/lib/exakit-common.ps1")"
 # The clipboard is the user's, and an unattended install has no business
 # overwriting it for a prompt nobody is about to paste.
+# Anchored on the function, not on the panel title: the prompt is only PRINTED
+# when the clipboard could not take it, so the title now sits inside the else.
 has "the clipboard is only touched with a terminal attached" "exakit_stdin_is_tty" \
-    "$(sed -n '/First prompt to try in your AI client/,/^}/p' "$ROOT/setup/lib/common.sh")"
+    "$(sed -n '/^exakit_print_mcp_ready_panel()/,/^}/p' "$ROOT/setup/lib/common.sh")"
 # The credential guardrail named only the credentials dir, while the password is
 # also in clear text in every client config an agent reads while debugging MCP.
 has "the guardrail covers the client configs too" ".claude.json" \

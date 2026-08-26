@@ -272,7 +272,7 @@ _ui_checkbox_toggle() {
 # lands in EXAKIT_CHECKBOX_SELECTION as an ascending csv of 1-based indices.
 #
 # EXAKIT_CHECKBOX_EXCLUSIVE (optional, cleared after each call): 1-based index
-# of an option that cannot be combined with the others — think "Skip for now".
+# of an option that cannot be combined with the others — think "Skip".
 # Selecting it clears every other choice; selecting any other choice clears it.
 # "a" (select all) selects all non-exclusive options.
 #
@@ -3197,7 +3197,7 @@ EXAKIT_MM_EOF
     # data-load menu (EXAKIT_MARKETPLACE_ADDONS=none is the scripted opt-out).
     # Mirrors exakit_data_load_select / Show-ExakitMarketplaceMenu.
     _mm_tee="${UI_TEE:-|-}"; _mm_corner="${UI_CORNER:-\`-}"
-    _mm_menu_labels=("Available add-ons")
+    _mm_menu_labels=("Select All")
     _mm_menu_ids=("__group__")
     # Children in two passes: installable rows first, so the group's child range
     # (2 .. selectable+1) stays contiguous, then the disabled rows. The corner
@@ -3236,7 +3236,7 @@ EXAKIT_MM_EOF
         esac
         _mm_i=$((_mm_i + 1))
     done
-    _mm_menu_labels+=("Cancel (install nothing)")
+    _mm_menu_labels+=("Skip")
     _mm_menu_ids+=("__cancel__")
     _mm_cancel_idx="${#_mm_menu_labels[@]}"
     # Default: the group AND every available add-on pre-selected — the same
@@ -3307,16 +3307,14 @@ exakit_marketplace_offer() {
     # One gate question first — the same cursor menu every other kit choice
     # uses, no typing: Yes is pre-ticked, No is the exclusive opt-out. Only a
     # Yes opens the marketplace selection itself (where the available add-ons
-    # come pre-selected, so Enter installs them and Cancel still backs out).
+    # come pre-selected, so Enter installs them and Skip still backs out).
     printf '\n'
     ok "Your starter kit is ready to use."
-    info "The marketplace has add-ons that extend what you can do with Exasol:
-      dashboards, editor integration, extra data formats, with more added
-      over time."
+    info "Supercharge starterkit with exasol add-ons"
     EXAKIT_CHECKBOX_EXCLUSIVE=2
-    ui_checkbox_menu "Browse it now?" "1" \
-        "Yes, open the marketplace" \
-        "No, maybe later"
+    ui_checkbox_menu "Explore ?" "1" \
+        "Yes" \
+        "No"
     case ",$EXAKIT_CHECKBOX_SELECTION," in
         *",1,"*)
             exakit_marketplace_menu || true
@@ -5253,7 +5251,9 @@ exakit_install_skills() {
             mkdir -p "$_dest_root/$_name"
             cp -R "$_skill_dir". "$_dest_root/$_name/"
         done
-        ok "Installed skill: $_name"
+        # The names go to the logfile, not the screen: nine ticked lines say
+        # nothing the count does not, and `exakit skills` lists them any time.
+        _exakit_log_file "OK    Installed skill: $_name"
         _installed=$((_installed + 1))
         _installed_json="${_installed_json:+$_installed_json,}\"$_name\""
     done
@@ -5262,7 +5262,7 @@ exakit_install_skills() {
         warn "No SKILL.md files found under $_skills_src — nothing to install."
         return 1
     fi
-    info "Skills installed for Claude Code (~/.claude/skills) and open-standard agents (~/.agents/skills)."
+    ok "Installed $_installed AI skill$([ "$_installed" = 1 ] || printf 's') for Claude Code (~/.claude/skills) and open-standard agents (~/.agents/skills)"
 
     # Record what was placed and which skill-set version it came from. This is
     # the only honest source for two later questions: which skill directories
@@ -6036,11 +6036,19 @@ exakit_run_mcp_operation_cli() {
     return 0
 }
 
+# exakit_print_mcp_setup_summary <result-json> — what MCP setup did, in the
+# fewest lines that still tell the reader everything they have to act on.
+#
+# This was a twenty-line panel: a Mode row, a Meaning row explaining the Mode
+# row, a Status row, and one File: row per client. None of that is actionable,
+# and every word of it is one `exakit mcp-status` away. What IS actionable — the
+# clients configured, the plaintext-credential warning, and the per-client
+# "restart it like this" lines, which differ per client — stays, as plain lines
+# rather than boxed rows. Python emits typed records; the shell renders each
+# through the same info/ok/warn the rest of the run uses.
 exakit_print_mcp_setup_summary() {
     _result_file="$1"
     require_python3
-    # Python renders the content as bare lines; the shell wraps them in the
-    # same rounded panel used for the install plan / connection details.
     _summary_lines="$(run_python - "$_result_file" <<'PY'
 import json, sys
 
@@ -6058,49 +6066,44 @@ LABELS = {
 with open(sys.argv[1], encoding="utf-8") as handle:
     doc = json.load(handle)
 
+# One record per line: "<kind>|<text>". The shell knows how to draw each kind;
+# nothing here decides what it looks like.
 clients = ", ".join(LABELS.get(item, item) for item in doc.get("selected_clients", []))
-lines = [
-    "Mode:     managed",
-    "Meaning:  wrote managed MCP entries into the selected client config files",
-    f"Clients:  {clients or 'none'}",
-    f"Status:   {doc.get('status', 'unknown')}",
-]
-for artifact in doc.get("artifacts", []):
-    client = LABELS.get(artifact.get("client"), artifact.get("client", "unknown"))
-    lines.append(f"File:     {client} -> {artifact.get('path', 'unknown')}")
+lines = []
+status = doc.get("status", "unknown")
+if str(status).startswith("success"):
+    lines.append(f"ok|MCP configured for {clients or 'no clients'}")
+else:
+    lines.append(f"warn|MCP setup finished as '{status}' for {clients or 'no clients'}")
 
 # A client whose own config file could not be used is skipped on its own; the
-# other clients are still configured, so name it here instead of leaving a
-# silent gap in the File: list.
+# other clients are still configured, so name it rather than leave a silent gap.
 for skipped in doc.get("details", {}).get("skipped_clients", []):
     client = LABELS.get(skipped.get("client"), skipped.get("client", "unknown"))
-    lines.append(f"Skipped:  {client} -> {skipped.get('reason', 'unknown reason')}")
+    lines.append(f"warn|Skipped {client}: {skipped.get('reason', 'unknown reason')}")
 
-findings = doc.get("findings", [])
-if findings:
-    lines.append(" ")
-    lines.append("Notes:")
-    for finding in findings:
-        lines.append(f"- {finding.get('message', 'Unknown issue')}")
+for finding in doc.get("findings", []):
+    lines.append(f"warn|{finding.get('message', 'Unknown issue')}")
 
-actions = doc.get("next_actions", [])
-if actions:
-    lines.append(" ")
-    lines.append("Next:")
-    for action in actions:
-        lines.append(f"- {action.get('message', '')}")
+for action in doc.get("next_actions", []):
+    message = action.get("message", "")
+    if message:
+        lines.append(f"info|{message}")
 
 print("\n".join(lines))
 PY
 )" || { warn "Could not render the MCP setup summary (see log)."; return 0; }
-    printf '\n'
-    ui_panel_begin "MCP setup summary"
-    while IFS= read -r _sum_line; do
-        ui_panel_line "$_sum_line"
+    while IFS='|' read -r _sum_kind _sum_text; do
+        [ -n "$_sum_text" ] || continue
+        case "$_sum_kind" in
+            ok)   ok   "$_sum_text" ;;
+            warn) warn "$_sum_text" ;;
+            *)    info "$_sum_text" ;;
+        esac
     done <<EOF
 $_summary_lines
 EOF
-    ui_panel_end
+    info "Config file paths and per-client state: exakit mcp-status"
 }
 
 exakit_print_mcp_ready_panel() {
@@ -6113,27 +6116,15 @@ exakit_print_mcp_ready_panel() {
     _tls="$(manifest_get runtime.tls 2>/dev/null || true)"
     [ -n "$_mcp_command" ] || _mcp_command="uvx"
 
-    printf '\n'
-    ui_panel_begin "MCP is ready"
-    ui_panel_line "Server name:   exasol"
-    ui_panel_line "How it runs:   your AI client starts it on demand over stdio"
-    ui_panel_line "Command:       $_mcp_command $_mcp_package@$_mcp_version"
-    ui_panel_line "Database:      ${_dsn:-unknown}"
-    ui_panel_line "DB user:       ${_mcp_user:-mcp_readonly} (read-only)"
-    if [ "$_tls" = "self-signed" ]; then
-        ui_panel_line "TLS:           local self-signed certificate accepted for 127.0.0.1"
-    fi
-    ui_panel_line "Managed state: $EXAKIT_MCP_DIR"
-    ui_panel_end
-    info "Config files updated — restart the selected client now."
-    info "After the restart, look for an MCP server named: exasol"
-    printf '\n'
-    ui_panel_begin "First prompt to try in your AI client"
-    ui_panel_line '"Use the exasol MCP server connected to my local Exasol database.'
-    ui_panel_line 'List the available schemas and tables first. Then answer my'
-    ui_panel_line 'questions with read-only SQL only, show me the SQL before you run'
-    ui_panel_line 'it, and do not create, update, or delete anything."'
-    ui_panel_end
+    # An eight-row panel of reference values became one line. The command, the
+    # package version and the managed-state directory are what `exakit
+    # mcp-status` is for; what the reader needs here is that the server exists,
+    # what it is called, and that it reaches the database read-only. The whole
+    # panel still goes to the logfile, so nothing is unrecoverable.
+    _exakit_log_file "DATA  MCP command: $_mcp_command $_mcp_package@$_mcp_version"
+    _exakit_log_file "DATA  MCP managed state: $EXAKIT_MCP_DIR"
+    _exakit_log_file "DATA  MCP TLS: ${_tls:-unknown}"
+    ok "MCP server 'exasol' — ${_dsn:-unknown} as ${_mcp_user:-mcp_readonly} (read-only), started by your AI client on demand"
     # Put the prompt straight onto the clipboard so the first interaction is a
     # paste, not a retype. Best-effort: silent when no clipboard tool exists.
     #
@@ -6142,10 +6133,20 @@ exakit_print_mcp_ready_panel() {
     # has no business overwriting whatever they had on it for a prompt nobody is
     # about to paste. There is no undo for a clipboard.
     _first_prompt='Use the exasol MCP server connected to my local Exasol database. List the available schemas and tables first. Then answer my questions with read-only SQL only, show me the SQL before you run it, and do not create, update, or delete anything.'
-    if ! exakit_stdin_is_tty; then
-        info "Paste this prompt into your AI client after restarting it."
-    elif printf '%s' "$_first_prompt" | exakit_copy_clipboard 2>/dev/null; then
-        ok "This prompt is copied to your clipboard — paste it after restarting your client."
+    # The prompt is only PRINTED when it could not be handed over: on the
+    # clipboard it is four lines nobody has to read, and off a terminal (an
+    # agent, CI) the clipboard is not ours to take, so the text is the only way
+    # to pass it on. Never both.
+    if exakit_stdin_is_tty && printf '%s' "$_first_prompt" | exakit_copy_clipboard 2>/dev/null; then
+        ok "A first prompt for your AI client is on your clipboard — paste it after the restart."
+    else
+        printf '\n'
+        ui_panel_begin "First prompt to try in your AI client"
+        ui_panel_line '"Use the exasol MCP server connected to my local Exasol database.'
+        ui_panel_line 'List the available schemas and tables first. Then answer my'
+        ui_panel_line 'questions with read-only SQL only, show me the SQL before you run'
+        ui_panel_line 'it, and do not create, update, or delete anything."'
+        ui_panel_end
     fi
 }
 
@@ -6538,7 +6539,7 @@ EOF
             info "Check them with 'exakit mcp-status'; new clients appear here once installed."
             return 0
         fi
-        _menu_labels+=("Skip for now (no MCP client changes)")
+        _menu_labels+=("Skip")
         _skip_idx="${#_menu_labels[@]}"
         # Pre-select every pending client (ascending indices) — never a
         # disabled row, never Skip.
@@ -6793,7 +6794,7 @@ exakit_maybe_offer_data_load() {
     # datasets that are not loaded yet are offered, plus the local-file option
     # and an explicit skip. Each load runs in a subshell so a die() inside the
     # loading flow never aborts the surrounding install.
-    exakit_data_load_select "Skip for now (no dataset loading)"
+    exakit_data_load_select "Skip"
     if [ "$EXAKIT_DATA_LOAD_SELECTION" = "none" ]; then
         info "Skipping data loading. Run it any time with: exakit data-load"
         return 0
@@ -7381,6 +7382,31 @@ kit_shared_steps() {
     # (exakit_print_soft_failures) are printed by the setup scripts after the
     # connection panel at the very end of the run — not here, in the middle of
     # the step output where the connection details would push them off screen.
+}
+
+# connection_summary — the CLOSING panel of an install: the four things somebody
+# who just watched a setup finish actually reaches for, and the command that has
+# the rest.
+#
+# connection_panel below is the same information in full — eighteen rows — and it
+# stays that way, because it is also what `exakit info` prints, and a reference
+# screen is exactly where every path belongs. What an install should end with is
+# not a reference screen.
+connection_summary() {
+    [ -f "$EXAKIT_MANIFEST" ] || { warn "No installation found ($EXAKIT_MANIFEST missing)"; return 1; }
+    _cs_dsn="$(manifest_get runtime.dsn 2>/dev/null)"
+    _cs_user="$(manifest_get runtime.user 2>/dev/null)"
+    printf '\n'
+    ui_panel_begin "Your local Exasol"
+    ui_panel_line "$(printf '%-13s %s' "DSN" "${_cs_dsn:-unknown}   (admin ${_cs_user:-sys}, TLS self-signed)")"
+    ui_panel_line "$(printf '%-13s %s' "Passwords" "$(ui_tilde "$EXAKIT_CREDS_DIR")/")"
+    if exakit_marketplace_addon_installed exasol-vscode 2>/dev/null; then
+        ui_panel_line "$(printf '%-13s %s' "SQL client" "VS Code (Exasol extension), $(ui_link https://dbeaver.io/download/ "DBeaver") or $(ui_link https://www.dbvis.com/download/ "DbVisualizer")")"
+    else
+        ui_panel_line "$(printf '%-13s %s' "SQL client" "$(ui_link https://dbeaver.io/download/ "DBeaver") or $(ui_link https://www.dbvis.com/download/ "DbVisualizer")")"
+    fi
+    ui_panel_line "$(printf '%-13s %s' "Everything" "exakit info  ·  exakit guide")"
+    ui_panel_end
 }
 
 # connection_panel — the payoff screen: everything needed to connect.

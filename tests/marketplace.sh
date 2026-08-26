@@ -1344,7 +1344,7 @@ check "an unreachable mirror advertises nothing rather than guessing" "none" "$(
 ) )"
 echo "data-load's default row when every bundled dataset is in:"
 # THE BUG: with nothing left to load from the bundle, the pre-selected row was
-# the final "Cancel (load nothing)" one -- so Enter did nothing, on the one
+# the final "Skip" one -- so Enter did nothing, on the one
 # screen whose only remaining purpose is to load a file of your own. The local
 # row is what should be waiting under the cursor.
 . "$ROOT/setup/lib/exapump.sh"
@@ -1357,7 +1357,7 @@ _dl_probe="$WORK/dl-default-label"
         eval "printf '%s' \"\${$_dlp_defaults}\"" > "$_dl_probe"
         EXAKIT_CHECKBOX_SELECTION="$_dlp_defaults"
     }
-    exakit_data_load_select "Cancel (load nothing)" >/dev/null 2>&1
+    exakit_data_load_select "Skip" >/dev/null 2>&1
 )
 # The expected value is the label VERBATIM, and it moves when the label moves:
 # the folder-loading work widened this row to ", or a folder of them" and left
@@ -1365,7 +1365,7 @@ _dl_probe="$WORK/dl-default-label"
 # check rather than loosened to a prefix - this is the row the menu pre-selects
 # and the wording is worth pinning.
 check "the local-file row is pre-selected" "A local CSV / Parquet / JSON file, or a folder of them" "$(cat "$_dl_probe" 2>/dev/null)"
-lacks "and Cancel is not what Enter would take" "Cancel" "$(cat "$_dl_probe" 2>/dev/null)"
+lacks "and Skip is not what Enter would take" "Skip" "$(cat "$_dl_probe" 2>/dev/null)"
 # The Windows twin builds the same menu; assert it defaults one row above the
 # final label too, rather than to the final label itself.
 has "the PowerShell twin defaults off the final row" 'Defaults @($finalIdx - 1)' \

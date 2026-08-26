@@ -226,9 +226,10 @@ class LoadWiringTests(unittest.TestCase):
         a local-file option, and a mutually exclusive opt-out."""
         bash = EXAPUMP_LIB.read_text(encoding="utf-8")
         ps1 = EXAPUMP_PS1.read_text(encoding="utf-8")
-        # Standalone menus delegate to the shared selector with a plain Cancel.
-        self.assertIn('exakit_data_load_select "Cancel (load nothing)"', bash)
-        self.assertIn('Select-ExakitDataLoad -FinalLabel "Cancel (load nothing)"', ps1)
+        # Every entry point delegates to the shared selector with the same
+        # one-word opt-out.
+        self.assertIn('exakit_data_load_select "Skip"', bash)
+        self.assertIn('Select-ExakitDataLoad -FinalLabel "Skip"', ps1)
         # The selector offers the local-file source on both platforms, but the
         # LABEL still differs, for a reason that has CHANGED and is worth
         # stating precisely.
@@ -296,12 +297,20 @@ class LoadWiringTests(unittest.TestCase):
         )
 
     def test_install_offer_uses_skip_wording(self) -> None:
-        """The installer's data step uses the same dynamic selector, but its
-        opt-out reads 'Skip for now' (install mode) rather than 'Cancel'."""
+        """Every caller of the shared selector passes the same one-word opt-out.
+
+        The install path and the standalone command used to word this row
+        differently ("Skip for now (no data loading)" against "Cancel (load
+        nothing)") - two labels for one row, in a menu whose other rows are one
+        word each. Both are "Skip" now, so what is worth pinning is that all
+        four call sites (two entry points x two platforms) agree.
+        """
         common = COMMON_LIB.read_text(encoding="utf-8")
+        exapump = EXAPUMP_LIB.read_text(encoding="utf-8")
         exapump_ps1 = EXAPUMP_PS1.read_text(encoding="utf-8")
-        self.assertIn('exakit_data_load_select "Skip for now (no dataset loading)"', common)
-        self.assertIn('Select-ExakitDataLoad -FinalLabel "Skip for now (no dataset loading)"', exapump_ps1)
+        self.assertIn('exakit_data_load_select "Skip"', common)
+        self.assertIn('exakit_data_load_select "Skip"', exapump)
+        self.assertEqual(2, exapump_ps1.count('Select-ExakitDataLoad -FinalLabel "Skip"'))
 
     def test_local_file_data_load_can_return_to_menu(self) -> None:
         local_file_blocks = (
@@ -321,10 +330,12 @@ class LoadWiringTests(unittest.TestCase):
                 # Same platform split as the menu label above: bash names JSON,
                 # PowerShell does not because the add-on that handles it is not
                 # available there.
+                # The prompt takes a FOLDER as readily as a file (the bulk
+                # load), so both halves name both.
                 if menu_name == EXAPUMP_PS1.name:
-                    self.assertIn("Please enter a local CSV/Parquet file path", local_file_flow)
+                    self.assertIn("Please enter a local CSV/Parquet file, a folder of them", local_file_flow)
                 else:
-                    self.assertIn("Please enter a local CSV, Parquet or JSON file path", local_file_flow)
+                    self.assertIn("Please enter a local CSV, Parquet or JSON file, a folder of them", local_file_flow)
                 self.assertIn("back to return", local_file_flow)
                 self.assertIn("Returning to data loading options.", local_file_flow)
 

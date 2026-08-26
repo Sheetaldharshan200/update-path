@@ -431,5 +431,6 @@ jobs:
       - run: bash tests/deploy-progress.sh
       - run: bash tests/bulk-folder-load.sh
       - run: bash tests/dataset-load-progress.sh
+      - run: bash tests/install-output-brevity.sh
       # Dry run only without EXAKIT_SMOKE_FULL=1: no install, no database.
       - run: bash tests/smoke-test.sh

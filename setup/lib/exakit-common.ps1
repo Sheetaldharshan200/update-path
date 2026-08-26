@@ -240,7 +240,7 @@ function Read-ExakitCheckboxMenu {
         [string]$GroupMode = "any"
     )
     # $ExclusiveIndex (1-based, 0 = none): an option that cannot be combined
-    # with the others - think "Skip for now". Selecting it clears every other
+    # with the others - think "Skip". Selecting it clears every other
     # choice; selecting any other choice clears it.
     # $GroupParent/$GroupFirst/$GroupLast (optional): row $GroupParent is a
     # group checkbox whose children are rows $GroupFirst..$GroupLast (header
@@ -2865,11 +2865,14 @@ function Install-ExakitSkills {
             New-Item -ItemType Directory -Force -Path $dest | Out-Null
             Copy-Item -Recurse -Force -Path (Join-Path $skillDir.FullName "*") -Destination $dest
         }
-        Ok "Installed skill: $name"
+        # The names go to the logfile, not the screen: nine ticked lines say
+        # nothing the count does not, and `exakit skills` lists them any time.
+        if ($script:LogFile) { "OK    Installed skill: $name" | Add-Content -Path $script:LogFile }
         $installed++
     }
     if ($installed -eq 0) { Warn2 "No SKILL.md files found under $skillsSrc - nothing to install."; return $false }
-    Info "Skills installed for Claude Code (~\.claude\skills) and open-standard agents (~\.agents\skills)."
+    if ($installed -eq 1) { $skillUnit = "AI skill" } else { $skillUnit = "AI skills" }
+    Ok "Installed $installed $skillUnit for Claude Code (~\.claude\skills) and open-standard agents (~\.agents\skills)"
     # The read-only allowlist the skill documents, applied for real.
     $applied = Set-ExakitReadonlyAllowlist
     if ($applied -eq "ADDED 0") {
@@ -3434,7 +3437,7 @@ function Show-ExakitMarketplaceMenu {
     $tee = $script:UiTee; $corner = $script:UiCorner
     $menuLabels = New-Object System.Collections.Generic.List[string]
     $menuIds = New-Object System.Collections.Generic.List[string]
-    [void]$menuLabels.Add("Available add-ons")
+    [void]$menuLabels.Add("Select All")
     [void]$menuIds.Add("__group__")
     # Children in two passes: installable rows first, so the group's child range
     # (2 .. selectable+1) stays contiguous, then the disabled rows. The corner
@@ -3455,7 +3458,7 @@ function Show-ExakitMarketplaceMenu {
         [void]$menuLabels.Add("!$conn $($row.Label)")
         [void]$menuIds.Add("__disabled__")
     }
-    [void]$menuLabels.Add("Cancel (install nothing)")
+    [void]$menuLabels.Add("Skip")
     [void]$menuIds.Add("__cancel__")
     $cancelIdx = $menuLabels.Count
     # Default: the group AND every available add-on pre-selected - the same
@@ -3575,14 +3578,12 @@ function Request-ExakitMarketplaceOffer {
     # One gate question first - the same cursor menu every other kit choice
     # uses, no typing: Yes is pre-ticked, No is the exclusive opt-out. Only a
     # Yes opens the marketplace selection itself (where the available add-ons
-    # come pre-selected, so Enter installs them and Cancel still backs out).
+    # come pre-selected, so Enter installs them and Skip still backs out).
     Write-Host ""
     Ok "Your starter kit is ready to use."
-    Info ("The marketplace has add-ons that extend what you can do with Exasol:`n" +
-          "      dashboards, editor integration, extra data formats, with more added`n" +
-          "      over time.")
-    $gate = Read-ExakitCheckboxMenu -Title "Browse it now?" `
-        -Options @("Yes, open the marketplace", "No, maybe later") `
+    Info "Supercharge starterkit with exasol add-ons"
+    $gate = Read-ExakitCheckboxMenu -Title "Explore ?" `
+        -Options @("Yes", "No") `
         -Defaults @(1) -ExclusiveIndex 2
     if ($gate -contains 1) {
         try { Show-ExakitMarketplaceMenu } catch { Warn2 "The marketplace did not finish cleanly: $_" }
@@ -3603,6 +3604,33 @@ function Request-ExakitSkillsInstallOffer {
     if (-not (Install-ExakitSkills)) {
         Warn2 "Skills install did not finish cleanly. Retry any time with: exakit skills-install"
     }
+}
+
+# Show-ExakitConnectionSummary - the CLOSING panel of an install: the four things
+# somebody who just watched a setup finish actually reaches for, and the command
+# that has the rest.
+#
+# Show-ExakitConnectionPanel below is the same information in full - eighteen
+# rows - and it stays that way, because it is also what `exakit info` prints, and
+# a reference screen is exactly where every path belongs. What an install should
+# end with is not a reference screen. Twin of connection_summary in common.sh.
+function Show-ExakitConnectionSummary {
+    if (-not (Test-Path $script:ManifestPath)) { Warn2 "No installation found ($script:ManifestPath missing)"; return }
+    $dsn = Get-ExakitManifestValue "runtime.dsn"
+    $user = Get-ExakitManifestValue "runtime.user"
+    if (-not $dsn) { $dsn = "unknown" }
+    if (-not $user) { $user = "sys" }
+    Write-Host ""
+    Start-ExakitPanel "Your local Exasol"
+    Write-ExakitPanelLine ("{0,-13} {1}" -f "DSN", "$dsn   (admin $user, TLS self-signed)")
+    Write-ExakitPanelLine ("{0,-13} {1}" -f "Passwords", (Get-ExakitTilde $script:CredsDir))
+    if (Test-ExakitMarketplaceAddonInstalled "exasol-vscode") {
+        Write-ExakitPanelLine ("{0,-13} {1}" -f "SQL client", "VS Code (Exasol extension), DBeaver or DbVisualizer")
+    } else {
+        Write-ExakitPanelLine ("{0,-13} {1}" -f "SQL client", "DBeaver or DbVisualizer")
+    }
+    Write-ExakitPanelLine ("{0,-13} {1}" -f "Everything", "exakit info  |  exakit guide")
+    Complete-ExakitPanel
 }
 
 # connection_panel equivalent - printed at the end of setup and via `exakit info`.

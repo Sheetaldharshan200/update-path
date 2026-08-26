@@ -1144,7 +1144,7 @@ exakit_bulk_select_formats() {
         _bsl_ids+=("$_bsl_k")
         _bsl_defaults="${_bsl_defaults:+$_bsl_defaults,}$_bsl_i"
     done
-    _bsl_labels+=("Cancel (load nothing)")
+    _bsl_labels+=("Skip")
     _bsl_final=$((_bsl_i + 1))
     EXAKIT_CHECKBOX_EXCLUSIVE="$_bsl_final"
     ui_checkbox_menu "This folder has more than one format — which do you want to load?" \
@@ -1758,7 +1758,7 @@ exakit_load_dataset_dir() {
 # exakit_data_load_select <final_label> — dynamic checkbox over the data
 # sources, shown as a small tree with exactly three top-level choices:
 #
-#   Sample datasets                 <- group header (only when any is pending)
+#   Select All                      <- group row (only when any is pending)
 #     [x] <each dataset not loaded yet, visible upfront and individually
 #          selectable — no extra keypress needed to see what is available>
 #   [ ] A local CSV / Parquet / JSON file
@@ -1806,7 +1806,7 @@ EXAKIT_DLS_EOF
         # Mirrors exapump.ps1, where the palette is mandatory: glyph literals
         # in the BOM-less .ps1 twin break Windows PowerShell 5.1 parsing.
         _dls_tee="${UI_TEE:-|-}"; _dls_corner="${UI_CORNER:-\`-}"
-        _dls_labels+=("Sample datasets")
+        _dls_labels+=("Select All")
         _dls_ids+=("__group__")
         _dls_i=0
         while [ "$_dls_i" -lt "$_dls_pending_n" ]; do
@@ -1867,7 +1867,7 @@ exakit_data_load_menu() {
     [ -n "$(manifest_get components.exapump.profile 2>/dev/null)" ] || \
         die "No exapump connection profile is recorded — re-run the installer, then retry."
 
-    exakit_data_load_select "Cancel (load nothing)"
+    exakit_data_load_select "Skip"
     if [ "$EXAKIT_DATA_LOAD_SELECTION" = "none" ]; then
         info "Data loading cancelled."
         return 0

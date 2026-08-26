@@ -75,7 +75,7 @@ kit_shared_steps 2 5 "$SCRIPT_DIR" "$KIT_ROOT"
 
 exakit_finish
 ok "Setup complete"
-connection_panel
+connection_summary
 # Only when the kit version moved during this run, and never able to fail it: the
 # trap is already released and every reader inside degrades to silence.
 exakit_print_whats_new_box "$KIT_ROOT" || true
