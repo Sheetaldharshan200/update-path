@@ -166,8 +166,22 @@ _exakit_log_file() {
 # actions (4-space dim bullet: info/prompts), and outcomes nested under their
 # action (6-space: ✓ ok, ! warn, ✗ error — plus contained tool output). The
 # nesting is what makes a step read as "action → what happened".
-info() { printf '    %s%s%s %s\n' "${UI_DIM:-}" "${UI_BULLET:--}" "${UI_RESET:-}" "$*";      _exakit_log_file "INFO  $*"; }
-ok()   { printf '      %s%s%s %s\n' "${UI_OK:-}"   "${UI_TICK:-[ok]}"  "${UI_RESET:-}" "$*"; _exakit_log_file "OK    $*"; }
+# EXAKIT_QUIET_DETAIL=1 — a caller is narrating a whole job on ONE line (an
+# add-on install, a dataset load), so the steps underneath report to the LOGFILE
+# instead of the screen. Gated here rather than at every call site: the chatter
+# comes from a dozen places in four modules, and a gate per line is a gate
+# somebody forgets. warn/error are deliberately NOT gated — a job that says
+# nothing while it works must still say something when it goes wrong.
+info() {
+    [ "${EXAKIT_QUIET_DETAIL:-0}" = 1 ] || \
+        printf '    %s%s%s %s\n' "${UI_DIM:-}" "${UI_BULLET:--}" "${UI_RESET:-}" "$*"
+    _exakit_log_file "INFO  $*"
+}
+ok() {
+    [ "${EXAKIT_QUIET_DETAIL:-0}" = 1 ] || \
+        printf '      %s%s%s %s\n' "${UI_OK:-}" "${UI_TICK:-[ok]}" "${UI_RESET:-}" "$*"
+    _exakit_log_file "OK    $*"
+}
 warn() { printf '      %s!%s %s\n'  "${UI_WARN:-}" "${UI_RESET:-}" "$*" >&2;        _exakit_log_file "WARN  $*"; }
 error(){ printf '      %s%s%s %s\n' "${UI_ERR:-}"  "${UI_CROSS:-[x]}" "${UI_RESET:-}" "$*" >&2; _exakit_log_file "ERROR $*"; }
 
@@ -3012,15 +3026,29 @@ _exakit_marketplace_install_one() {
     # title, or under the bare word "working". Name what is actually running.
     # Twin of the same block in Invoke-ExakitMarketplaceApply (exakit-common.ps1).
     _mi_prev_label="${EXAKIT_ACTIVE_LABEL:-}"
-    EXAKIT_ACTIVE_LABEL="Installing $1"
+    _mi_prev_quiet="${EXAKIT_QUIET_DETAIL:-0}"
+    # Installing three add-ons printed fifty lines: a venv, a pip resolve, a
+    # download, a checksum, a launcher, a package-data repair and a validation
+    # probe, each announcing itself twice. None of it is something the person
+    # who ticked three boxes can act on, and all of it is in the logfile.
+    #
+    # EXAKIT_QUIET_DETAIL routes it there; the progress line below is the
+    # narration, carried by the spinner run_logged and fetch already start (so
+    # the bar, the percentage, the phase and the animation are ONE line). The
+    # percentages are milestone positions weighted by where the TIME goes -
+    # fetching and installing is nearly all of it - not a step count.
+    EXAKIT_QUIET_DETAIL=1
+    _exakit_addon_progress "$1" 0 "installing"
     "$_mi_install"
     _mi_rc=$?
-    EXAKIT_ACTIVE_LABEL="$_mi_prev_label"
-    [ "$_mi_rc" -eq 0 ] || return 1
-    if command -v "$_mi_validate" >/dev/null 2>&1; then
-        EXAKIT_ACTIVE_LABEL="Validating $1"
-        "$_mi_validate" || true
+    if [ "$_mi_rc" -ne 0 ]; then
+        EXAKIT_QUIET_DETAIL="$_mi_prev_quiet"
         EXAKIT_ACTIVE_LABEL="$_mi_prev_label"
+        return 1
+    fi
+    if command -v "$_mi_validate" >/dev/null 2>&1; then
+        _exakit_addon_progress "$1" 65 "validating"
+        "$_mi_validate" || true
     fi
     # A service add-on joins the boot set the moment it is installed, so the
     # user does not have to remember a second command after saying yes. On
@@ -3035,10 +3063,21 @@ _exakit_marketplace_install_one() {
     # Best-effort, and only for an add-on that declares a start hook.
     _mi_start="$(_exakit_addon_fn "$1" start)"
     if command -v "$_mi_start" >/dev/null 2>&1; then
+        _exakit_addon_progress "$1" 90 "starting"
         "$_mi_start" >/dev/null 2>&1 || \
             warn "$1 installed but did not start — start it with: exakit start"
     fi
+    EXAKIT_QUIET_DETAIL="$_mi_prev_quiet"
+    EXAKIT_ACTIVE_LABEL="$_mi_prev_label"
     return 0
+}
+
+# _exakit_addon_progress <id> <pct> <phase> — the add-on install's one line of
+# progress. Prints nothing itself: it sets the label the spinner is about to
+# draw, so the animation, the bar, the percentage and the phase share one line.
+# ⇄ twin: Set-ExakitAddonProgress in exakit-common.ps1.
+_exakit_addon_progress() {
+    EXAKIT_ACTIVE_LABEL="$1 $(ui_bar "$2") ${UI_BOLD:-}$(printf '%3s' "$2")%${UI_RESET:-} $3"
 }
 
 # exakit_marketplace_menu — the `exakit marketplace` command body, wearing the
@@ -3310,6 +3349,9 @@ exakit_marketplace_offer() {
     # come pre-selected, so Enter installs them and Skip still backs out).
     printf '\n'
     ok "Your starter kit is ready to use."
+    # The install is over; what follows is a different question. A rule with air
+    # around it is the seam, so the offer does not read as one more install step.
+    ui_rule
     info "Supercharge starterkit with exasol add-ons"
     EXAKIT_CHECKBOX_EXCLUSIVE=2
     ui_checkbox_menu "Explore ?" "1" \
@@ -3334,7 +3376,7 @@ _exakit_marketplace_apply() {
     for _mp_id in $(printf '%s' "$1" | tr ',' ' '); do
         info "Installing add-on: $_mp_id"
         if _exakit_marketplace_install_one "$_mp_id"; then
-            ok "$_mp_id installed — it now updates with: exakit update (or exakit update $_mp_id)"
+            ok "$_mp_id installed"
         else
             warn "$_mp_id did not finish installing — retry with: exakit marketplace (or exakit update $_mp_id)"
             _mp_status=1

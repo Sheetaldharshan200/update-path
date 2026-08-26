@@ -167,11 +167,25 @@ function Show-ExakitHelpOverview {
     }
     $byName = @{}
     foreach ($entry in $doc.commands) { $byName[$entry.command] = $entry }
+    # First group wins, exactly as the --all view already does. A command that
+    # reads naturally in two groups (mcp-setup belongs to both "Get started" and
+    # "AI clients") was printed twice, so the one screen whose whole job is "find
+    # the command you want" answered the same question in two places. The section
+    # header is held back until a row actually survives, so a group whose every
+    # command was already listed does not leave an empty heading behind.
+    # Twin of render_overview in help.sh.
+    $seen = @{}
     foreach ($group in $doc.groups) {
-        Write-ExakitHelpSection $group.title
+        $rows = @()
         foreach ($name in $group.commands) {
             $entry = $byName[$name]
-            if (-not $entry) { continue }
+            if (-not $entry -or $seen[$name]) { continue }
+            $seen[$name] = $true
+            $rows += $entry
+        }
+        if ($rows.Count -eq 0) { continue }
+        Write-ExakitHelpSection $group.title
+        foreach ($entry in $rows) {
             $label = Get-ExakitHelpInvocation -DocId "exakit" -Entry $entry -Doc $doc
             Write-ExakitHelpCommand -Label $label -Summary $entry.summary -Pad 24
         }

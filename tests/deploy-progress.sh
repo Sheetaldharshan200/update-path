@@ -218,14 +218,22 @@ printf '\n== an add-on install says what it is installing ==\n'
 # The spinner reads EXAKIT_ACTIVE_LABEL. Before the fix nothing set it here, so
 # an add-on installed after the last numbered step animated under that step's
 # title. Record what the label actually is while the install function runs.
+#
+# The label is a progress line now (id, bar, percentage, phase), so what is
+# asserted is that it names THIS add-on and THIS phase -- not the exact bytes,
+# which the bar's width would pin for no reason. tests/install-output-brevity.sh
+# owns the progress line's own shape.
 EXAKIT_ACTIVE_LABEL="Step 6/6  exakit helper"
 LABEL_SEEN=""
 LABEL_SEEN_VALIDATE=""
 dash_server_install()  { LABEL_SEEN="$EXAKIT_ACTIVE_LABEL"; return 0; }
 dash_server_validate() { LABEL_SEEN_VALIDATE="$EXAKIT_ACTIVE_LABEL"; return 0; }
 _exakit_marketplace_install_one dash-server >/dev/null 2>&1
-check "install names the add-on"  "Installing dash-server"  "$LABEL_SEEN"
-check "validate names the add-on" "Validating dash-server" "$LABEL_SEEN_VALIDATE"
+has "install names the add-on"  "dash-server" "$LABEL_SEEN"
+has "...and the phase"          "installing"  "$LABEL_SEEN"
+has "validate names the add-on" "dash-server" "$LABEL_SEEN_VALIDATE"
+has "...and its phase"          "validating"  "$LABEL_SEEN_VALIDATE"
+lacks "the previous step's title is gone" "Step 6/6" "$LABEL_SEEN"
 check "the previous label is restored" "Step 6/6  exakit helper" "$EXAKIT_ACTIVE_LABEL"
 
 # A failing install must still hand the label back, or every later step would

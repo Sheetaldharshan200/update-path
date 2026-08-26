@@ -233,6 +233,19 @@ ui_panel_end() {
         "$UI_ACCENT" "$UI_BL" "$(ui_repeat "$UI_HR" "$_uipe_w")" "$UI_BR$UI_RESET"
 }
 
+# ui_rule — a dim full-width divider, with a blank line either side.
+#
+# For the seam between two parts of a run: the install is finished and something
+# else is being asked. Sized to the terminal so it reads as a break rather than
+# as content. ⇄ twin: Write-ExakitRule in ui.ps1.
+ui_rule() {
+    _uir_w="$(_ui_term_cols 2>/dev/null || echo 80)"
+    _uir_w=$(( _uir_w - 4 ))
+    [ "$_uir_w" -gt 76 ] && _uir_w=76
+    [ "$_uir_w" -ge 8 ] || _uir_w=8
+    printf '\n  %s%s%s\n\n' "${UI_DIM:-}" "$(ui_repeat "${UI_HR:--}" "$_uir_w")" "${UI_RESET:-}"
+}
+
 # --- spinner / step animation ----------------------------------------------
 # Model: ui_step_start prints (or animates) a "working" line; the step body
 # runs with its chatter sent to the log; ui_step_ok / ui_step_fail replaces

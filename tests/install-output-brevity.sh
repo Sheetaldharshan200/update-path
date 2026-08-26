@@ -207,5 +207,135 @@ lacks "no 'open the marketplace' row" "Yes, open the marketplace"             "$
 lacks "no 'maybe later' row"          "No, maybe later"                       "$COMMON$COMMON_PS1"
 has "just Yes and No"      '-Options @("Yes", "No")'                          "$COMMON_PS1"
 
+printf '\n== the quiet gate silences the screen, never the log ==\n'
+
+: > "$EXAKIT_LOG_FILE"
+QUIET_OUT="$( (EXAKIT_QUIET_DETAIL=1; info "a step nobody has to read"; ok "a tick nobody has to read") 2>/dev/null )"
+lacks "info is off screen" "a step nobody has to read" "$QUIET_OUT"
+lacks "ok is off screen"   "a tick nobody has to read" "$QUIET_OUT"
+# A job that says nothing while it works must still say something when it fails.
+QUIET_ERR="$( (EXAKIT_QUIET_DETAIL=1; warn "something actually went wrong"; error "and something worse") 2>&1 )"
+has "warn still speaks"  "something actually went wrong" "$QUIET_ERR"
+has "error still speaks" "and something worse"           "$QUIET_ERR"
+LOGGED="$(cat "$EXAKIT_LOG_FILE")"
+has "info reached the log" "a step nobody has to read" "$LOGGED"
+has "ok reached the log"   "a tick nobody has to read" "$LOGGED"
+# Unset, everything prints as it always did.
+LOUD="$(info "back to normal")"
+has "off, info prints again" "back to normal" "$LOUD"
+
+printf '\n== the seam between the install and the offer ==\n'
+
+RULE="$(COLUMNS=40 ui_rule)"
+# A command substitution eats the trailing newline, so the blank line BELOW is
+# asserted from the function's own bytes, not from the capture.
+check "the rule has air above it" "" "$(printf '%s\n' "$RULE" | sed -n 1p)"
+check "one divider line"          "1" "$(printf '%s\n' "$RULE" | grep -c "$UI_HR")"
+has "and air below it in the source" "'\\n  %s%s%s\\n\\n'" "$(cat "$ROOT/setup/lib/ui.sh")"
+has "and it draws a divider" "$UI_HR$UI_HR$UI_HR" "$RULE"
+has "the offer is behind the seam" 'ui_rule
+    info "Supercharge starterkit with exasol add-ons"' "$COMMON"
+has "...on Windows too" 'Write-ExakitRule
+    Info "Supercharge starterkit with exasol add-ons"' "$COMMON_PS1"
+has "ui.sh has the rule"  "ui_rule()"                  "$(cat "$ROOT/setup/lib/ui.sh")"
+has "ui.ps1 has its twin" "function Write-ExakitRule"  "$(cat "$ROOT/setup/lib/ui.ps1")"
+
+printf '\n== an add-on install is two lines and its own panel ==\n'
+
+_exakit_addon_progress dash-server 65 "validating"
+has "the add-on is named"  "dash-server"  "$EXAKIT_ACTIVE_LABEL"
+has "the percentage"       "65%"          "$EXAKIT_ACTIVE_LABEL"
+has "the phase"            "validating"   "$EXAKIT_ACTIVE_LABEL"
+has "a filled bar"         "$UI_BAR_FULL" "$EXAKIT_ACTIVE_LABEL"
+
+# One add-on, stubbed end to end: chatter, a usage panel, autostart and a start
+# hook — the same shape every real add-on module has.
+dash_server_install() {
+    info "Installing dash-server 0.1.0"
+    ok "dash-server installed: /somewhere/dash-server-venv"
+    ok "dash-server launcher written: /somewhere/bin/dash-server"
+    return 0
+}
+dash_server_validate() {
+    info "Validating dash-server (MCP control plane on port 5100)"
+    ok "dash-server control plane answers on port 5100"
+    ui_panel_begin "dash-server"
+    ui_panel_line "Start it   dash-server"
+    ui_panel_end
+    return 0
+}
+dash_server_autostart_command() { printf 'dash-server\n'; }
+dash_server_start() { return 0; }
+_exakit_autostart_register() { ok "dash-server: starts at login (~/Library/LaunchAgents/x.plist)"; return 0; }
+manifest_get() { [ "$1" = "autostart.enabled" ] && printf 'true\n'; return 0; }
+
+: > "$EXAKIT_LOG_FILE"
+EXAKIT_ACTIVE_LABEL="Step 6/6  exakit helper"
+ADDON="$(_exakit_marketplace_install_one dash-server 2>&1)"
+check "the install succeeds" "0" "$?"
+
+lacks "no version line"      "Installing dash-server 0.1.0"  "$ADDON"
+lacks "no venv path"         "dash-server-venv"              "$ADDON"
+lacks "no launcher line"     "launcher written"              "$ADDON"
+lacks "no validating line"   "Validating dash-server"        "$ADDON"
+lacks "no control-plane line" "control plane answers"        "$ADDON"
+lacks "no autostart line"    "starts at login"               "$ADDON"
+# The add-on's OWN panel is the payoff — how to use the thing just installed —
+# and it is the one part that stays on screen.
+has "its usage panel stays"  "Start it   dash-server"        "$ADDON"
+
+LOGGED="$(cat "$EXAKIT_LOG_FILE")"
+has "the version is in the log"   "Installing dash-server 0.1.0" "$LOGGED"
+has "the venv is in the log"      "dash-server-venv"             "$LOGGED"
+has "the autostart is in the log" "starts at login"              "$LOGGED"
+
+check "the label is handed back" "Step 6/6  exakit helper" "$EXAKIT_ACTIVE_LABEL"
+check "and so is the quiet flag" "0" "${EXAKIT_QUIET_DETAIL:-0}"
+
+# A failing install must hand both back too, or every later line goes silent.
+dash_server_install() { return 1; }
+_exakit_marketplace_install_one dash-server >/dev/null 2>&1
+check "a failed install restores the label" "Step 6/6  exakit helper" "$EXAKIT_ACTIVE_LABEL"
+check "...and the quiet flag" "0" "${EXAKIT_QUIET_DETAIL:-0}"
+LOUD="$(info "still speaking")"
+has "the screen is not left silent" "still speaking" "$LOUD"
+
+printf '\n== the result line does not repeat the panel ==\n'
+
+has "one word for the outcome" 'ok "$_mp_id installed"' "$COMMON"
+lacks "no doubled update hint" 'installed — it now updates with: exakit update (or exakit update' "$COMMON"
+has "...on Windows too"        'Ok "$id installed"'      "$COMMON_PS1"
+
+printf '\n== the PowerShell twin gates at the same sink ==\n'
+
+has "Info is gated"        'if (-not $script:ExakitQuietDetail) {' "$COMMON_PS1"
+has "the flag is declared" '$script:ExakitQuietDetail = $false'    "$COMMON_PS1"
+has "the progress helper"  'function Set-ExakitAddonProgress'      "$COMMON_PS1"
+has "the apply loop sets it" 'Set-ExakitAddonProgress -Id $id -Pct 0 -Phase "installing"' "$COMMON_PS1"
+has "and hands it back"      '$script:ExakitQuietDetail = $prevQuiet' "$COMMON_PS1"
+
+printf '\n== exakit help lists each command once ==\n'
+
+# NO_COLOR so the rows can be matched without stripping escapes (BSD sed has no
+# \x1b). The screen is rendered for real, not read out of the catalog: the
+# catalog is ALLOWED to name a command in two groups - what must not happen is
+# printing it twice.
+HELP_OUT="$(NO_COLOR=1 EXAKIT_NO_UPDATE_NOTICE=1 /bin/bash "$ROOT/setup/exakit" help 2>&1)"
+HELP_ROWS="$(printf '%s\n' "$HELP_OUT" | grep -oE '^    exakit [a-z-]+' || true)"
+check "no command is listed twice" "" "$(printf '%s\n' "$HELP_ROWS" | sort | uniq -d)"
+# The catalog still names mcp-setup in two groups, so this proves the RENDERER
+# dedupes rather than the catalog having been edited to hide the overlap.
+check "the catalog still lists it twice" "2" \
+    "$(grep -c '^        "mcp-setup",' "$ROOT/setup/help/exakit.json")"
+has "the first group keeps it" "exakit mcp-setup" "$HELP_OUT"
+check "and only once" "1" "$(printf '%s\n' "$HELP_ROWS" | grep -c 'exakit mcp-setup')"
+# A group emptied by the dedupe must not leave its heading behind.
+check "no heading with nothing under it" "" "$(printf '%s\n' "$HELP_OUT" | awk '
+    /^  [A-Z]/ { if (heading != "" && rows == 0) print heading; heading = $0; rows = 0; next }
+    /^    exakit / { rows++ }
+    END { if (heading != "" && rows == 0) print heading }')"
+has "the --all view dedupes too" "if not entry or name in seen" "$(cat "$ROOT/setup/lib/help.sh")"
+has "and so does its twin"       'if (-not $entry -or $seen[$name]) { continue }' "$(cat "$ROOT/setup/lib/help.ps1")"
+
 printf '\n%s: %d passed, %d failed\n' "$(basename "$0")" "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
