@@ -797,8 +797,13 @@ ui_table_frame() {
             *)      _utr_conn="" ;;
         esac
         if [ "$_utr_tick" = "1" ]; then
-            _utr_box="${UI_OK:-}[${UI_TICK:-x}]${UI_RESET:-}"
-            _utr_boxlen=$(( 2 + ${#UI_TICK} ))
+            # A plain "x", not the palette tick, when there is no colour: the
+            # plain-palette UI_TICK is the multi-character "[ok]", and a checkbox
+            # is already brackets — together they read "[[ok]]".
+            # ui_checkbox_menu makes the same substitution for the same reason.
+            if [ "${UI_FANCY:-0}" = 1 ]; then _utr_mark="${UI_TICK:-x}"; else _utr_mark="x"; fi
+            _utr_box="${UI_OK:-}[${_utr_mark}]${UI_RESET:-}"
+            _utr_boxlen=$(( 2 + ${#_utr_mark} ))
         else
             _utr_box="[ ]"; _utr_boxlen=3
         fi
