@@ -2955,6 +2955,24 @@ function Confirm-ExakitRuntimeRunning {
 # field of its own repository, read through Get-ExakitMarketplaceAddonDescription.
 # (CI guards move with it: the expected-components set in versions.yml and the
 # COUPLED fallback-constant table in versions-bump.yml.)
+# Get-ExakitVersionPlain <version> - a version as the tables spell it: no
+# leading "v".
+#
+# Upstreams disagree about the prefix. Most of what the kit reports is a bare
+# number because that is what its source says, but json-tables takes its version
+# from a git tag and reported "v0.2" - one row in two tables wearing a prefix
+# none of its neighbours wore, which reads as a different KIND of version rather
+# than the same thing spelled differently.
+#
+# Normalised where versions are DISPLAYED, never where they are compared or
+# stored. Anything that is not a "v" followed by a digit is returned untouched.
+# Twin of exakit_version_plain in common.sh.
+function Get-ExakitVersionPlain {
+    param([string]$Version)
+    if ($Version -match '^v[0-9]') { return $Version.Substring(1) }
+    return $Version
+}
+
 function Get-ExakitMarketplaceAddons {
     return @(
         [pscustomobject]@{
@@ -3351,7 +3369,7 @@ function Show-ExakitMarketplaceMenu {
             if (-not $ver -and (Get-Command $addon.VersionFn -ErrorAction SilentlyContinue)) { $ver = & $addon.VersionFn }
             if (-not $ver) { $ver = "?" }
             $rows += @{ Id = $null; Label = "$($addon.Id) - already installed"
-                Table = ("{0,-14} {1,-14} {2}" -f $addon.Id, $ver, "Installed") }
+                Table = ("{0,-14} {1,-14} {2}" -f $addon.Id, (Get-ExakitVersionPlain $ver), "Installed") }
         } elseif (Test-ExakitAddonSystemPresent $addon.Id) {
             # The user already has the tool from somewhere else - covered, and
             # the kit does not manage it.
@@ -3382,13 +3400,20 @@ function Show-ExakitMarketplaceMenu {
             if (-not $env:EXAKIT_MARKETPLACE_ADDONS) {
                 # The table carries the About IN FULL, folded onto as many lines
                 # as it needs. Nothing truncates it.
-                $cell = Format-ExakitAboutWrap (Get-ExakitMarketplaceAddonDescription $addon.Id) $script:ExakitAboutWidth (" " * 32)
+                # The continuation indent is the width of the two leading
+                # cells, MEASURED from the very format the rows are built with
+                # rather than counted by hand. Counted by hand it was 32 against
+                # a 30-column prefix, so every folded line of a description sat
+                # two columns to the right of the line above it. Written this way
+                # the two cannot drift apart again.
+                $indent = "{0,-14} {1,-14} " -f "", ""
+                $cell = Format-ExakitAboutWrap (Get-ExakitMarketplaceAddonDescription $addon.Id) $script:ExakitAboutWidth $indent
             }
             # The label NAMES the row, it does not re-explain it: the full text is
             # in the table directly above, and the checkbox layer truncates every
             # menu row to exactly one terminal line (its redraw depends on that).
             $rows += @{ Id = $addon.Id; Label = $addon.Id
-                Table = ("{0,-14} {1,-14} {2}" -f $addon.Id, $advertised, $cell) }
+                Table = ("{0,-14} {1,-14} {2}" -f $addon.Id, (Get-ExakitVersionPlain $advertised), $cell) }
         }
     }
 

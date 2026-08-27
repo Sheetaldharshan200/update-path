@@ -2243,6 +2243,27 @@ _exakit_component_env_override() {
 #   anything else the compiled-in *_FALLBACK constant
 # Empty output means "cannot tell" (no readable document), which the table reports
 # as unknown rather than guessing.
+# exakit_version_plain <version> — a version as the tables spell it: no leading
+# "v".
+#
+# Upstreams disagree about the prefix. Most of what the kit reports is a bare
+# number (0.1.0, 1.7.0, 2.2.0) because that is what its source says, but
+# json-tables takes its version from a git tag and reported "v0.2" — one row in
+# two tables wearing a prefix none of its neighbours wore, which reads as a
+# different KIND of version rather than the same thing spelled differently.
+#
+# Normalised where versions are DISPLAYED, never where they are compared or
+# stored: the tag is what it is, and nothing downstream should start guessing
+# which spelling it is holding. Anything that is not a "v" followed by a digit
+# is returned untouched, so a version legitimately starting with a letter
+# (a codename, "vNext") keeps it.
+exakit_version_plain() {
+    case "$1" in
+        v[0-9]*) printf '%s\n' "${1#v}" ;;
+        *)       printf '%s\n' "$1" ;;
+    esac
+}
+
 exakit_component_available() {
     _cav_override="$(_exakit_component_env_override "$1")"
     if [ -n "$_cav_override" ]; then
@@ -3156,7 +3177,7 @@ exakit_marketplace_menu() {
         # menu is ever drawn and the table is then the only output.
         if exakit_marketplace_addon_installed "$_mm_id"; then
             _mm_ver="$(exakit_component_current "$_mm_id" 2>/dev/null || true)"
-            _mm_rows+=("$(printf '%-14s %-14s %s' "$_mm_id" "${_mm_ver:-?}" "Installed")")
+            _mm_rows+=("$(printf '%-14s %-14s %s' "$_mm_id" "$(exakit_version_plain "${_mm_ver:-?}")" "Installed")")
             _mm_ids+=("__disabled__"); _mm_labels+=("$_mm_id - already installed")
         elif _exakit_addon_system_present "$_mm_id"; then
             # The user already has the tool from somewhere else: covered, and
@@ -3176,11 +3197,17 @@ exakit_marketplace_menu() {
             if [ -z "${EXAKIT_MARKETPLACE_ADDONS:-}" ]; then
                 # The table carries the About IN FULL, folded onto as many lines
                 # as it needs. Nothing truncates it.
+                # The continuation indent is the width of the two leading
+                # cells, MEASURED from the very format string the rows are
+                # printed with rather than counted by hand. Counted by hand it
+                # was 32 against a 30-column prefix, so every folded line of a
+                # description sat two columns to the right of the line above it.
+                # Written this way the two cannot drift apart again.
                 _mm_cell="$(exakit_about_wrap \
                     "$(exakit_marketplace_addon_description "$_mm_id")" \
-                    "$EXAKIT_ABOUT_WIDTH" "$(ui_repeat ' ' 32)")"
+                    "$EXAKIT_ABOUT_WIDTH" "$(printf '%-14s %-14s ' '' '')")"
             fi
-            _mm_rows+=("$(printf '%-14s %-14s %s' "$_mm_id" "${_mm_adv:-unknown}" "$_mm_cell")")
+            _mm_rows+=("$(printf '%-14s %-14s %s' "$_mm_id" "$(exakit_version_plain "${_mm_adv:-unknown}")" "$_mm_cell")")
             _mm_ids+=("$_mm_id")
             # The label NAMES the row, it does not re-explain it: the full text
             # is in the table directly above, and _ui_fit_row would truncate a
@@ -3947,8 +3974,8 @@ exakit_print_version_table() {
     _pending=0
     for _component in $(exakit_version_table_targets); do
         _row_component="$(exakit_update_actual_target "$_component" 2>/dev/null || printf '%s\n' "$_component")"
-        _row_installed="$(exakit_version_installed_cell "$_row_component")"
-        _row_available="$(exakit_component_available "$_row_component" 2>/dev/null || true)"
+        _row_installed="$(exakit_version_plain "$(exakit_version_installed_cell "$_row_component")")"
+        _row_available="$(exakit_version_plain "$(exakit_component_available "$_row_component" 2>/dev/null || true)")"
         [ -n "$_row_available" ] || _row_available="unknown"
         _row_note=""
         _row_severity="$(exakit_component_severity "$_row_component" 2>/dev/null || true)"

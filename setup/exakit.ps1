@@ -882,6 +882,9 @@ function Invoke-CmdVersion {
         if (-not $installed) { $installed = "not installed" }
         $available = Get-ExakitComponentAvailable $actual
         if (-not $available) { $available = "unknown" }
+        # Spelled the way every other row spells it - see Get-ExakitVersionPlain.
+        $installed = Get-ExakitVersionPlain $installed
+        $available = Get-ExakitVersionPlain $available
         $rowNote = ""
         $severity = Get-ExakitComponentSeverity $actual
         $status = "current"
