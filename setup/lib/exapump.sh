@@ -505,6 +505,50 @@ exapump_count() {
         grep -oE 'EXAKIT_RC\[[0-9]+\]' | head -1 | tr -dc '0-9'
 }
 
+# exapump_count_many <schema> <table>... - count EVERY table in ONE exapump
+# invocation instead of one per table.
+#
+# WHY THIS EXISTS: every exapump call is a separate PROCESS LAUNCH, and on
+# Windows a freshly downloaded, unsigned exapump.exe is re-scanned by Defender
+# on each one - measured at ~4.4s per launch during an install, against 88ms
+# once the scan is cached. A tpch load made 20 launches, 8 of them nothing but
+# one COUNT(*) per table. That is why loading weather (10,970 rows) took as
+# long as energy (108,050 rows): both made 7 launches. The row counts never
+# mattered; the launch count did.
+#
+# Prints one "<table> <count>" line per table asked for, in query order.
+# Returns NON-ZERO and prints nothing unless every table came back: a UNION ALL
+# fails as a whole, so a partial result must send the caller back to counting
+# one at a time rather than let it report a total that is quietly short.
+#
+# The token carries the table name (EXAKIT_RC[CUSTOMER=1500]) because one
+# result set now holds every count and they have to be told apart. As with
+# exapump_count, the echoed query literal cannot match: after "=" it has a
+# quote, not a digit.
+exapump_count_many() {
+    _ecm_schema="$1"; shift
+    [ $# -gt 0 ] || return 0
+    _ecm_want=$#
+    _ecm_sql=""
+    for _ecm_t in "$@"; do
+        [ -n "$_ecm_sql" ] && _ecm_sql="$_ecm_sql UNION ALL "
+        _ecm_sql="${_ecm_sql}SELECT 'EXAKIT_RC[$_ecm_t=' || CAST(COUNT(*) AS VARCHAR(40)) || ']' AS EXAKIT_RC FROM $_ecm_schema.$_ecm_t"
+    done
+    _ecm_out="$("$(exapump_cli)" sql -p "$EXAKIT_EXAPUMP_PROFILE" "$_ecm_sql" 2>/dev/null | \
+        grep -oE 'EXAKIT_RC\[[A-Za-z0-9_]+=[0-9]+\]' | \
+        sed -e 's/^EXAKIT_RC\[//' -e 's/\]$//' -e 's/=/ /')"
+    # Deliberately not "grep -c . || printf 0": on empty input grep PRINTS 0
+    # and EXITS 1, so the fallback fires too and the count reads "00". It would
+    # still be caught by the comparison below, but only by accident.
+    _ecm_got=0
+    if [ -n "$_ecm_out" ]; then
+        _ecm_got="$(printf '%s
+' "$_ecm_out" | grep -c .)"
+    fi
+    [ "$_ecm_got" = "$_ecm_want" ] || return 1
+    printf '%s\n' "$_ecm_out"
+}
+
 # exakit_group_digits <n> — 173745 -> 173,745. Worth the sed: the row total is
 # the one number in a dataset's result line that a reader compares against what
 # they were expecting.
@@ -1722,8 +1766,17 @@ exakit_load_dataset_dir() {
     _ld_rows_known=1
     if [ -n "$_ld_tables" ]; then
         ui_spin_begin "$EXAKIT_ACTIVE_LABEL"
+        # ONE invocation for every table. exapump_count_many returns non-zero
+        # unless it read them all, and an empty _ld_counts sends the loop back
+        # to the per-table call - so a batch that cannot run costs correctness
+        # nothing, only the speed it was meant to buy.
+        _ld_counts="$(exapump_count_many "$_ld_schema" $_ld_tables 2>/dev/null)" || _ld_counts=""
         for _ld_table in $_ld_tables; do
-            _ld_rows="$(exapump_count "$_ld_schema.$_ld_table")"
+            if [ -n "$_ld_counts" ]; then
+                _ld_rows="$(printf '%s\n' "$_ld_counts" | awk -v t="$_ld_table" '$1 == t { print $2; exit }')"
+            else
+                _ld_rows="$(exapump_count "$_ld_schema.$_ld_table")"
+            fi
             _ld_tables_n=$((_ld_tables_n + 1))
             if [ -n "$_ld_rows" ]; then
                 _ld_rows_total=$((_ld_rows_total + _ld_rows))

@@ -584,9 +584,6 @@ function Invoke-ExapumpUpload {
     return $true
 }
 
-# Get-ExapumpRowCount <schema.table> - row count, or $null if it could not be
-# read. Best-effort only: the row-count summary it feeds is cosmetic (shows
-# "?" on failure) and the real load validation is 03_verify_setup.sql.
 # Get-ExapumpProfilePassword <profile> - the password stored in an exapump
 # profile ($script:ExapumpConfigPath), or $null. Symmetric with the writer in
 # Set-ExapumpTomlSection. Lets the MCP step recover the admin password when the
@@ -602,6 +599,9 @@ function Get-ExapumpProfilePassword {
     return $pw.Groups[1].Value
 }
 
+# Get-ExapumpRowCount <schema.table> - row count, or $null if it could not be
+# read. Best-effort only: the row-count summary it feeds is cosmetic (shows
+# "?" on failure) and the real load validation is 03_verify_setup.sql.
 function Get-ExapumpRowCount {
     param([Parameter(Mandatory)][string]$Target)
     # Wrap the count in a unique delimited token (EXAKIT_RC[<n>]) so it can be
@@ -619,6 +619,48 @@ function Get-ExapumpRowCount {
     $m = [regex]::Match("$($result.Output)", 'EXAKIT_RC\[(\d+)\]')
     if ($m.Success) { return $m.Groups[1].Value }
     return $null
+}
+
+# Get-ExapumpRowCountMany <schema> <tables> - count EVERY table in ONE exapump
+# invocation instead of one per table. Returns a hashtable of table -> count,
+# or $null if any table did not come back.
+#
+# WHY THIS EXISTS: every exapump call is a separate PROCESS LAUNCH, and on
+# Windows a freshly downloaded, unsigned exapump.exe is re-scanned by Defender
+# on each one - measured at ~4.4s per launch during an install, against 88ms
+# once the scan is cached. A tpch load made 20 launches, 8 of them nothing but
+# one COUNT(*) per table. That is why loading weather (10,970 rows) took as
+# long as energy (108,050 rows): both made 7 launches. The row counts never
+# mattered; the launch count did.
+#
+# $null is deliberately all-or-nothing: a UNION ALL fails as a whole, so a
+# partial read must send the caller back to counting one at a time rather than
+# let it report a total that is quietly short.
+#
+# The token carries the table name (EXAKIT_RC[CUSTOMER=1500]) because one
+# result set now holds every count and they have to be told apart. As with
+# Get-ExapumpRowCount the echoed query literal cannot match: after "=" it has
+# a quote, not a digit.
+function Get-ExapumpRowCountMany {
+    param(
+        [Parameter(Mandatory)][string]$Schema,
+        [Parameter(Mandatory)][AllowEmptyCollection()][string[]]$Tables
+    )
+    if ($Tables.Count -eq 0) { return @{} }
+    $parts = @()
+    foreach ($t in $Tables) {
+        $parts += "SELECT 'EXAKIT_RC[$t=' || CAST(COUNT(*) AS VARCHAR(40)) || ']' AS EXAKIT_RC FROM $Schema.$t"
+    }
+    $result = Invoke-Exapump @("sql", "-p", $script:ExapumpProfile, ($parts -join " UNION ALL "))
+    if (-not $result.Success) { return $null }
+    $counts = @{}
+    foreach ($m in [regex]::Matches("$($result.Output)", 'EXAKIT_RC\[([A-Za-z0-9_]+)=(\d+)\]')) {
+        $counts[$m.Groups[1].Value] = $m.Groups[2].Value
+    }
+    foreach ($t in $Tables) {
+        if (-not $counts.ContainsKey($t)) { return $null }
+    }
+    return $counts
 }
 
 function Get-ExakitTableName {
@@ -1584,8 +1626,14 @@ function Invoke-ExakitDatasetDirLoad {
         $schemaName = $schema
         $counted = Invoke-ExakitDatasetStep -Id $Id -Done $step -Total $total -Label "counting rows" -Body {
             $acc = New-Object 'System.Collections.Generic.List[string]'
+            # ONE invocation for every table. $batch is $null unless all of
+            # them came back, and that sends the loop to the per-table call -
+            # so a batch that cannot run costs correctness nothing, only the
+            # speed it was meant to buy.
+            $batch = Get-ExapumpRowCountMany -Schema $schemaName -Tables $tableList
             foreach ($t in $tableList) {
-                $rows = Get-ExapumpRowCount "$schemaName.$t"
+                if ($null -ne $batch) { $rows = $batch[$t] }
+                else { $rows = Get-ExapumpRowCount "$schemaName.$t" }
                 if ($rows) { $shown = $rows } else { $shown = "?" }
                 $line = "{0,-30} {1} rows" -f "$schemaName.$t", $shown
                 if ($script:LogFile) { "DATA  $line" | Add-Content -Path $script:LogFile }
