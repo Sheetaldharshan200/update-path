@@ -6933,28 +6933,58 @@ exakit_maybe_offer_data_load() {
         info "Skipping data loading. Run it any time with: exakit data-load"
         return 0
     fi
+    # The SAME table the selection was just made in becomes the progress display.
+    # This is the path an install actually takes, and it was the one left out:
+    # exakit_data_load_menu (the standalone `exakit data-load`) started the table
+    # and this loop did not, so during an install the table drew, stayed empty,
+    # and every dataset fell back to the single-line bar underneath it.
+    #
+    # The loads below run in subshells, which is exactly why a row's state lives
+    # in a FILE: a subshell can write to it, and could never write to a variable
+    # the animator would see.
+    EXAKIT_TABLE_LIVE=0
+    if [ -n "${EXAKIT_TABLE_STATE:-}" ]; then
+        ui_table_begin "$EXAKIT_TABLE_STATE" && EXAKIT_TABLE_LIVE=1
+    fi
+    _data_notes=""
     for _data_id in $(printf '%s' "$EXAKIT_DATA_LOAD_SELECTION" | tr ',' ' '); do
         case "$_data_id" in
             local)
                 ( exakit_load_local_file )
                 _local_status=$?
                 if [ "$_local_status" -eq 2 ]; then
-                    info "Local file load skipped."
+                    _data_notes="${_data_notes}info|Local file load skipped.
+"
                 elif [ "$_local_status" -ne 0 ]; then
-                    warn "Data loading did not finish cleanly. Retry any time with: exakit data-load"
+                    _data_notes="${_data_notes}warn|Data loading did not finish cleanly. Retry any time with: exakit data-load
+"
                     exakit_note_failure "loading the local file did not finish (see the log)"
                     _data_failed=1
                 fi
                 ;;
             *)
                 if ! ( exakit_load_dataset "$_kit_root" "$_data_id" ); then
-                    warn "Data loading did not finish cleanly. Retry any time with: exakit data-load"
+                    _data_notes="${_data_notes}warn|Data loading did not finish cleanly. Retry any time with: exakit data-load
+"
                     exakit_note_failure "loading dataset '$_data_id' did not finish (see the log)"
                     _data_failed=1
                 fi
                 ;;
         esac
     done
+    # The table stops redrawing BEFORE anything is said over it. A warn printed
+    # into a frame that is still being repainted lands inside the box.
+    [ "$EXAKIT_TABLE_LIVE" = 1 ] && ui_table_end "$EXAKIT_TABLE_STATE"
+    EXAKIT_TABLE_LIVE=0
+    while IFS='|' read -r _dn_kind _dn_text; do
+        [ -n "$_dn_text" ] || continue
+        case "$_dn_kind" in
+            warn) warn "$_dn_text" ;;
+            *)    info "$_dn_text" ;;
+        esac
+    done <<EXAKIT_DATA_NOTES_EOF
+$_data_notes
+EXAKIT_DATA_NOTES_EOF
     return "$_data_failed"
 }
 

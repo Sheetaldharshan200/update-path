@@ -329,5 +329,68 @@ check "the selection is the defaults" "$EXAKIT_TABLE_DEFAULTS" "$EXAKIT_TABLE_SE
 has "and the table was printed"       "TPC-H retail benchmark" "$PLAIN"
 lacks "with no keyboard hint"         "Space to toggle"        "$PLAIN"
 
+printf '\n== a byteless step is worth more than a share of the bytes ==\n'
+
+# energy is the counter-example that broke this: 1,882 bytes of CSV and an
+# 02_load_data.sql that GENERATES 108,000 readings. Five percent of 1,882 is 94,
+# so the step that was the whole job got four percent of the bar, the upload
+# segment capped at 86% and sat there.
+check "a tiny dataset gets the floor"  "262144" "$(exakit_load_nominal 1882)"
+check "so does an empty one"           "262144" "$(exakit_load_nominal 0)"
+# A big one is still a share of itself, because there the files ARE the cost.
+check "a big dataset scales with its bytes" "1083337" "$(exakit_load_nominal 21666755)"
+check "the floor is the larger of the two" "yes" \
+    "$([ "$(exakit_load_nominal 21666755)" -gt "$(exakit_load_nominal 1882)" ] && echo yes || echo no)"
+
+# Measured on the datasets the kit actually ships: the generator-driven one must
+# not hand its whole bar to an upload worth two kilobytes.
+_wt_share() {   # _wt_share <dataset-dir> -> "<upload-pct> <script-pct>"
+    _ws_b=0
+    for _ws_f in "$1"/data/*.csv; do
+        [ -s "$_ws_f" ] && _ws_b=$(( _ws_b + $(exakit_load_weight_of "$_ws_f") ))
+    done
+    _ws_n="$(exakit_load_nominal "$_ws_b")"
+    _ws_t=$(( _ws_b + _ws_n + _ws_n ))
+    [ -s "$1/02_load_data.sql" ]    && _ws_t=$(( _ws_t + _ws_n ))
+    [ -s "$1/03_verify_setup.sql" ] && _ws_t=$(( _ws_t + _ws_n ))
+    printf '%s %s\n' "$(( _ws_b * 100 / _ws_t ))" "$(( _ws_n * 100 / _ws_t ))"
+}
+set -- $(_wt_share "$ROOT/data/datasets/energy")
+check "energy's uploads are almost nothing" "yes" "$([ "$1" -le 5 ] && echo yes || echo "no: $1%")"
+check "and its scripts carry the bar"       "yes" "$([ "$2" -ge 15 ] && echo yes || echo "no: $2%")"
+set -- $(_wt_share "$ROOT/data/datasets/tpch")
+check "tpch's uploads still carry its bar"  "yes" "$([ "$1" -ge 70 ] && echo yes || echo "no: $1%")"
+
+printf '\n== the label drops the estimate the Status column measures ==\n'
+
+exakit_pending_datasets() {
+    printf 'tpch|TPC-H retail benchmark (~175k rows)\nenergy|Smart-meter energy readings (time series, ~108k rows)\n'
+}
+exakit_data_table_build "$TBL"
+check "the hint is gone"      "TPC-H retail benchmark"      "$(sed -n 2p "$TBL" | cut -d'|' -f2)"
+check "...on every row"       "Smart-meter energy readings" "$(sed -n 3p "$TBL" | cut -d'|' -f2)"
+# Only a TRAILING parenthetical goes: a name that legitimately contains brackets
+# in the middle keeps them.
+exakit_pending_datasets() { printf 'x|Orders (EU) by quarter\n'; }
+exakit_data_table_build "$TBL"
+check "brackets in the middle survive" "Orders (EU) by quarter" "$(sed -n 2p "$TBL" | cut -d'|' -f2)"
+
+printf '\n== BOTH callers drive the table, not just the standalone one ==\n'
+
+# This is the gap that shipped: exakit_data_load_menu started the table and the
+# installer's own loop did not, so during an install the table drew, stayed
+# empty, and every dataset fell back to the single-line bar underneath it. The
+# install path is the one that matters and it was the one untested.
+COMMON_SH="$(cat "$ROOT/setup/lib/common.sh")"
+EXAPUMP_SH2="$(cat "$ROOT/setup/lib/exapump.sh")"
+has "the standalone command starts it" 'ui_table_begin "$EXAKIT_TABLE_STATE"' "$EXAPUMP_SH2"
+has "...and stops it"                  'ui_table_end "$EXAKIT_TABLE_STATE"'   "$EXAPUMP_SH2"
+has "the installer offer starts it"    'ui_table_begin "$EXAKIT_TABLE_STATE"' "$COMMON_SH"
+has "...and stops it"                  'ui_table_end "$EXAKIT_TABLE_STATE"'   "$COMMON_SH"
+# A warning printed into a frame that is still being repainted lands inside the
+# box, so the installer collects them and speaks after the table has stopped.
+has "warnings wait for the table"      '_data_notes="${_data_notes}warn|'      "$COMMON_SH"
+has "...and are said afterwards"       'EXAKIT_DATA_NOTES_EOF'                "$COMMON_SH"
+
 printf '\n%s: %d passed, %d failed\n' "$(basename "$0")" "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
