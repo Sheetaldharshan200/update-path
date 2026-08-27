@@ -3101,16 +3101,23 @@ _exakit_marketplace_install_one() {
     # percentages are milestone positions weighted by where the TIME goes -
     # fetching and installing is nearly all of it - not a step count.
     EXAKIT_QUIET_DETAIL=1
-    _exakit_addon_progress "$1" 0 "installing"
+    _mi_state="$(mktemp "${TMPDIR:-/tmp}/exakit-addon.XXXXXX")" || _mi_state=""
+    _mi_t0="$(date +%s 2>/dev/null || echo 0)"
+    if [ -n "$_mi_state" ]; then
+        _exakit_addon_progress "$_mi_state" "$1" 0 65 40 "installing"
+        ui_progress_begin "$_mi_state" "$_mi_t0" || true
+    fi
     "$_mi_install"
     _mi_rc=$?
     if [ "$_mi_rc" -ne 0 ]; then
+        ui_progress_end
+        [ -n "$_mi_state" ] && rm -f "$_mi_state"
         EXAKIT_QUIET_DETAIL="$_mi_prev_quiet"
         EXAKIT_ACTIVE_LABEL="$_mi_prev_label"
         return 1
     fi
     if command -v "$_mi_validate" >/dev/null 2>&1; then
-        _exakit_addon_progress "$1" 65 "validating"
+        [ -n "$_mi_state" ] && _exakit_addon_progress "$_mi_state" "$1" 65 90 8 "validating"
         "$_mi_validate" || true
     fi
     # A service add-on joins the boot set the moment it is installed, so the
@@ -3126,21 +3133,28 @@ _exakit_marketplace_install_one() {
     # Best-effort, and only for an add-on that declares a start hook.
     _mi_start="$(_exakit_addon_fn "$1" start)"
     if command -v "$_mi_start" >/dev/null 2>&1; then
-        _exakit_addon_progress "$1" 90 "starting"
+        [ -n "$_mi_state" ] && _exakit_addon_progress "$_mi_state" "$1" 90 100 3 "starting"
         "$_mi_start" >/dev/null 2>&1 || \
             warn "$1 installed but did not start — start it with: exakit start"
     fi
+    ui_progress_end
+    [ -n "$_mi_state" ] && rm -f "$_mi_state"
     EXAKIT_QUIET_DETAIL="$_mi_prev_quiet"
     EXAKIT_ACTIVE_LABEL="$_mi_prev_label"
     return 0
 }
 
-# _exakit_addon_progress <id> <pct> <phase> — the add-on install's one line of
-# progress. Prints nothing itself: it sets the label the spinner is about to
-# draw, so the animation, the bar, the percentage and the phase share one line.
+# _exakit_addon_progress <state-file> <id> <pct> <ceiling> <seconds> <phase> —
+# the add-on install has reached a new stage.
+#
+# The percentages are milestone positions weighted by where the TIME goes:
+# fetching and installing is nearly all of it, validating a little, starting
+# almost none. The seconds are what the creep fills the gaps with, and it is
+# capped below the next stage, so a slow PyPI resolve makes the bar wait rather
+# than walk into "validating".
 # ⇄ twin: Set-ExakitAddonProgress in exakit-common.ps1.
 _exakit_addon_progress() {
-    EXAKIT_ACTIVE_LABEL="$1 $(ui_bar "$2") ${UI_BOLD:-}$(printf '%3s' "$2")%${UI_RESET:-} $3"
+    ui_progress_state "$1" "$3" "$4" "$5" "$2 · $6"
 }
 
 # exakit_marketplace_menu — the `exakit marketplace` command body, wearing the
