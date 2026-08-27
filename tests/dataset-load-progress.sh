@@ -394,6 +394,28 @@ has "...and are said afterwards"       'EXAKIT_DATA_NOTES_EOF'                "$
 
 printf '\n== under a REAL terminal, one table is left, not three ==\n'
 
+# Cursor-up PRESERVES the column. So a frame drawn while the cursor sits mid-row
+# -- left there by anything that printed without a newline, a spinner frame or a
+# progress line -- starts at that column, and clear-to-end only clears from there
+# rightwards. What stays on screen is the first N columns of the old frame with a
+# new one starting inside it: several top borders side by side on ONE line, at
+# differing widths, which is exactly what was reported. One carriage return in
+# front of every frame makes it impossible, whoever left the cursor where.
+CR_STATE="$WORK/cr-table"
+printf 'group|Select All|1|idle|0|0|0|0||\n' > "$CR_STATE"
+UI_TABLE_LINES=5
+CR_FIRST="$(ui_table_redraw "$CR_STATE" 0 2>/dev/null | head -c 1 | od -An -c | tr -d ' \n')"
+check "every frame starts at column 0" '\r' "$CR_FIRST"
+UI_TABLE_LINES=0
+
+# And only ONE animation at a time: ui_spin_begin takes a nesting reference when
+# something is already animating, but ui_table_begin overwrote the pid instead --
+# orphaning a live step spinner, which then printed its own line forever and left
+# the cursor mid-row for the frame that followed. The PowerShell twin has always
+# refused to start a second one.
+has "the table stops a live animation first" '_ui_step_stop_spinner' \
+    "$(sed -n '/^ui_table_begin() {/,/printf .\\033\[?25l./p' "$ROOT/setup/lib/ui.sh")"
+
 # Everything above reads the state file or a captured string, and neither can see
 # the bug that shipped twice: the table STACKED. The first stack was an animator
 # whose opening frame printed instead of overwriting; the second was an animator

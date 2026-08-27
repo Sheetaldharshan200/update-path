@@ -66,6 +66,7 @@ raw = b''.join(out).decode('utf-8', 'replace')
 
 # Minimal terminal: rows, cursor, ESC[nA (up), ESC[nJ (clear to end), ESC[K, \r
 scr, cur, col = [], 0, 0
+worst_per_line, worst_total = 0, 0
 def put(ch):
     global cur, col
     while len(scr) <= cur: scr.append('')
@@ -101,7 +102,20 @@ while i < len(raw):
         if m: i += m.end(); continue
         m = re.match(r'\x1b\[[0-9;]*m', raw[i:])
         if m: i += m.end(); continue
-    if c == '\n': cur += 1; col = 0
+    if c == '\n':
+        cur += 1; col = 0
+        # The worst INSTANT, not the final screen. Both failures this catches are
+        # transient -- the last frame repaints over the evidence while the user
+        # has already watched the table double. Borders side by side on ONE line
+        # mean a frame was drawn from a column something else left the cursor in
+        # (cursor-up preserves the column); borders on separate lines mean a
+        # frame was taller than the height the animator moves up by.
+        _now = re.sub(r'\x1b\[[0-9;]*m', '', '\n'.join(scr))
+        for _l in _now.split('\n'):
+            _n = _l.count('╭─ ' + title)
+            if _n > worst_per_line: worst_per_line = _n
+        _t = _now.count('╭─ ' + title)
+        if _t > worst_total: worst_total = _t
     elif c == '\r': col = 0
     else: put(c)
     i += 1
@@ -124,4 +138,7 @@ print("=== tables on screen: %d top borders, %d bottom borders (wanted 1 and %d)
 # already done. So count it in the RAW stream, where nothing can overwrite it.
 noise = len(re.findall(r'Terminated:? *\d*|Killed:? *\d*', raw))
 print("=== shell job announcements: %d ===" % noise)
-sys.exit(0 if (tops == 1 and bots == want_bots and noise == 0) else 1)
+print("=== worst instant: %d tables on screen, %d on one line ==="
+      % (worst_total, worst_per_line))
+sys.exit(0 if (tops == 1 and bots == want_bots and noise == 0
+               and worst_per_line <= 1 and worst_total <= 1) else 1)
