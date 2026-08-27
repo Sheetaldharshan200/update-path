@@ -2051,6 +2051,20 @@ exakit_load_dataset_dir() {
     # backward compatibility). data.loaded is left untouched for existing installs.
     _ld_canonical="data.datasets.${_ld_id}.loaded"
     [ "$_ld_flag" = "$_ld_canonical" ] || manifest_set "$_ld_canonical" true
+    # RECORDED HERE BECAUSE THEY ARE ALREADY COMPUTED for the result line
+    # below. `exakit status` shows a dataset's shape without asking the
+    # database at all, which is what keeps that screen instant - counting three
+    # datasets live would put two more exapump launches on every status, and
+    # process launches are exactly what made the old status slow.
+    #
+    # They describe the state AS OF THIS LOAD. Anyone who changes these tables
+    # behind the kit's back will read stale numbers, which is the price of not
+    # querying; `exakit data-load` rewrites them.
+    manifest_set "data.datasets.${_ld_id}.schema" "$_ld_schema"
+    manifest_set "data.datasets.${_ld_id}.tables" "$_ld_tables_n"
+    if [ "$_ld_rows_known" = 1 ]; then
+        manifest_set "data.datasets.${_ld_id}.rows" "$_ld_rows_total"
+    fi
     manifest_set data.last_load.source "dataset:$_ld_id"
     # This dataset's tables exist now, so any listing taken before it is stale.
     exakit_clear_table_listing

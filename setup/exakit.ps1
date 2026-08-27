@@ -202,22 +202,139 @@ function Invoke-CmdStatus {
     }
     $script:statusLabelWidth = $lw
 
-    Write-StatusRow "Kit level:" "$(Get-ExakitManifestValue 'kit_level')"
-    if ($type) { Write-StatusRow "Runtime:" $type } else { Write-StatusRow "Runtime:" "none" }
-    Write-StatusRow "Status:" $status
-    foreach ($svcId in $services.Keys) {
-        Write-StatusRow "${svcId}:" $services[$svcId]
+    # FOUR PANELS, NOT ONE LIST OF LABELS. Twin of cmd_status in setup/exakit.
+    #
+    # status answers "what is true right now". It used to answer that for the
+    # runtime and nothing else: which add-ons are installed, which AI clients
+    # are actually wired to the database, and how much data is in it were all
+    # invisible, even though the manifest records every one of them.
+    #
+    # NOTHING HERE QUERIES THE DATABASE. Every value is read from the manifest
+    # or from the service probes status already ran - process launches are what
+    # made this screen slow, so the landscape got wider without getting slower.
+    #
+    # Versions are NOT here and paths are NOT here: `exakit version` owns the
+    # first, `exakit info` owns the second.
+    #
+    # 17 fits the widest label printed, "Claude Code (CLI)".
+    function Write-StatusPanelRow([string]$Label, [string]$Value) {
+        Write-ExakitPanelLine ($Label.PadRight(17) + " " + $Value)
     }
+
+    Start-ExakitPanel "Kit"
+    $engine = Get-ExakitManifestValue "runtime.engine"
+    $runtimeText = $(if ($type) { $type } else { "none" })
+    if ($engine) { $runtimeText = "$runtimeText ($engine)" }
+    Write-StatusPanelRow "Runtime" "$runtimeText - $status"
+    $dsn = Get-ExakitManifestValue "runtime.dsn"
+    if (-not $dsn) { $dsn = "unknown" }
+    if ($running) { $reach = "reachable" } else { $reach = "not reachable" }
+    Write-StatusPanelRow "Database" "$dsn - $reach"
     if ((Get-ExakitManifestValue "autostart.enabled") -eq $true) {
-        Write-StatusRow "Autostart:" "on"
+        Write-StatusPanelRow "Autostart" "on"
     } else {
-        Write-StatusRow "Autostart:" "off - turn it on with: exakit autostart on"
+        Write-StatusPanelRow "Autostart" "off - turn it on with: exakit autostart on"
     }
+    Write-StatusPanelRow "Kit level" "$(Get-ExakitManifestValue 'kit_level')"
+    # NOT the install date: `exakit version` already prints it.
+    Complete-ExakitPanel
+    Write-Host ""
+
+    # --- add-ons ------------------------------------------------------------
+    Start-ExakitPanel "Add-ons"
+    $installedAddons = @()
+    $absentAddons = @()
+    foreach ($entry in (Get-ExakitMarketplaceAddons)) {
+        # The PowerShell registry yields HASHTABLES with an Id field - it is NOT
+        # the "id|label" string its bash twin returns. Stringifying one and
+        # splitting on "|" produced the whole hashtable as the id, which matched
+        # no add-on, so a kit with three installed reported none and printed the
+        # entire registry as "available".
+        $addonId = "$($entry.Id)"
+        if (-not $addonId) { continue }
+        if (Test-ExakitMarketplaceAddonInstalled $addonId) {
+            $state = "installed"
+            # A service add-on reports the state it is really in.
+            foreach ($svcId in $services.Keys) {
+                if ($svcId -ne $addonId) { continue }
+                $state = $services[$svcId]
+                $port = Get-ExakitManifestValue ("components." + ($addonId -replace '-', '_') + ".port")
+                if ($port) { $state = "$state - http://127.0.0.1:$port" }
+            }
+            $installedAddons += @{ Id = $addonId; State = $state }
+        } else {
+            $absentAddons += $addonId
+        }
+    }
+    if ($installedAddons.Count -gt 0) {
+        foreach ($a in $installedAddons) { Write-StatusPanelRow $a.Id $a.State }
+    } else {
+        Write-StatusPanelRow "none" "add one with: exakit marketplace"
+    }
+    # What you could add is half of "what is my kit".
+    if ($absentAddons.Count -gt 0) {
+        Write-StatusPanelRow "available" ($absentAddons -join ", ")
+    }
+    Complete-ExakitPanel
+    Write-Host ""
+
+    # --- AI clients ---------------------------------------------------------
+    # The whole point of the kit is an AI client that can query the database,
+    # and status never said whether one was connected.
+    Start-ExakitPanel "AI clients (MCP)"
+    $labels = @(
+        @("claude_desktop", "Claude"), @("claude_code", "Claude Code (CLI)"),
+        @("cursor", "Cursor"), @("codex", "Codex"),
+        @("vscode_copilot", "GitHub Copilot"), @("gemini_cli", "Gemini CLI"),
+        @("opencode", "OpenCode"), @("continue", "Continue")
+    )
+    $configured = @(Get-ExakitManifestValue "components.mcp_server.client_setup.configured_clients")
+    $skipped = @(Get-ExakitManifestValue "components.mcp_server.client_setup.skipped_clients")
+    if ($configured.Count -gt 0 -and $configured[0]) {
+        foreach ($pair in $labels) {
+            if ($configured -contains $pair[0]) { $state = "configured" }
+            elseif ($skipped -contains $pair[0]) { $state = "skipped" }
+            else { $state = "not installed" }
+            Write-StatusPanelRow $pair[1] $state
+        }
+        # mcp-setup records how it went. "success_with_warnings" was never shown
+        # anywhere, so a kit carrying a real warning looked perfect.
+        $mcpHealth = Get-ExakitManifestValue "components.mcp_server.client_setup.status"
+        if ($mcpHealth -and $mcpHealth -ne "success") {
+            Write-StatusPanelRow "health" "$mcpHealth - details: exakit mcp-doctor"
+        }
+    } else {
+        Write-StatusPanelRow "none" "connect one with: exakit mcp-setup"
+    }
+    Complete-ExakitPanel
+    Write-Host ""
+
+    # --- data ---------------------------------------------------------------
+    # Table and row counts come from the manifest, written when the dataset was
+    # LOADED (the loader computes them anyway). Counting live would put two more
+    # exapump launches on every status, and launches are what made it slow.
+    Start-ExakitPanel "Data"
     if ($datasets.Count -gt 0) {
-        Write-StatusRow "Datasets:" ($datasets -join ', ')
+        foreach ($ds in $datasets) {
+            $dsSchema = Get-ExakitManifestValue "data.datasets.$ds.schema"
+            if (-not $dsSchema) { $dsSchema = $ds.ToUpper() }
+            $dsTables = Get-ExakitManifestValue "data.datasets.$ds.tables"
+            $dsRows = Get-ExakitManifestValue "data.datasets.$ds.rows"
+            $detail = "loaded"
+            if ($dsTables) {
+                if ("$dsTables" -eq "1") { $unit = "table" } else { $unit = "tables" }
+                $detail = "$dsTables $unit"
+                if ($dsRows) { $detail = "$detail, $(Get-ExakitGroupedDigits $dsRows) rows" }
+            }
+            Write-ExakitPanelLine ("$ds".PadRight(11) + " " + "$dsSchema".PadRight(11) + " " + $detail)
+        }
+        $lastLoad = Get-ExakitManifestValue "data.last_load.source"
+        if ($lastLoad) { Write-ExakitPanelLine ("last load".PadRight(11) + " " + $lastLoad) }
     } else {
-        Write-StatusRow "Datasets:" "none loaded - load some with: exakit data-load"
+        Write-ExakitPanelLine "none loaded - load some with: exakit data-load"
     }
+    Complete-ExakitPanel
+    Write-Host ""
 
     # Every SOFT component, not just one. exapump, the MCP server and pyexasol
     # all install through the soft-step path, so ANY of them can be missing from

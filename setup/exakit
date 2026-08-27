@@ -154,6 +154,56 @@ _not_installed_answer() {
 # prose shows (same exit codes; nothing else on stdout). Loaded datasets are
 # included in both forms: the manifest records them, and reconstructing state
 # after a context reset must not require knowing where that file lives.
+# _cs_engine_suffix — " (docker)" when a container runtime is what runs the
+# database, empty when the runtime is native. Reads the manifest only.
+_cs_engine_suffix() {
+    _cse="$(manifest_get runtime.engine 2>/dev/null || true)"
+    [ -n "$_cse" ] && printf ' (%s)' "$_cse"
+}
+
+# _cs_mcp_clients — "<label>|<state>" per AI client, from the manifest alone.
+#
+# configured_clients is what mcp-setup actually wrote; every other known client
+# is reported as not installed. No probing and no config parsing: this is the
+# state the kit recorded, and `exakit mcp-doctor` is the command that re-checks
+# it against the machine.
+_cs_mcp_clients() {
+    manifest_get components.mcp_server.client_setup.configured_clients >/dev/null 2>&1 || return 0
+    require_python3 2>/dev/null || return 0
+    run_python - "$EXAKIT_MANIFEST" <<'EXAKIT_CS_MCP'
+import json, sys
+
+LABELS = [
+    ("claude_desktop", "Claude"),
+    ("claude_code", "Claude Code (CLI)"),
+    ("cursor", "Cursor"),
+    ("codex", "Codex"),
+    ("vscode_copilot", "GitHub Copilot"),
+    ("gemini_cli", "Gemini CLI"),
+    ("opencode", "OpenCode"),
+    ("continue", "Continue"),
+]
+try:
+    with open(sys.argv[1], encoding="utf-8") as handle:
+        doc = json.load(handle)
+except (OSError, ValueError):
+    raise SystemExit(0)
+setup = (
+    doc.get("components", {}).get("mcp_server", {}).get("client_setup", {}) or {}
+)
+configured = set(setup.get("configured_clients") or [])
+skipped = set(setup.get("skipped_clients") or [])
+for key, label in LABELS:
+    if key in configured:
+        state = "configured"
+    elif key in skipped:
+        state = "skipped"
+    else:
+        state = "not installed"
+    print("%s|%s" % (label, state))
+EXAKIT_CS_MCP
+}
+
 cmd_status() {
     _cs_json=0
     for _cs_arg in "$@"; do
@@ -270,27 +320,138 @@ EXAKIT_SJ_PY
     done
     _cs_row() { printf "%-${_cs_lw}s %s\n" "$1" "$2"; }
 
-    _cs_row 'Kit level:' "$(manifest_get kit_level 2>/dev/null)"
-    _cs_row 'Runtime:'   "${_type:-none}"
-    _cs_row 'Status:'    "$_cs_db"
-    # Every add-on that runs as a service, with the state it is actually in —
-    # registry-driven, so a new add-on appears here on its own.
-    for _st_id in $(exakit_service_ids 2>/dev/null); do
-        [ "$_st_id" = "database" ] && continue
-        _cs_row "$_st_id:" "$(exakit_service_status "$_st_id")"
-    done
+    # FOUR PANELS, NOT ONE LIST OF LABELS.
+    #
+    # status answers "what is true right now". It used to answer that for the
+    # runtime and nothing else: which add-ons are installed, which AI clients
+    # are actually wired to the database, and how much data is in it were all
+    # invisible, even though the manifest records every one of them.
+    #
+    # NOTHING HERE QUERIES THE DATABASE. Every value below is read from the
+    # manifest or from the service probes status already ran. That is
+    # deliberate: process launches are what made this screen slow, so the
+    # landscape got wider without getting slower.
+    #
+    # Versions are NOT here and paths are NOT here - `exakit version` owns the
+    # first and `exakit info` owns the second. Repeating them was the thing
+    # that made the older screens feel like the same content three times.
+    # 17 fits the widest label this screen prints, "Claude Code (CLI)".
+    # It was 15, and that one row pushed its value out of the column.
+    _cs_pad() { printf '%-17s %s' "$1" "$2"; }
+
+    ui_panel_begin "Kit"
+    ui_panel_line "$(_cs_pad 'Runtime' "${_type:-none}$(_cs_engine_suffix) · $_cs_db")"
+    ui_panel_line "$(_cs_pad 'Database' "$(manifest_get runtime.dsn 2>/dev/null || printf 'unknown')$(
+        [ "$_cs_running" -eq 1 ] && printf ' · reachable' || printf ' · not reachable')")"
     if [ "$_cs_autostart" = "true" ]; then
-        _cs_row 'Autostart:' 'on'
+        ui_panel_line "$(_cs_pad 'Autostart' 'on')"
     else
-        _cs_row 'Autostart:' 'off — turn it on with: exakit autostart on'
+        ui_panel_line "$(_cs_pad 'Autostart' 'off — turn it on with: exakit autostart on')"
     fi
+    ui_panel_line "$(_cs_pad 'Kit level' "$(manifest_get kit_level 2>/dev/null)")"
+    # NOT the install date: `exakit version` already prints it, and repeating
+    # it here is exactly the duplication that made the older screens read like
+    # the same content three times.
+    ui_panel_end
+    printf '\n'
+
+    # --- add-ons ------------------------------------------------------------
+    # Registry-driven on both halves: a new add-on appears here on its own, and
+    # the ones you do NOT have are named too, because "what could I add" is
+    # half of "what is my kit".
+    ui_panel_begin "Add-ons"
+    # exakit_marketplace_addons yields "id|label" LINES. Splitting on whitespace
+    # turned every label into separate words and the id into "dash-server|dash-server",
+    # which matched no add-on - so a kit with three of them installed reported
+    # none. Read line by line and cut the id.
+    _cs_installed=""
+    _cs_absent=""
+    while IFS='|' read -r _cs_aid _cs_alabel; do
+        [ -n "$_cs_aid" ] || continue
+        if exakit_marketplace_addon_installed "$_cs_aid" 2>/dev/null; then
+            _cs_astate="installed"
+            # A service add-on reports the state it is really in; the rest are
+            # simply present. Registry-driven, so a new one appears on its own.
+            for _st_id in $(exakit_service_ids 2>/dev/null); do
+                [ "$_st_id" = "$_cs_aid" ] || continue
+                _cs_astate="$(exakit_service_status "$_st_id")"
+                _cs_aport="$(manifest_get "components.$(printf '%s' "$_cs_aid" | tr '-' '_').port" 2>/dev/null || true)"
+                [ -n "$_cs_aport" ] && _cs_astate="$_cs_astate · http://127.0.0.1:$_cs_aport"
+            done
+            _cs_installed="${_cs_installed}${_cs_installed:+
+}$_cs_aid|$_cs_astate"
+        else
+            _cs_absent="${_cs_absent:+$_cs_absent, }$_cs_aid"
+        fi
+    done <<EXAKIT_CS_ADDONS
+$(exakit_marketplace_addons 2>/dev/null)
+EXAKIT_CS_ADDONS
+    if [ -n "$_cs_installed" ]; then
+        while IFS='|' read -r _cs_aid _cs_astate; do
+            [ -n "$_cs_aid" ] || continue
+            ui_panel_line "$(_cs_pad "$_cs_aid" "$_cs_astate")"
+        done <<EXAKIT_CS_INSTALLED
+$_cs_installed
+EXAKIT_CS_INSTALLED
+    else
+        ui_panel_line "$(_cs_pad 'none' 'add one with: exakit marketplace')"
+    fi
+    # What you could add is half of "what is my kit".
+    [ -n "$_cs_absent" ] && ui_panel_line "$(_cs_pad 'available' "$_cs_absent")"
+    ui_panel_end
+    printf '\n'
+
+    # --- AI clients ---------------------------------------------------------
+    # The whole point of the kit is an AI client that can query the database,
+    # and status never said whether one was connected.
+    ui_panel_begin "AI clients (MCP)"
+    _cs_clients="$(_cs_mcp_clients)"
+    if [ -n "$_cs_clients" ]; then
+        # HEREDOC, NOT A PIPE. `... | while read` runs the loop in a SUBSHELL,
+        # and ui_panel_line only appends to a variable - so every line would be
+        # written into a shell that exits a moment later and the panel would
+        # render EMPTY. Fed from a heredoc the loop runs in this shell and the
+        # buffer survives.
+        while IFS='|' read -r _cs_cl _cs_cs; do
+            [ -n "$_cs_cl" ] || continue
+            ui_panel_line "$(_cs_pad "$_cs_cl" "$_cs_cs")"
+        done <<EXAKIT_CS_CLIENTS
+$_cs_clients
+EXAKIT_CS_CLIENTS
+        # mcp-setup records how it went. "success_with_warnings" was never
+        # shown anywhere, so a kit carrying a real warning looked perfect.
+        _cs_mcpwarn="$(manifest_get components.mcp_server.client_setup.status 2>/dev/null || true)"
+        case "$_cs_mcpwarn" in
+            success|"") ;;
+            *) ui_panel_line "$(_cs_pad 'health' "$_cs_mcpwarn — details: exakit mcp-doctor")" ;;
+        esac
+    else
+        ui_panel_line "$(_cs_pad 'none' 'connect one with: exakit mcp-setup')"
+    fi
+    ui_panel_end
+    printf '\n'
+
+    # --- data ---------------------------------------------------------------
+    ui_panel_begin "Data"
     if [ -n "$_cs_datasets" ]; then
-        # Comma-separated: the ids are space-separated in the manifest, and
-        # printing them raw ran the names together as one string.
-        _cs_row 'Datasets:' "$(printf '%s' "$_cs_datasets" | tr -s ' ' | sed 's/^ //; s/ $//; s/ /, /g')"
+        for _cs_ds in $_cs_datasets; do
+            _cs_dsch="$(manifest_get "data.datasets.${_cs_ds}.schema" 2>/dev/null || printf '%s' "$(printf '%s' "$_cs_ds" | tr '[:lower:]' '[:upper:]')")"
+            _cs_dt="$(manifest_get "data.datasets.${_cs_ds}.tables" 2>/dev/null || true)"
+            _cs_dr="$(manifest_get "data.datasets.${_cs_ds}.rows" 2>/dev/null || true)"
+            _cs_dline="loaded"
+            if [ -n "$_cs_dt" ]; then
+                _cs_dline="$_cs_dt table$([ "$_cs_dt" = "1" ] || printf 's')"
+                [ -n "$_cs_dr" ] && _cs_dline="$_cs_dline, $(exakit_group_digits "$_cs_dr") rows"
+            fi
+            ui_panel_line "$(printf '%-11s %-11s %s' "$_cs_ds" "$_cs_dsch" "$_cs_dline")"
+        done
+        _cs_last="$(manifest_get data.last_load.source 2>/dev/null || true)"
+        [ -n "$_cs_last" ] && ui_panel_line "$(printf '%-11s %s' 'last load' "$_cs_last")"
     else
-        _cs_row 'Datasets:' 'none loaded — load some with: exakit data-load'
+        ui_panel_line 'none loaded — load some with: exakit data-load'
     fi
+    ui_panel_end
+    printf '\n'
 
     # Every SOFT component, not just one. exapump, the MCP server and pyexasol
     # all install through exakit_soft_step, so ANY of them can be missing from an

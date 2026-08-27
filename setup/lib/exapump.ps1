@@ -1892,6 +1892,18 @@ function Invoke-ExakitDatasetDirLoad {
     # backward compatibility). data.loaded is left untouched for existing installs.
     $canonicalFlag = "data.datasets.$Id.loaded"
     if ($flag -ne $canonicalFlag) { Set-ExakitManifestValue $canonicalFlag $true }
+    # RECORDED HERE BECAUSE THEY ARE ALREADY COMPUTED for the result line
+    # below. `exakit status` shows a dataset's shape without asking the
+    # database at all, which is what keeps that screen instant - counting three
+    # datasets live would put two more exapump launches on every status, and
+    # process launches are exactly what made the old status slow.
+    #
+    # They describe the state AS OF THIS LOAD. Anyone who changes these tables
+    # behind the kit's back will read stale numbers, which is the price of not
+    # querying; `exakit data-load` rewrites them.
+    Set-ExakitManifestValue "data.datasets.$Id.schema" $schema
+    Set-ExakitManifestValue "data.datasets.$Id.tables" $tableCount
+    if ($rowsKnown) { Set-ExakitManifestValue "data.datasets.$Id.rows" $rowTotal }
     Set-ExakitManifestValue "data.last_load.source" "dataset:$Id"
     # This dataset's tables exist now, so any listing taken before it is stale.
     Clear-ExakitTableListing
