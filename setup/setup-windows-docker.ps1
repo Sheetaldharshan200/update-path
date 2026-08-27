@@ -237,7 +237,7 @@ try {
         -Label "marketplace add-ons" `
         -Warning "The marketplace offer did not finish cleanly." `
         -Body { Request-ExakitMarketplaceOffer })
-    Info "Next: exakit status | exakit info | exakit version | exakit update | exakit help"
+    Info "Run ""exakit help"" for support"
 } catch [ExakitFailException] {
     # A hard stop (no container runtime, no database) still owes the user the
     # account of what had already been skipped before it.

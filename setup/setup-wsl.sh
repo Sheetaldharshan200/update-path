@@ -94,4 +94,4 @@ exakit_print_soft_failures
 # the marketplace offer so an add-on installed from it joins the boot set.
 exakit_autostart_default_on || true
 ( exakit_marketplace_offer ) || true
-info "Next: exakit status | exakit info | exakit version | exakit update | exakit help"
+info "Run \"exakit help\" for support"
