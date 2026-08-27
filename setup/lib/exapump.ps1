@@ -1673,6 +1673,13 @@ function Set-ExakitLoadStep {
     }
     if ($ceil -gt 100) { $ceil = 100 }
     if ($pct -gt 100) { $pct = 100 }
+    # A dataset being loaded from the table reports into its ROW; anything else
+    # (a folder, a single named file) still owns the one-line bar.
+    if ($script:ExakitTableRow -gt 0) {
+        Set-ExakitTableRow -Row $script:ExakitTableRow -State "running" `
+            -Pct $pct -Ceiling $ceil -Secs $Seconds -Phase $Phase
+        return
+    }
     Set-ExakitProgress -Pct $pct -Ceiling $ceil -Secs $Seconds -Phase $Phase
 }
 
@@ -1710,7 +1717,13 @@ function Invoke-ExakitDatasetDirLoad {
         Ok "Dataset '$Id' already loaded"
         return
     }
-    Info "Loading the '$Id' dataset into schema $schema"
+    # The table already names the dataset in its own row, so announcing it again
+    # would be the same fact twice - and the line would scroll the table.
+    if ($script:ExakitTableLive) {
+        Write-ExakitLog "INFO" "Loading the '$Id' dataset into schema $schema"
+    } else {
+        Info "Loading the '$Id' dataset into schema $schema"
+    }
 
     # ONE line for the whole dataset, not one line per file. Loading three
     # bundled datasets used to print about a hundred and thirty lines - every
@@ -1739,7 +1752,16 @@ function Invoke-ExakitDatasetDirLoad {
     if ((Test-Path $verifySql) -and (Get-Item $verifySql).Length -gt 0) { $totalWeight += $nominal }
     $doneWeight = [long]0
     $started = Get-Date
-    [void](Start-ExakitProgress -Pct 0 -Ceiling 1 -Secs 2 -Phase "$Id - reading the dataset")
+    # Which row of the table this dataset owns, if a table is on screen. Zero
+    # means there is none, and the single-line bar takes over.
+    $script:ExakitTableRow = 0
+    if ($script:ExakitTableLive) { $script:ExakitTableRow = Get-ExakitDataTableRow -Id $Id }
+    if ($script:ExakitTableRow -gt 0) {
+        Set-ExakitTableRow -Row $script:ExakitTableRow -State "running" `
+            -Pct 0 -Ceiling 1 -Secs 2 -Phase "$Id - reading the dataset"
+    } else {
+        [void](Start-ExakitProgress -Pct 0 -Ceiling 1 -Secs 2 -Phase "$Id - reading the dataset")
+    }
     $script:ExakitUploadQuiet = $true
     $tableCount = 0
     $rowTotal = [long]0
@@ -1824,7 +1846,16 @@ function Invoke-ExakitDatasetDirLoad {
         # Eighteen rows of "OK, 0 orphaned row(s)" say nothing the result line
         # does not already say - a FAIL row says everything.
         if (-not $result.Success -or $result.Output -match ",FAIL,") {
-                Stop-ExakitProgress
+            Stop-ExakitProgress
+            if ($script:ExakitTableRow -gt 0) {
+                Set-ExakitTableRow -Row $script:ExakitTableRow -State "failed" `
+                    -Final "failed $($script:UiMidDot) verification (see log)"
+                $script:ExakitTableRow = 0
+            }
+            # The table has to stop animating before anything is printed over it,
+            # or the checks scroll under a repainting frame. Stopped AFTER the row
+            # was marked failed, so the frame left on screen says which one it was.
+            Stop-ExakitDataTableRun
             $script:ExakitUploadQuiet = $false
             $script:ExakitActiveLabel = ""
             Write-ExapumpOutput -Output $result.Output -Header "Verification failed for dataset '$Id':"
@@ -1881,7 +1912,10 @@ function Invoke-ExakitDatasetDirLoad {
     }
 
     } finally {
-        Stop-ExakitProgress
+        # Only the one-line bar is stopped here. A row of the table is not an
+        # animation of its own - the table owns the animation and outlives this
+        # dataset, because the next one fills in the row underneath.
+        if ($script:ExakitTableRow -le 0) { Stop-ExakitProgress }
         $script:ExakitUploadQuiet = $false
         $script:ExakitActiveLabel = ""
     }
@@ -1898,73 +1932,157 @@ function Invoke-ExakitDatasetDirLoad {
     $elapsed = [int]((Get-Date) - $started).TotalSeconds
     if ($elapsed -lt 0) { $elapsed = 0 }
     $resultLine = "Dataset '$Id' loaded and verified"
+    if ($tableCount -eq 1) { $unit = "table" } else { $unit = "tables" }
     if ($tableCount -gt 0) {
-        if ($tableCount -eq 1) { $unit = "table" } else { $unit = "tables" }
         $resultLine = "$resultLine - $tableCount $unit"
         if ($rowsKnown) { $resultLine = "$resultLine, $(Get-ExakitGroupedDigits $rowTotal) rows" }
     }
-    Ok "$resultLine (${elapsed}s)"
+    if ($script:ExakitTableRow -gt 0) {
+        # Built for the COLUMN, not for a sentence: the row already says which
+        # dataset it is, so the prefix goes, and the two numbers are padded to a
+        # fixed width so they line up down the table instead of wandering with the
+        # length of the text in front of them.
+        #
+        #   completed - 8 tables, 173,745 rows  (23s)
+        #   completed - 2 tables, 108,050 rows   (4s)
+        #   completed - 2 tables,  10,970 rows   (2s)
+        $cell = "completed $($script:UiMidDot) $tableCount $unit"
+        if ($rowsKnown) {
+            $cell = "$cell, $((Get-ExakitGroupedDigits $rowTotal).PadLeft(7)) rows"
+        }
+        $stamp = "({0}s)" -f $elapsed
+        $cell = "$cell $($stamp.PadLeft(5))"
+        Set-ExakitTableRow -Row $script:ExakitTableRow -State "done" -Final $cell
+        Write-ExakitLog "OK" "$resultLine (${elapsed}s)"
+        $script:ExakitTableRow = 0
+    } else {
+        Ok "$resultLine (${elapsed}s)"
+    }
 }
 
-# Select-ExakitDataLoad <final_label> - dynamic checkbox over the data
-# sources: every bundled dataset that is not loaded yet, then the local-file
-# option, then <final_label> as the mutually exclusive opt-out (Cancel/Skip).
-# When every bundled dataset is already loaded, only the local-file and
-# opt-out choices are shown, with the opt-out as the safe default. Returns a
-# string array of ids ("tpch", "local") or @("none").
-function Select-ExakitDataLoad {
+# --- the datasets table -------------------------------------------------------
+# One table for the whole job: the rows you tick are the rows that fill in. See
+# the ui_table_* / *-ExakitTable* family in ui.ps1 for the mechanism; what lives
+# here is which rows there are and what their Status column says.
+# Twin of the same block in exapump.sh.
+$script:ExakitTableIds = @()          # the dataset id per row ("" for the rest)
+$script:ExakitTableRowLocal = 0
+$script:ExakitTableRowSkip = 0
+$script:ExakitTableDefaults = @()
+$script:ExakitTableGroupFirst = 0
+$script:ExakitTableGroupLast = 0
+$script:ExakitTableLive = $false      # is the table animating right now
+$script:ExakitTableRow = 0            # the row the dataset being loaded owns
+
+# New-ExakitDataTable <final_label> - build the rows, in the order they are
+# drawn, and record the defaults / group range / exclusive row the way the
+# selection layer expects. Twin of exakit_data_table_build in exapump.sh.
+function New-ExakitDataTable {
     param([Parameter(Mandatory)][string]$FinalLabel)
-    # EXAKIT_DATA_FILE mirrors the EXAKIT_DATASETS contract: naming a file IS
-    # choosing the local-file option, so the menu never draws. The path (and
-    # EXAKIT_DATA_TABLE) are consumed by Import-ExakitLocalFile as its answers.
-    if ($env:EXAKIT_DATA_FILE) {
-        Info "Loading a local file (EXAKIT_DATA_FILE)."
-        return @("local")
-    }
-    # Three top-level choices, with the pending datasets shown upfront as a
-    # small tree under a "Sample datasets" group header (see exapump.sh twin).
-    $labels = New-Object 'System.Collections.Generic.List[string]'
+    [void](New-ExakitTable -Title "Datasets to load" -Reserve 1)
     $ids = New-Object 'System.Collections.Generic.List[string]'
+    $defaults = New-Object 'System.Collections.Generic.List[int]'
+    $script:ExakitTableGroupFirst = 0
+    $script:ExakitTableGroupLast = 0
     $pending = @(Get-ExakitPendingDatasets)
     if ($pending.Count -gt 0) {
         # The group row is itself a checkbox: pre-selected with every dataset;
-        # unchecking it clears all datasets, after which the user can pick
-        # them individually. Each dataset hangs off it with a tree connector
-        # (UiTee/UiCorner from the ui palette; ASCII in plain mode) so the
-        # parent-child relationship is visible, not just implied by indent.
-        # The connectors must come from the palette, never as literals here:
-        # this file has no BOM, so Windows PowerShell 5.1 reads it as ANSI and
-        # raw glyph bytes break the parse of the whole script.
-        $tee = $script:UiTee; $corner = $script:UiCorner
-        [void]$labels.Add("Select All"); [void]$ids.Add("__group__")
+        # unchecking it clears them all, after which they can be picked
+        # individually. Each dataset hangs off it with a tree connector, which the
+        # table draws from the palette - the connectors must never be literals in
+        # this file, which has no BOM and would be misread byte for byte by
+        # Windows PowerShell 5.1 (see tests/ps-encoding-guard.sh).
+        [void](Add-ExakitTableRow -Kind "group" -Label "Select All" -Ticked)
+        [void]$ids.Add("")
         for ($i = 0; $i -lt $pending.Count; $i++) {
-            if ($i -eq $pending.Count - 1) { $conn = $corner } else { $conn = $tee }
-            [void]$labels.Add("$conn $($pending[$i].Label)")
+            if ($i -eq $pending.Count - 1) { $kind = "corner" } else { $kind = "tee" }
+            # The label loses its trailing "(~175k rows)": the Status column
+            # carries the real count when the row finishes, and an estimate beside
+            # a measurement is the same fact twice, worse. Only a TRAILING
+            # parenthetical goes - "Orders (EU) by quarter" keeps its brackets.
+            $label = [regex]::Replace($pending[$i].Label, ' *\([^()]*\)$', '')
+            [void](Add-ExakitTableRow -Kind $kind -Label $label -Ticked)
             [void]$ids.Add($pending[$i].Id)
         }
+        $script:ExakitTableGroupFirst = 2
+        $script:ExakitTableGroupLast = $pending.Count + 1
+        for ($i = 1; $i -le ($pending.Count + 1); $i++) { [void]$defaults.Add($i) }
     }
-    [void]$labels.Add("A local CSV/Parquet file, or a folder of them"); [void]$ids.Add("local")
-    [void]$labels.Add($FinalLabel);                [void]$ids.Add("none")
-    $finalIdx = $labels.Count
-    if ($pending.Count -gt 0) {
-        $defaults = @(1..($pending.Count + 1))   # group row + every dataset
-        $selection = Read-ExakitCheckboxMenu -Title "Select dataset to load" -Options $labels.ToArray() `
-            -Defaults $defaults -ExclusiveIndex $finalIdx `
-            -GroupParent 1 -GroupFirst 2 -GroupLast ($pending.Count + 1) -GroupMode "all"
-    } else {
+    # The label is NARROWER than the shell twin's on purpose: exapump.ps1 does not
+    # route a .json file to the JSON Tables add-on the way exapump.sh does, so
+    # naming JSON here would offer what this side cannot do. When that routing
+    # lands, widen the label and the assertion in tests/test_sample_data_schema.py
+    # together - never the label alone.
+    [void](Add-ExakitTableRow -Kind "plain" -Label "A local CSV/Parquet file, or a folder of them")
+    [void]$ids.Add("local")
+    $script:ExakitTableRowLocal = $ids.Count
+    [void](Add-ExakitTableRow -Kind "plain" -Label $FinalLabel)
+    [void]$ids.Add("")
+    $script:ExakitTableRowSkip = $ids.Count
+    # With every bundled dataset already loaded there is nothing to tick but the
+    # local-file row, which is the only thing this screen can still do. Enter must
+    # never be a no-op.
+    if ($pending.Count -eq 0) {
+        $defaults.Clear()
+        [void]$defaults.Add($script:ExakitTableRowLocal)
+    }
+    $script:ExakitTableIds = $ids.ToArray()
+    $script:ExakitTableDefaults = $defaults.ToArray()
+}
+
+# Get-ExakitDataTableRow <dataset-id> - which row that dataset is on, or 0.
+# Twin of exakit_data_table_row in exapump.sh.
+function Get-ExakitDataTableRow {
+    param([Parameter(Mandatory)][string]$Id)
+    for ($i = 0; $i -lt $script:ExakitTableIds.Count; $i++) {
+        if ($script:ExakitTableIds[$i] -eq $Id) { return $i + 1 }
+    }
+    return 0
+}
+
+# Select-ExakitDataLoad <final_label> - the data-source choice, made in the
+# TABLE that will show the progress: every bundled dataset that is not loaded yet
+# under a "Select All" group row, then the local-file option, then <final_label>
+# as the mutually exclusive opt-out (Cancel/Skip). When every bundled dataset is
+# already loaded the group disappears and the local-file row is the default, so
+# Enter still does something. Returns a string array of ids ("tpch", "local") or
+# @("none"). Twin of exakit_data_load_select in exapump.sh.
+function Select-ExakitDataLoad {
+    param([Parameter(Mandatory)][string]$FinalLabel)
+    # EXAKIT_DATA_FILE mirrors the EXAKIT_DATASETS contract: naming a file IS
+    # choosing the local-file option, so the table never draws. The path (and
+    # EXAKIT_DATA_TABLE) are consumed by Import-ExakitLocalFile as its answers.
+    if ($env:EXAKIT_DATA_FILE) {
+        Info "Loading a local file (EXAKIT_DATA_FILE)."
+        # No table was built, so nothing may animate one. The row ids ARE that
+        # signal, the way an empty EXAKIT_TABLE_STATE is on the shell side.
+        $script:ExakitTableIds = @()
+        return @("local")
+    }
+    New-ExakitDataTable -FinalLabel $FinalLabel
+    # The local-file row being row 1 means there was no group above it, which
+    # means nothing is pending.
+    if ($script:ExakitTableRowLocal -eq 1) {
         Info "Every bundled dataset is already loaded (reload with: exakit data-load -Force)."
-        # Pre-select the LOCAL FILE row, not the final "Cancel" one: with every
-        # bundled dataset already in, loading something of your own is the only
-        # thing left for this screen to do, and defaulting to Cancel made Enter
-        # a no-op. The local row sits one index below the final label.
-        # Twin of exakit_data_load_select in exapump.sh.
-        $selection = Read-ExakitCheckboxMenu -Title "Select dataset to load" -Options $labels.ToArray() `
-            -Defaults @($finalIdx - 1) -ExclusiveIndex $finalIdx
     }
-    if ($selection -contains $finalIdx) { return @("none") }
-    $chosen = @($selection | Where-Object { $_ -lt $finalIdx } | ForEach-Object { $ids[$_ - 1] } | Where-Object { $_ -ne "__group__" })
+    $groupParent = 0
+    if ($script:ExakitTableGroupFirst -gt 0) { $groupParent = 1 }
+    Write-Host ""
+    $selection = @(Invoke-ExakitTableMenu -Defaults $script:ExakitTableDefaults `
+        -ExclusiveIndex $script:ExakitTableRowSkip `
+        -GroupParent $groupParent -GroupFirst $script:ExakitTableGroupFirst `
+        -GroupLast $script:ExakitTableGroupLast -GroupMode "all")
+    if ($selection -contains $script:ExakitTableRowSkip) { return @("none") }
+    $chosen = New-Object 'System.Collections.Generic.List[string]'
+    foreach ($row in $selection) {
+        if ($row -lt 1 -or $row -gt $script:ExakitTableIds.Count) { continue }
+        $id = $script:ExakitTableIds[$row - 1]
+        # The group row and the opt-out carry no id: they are answers about the
+        # other rows, not data sources of their own.
+        if ($id -and -not $chosen.Contains($id)) { [void]$chosen.Add($id) }
+    }
     if ($chosen.Count -eq 0) { return @("none") }
-    return $chosen
+    return $chosen.ToArray()
 }
 
 function Show-ExakitDataLoadMenu {
@@ -1976,16 +2094,51 @@ function Show-ExakitDataLoadMenu {
         Info "Data loading cancelled."
         return
     }
-    foreach ($id in $chosen) {
-        if ($id -eq "local") {
-            $result = Import-ExakitLocalFile
-            if ($result -eq "back") { Info "Local file load skipped. Run it any time with: exakit data-load" }
-        } else {
-            $kitRoot = Get-ExakitRepoRoot
-            if (-not $kitRoot) { Fail "Could not find the kit's sql/ and data/ files to load." }
-            Invoke-ExakitDatasetLoad -KitRoot $kitRoot -Id $id
+    Start-ExakitDataTableRun
+    try {
+        foreach ($id in $chosen) {
+            if ($id -eq "local") {
+                Stop-ExakitDataTableRun
+                $result = Import-ExakitLocalFile
+                if ($result -eq "back") { Info "Local file load skipped. Run it any time with: exakit data-load" }
+            } else {
+                $kitRoot = Get-ExakitRepoRoot
+                if (-not $kitRoot) { Fail "Could not find the kit's sql/ and data/ files to load." }
+                Invoke-ExakitDatasetLoad -KitRoot $kitRoot -Id $id
+            }
         }
+    } finally {
+        Stop-ExakitDataTableRun
     }
+}
+
+# Start-ExakitDataTableRun / Stop-ExakitDataTableRun - the same table the
+# selection was made in now becomes the progress display: the rows do not move,
+# so nobody has to map one screen onto another. It animates only where there is a
+# console to animate on; everywhere else the loaders narrate in plain lines
+# exactly as they did before.
+#
+# Both entry points into a load - the standalone `exakit data-load` and the
+# installer's offer - have to drive it. That is the gap the shell side shipped
+# with: only the standalone command started the table, so during an install it
+# drew, stayed empty, and every dataset fell back to the single-line bar.
+function Start-ExakitDataTableRun {
+    $script:ExakitTableRow = 0
+    $script:ExakitTableLive = $false
+    # No rows means no table was built for this run (EXAKIT_DATA_FILE answers the
+    # screen without drawing one), and an empty box animating over nothing is
+    # worse than no box. Twin of the `[ -n "$EXAKIT_TABLE_STATE" ]` guard.
+    if ($script:ExakitTableIds.Count -lt 1) { return }
+    $script:ExakitTableLive = [bool](Start-ExakitTable)
+}
+function Stop-ExakitDataTableRun {
+    # A prompt cannot share the screen with a repainting frame, so the local-file
+    # branch stops the table before it asks anything - which is also why this is
+    # safe to call more than once.
+    if (-not $script:ExakitTableLive) { return }
+    Stop-ExakitTable
+    $script:ExakitTableLive = $false
+    $script:ExakitTableRow = 0
 }
 
 # Invoke-ExakitSampleDataLoad <kit_root> [-Force] - the TPC-H sample-data
@@ -2054,12 +2207,18 @@ function Request-ExakitDataLoadOffer {
         Info "Skipping data loading. Run it any time with: exakit data-load"
         return
     }
-    foreach ($id in $chosen) {
-        if ($id -eq "local") {
-            $result = Import-ExakitLocalFile
-            if ($result -eq "back") { Info "Local file load skipped. Run it any time with: exakit data-load" }
-        } else {
-            Invoke-ExakitDatasetLoad -KitRoot $KitRoot -Id $id
+    Start-ExakitDataTableRun
+    try {
+        foreach ($id in $chosen) {
+            if ($id -eq "local") {
+                Stop-ExakitDataTableRun
+                $result = Import-ExakitLocalFile
+                if ($result -eq "back") { Info "Local file load skipped. Run it any time with: exakit data-load" }
+            } else {
+                Invoke-ExakitDatasetLoad -KitRoot $KitRoot -Id $id
+            }
         }
+    } finally {
+        Stop-ExakitDataTableRun
     }
 }

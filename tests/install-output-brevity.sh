@@ -192,7 +192,9 @@ has "the add-on group row"  '_mm_menu_labels=("Select All")'                    
 # table's own state file rather than a label array.
 has "the dataset group row" "printf 'group|Select All|1|idle" "$EXAPUMP_SH"
 has "...and on Windows"     '[void]$menuLabels.Add("Select All")'               "$COMMON_PS1"
-has "...for datasets too"   '[void]$labels.Add("Select All"); [void]$ids.Add("__group__")' "$EXAPUMP_PS1"
+# Windows draws the same live table now, so its parent row is a table row rather
+# than an entry in a label array.
+has "...for datasets too"   'Add-ExakitTableRow -Kind "group" -Label "Select All"' "$EXAPUMP_PS1"
 
 # One word for the opt-out row, in every menu that has one. Five call sites on
 # the shell side, four on the PowerShell side.

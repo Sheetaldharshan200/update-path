@@ -34,10 +34,38 @@ if (-not (Get-Command Start-ExakitSpinner -ErrorAction SilentlyContinue)) {
         Set-Variable -Scope script -Name $v -Value ""
     }
     $script:UiTick = "+"; $script:UiCross = "x"; $script:UiArrow = ">"; $script:UiBullet = "-"; $script:UiVB = "|"
-    $script:UiTee = "|-"; $script:UiCorner = '`-'
+    $script:UiTee = "|-"; $script:UiCorner = '`-'; $script:UiMidDot = "-"
     function Start-ExakitSpinner([string]$Label) { }
     function Stop-ExakitSpinner { }
     function Restore-ExakitCursor { }
+    # The live table, stubbed the way the rest of this block is stubbed: nothing
+    # draws, Start-ExakitTable answers "not animating" so every caller narrates in
+    # plain lines instead, and the menu keeps whatever was pre-selected. Without
+    # these, a missing ui.ps1 turns the data-load path into a
+    # CommandNotFoundException rather than a plainer screen.
+    #
+    # Each stub carries the real signature, because a function with NO parameter
+    # list refuses named arguments: a bare `function Set-ExakitTableRow { }` would
+    # only trade the missing-command error for a missing-parameter one.
+    function New-ExakitTable([string]$Title = "", [int]$Reserve = 1) { return $null }
+    function Add-ExakitTableRow([string]$Kind = "plain", [string]$Label = "",
+        [switch]$Ticked, $Table = $null) { return 0 }
+    function Set-ExakitTableRow([int]$Row = 0, [string]$State = "", [int]$Pct = 0,
+        [int]$Ceiling = 0, [int]$Secs = 0, [string]$Phase = "", [string]$Final = "",
+        $Table = $null) { }
+    function Set-ExakitTableTicks([int[]]$Rows = @(), $Table = $null) { }
+    function Show-ExakitTable($Table = $null, [int]$Cursor = 0) { }
+    function Update-ExakitTable($Table = $null, [int]$Cursor = 0) { }
+    function Start-ExakitTable($Table = $null) { return $false }
+    function Stop-ExakitTable($Table = $null) { }
+    function Stop-ExakitAnimation { }
+    # $Defaults is the only argument a stub has to honour: it is the answer a
+    # non-interactive run would have kept anyway.
+    function Invoke-ExakitTableMenu($Table = $null, [int[]]$Defaults = @(),
+        [int]$ExclusiveIndex = 0, [int]$GroupParent = 0, [int]$GroupFirst = 0,
+        [int]$GroupLast = 0, [string]$GroupMode = "any") {
+        return @($Defaults | Sort-Object)
+    }
     function Get-ExakitTilde([string]$Path) { return $Path }
     function Write-ExakitBanner {
         param([string]$Title = "Exasol Personal Local Starter Kit", [string]$Subtitle = "")
@@ -491,8 +519,11 @@ class ExakitFailException : System.Exception {
 }
 
 function Fail([string]$Msg) {
-    Stop-ExakitSpinner
-    Restore-ExakitCursor
+    # Whatever is animating has to stop BEFORE the card is printed, or the message
+    # is written into a frame that is still being repainted and the next redraw
+    # erases it - which is what "the data load has issues, with no error shown"
+    # looks like from the outside. Twin of die() calling ui_animation_stop.
+    Stop-ExakitAnimation
     # Record the reason before it is printed, so a soft step that swallows this
     # exception can quote the real sentence in the closing summary rather than a
     # bare exception type. Defined further down the file; guarded because Fail()

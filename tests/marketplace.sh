@@ -1368,12 +1368,15 @@ _dl_probe="$WORK/dl-default-label"
 # and the wording is worth pinning.
 check "the local-file row is pre-selected" "A local CSV / Parquet / JSON file, or a folder of them" "$(cat "$_dl_probe" 2>/dev/null)"
 lacks "and Skip is not what Enter would take" "Skip" "$(cat "$_dl_probe" 2>/dev/null)"
-# The Windows twin builds the same menu; assert it defaults one row above the
-# final label too, rather than to the final label itself.
-# The Windows twin still builds a checkbox menu (the live table is macOS/WSL for
-# now); assert it defaults one row above the final label rather than to it.
-has "the PowerShell twin defaults off the final row" 'Defaults @($finalIdx - 1)' \
-    "$(cat "$ROOT/setup/lib/exapump.ps1")"
+# The Windows twin draws the same live table now, so its pre-selection is a ROW
+# NUMBER in that table rather than an index into a label array. Same bug to
+# guard against: with nothing left in the bundle, the row waiting under the
+# cursor must be the local-file one and never the opt-out.
+_dl_ps1="$(sed -n '/^function New-ExakitDataTable/,/^}/p' "$ROOT/setup/lib/exapump.ps1")"
+has "the PowerShell twin pre-ticks the local-file row" \
+    '[void]$defaults.Add($script:ExakitTableRowLocal)' "$_dl_ps1"
+lacks "...and never the opt-out row" \
+    '[void]$defaults.Add($script:ExakitTableRowSkip)' "$_dl_ps1"
 
 echo "data-load routes JSON through the add-on:"
 . "$ROOT/setup/lib/exapump.sh"
