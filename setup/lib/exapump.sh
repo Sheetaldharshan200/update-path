@@ -1660,6 +1660,28 @@ _exakit_sync_dataset_flag() {
 # database with no schemas in it, long after this function had observed the
 # tables were gone and healed the other key. Whichever key the caller names,
 # the canonical one is written too.
+# exakit_table_listing — every table as SCHEMA.TABLE, one per line, from ONE
+# query. Cached for the shell and cleared by exakit_clear_table_listing once a
+# dataset has landed, so nothing reads a listing taken before its own tables
+# existed.
+EXAKIT_TABLE_LISTING=""
+EXAKIT_TABLE_LISTING_READ=0
+
+exakit_clear_table_listing() {
+    EXAKIT_TABLE_LISTING=""
+    EXAKIT_TABLE_LISTING_READ=0
+}
+
+exakit_table_listing() {
+    if [ "$EXAKIT_TABLE_LISTING_READ" != "1" ]; then
+        EXAKIT_TABLE_LISTING="$("$(exapump_cli)" sql -p "$EXAKIT_EXAPUMP_PROFILE" \
+            "SELECT TABLE_SCHEMA || '.' || TABLE_NAME AS QUALIFIED FROM SYS.EXA_ALL_TABLES" 2>/dev/null | \
+            grep -oE '^[A-Za-z0-9_$]+\.[A-Za-z0-9_$]+$' | tr '[:lower:]' '[:upper:]')"
+        EXAKIT_TABLE_LISTING_READ=1
+    fi
+    printf '%s' "$EXAKIT_TABLE_LISTING"
+}
+
 exakit_dataset_loaded() {
     _dl_flag="$1"
     _dl_markers="$(printf '%s' "$2" | tr ',' ' ')"
@@ -1668,17 +1690,28 @@ exakit_dataset_loaded() {
     _dl_canonical=""
     [ -n "$_dl_id" ] && _dl_canonical="data.datasets.${_dl_id}.loaded"
     [ "$_dl_canonical" = "$_dl_flag" ] && _dl_canonical=""
-    if exakit_db_reachable && [ -n "$_dl_markers" ]; then
-        for _dl_table in $_dl_markers; do
-            if ! exakit_table_present "$_dl_table" "$_dl_schema"; then
-                _exakit_sync_dataset_flag "$_dl_flag" false
-                _exakit_sync_dataset_flag "$_dl_canonical" false
-                return 1
-            fi
-        done
-        _exakit_sync_dataset_flag "$_dl_flag" true
-        _exakit_sync_dataset_flag "$_dl_canonical" true
-        return 0
+    # ONE LISTING, NOT A REACHABILITY PROBE PLUS A QUERY PER MARKER. This used
+    # to call exakit_db_reachable (a SELECT 1) and then one EXA_ALL_TABLES
+    # query PER MARKER TABLE - eight exapump launches across the three bundled
+    # datasets, each a process start, a TLS handshake and an authentication.
+    # exakit_verified_datasets already learned this; this function was never
+    # brought along. Empty output means the database could not be ASKED, not
+    # that it holds nothing, so that falls through to the manifest below.
+    if [ -n "$_dl_markers" ]; then
+        _dl_listing="$(exakit_table_listing)"
+        if [ -n "$_dl_listing" ]; then
+            for _dl_table in $_dl_markers; do
+                _dl_want="$(printf '%s.%s' "$_dl_schema" "$_dl_table" | tr '[:lower:]' '[:upper:]')"
+                if ! printf '%s\n' "$_dl_listing" | grep -qx "$_dl_want"; then
+                    _exakit_sync_dataset_flag "$_dl_flag" false
+                    _exakit_sync_dataset_flag "$_dl_canonical" false
+                    return 1
+                fi
+            done
+            _exakit_sync_dataset_flag "$_dl_flag" true
+            _exakit_sync_dataset_flag "$_dl_canonical" true
+            return 0
+        fi
     fi
     [ "$(manifest_get "$_dl_flag" 2>/dev/null)" = "true" ]
 }
@@ -1973,6 +2006,8 @@ exakit_load_dataset_dir() {
     _ld_canonical="data.datasets.${_ld_id}.loaded"
     [ "$_ld_flag" = "$_ld_canonical" ] || manifest_set "$_ld_canonical" true
     manifest_set data.last_load.source "dataset:$_ld_id"
+    # This dataset's tables exist now, so any listing taken before it is stale.
+    exakit_clear_table_listing
     ui_progress_end
     rm -f "$_ld_state"
     EXAKIT_UPLOAD_QUIET=0

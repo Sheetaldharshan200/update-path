@@ -1477,21 +1477,56 @@ function Sync-ExakitDatasetFlag {
 # dataset alike. Syncing only the override is what let status keep listing tpch
 # as loaded against a database with no schemas in it.
 # twin: exakit_dataset_loaded in setup/lib/exapump.sh.
+# ONE LISTING, NOT A REACHABILITY PROBE PLUS A QUERY PER MARKER.
+#
+# This used to ask Test-ExakitDbReachable (a SELECT 1) and then run one
+# EXA_ALL_TABLES query PER MARKER TABLE - four exapump launches for tpch, eight
+# across the three bundled datasets. Every launch is a process start, a TLS
+# handshake and an authentication, ~2.5s warm, which is why
+# Invoke-ExakitDatasetLoad measured 11.5s to do nothing but print
+# "already loaded".
+#
+# Get-ExakitVerifiedDatasets already learned exactly this - "THE TABLE LISTING
+# IS THE REACHABILITY PROBE ... asking SELECT 1 first bought no information the
+# listing does not already give, and doubled the cost" - but this function was
+# never brought along. It is now: one listing answers reachability AND every
+# marker at once.
+#
+# Cached for the process and dropped whenever a dataset finishes loading, so a
+# second dataset checked in the same run does not pay for it again, and nothing
+# can read a listing taken before its own tables landed.
+$script:ExakitTableListing = $null
+
+function Clear-ExakitTableListing { $script:ExakitTableListing = $null }
+
+function Get-ExakitTableListing {
+    if ($null -eq $script:ExakitTableListing) {
+        $script:ExakitTableListing = Get-ExakitQualifiedTables
+    }
+    return $script:ExakitTableListing
+}
+
 function Test-ExakitDatasetLoaded {
     param([Parameter(Mandatory)][hashtable]$Dataset)
     $canonical = "data.datasets.$($Dataset.Id).loaded"
     if ($canonical -eq $Dataset.Flag) { $canonical = "" }
-    if ((Test-ExakitDbReachable) -and $Dataset.Markers.Count -gt 0) {
-        foreach ($table in $Dataset.Markers) {
-            if (-not (Test-ExakitTablePresent $table $Dataset.Schema)) {
-                Sync-ExakitDatasetFlag $Dataset.Flag $false
-                Sync-ExakitDatasetFlag $canonical $false
-                return $false
+    if ($Dataset.Markers.Count -gt 0) {
+        $present = Get-ExakitTableListing
+        # $null means the database could not be ASKED - not that it is empty.
+        # Falling through to the manifest is what stops an unreachable database
+        # from being reported as one with no data in it.
+        if ($null -ne $present) {
+            foreach ($table in $Dataset.Markers) {
+                if (-not $present.ContainsKey("$($Dataset.Schema).$table".ToUpper())) {
+                    Sync-ExakitDatasetFlag $Dataset.Flag $false
+                    Sync-ExakitDatasetFlag $canonical $false
+                    return $false
+                }
             }
+            Sync-ExakitDatasetFlag $Dataset.Flag $true
+            Sync-ExakitDatasetFlag $canonical $true
+            return $true
         }
-        Sync-ExakitDatasetFlag $Dataset.Flag $true
-        Sync-ExakitDatasetFlag $canonical $true
-        return $true
     }
     return ((Get-ExakitManifestValue $Dataset.Flag) -eq $true)
 }
@@ -1764,7 +1799,6 @@ function Invoke-ExakitDatasetDirLoad {
         }
         $doneWeight += $bytes
     }
-    }
 
     if ((Test-Path $loadSql) -and (Get-Item $loadSql).Length -gt 0) {
         Set-ExakitLoadStep -DoneWeight $doneWeight -StepWeight $nominal -TotalWeight $totalWeight `
@@ -1859,6 +1893,8 @@ function Invoke-ExakitDatasetDirLoad {
     $canonicalFlag = "data.datasets.$Id.loaded"
     if ($flag -ne $canonicalFlag) { Set-ExakitManifestValue $canonicalFlag $true }
     Set-ExakitManifestValue "data.last_load.source" "dataset:$Id"
+    # This dataset's tables exist now, so any listing taken before it is stale.
+    Clear-ExakitTableListing
     $elapsed = [int]((Get-Date) - $started).TotalSeconds
     if ($elapsed -lt 0) { $elapsed = 0 }
     $resultLine = "Dataset '$Id' loaded and verified"
