@@ -188,7 +188,9 @@ MCP_PS1_ALL="$(cat "$ROOT/setup/lib/mcp.ps1")"
 
 # The parent of a checkbox tree IS the select-all, so it says so on both sides.
 has "the add-on group row"  '_mm_menu_labels=("Select All")'                    "$COMMON"
-has "the dataset group row" '_dls_labels+=("Select All")'                       "$EXAPUMP_SH"
+# The data-load screen is a live table now; its parent row is written into the
+# table's own state file rather than a label array.
+has "the dataset group row" "printf 'group|Select All|1|idle" "$EXAPUMP_SH"
 has "...and on Windows"     '[void]$menuLabels.Add("Select All")'               "$COMMON_PS1"
 has "...for datasets too"   '[void]$labels.Add("Select All"); [void]$ids.Add("__group__")' "$EXAPUMP_PS1"
 

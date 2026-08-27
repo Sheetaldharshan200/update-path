@@ -232,5 +232,102 @@ lacks "no row-count panel on Windows either" 'Start-ExakitPanel "Row counts"' "$
 lacks "no unconditional verify header" 'Info "Verification ($Id 03_verify_setup.sql):"' "$EXAPUMP_PS1"
 has "its SQL narration is gated too"   'if (-not $script:ExakitUploadQuiet) { Info "Running $Description" }' "$EXAPUMP_PS1"
 
+printf '\n== the datasets table is the menu AND the progress ==\n'
+
+UI_TABLE_TITLE="Datasets to load"
+exakit_pending_datasets() {
+    printf 'tpch|TPC-H retail benchmark\nenergy|Smart-meter energy readings\nweather|City weather daily history\n'
+}
+TBL="$WORK/table"
+exakit_data_table_build "$TBL"
+
+check "a row per dataset, plus the group, the file row and Skip" "6" "$(grep -c '.' "$TBL")"
+check "the group row leads"        "group"      "$(sed -n 1p "$TBL" | cut -d'|' -f1)"
+check "the last dataset corners"   "corner"     "$(sed -n 4p "$TBL" | cut -d'|' -f1)"
+check "the file row is 5"          "5"          "$EXAKIT_TABLE_ROW_LOCAL"
+check "Skip is 6, and exclusive"   "6"          "$EXAKIT_TABLE_EXCLUSIVE"
+check "the group is all-or-none"   "1:2:4:all"  "$EXAKIT_TABLE_GROUP"
+check "everything loadable is pre-ticked" "1,2,3,4" "$EXAKIT_TABLE_DEFAULTS"
+# A label with spaces in it is ONE row: an accumulator split on whitespace turned
+# "TPC-H retail benchmark" into three rows of the table.
+check "a multi-word label stays one row" "TPC-H retail benchmark" "$(sed -n 2p "$TBL" | cut -d'|' -f2)"
+check "a dataset knows its own row"      "3" "$(exakit_data_table_row energy)"
+check "and a non-dataset does not"       "0" "$(exakit_data_table_row nonesuch)"
+
+# With every bundled dataset in, the pre-ticked row is the local-file one — the
+# only thing the screen can still do. Enter must never be a no-op.
+exakit_pending_datasets() { :; }
+exakit_data_table_build "$TBL"
+check "nothing pending: the file row is pre-ticked" "$EXAKIT_TABLE_ROW_LOCAL" "$EXAKIT_TABLE_DEFAULTS"
+lacks "...and Skip is not"  ",$EXAKIT_TABLE_ROW_SKIP," ",$EXAKIT_TABLE_DEFAULTS,"
+
+printf '\n== a row carries its own state, and keeps its clock ==\n'
+
+exakit_pending_datasets() {
+    printf 'tpch|TPC-H retail benchmark\nenergy|Smart-meter energy readings\nweather|City weather daily history\n'
+}
+exakit_data_table_build "$TBL"
+ui_table_set "$TBL" 2 running 10 40 8 "creating schema TPCH"
+check "the row is running"  "running"              "$(sed -n 2p "$TBL" | cut -d'|' -f4)"
+check "at its milestone"    "10"                   "$(sed -n 2p "$TBL" | cut -d'|' -f5)"
+check "with a ceiling"      "40"                   "$(sed -n 2p "$TBL" | cut -d'|' -f6)"
+has "and a phase"           "creating schema TPCH" "$(sed -n 2p "$TBL" | cut -d'|' -f9)"
+CLOCK="$(sed -n 2p "$TBL" | cut -d'|' -f8)"
+# A new PHASE inside the same job must not restart the elapsed count the reader
+# is watching.
+ui_table_set "$TBL" 2 running 40 88 20 "loading 8 data files"
+check "a phase change keeps the clock" "$CLOCK" "$(sed -n 2p "$TBL" | cut -d'|' -f8)"
+check "...but moves the bar"           "40"     "$(sed -n 2p "$TBL" | cut -d'|' -f5)"
+ui_table_set "$TBL" 2 done "" "" "" "" "completed · 8 tables, 173,745 rows (23s)"
+check "finishing clears the clock" "" "$(sed -n 2p "$TBL" | cut -d'|' -f8)"
+has "and states the outcome" "8 tables, 173,745 rows" "$(sed -n 2p "$TBL" | cut -d'|' -f10)"
+# Only the named row changes.
+check "its neighbour is untouched" "idle" "$(sed -n 3p "$TBL" | cut -d'|' -f4)"
+
+printf '\n== it draws square, at every width ==\n'
+
+UI_FANCY=1
+UI_BAR_FULL="$(printf '\xe2\x96\x88')"; UI_BAR_EMPTY="$(printf '\xe2\x96\x91')"
+UI_VB="$(printf '\xe2\x94\x82')"; UI_HR="$(printf '\xe2\x94\x80')"
+UI_TL="$(printf '\xe2\x95\xad')"; UI_TR="$(printf '\xe2\x95\xae')"
+UI_BL="$(printf '\xe2\x95\xb0')"; UI_BR="$(printf '\xe2\x95\xaf')"
+UI_TEE="$(printf '\xe2\x94\x9c\xe2\x94\x80')"; UI_CORNER="$(printf '\xe2\x94\x94\xe2\x94\x80')"
+UI_TICK="$(printf '\xe2\x9c\x93')"
+UI_PROGRESS_EIGHTHS=' ▏▎▍▌▋▊▉'
+ui_table_set "$TBL" 3 running 42 88 12 "loading 1 data file"
+for _w in 80 100 120; do
+    OUT="$(COLUMNS=$_w ui_table_render "$TBL" 0)"
+    # Every row of a table has to be the same width, or the right border walks.
+    # _ui_visible_len prints WITHOUT a trailing newline, so the loop has to add
+    # one or every row's width runs into the next.
+    WIDTHS="$(printf '%s\n' "$OUT" | while IFS= read -r _l; do printf '%s\n' "$(_ui_visible_len "$_l")"; done | sort -u | grep -c .)"
+    check "at $_w columns every row is one width" "1" "$WIDTHS"
+    FITS="$(printf '%s\n' "$OUT" | while IFS= read -r _l; do printf '%s\n' "$(_ui_visible_len "$_l")"; done | sort -rn | sed -n 1p)"
+    check "at $_w columns it fits the screen" "yes" \
+        "$([ "$FITS" -le "$_w" ] && echo yes || echo "no: $FITS")"
+done
+# The status column must NOT change width when the last row finishes, or the
+# whole table would jump at the end.
+W_RUNNING="$(COLUMNS=110 ui_table_render "$TBL" 0 | sed -n 1p | wc -c)"
+ui_table_set "$TBL" 3 done "" "" "" "" "completed · 2 tables, 108,050 rows (4s)"
+W_DONE="$(COLUMNS=110 ui_table_render "$TBL" 0 | sed -n 1p | wc -c)"
+check "the table does not resize when work finishes" "$W_RUNNING" "$W_DONE"
+
+printf '\n== off a terminal it prints once and takes the defaults ==\n'
+
+UI_FANCY=0
+exakit_data_table_build "$TBL"
+# NOT in $( ): the function reports through EXAKIT_TABLE_SELECTION, which a
+# command substitution's subshell would throw away.
+EXAKIT_TABLE_SELECTION=""
+# A width the labels actually fit in: at 80 the name column shrinks to 24 and
+# the assertion below would be measuring the truncation, not the printing.
+COLUMNS=110
+ui_table_menu "$TBL" > "$WORK/plain.out" 2>&1
+PLAIN="$(cat "$WORK/plain.out")"
+check "the selection is the defaults" "$EXAKIT_TABLE_DEFAULTS" "$EXAKIT_TABLE_SELECTION"
+has "and the table was printed"       "TPC-H retail benchmark" "$PLAIN"
+lacks "with no keyboard hint"         "Space to toggle"        "$PLAIN"
+
 printf '\n%s: %d passed, %d failed\n' "$(basename "$0")" "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

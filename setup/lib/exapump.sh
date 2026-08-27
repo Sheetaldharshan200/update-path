@@ -686,6 +686,13 @@ exakit_load_step() {
     fi
     [ "$_lst_ceil" -gt 100 ] && _lst_ceil=100
     [ "$_lst_pct" -gt 100 ] && _lst_pct=100
+    # A dataset being loaded from the table reports into its ROW; anything else
+    # (a folder, a single named file) still owns the one-line bar.
+    if [ -n "${EXAKIT_TABLE_ROW:-}" ] && [ -n "${EXAKIT_TABLE_STATE:-}" ]; then
+        ui_table_set "$EXAKIT_TABLE_STATE" "$EXAKIT_TABLE_ROW" running \
+            "$_lst_pct" "$_lst_ceil" "$5" "$6"
+        return 0
+    fi
     ui_progress_state "$1" "$_lst_pct" "$_lst_ceil" "$5" "$6"
 }
 
@@ -1824,7 +1831,13 @@ exakit_load_dataset_dir() {
         return 0
     fi
 
-    info "Loading the '$_ld_id' dataset into schema $_ld_schema"
+    # The table already names the dataset in its own row, so announcing it again
+    # would be the same fact twice — and the line would scroll the table.
+    if [ "${EXAKIT_TABLE_LIVE:-0}" = 1 ]; then
+        _exakit_log_file "INFO  Loading the '$_ld_id' dataset into schema $_ld_schema"
+    else
+        info "Loading the '$_ld_id' dataset into schema $_ld_schema"
+    fi
 
     # ONE line for the whole dataset, not one line per file. Loading three
     # bundled datasets used to print about a hundred and thirty lines — every
@@ -1857,11 +1870,18 @@ exakit_load_dataset_dir() {
     _ld_t0="$(date +%s 2>/dev/null || echo 0)"
     _ld_state="$(mktemp "${TMPDIR:-/tmp}/exakit-load.XXXXXX")" || \
         die "Could not create a temporary file for the load progress."
+    # Which row of the table this dataset owns, if a table is on screen. Empty
+    # means there is none, and the single-line bar takes over.
+    EXAKIT_TABLE_ROW=""
+    if [ "${EXAKIT_TABLE_LIVE:-0}" = 1 ]; then
+        EXAKIT_TABLE_ROW="$(exakit_data_table_row "$_ld_id")"
+        [ "$EXAKIT_TABLE_ROW" = "0" ] && EXAKIT_TABLE_ROW=""
+    fi
     EXAKIT_UPLOAD_QUIET=1
     export EXAKIT_UPLOAD_QUIET
     exakit_load_step "$_ld_state" "$_ld_done_w" "$_ld_nominal" "$_ld_total_w" 2 \
         "$_ld_id · creating schema $_ld_schema"
-    ui_progress_begin "$_ld_state" "$_ld_t0" || true
+    [ -n "$EXAKIT_TABLE_ROW" ] || ui_progress_begin "$_ld_state" "$_ld_t0" || true
 
     # Schema script is OPTIONAL: exapump infers column types and creates the
     # table itself when none exists, so a dataset can ship as bare CSVs. The
@@ -1947,6 +1967,15 @@ exakit_load_dataset_dir() {
         if [ "$_ld_verify_status" -ne 0 ] || grep -q ',FAIL,' "$_ld_verify"; then
             ui_progress_end
             rm -f "$_ld_state"
+            if [ -n "$EXAKIT_TABLE_ROW" ]; then
+                ui_table_set "$EXAKIT_TABLE_STATE" "$EXAKIT_TABLE_ROW" failed \
+                    "" "" "" "" "failed · verification (see log)"
+                # The table has to stop animating before anything is printed over
+                # it, or the checks scroll under a redrawing frame.
+                ui_table_end "$EXAKIT_TABLE_STATE"
+                EXAKIT_TABLE_LIVE=0
+                EXAKIT_TABLE_ROW=""
+            fi
             EXAKIT_UPLOAD_QUIET=0
             EXAKIT_ACTIVE_LABEL=""
             error "Verification failed for dataset '$_ld_id':"
@@ -2020,7 +2049,16 @@ exakit_load_dataset_dir() {
         [ "$_ld_rows_known" = 1 ] && \
             _ld_result="$_ld_result, $(exakit_group_digits "$_ld_rows_total") rows"
     fi
-    ok "$_ld_result (${_ld_elapsed}s)"
+    if [ -n "$EXAKIT_TABLE_ROW" ]; then
+        # Strip the "Dataset 'x' " prefix: the row already says which dataset it
+        # is, and the Status column is narrow.
+        ui_table_set "$EXAKIT_TABLE_STATE" "$EXAKIT_TABLE_ROW" done "" "" "" "" \
+            "completed · ${_ld_result#Dataset \'$_ld_id\' loaded and verified — } (${_ld_elapsed}s)"
+        _exakit_log_file "OK    $_ld_result (${_ld_elapsed}s)"
+        EXAKIT_TABLE_ROW=""
+    else
+        ok "$_ld_result (${_ld_elapsed}s)"
+    fi
 }
 
 # exakit_data_load_select <final_label> — dynamic checkbox over the data
@@ -2042,7 +2080,7 @@ EXAKIT_DATA_LOAD_SELECTION=""
 exakit_data_load_select() {
     _dls_final_label="$1"
     # EXAKIT_DATA_FILE mirrors the EXAKIT_DATASETS contract: naming a file IS
-    # choosing "A local CSV / Parquet / JSON file", so the menu never draws.
+    # choosing "A local CSV / Parquet / JSON file", so the table never draws.
     # The path (and EXAKIT_DATA_TABLE) are consumed by exakit_load_local_file
     # as its two answers.
     if [ -n "${EXAKIT_DATA_FILE:-}" ]; then
@@ -2050,79 +2088,34 @@ exakit_data_load_select() {
         EXAKIT_DATA_LOAD_SELECTION="local"
         return 0
     fi
-    _dls_labels=()
-    _dls_ids=()
-    _dls_pending_n=0
-    # Collect the pending datasets first so we know which one is last and can
-    # give it the tree's corner connector.
-    _dls_pend_ids=()
-    _dls_pend_labels=()
-    while IFS='|' read -r _dls_id _dls_label; do
-        [ -n "$_dls_id" ] || continue
-        _dls_pend_ids+=("$_dls_id")
-        _dls_pend_labels+=("$_dls_label")
-        _dls_pending_n=$((_dls_pending_n + 1))
-    done <<EXAKIT_DLS_EOF
-$(exakit_pending_datasets)
-EXAKIT_DLS_EOF
-    if [ "$_dls_pending_n" -gt 0 ]; then
-        # The group row is itself a checkbox: pre-selected with every dataset;
-        # unchecking it clears all datasets, after which the user can pick
-        # them individually. Each dataset hangs off it with a tree connector
-        # (UI_TEE/UI_CORNER from the ui palette; ASCII in plain mode) so the
-        # parent-child relationship is visible, not just implied by indent.
-        # Mirrors exapump.ps1, where the palette is mandatory: glyph literals
-        # in the BOM-less .ps1 twin break Windows PowerShell 5.1 parsing.
-        _dls_tee="${UI_TEE:-|-}"; _dls_corner="${UI_CORNER:-\`-}"
-        _dls_labels+=("Select All")
-        _dls_ids+=("__group__")
-        _dls_i=0
-        while [ "$_dls_i" -lt "$_dls_pending_n" ]; do
-            if [ "$_dls_i" -eq $((_dls_pending_n - 1)) ]; then _dls_conn="$_dls_corner"; else _dls_conn="$_dls_tee"; fi
-            _dls_labels+=("$_dls_conn ${_dls_pend_labels[$_dls_i]}")
-            _dls_ids+=("${_dls_pend_ids[$_dls_i]}")
-            _dls_i=$((_dls_i + 1))
-        done
-    fi
-    _dls_labels+=("A local CSV / Parquet / JSON file, or a folder of them"); _dls_ids+=("local")
-    _dls_labels+=("$_dls_final_label");        _dls_ids+=("none")
-    _dls_final_idx="${#_dls_labels[@]}"
-    if [ "$_dls_pending_n" -gt 0 ]; then
-        # Default: the group AND every pending dataset (rows 1..pending+1).
-        _dls_defaults=""
-        _dls_i=1
-        while [ "$_dls_i" -le $((_dls_pending_n + 1)) ]; do
-            _dls_defaults="${_dls_defaults:+$_dls_defaults,}$_dls_i"
-            _dls_i=$((_dls_i + 1))
-        done
-        # "all": master toggle, checked only while EVERY dataset is. See the
-        # same spec in exakit_marketplace_menu — one child ticked must not
-        # render as a checked parent, or the row lies about what will load.
-        EXAKIT_CHECKBOX_GROUP="1:2:$((_dls_pending_n + 1)):all"
-    else
+    # The selection is made in the TABLE that will show the progress, so the
+    # rows a reader ticks are the rows they then watch fill in. The final label
+    # is a parameter for the same reason it always was: the installer's opt-out
+    # reads "Skip", and so does the standalone command's.
+    EXAKIT_TABLE_STATE="$(mktemp "${TMPDIR:-/tmp}/exakit-table.XXXXXX")" || {
+        warn "Could not create a temporary file for the data table."
+        EXAKIT_DATA_LOAD_SELECTION="none"
+        return 1
+    }
+    exakit_data_table_build "$EXAKIT_TABLE_STATE"
+    if [ "$(exakit_data_table_row local)" = "$EXAKIT_TABLE_ROW_LOCAL" ] && \
+       [ "$EXAKIT_TABLE_ROW_LOCAL" = "1" ]; then
         info "Every bundled dataset is already loaded (reload with: exakit data-load --force)."
-        # Pre-select the LOCAL FILE row, not the final "Cancel" one. With every
-        # bundled dataset already in, someone who typed `exakit data-load`
-        # wants to load something of their own - that is the only thing left
-        # for this screen to do. Defaulting to Cancel made Enter a no-op and
-        # asked them to move the cursor to reach the one useful row.
-        # The local row is added immediately before the final label, so it sits
-        # one index below it.
-        _dls_defaults="$((_dls_final_idx - 1))"
     fi
-    EXAKIT_CHECKBOX_EXCLUSIVE="$_dls_final_idx"
-    ui_checkbox_menu "Select dataset to load" "$_dls_defaults" "${_dls_labels[@]}"
-    case ",$EXAKIT_CHECKBOX_SELECTION," in
-        *",$_dls_final_idx,"*)
+    UI_TABLE_TITLE="Datasets to load"
+    printf '\n'
+    ui_table_menu "$EXAKIT_TABLE_STATE"
+
+    EXAKIT_DATA_LOAD_SELECTION=""
+    case ",$EXAKIT_TABLE_SELECTION," in
+        *",$EXAKIT_TABLE_ROW_SKIP,"*)
             EXAKIT_DATA_LOAD_SELECTION="none"
             return 0
             ;;
     esac
-    EXAKIT_DATA_LOAD_SELECTION=""
-    for _dls_idx in $(printf '%s' "$EXAKIT_CHECKBOX_SELECTION" | tr ',' ' '); do
-        [ "$_dls_idx" -ge 1 ] && [ "$_dls_idx" -lt "$_dls_final_idx" ] || continue
-        _dls_id="${_dls_ids[$((_dls_idx - 1))]}"
-        [ "$_dls_id" = "__group__" ] && continue
+    for _dls_row in $(printf '%s' "$EXAKIT_TABLE_SELECTION" | tr ',' ' '); do
+        _dls_id="$(printf '%s\n' "$EXAKIT_TABLE_IDS" | sed -n "${_dls_row}p")"
+        [ -n "$_dls_id" ] || continue
         EXAKIT_DATA_LOAD_SELECTION="${EXAKIT_DATA_LOAD_SELECTION:+$EXAKIT_DATA_LOAD_SELECTION,}$_dls_id"
     done
     [ -n "$EXAKIT_DATA_LOAD_SELECTION" ] || EXAKIT_DATA_LOAD_SELECTION="none"
@@ -2131,6 +2124,91 @@ EXAKIT_DLS_EOF
 
 # Standalone `exakit data-load` menu: the dynamic dataset checkbox with a
 # plain Cancel as the opt-out.
+# --- the datasets table -------------------------------------------------------
+# One table for the whole job: the rows you tick are the rows that fill in. See
+# ui_table_* in ui.sh for the mechanism; what lives here is which rows there
+# are and what their Status column says.
+
+EXAKIT_TABLE_STATE=""
+EXAKIT_TABLE_ROW_LOCAL=0
+EXAKIT_TABLE_ROW_SKIP=0
+
+# exakit_data_table_build <state-file> — write the rows, in the order they are
+# drawn, and set EXAKIT_TABLE_DEFAULTS / _GROUP / _EXCLUSIVE the way the
+# checkbox layer expects. Sets EXAKIT_TABLE_IDS to the dataset id per row (empty
+# for the rows that are not datasets), so the loader can find its row again.
+exakit_data_table_build() {
+    _dtb_f="$1"
+    : > "$_dtb_f"
+    EXAKIT_TABLE_IDS=""
+    # Via a FILE, not a space-separated list: every label has spaces in it
+    # ("TPC-H retail benchmark"), and `for x in $list` would split each label
+    # into a row of its own.
+    _dtb_pend="$_dtb_f.pending"
+    exakit_pending_datasets > "$_dtb_pend" 2>/dev/null || : > "$_dtb_pend"
+    # NOT `grep -c ... || printf 0`: grep exits 1 when the count is zero, so the
+    # fallback fired IN ADDITION and the count came out as "0\n0" — which every
+    # later [ -gt ] then refused as a non-integer. The guard is the value, not
+    # the exit code.
+    _dtb_count="$(grep -c '.' "$_dtb_pend" 2>/dev/null)"
+    case "$_dtb_count" in ''|*[!0-9]*) _dtb_count=0 ;; esac
+    _dtb_n=0
+    if [ "$_dtb_count" -gt 0 ]; then
+        printf 'group|Select All|1|idle|||||| \n' >> "$_dtb_f"
+        EXAKIT_TABLE_IDS="
+"
+        _dtb_n=1
+        _dtb_i=0
+        while IFS='|' read -r _dtb_id _dtb_label; do
+            [ -n "$_dtb_id" ] || continue
+            _dtb_i=$(( _dtb_i + 1 ))
+            if [ "$_dtb_i" -eq "$_dtb_count" ]; then _dtb_kind=corner; else _dtb_kind=tee; fi
+            printf '%s|%s|1|idle|||||| \n' "$_dtb_kind" "$_dtb_label" >> "$_dtb_f"
+            EXAKIT_TABLE_IDS="$EXAKIT_TABLE_IDS$_dtb_id
+"
+            _dtb_n=$(( _dtb_n + 1 ))
+        done < "$_dtb_pend"
+        EXAKIT_TABLE_GROUP="1:2:$(( _dtb_count + 1 )):all"
+        EXAKIT_TABLE_DEFAULTS=""
+        _dtb_i=1
+        while [ "$_dtb_i" -le $(( _dtb_count + 1 )) ]; do
+            EXAKIT_TABLE_DEFAULTS="${EXAKIT_TABLE_DEFAULTS:+$EXAKIT_TABLE_DEFAULTS,}$_dtb_i"
+            _dtb_i=$(( _dtb_i + 1 ))
+        done
+    else
+        EXAKIT_TABLE_GROUP=""
+        EXAKIT_TABLE_DEFAULTS=""
+    fi
+    rm -f "$_dtb_pend"
+    printf 'plain|A local CSV / Parquet / JSON file, or a folder of them|0|idle|||||| \n' >> "$_dtb_f"
+    EXAKIT_TABLE_IDS="${EXAKIT_TABLE_IDS}local
+"
+    _dtb_n=$(( _dtb_n + 1 ))
+    EXAKIT_TABLE_ROW_LOCAL="$_dtb_n"
+    printf 'plain|Skip|0|idle|||||| \n' >> "$_dtb_f"
+    EXAKIT_TABLE_IDS="$EXAKIT_TABLE_IDS
+"
+    _dtb_n=$(( _dtb_n + 1 ))
+    EXAKIT_TABLE_ROW_SKIP="$_dtb_n"
+    EXAKIT_TABLE_EXCLUSIVE="$_dtb_n"
+    # With every bundled dataset already loaded there is nothing to tick but the
+    # local-file row, which is the only thing this screen can still do.
+    [ "$_dtb_count" -gt 0 ] || EXAKIT_TABLE_DEFAULTS="$EXAKIT_TABLE_ROW_LOCAL"
+    return 0
+}
+
+# exakit_data_table_row <dataset-id> — which row that dataset is on, or 0.
+exakit_data_table_row() {
+    _dtr_i=0
+    while IFS= read -r _dtr_id; do
+        _dtr_i=$(( _dtr_i + 1 ))
+        [ "$_dtr_id" = "$1" ] && { printf '%s\n' "$_dtr_i"; return 0; }
+    done <<EXAKIT_DTR_EOF
+$EXAKIT_TABLE_IDS
+EXAKIT_DTR_EOF
+    printf '0\n'
+}
+
 exakit_data_load_menu() {
     [ -n "$(manifest_get components.exapump.profile 2>/dev/null)" ] || \
         die "No exapump connection profile is recorded — re-run the installer, then retry."
@@ -2139,6 +2217,14 @@ exakit_data_load_menu() {
     if [ "$EXAKIT_DATA_LOAD_SELECTION" = "none" ]; then
         info "Data loading cancelled."
         return 0
+    fi
+    # The same table the selection was made in now becomes the progress display:
+    # the rows do not move, so nobody has to map one screen onto another. It
+    # animates only where there is a terminal to animate on; everywhere else the
+    # loaders narrate in plain lines exactly as they did before.
+    EXAKIT_TABLE_LIVE=0
+    if [ -n "$EXAKIT_TABLE_STATE" ]; then
+        ui_table_begin "$EXAKIT_TABLE_STATE" && EXAKIT_TABLE_LIVE=1
     fi
     _menu_status=0
     for _menu_id in $(printf '%s' "$EXAKIT_DATA_LOAD_SELECTION" | tr ',' ' '); do
@@ -2158,6 +2244,8 @@ exakit_data_load_menu() {
                 ;;
         esac
     done
+    [ "$EXAKIT_TABLE_LIVE" = 1 ] && ui_table_end "$EXAKIT_TABLE_STATE"
+    EXAKIT_TABLE_LIVE=0
     return "$_menu_status"
 }
 
