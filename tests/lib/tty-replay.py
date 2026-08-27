@@ -138,6 +138,12 @@ print("=== tables on screen: %d top borders, %d bottom borders (wanted 1 and %d)
 # already done. So count it in the RAW stream, where nothing can overwrite it.
 noise = len(re.findall(r'Terminated:? *\d*|Killed:? *\d*', raw))
 print("=== shell job announcements: %d ===" % noise)
+# A spinner frame anywhere in the raw stream while a table is meant to own the
+# line is a SECOND animator. It cannot be seen on the screen -- the table's next
+# frame paints over it -- but it is writing to the same terminal, without a
+# newline, five to twelve times a second.
+spin = sum(raw.count(g) for g in '⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏')
+print("=== spinner frames in stream: %d ===" % spin)
 print("=== worst instant: %d tables on screen, %d on one line ==="
       % (worst_total, worst_per_line))
 sys.exit(0 if (tops == 1 and bots == want_bots and noise == 0

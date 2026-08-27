@@ -41,6 +41,10 @@ exakit_pending_datasets() {
     printf 'tpch|TPC-H retail benchmark\nenergy|Smart-meter energy readings\nweather|City weather daily history\n'
 }
 
+# Still the exapump step's title when the loads run: no begin_step happens in
+# between, and it is what made the competing spinner's line 45 columns wide.
+EXAKIT_ACTIVE_LABEL="Step 3/6  exapump (data loading CLI)"
+EXAKIT_LOG_FILE="$W/install.log"
 UI_TABLE_TITLE="Datasets to load"
 EXAKIT_TABLE_STATE="$W/table"
 exakit_data_table_build "$EXAKIT_TABLE_STATE"
@@ -57,8 +61,12 @@ while IFS= read -r _id; do
     [ -n "$_id" ] || continue
     [ "$_id" = "local" ] && continue
     case ",$EXAKIT_TABLE_SELECTION," in *",$_row,"*) ;; *) continue ;; esac
-    # THE SUBSHELL. This is the only thing the installer does differently.
-    ( exakit_load_dataset_dir "$ROOT" "$_id" ) || true
+    # THE SUBSHELL, with the detach the installer really does (common.sh). It
+    # matters: detach drops _UI_SPIN_PID, and without it in here the subshell
+    # inherits the pid, so run_logged's ui_spin_begin nests into a no-op and no
+    # competing spinner is ever created -- the very thing that corrupted the
+    # frame on a real install could not happen in this scenario.
+    ( ui_table_detach; exakit_load_dataset_dir "$ROOT" "$_id" ) || true
 done <<IDS
 $EXAKIT_TABLE_IDS
 IDS
