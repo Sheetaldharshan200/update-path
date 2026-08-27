@@ -254,12 +254,28 @@ ui_rule() {
 _UI_SPIN_PID=''
 _UI_STEP_T0=''
 _UI_STEP_LABEL=''
+# ONE animation at a time. There is a single line being redrawn, so a second
+# request to animate is a no-op rather than a second painter: two loops writing
+# \r to the same row produce a flicker, and the first one's pid is lost the
+# moment the second overwrites _UI_SPIN_PID.
+#
+# This is what lets a progress line survive the work underneath it. A dataset
+# load paints its own bar and then calls exapump through run_logged, which asks
+# for a spinner of its own; without the counter, run_logged's ui_spin_end would
+# kill the bar after the first file. Counted rather than flagged, because the
+# nesting can be more than one deep.
+_UI_SPIN_NESTED=0
 
 # ui_spin_begin <label> — start ONLY the animated spinner (prints no line of
 # its own). No-op unless we are on an interactive fancy terminal *right now*:
 # it re-checks `-t 1` at call time so a spinner can never leak into a
 # $(command substitution) capture, even when UI_FANCY was 1 at load time.
 ui_spin_begin() {
+    # Something is already animating this line: take a reference, draw nothing.
+    if [ -n "${_UI_SPIN_PID:-}" ]; then
+        _UI_SPIN_NESTED=$(( _UI_SPIN_NESTED + 1 ))
+        return 0
+    fi
     [ "$UI_FANCY" = 1 ] || return 0
     [ -t 1 ] || return 0
     _UI_STEP_LABEL="$1"
@@ -283,7 +299,15 @@ ui_spin_begin() {
 
 # ui_spin_end — stop the spinner and clear its line, printing no status line
 # (the caller's own info/ok lines carry the message).
-ui_spin_end() { _ui_step_stop_spinner; }
+ui_spin_end() {
+    # Give back a reference taken while something else owned the line; only the
+    # call that actually started the animation stops it.
+    if [ "${_UI_SPIN_NESTED:-0}" -gt 0 ]; then
+        _UI_SPIN_NESTED=$(( _UI_SPIN_NESTED - 1 ))
+        return 0
+    fi
+    _ui_step_stop_spinner
+}
 
 # ui_step_start <label> — begin a visible step: an animated spinner in fancy
 # mode, or a plain "> label…" line otherwise. Pair with ui_step_ok/_fail.
@@ -341,6 +365,213 @@ ui_step_fail() {
 # purpose: the installer owns `trap ... EXIT` (exakit_on_failure), which
 # calls this itself, so a trap here would clobber the installer's cleanup.
 ui_restore_cursor() { [ "$UI_FANCY" = 1 ] && printf '\033[?25h'; return 0; }
+
+# --- the progress line -----------------------------------------------------
+# ui_progress_creep <pct> <ceiling> <seconds> <elapsed-in-segment> — where
+# the bar should sit RIGHT NOW, between the stage the job last reported and
+# the one it will report next.
+#
+# A milestone-only bar stands still for as long as the job is quiet, and every
+# job the kit runs is quiet for its longest stretch. So the milestones stay
+# the truth -- the bar never claims a stage that has not been reached -- and the
+# time between them is filled in at the pace that stage usually takes. The creep is
+# capped one point BELOW the next milestone, so arriving at it is still something
+# you see happen, and a stage that runs long simply waits there instead of
+# walking into the next one's territory.
+ui_progress_creep() {
+    _upc_span=$(( $2 - $1 ))
+    if [ "$_upc_span" -le 0 ] || [ "$3" -le 0 ]; then
+        printf '%s\n' "$1"
+        return 0
+    fi
+    _upc_step=$(( _upc_span * $4 / $3 ))
+    [ "$_upc_step" -gt $(( _upc_span - 1 )) ] && _upc_step=$(( _upc_span - 1 ))
+    [ "$_upc_step" -lt 0 ] && _upc_step=0
+    printf '%s\n' "$(( $1 + _upc_step ))"
+}
+
+UI_PROGRESS_EIGHTHS=' ▏▎▍▌▋▊▉'
+
+# ui_progress_line <pct> <phase> <elapsed-seconds> <frame> <columns> — the
+# progress line.
+#
+# Laid out in four cells across the terminal's own width, so the bar starts at
+# the same column whatever the phase is called and nothing shuffles sideways as
+# the text changes underneath it:
+#
+#   45% phase text · 40% bar · 7% percentage · 8% elapsed
+#
+# The phase leads because it is the part a reader is actually reading; the
+# numbers trail because they are the part they glance at. A braille head sits in
+# front of the whole thing: the bar can legitimately sit still (a slow step holds its
+# position on purpose), and the head is
+# what says the run is alive while it does.
+#
+# One bar for every long job the kit runs: the local deployment, a bundled
+# dataset, a folder of files, an add-on install. Twin: Write-ExakitProgressLine.
+ui_progress_line() {
+    _upl_pct="$1"; _upl_phase="$2"; _upl_el="$3"; _upl_frame="${4:-0}"; _upl_cols="${5:-80}"
+
+    # The gutter the rest of the step's lines use, plus the head and its space,
+    # and ONE COLUMN LEFT UNWRITTEN. A line that fills the last cell sets the
+    # terminal's pending-wrap flag, and the next \r lands a row lower — which on
+    # a wide terminal showed up as a clipped "(19s" with its bracket eaten.
+    _upl_avail=$(( _upl_cols - 6 - 2 - 1 ))
+    # Capped, because the cells are proportions and a very wide terminal turns
+    # the 45% text cell into sixty columns of nothing between the phase and the
+    # bar. Past this width the line stays put and the screen gets wider around
+    # it, which is what a reader wants from a line they are watching.
+    [ "$_upl_avail" -le 112 ] || _upl_avail=112
+    [ "$_upl_avail" -ge 24 ] || _upl_avail=24
+    #   30% phase · 40% bar · 10% percentage · 10% elapsed
+    # The remaining tenth is the gap between the phase and the bar. Spending it
+    # there rather than widening a cell is what stops a long phase from butting
+    # against the bar while a short one leaves the two looking unrelated.
+    _upl_tw=$(( _upl_avail * 30 / 100 ))
+    _upl_bw=$(( _upl_avail * 40 / 100 ))
+    _upl_nw=$(( _upl_avail * 10 / 100 ))
+    _upl_ew=$(( _upl_avail * 10 / 100 ))
+    _upl_gap=$(( _upl_avail - _upl_tw - _upl_bw - _upl_nw - _upl_ew ))
+    [ "$_upl_gap" -ge 1 ] || _upl_gap=1
+    # Floors, because a cell that cannot hold its content is worse than a
+    # narrower neighbour: "100%" needs four columns and "(120s)" needs six. The
+    # text cell pays for them, since it is the only one that can be shortened
+    # without losing information the others carry exactly.
+    [ "$_upl_nw" -ge 5 ] || { _upl_tw=$(( _upl_tw - (5 - _upl_nw) )); _upl_nw=5; }
+    [ "$_upl_ew" -ge 7 ] || { _upl_tw=$(( _upl_tw - (7 - _upl_ew) )); _upl_ew=7; }
+    [ "$_upl_bw" -ge 8 ] || _upl_bw=8
+    [ "$_upl_tw" -ge 8 ] || _upl_tw=8
+
+    # The phase, truncated to its cell MINUS ONE: a phase long enough to fill
+    # the cell would otherwise run straight into the bar with no gap between
+    # them, which is what a narrow terminal does to every long phase there is.
+    # _ui_fit_row measures what the reader SEES, so a phase carrying an escape
+    # sequence is not cut by byte count.
+    _upl_text="$(_ui_fit_row "$_upl_phase" 0 $(( _upl_tw - 1 )))"
+    _upl_pad=$(( _upl_tw - $(_ui_visible_len "$_upl_text") ))
+    [ "$_upl_pad" -ge 0 ] || _upl_pad=0
+
+    # Eighths across the whole bar, from integer percent: at forty cells one
+    # percent is three eighths, so every step of the creep moves something.
+    if [ "${UI_FANCY:-0}" = 1 ]; then
+        _upl_units=$(( _upl_pct * _upl_bw * 8 / 100 ))
+        _upl_full=$(( _upl_units / 8 ))
+        _upl_rem=$(( _upl_units % 8 ))
+        [ "$_upl_full" -gt "$_upl_bw" ] && { _upl_full="$_upl_bw"; _upl_rem=0; }
+        _upl_head=""
+        if [ "$_upl_full" -lt "$_upl_bw" ] && [ "$_upl_rem" -gt 0 ]; then
+            _upl_head="$(printf '%s' "$UI_PROGRESS_EIGHTHS" | cut -c $((_upl_rem + 1)))"
+        fi
+        _upl_empty=$(( _upl_bw - _upl_full ))
+        [ -n "$_upl_head" ] && _upl_empty=$(( _upl_empty - 1 ))
+        [ "$_upl_empty" -ge 0 ] || _upl_empty=0
+        _upl_bar="${UI_ACCENT:-}$(ui_repeat "${UI_BAR_FULL:-#}" "$_upl_full")${UI_DIM:-}${_upl_head}$(ui_repeat "${UI_BAR_EMPTY:-.}" "$_upl_empty")${UI_RESET:-}"
+        _upl_spin="${UI_SPIN_FRAMES[$(( _upl_frame % 10 ))]}"
+    else
+        _upl_full=$(( _upl_pct * _upl_bw / 100 ))
+        [ "$_upl_full" -gt "$_upl_bw" ] && _upl_full="$_upl_bw"
+        _upl_bar="$(ui_repeat "${UI_BAR_FULL:-#}" "$_upl_full")$(ui_repeat "${UI_BAR_EMPTY:-.}" $(( _upl_bw - _upl_full )))"
+        _upl_spin='>'
+    fi
+
+    printf '\r      %s%s%s %s%s%s%s%s%*s%%%s%s%*s%s\033[K' \
+        "${UI_ACCENT:-}" "$_upl_spin" "${UI_RESET:-}" \
+        "$_upl_text" "$(ui_repeat ' ' $(( _upl_pad + _upl_gap )))" \
+        "$_upl_bar" \
+        "${UI_BOLD:-}" "" $(( _upl_nw - 1 )) "$_upl_pct" "${UI_RESET:-}" \
+        "${UI_DIM:-}" "$_upl_ew" "($_upl_el""s)" "${UI_RESET:-}"
+}
+
+# ui_progress_animate <state-file> <t0> — redraw the progress line five
+# times a second from whatever the collector last wrote, so the elapsed counter
+# keeps moving through the launcher's long silences (13s between messages on a
+# warm cache, minutes on a cold one).
+#
+# It runs in the UI layer's single spinner slot (_UI_SPIN_PID), so the
+# installer's existing EXIT trap -- which calls ui_spin_end and
+# ui_restore_cursor -- stops it and gives the cursor back if the run is
+# interrupted or dies mid-deploy. Only one animation is ever on screen, so the
+# slot is free while this runs.
+ui_progress_animate() {
+    _upa_shown=0
+    _upa_frame=0
+    # Measured ONCE. _ui_term_cols forks stty or tput, and this loop runs five
+    # times a second for as long as the deploy takes; a terminal resized mid
+    # deploy keeps the width it started with, which is a fair trade for not
+    # forking a process per frame.
+    _upa_cols="$(_ui_term_cols 2>/dev/null || echo 80)"
+    while :; do
+        _upa_state=""
+        read -r _upa_state < "$1" 2>/dev/null || true
+        # A read that caught the file mid-write has no phase yet: skip the frame
+        # rather than paint a half-written one.
+        case "$_upa_state" in
+            *"|"*"|"*"|"*"|"*)
+                _upa_now="$(date +%s 2>/dev/null || echo 0)"
+                # pct|ceiling|seconds|segment-start|label
+                _upa_rest="${_upa_state#*|}"
+                _upa_pct="${_upa_state%%|*}"
+                _upa_ceil="${_upa_rest%%|*}"; _upa_rest="${_upa_rest#*|}"
+                _upa_secs="${_upa_rest%%|*}"; _upa_rest="${_upa_rest#*|}"
+                _upa_t0="${_upa_rest%%|*}"
+                _upa_label="${_upa_rest#*|}"
+                _upa_at="$(ui_progress_creep "$_upa_pct" "$_upa_ceil" \
+                    "$_upa_secs" "$(( _upa_now - _upa_t0 ))")"
+                # The bar never walks backwards. A milestone can arrive BELOW
+                # where the creep has already reached (the launcher emits
+                # "starting deployment" twenty seconds into a segment whose
+                # ceiling is higher); the new segment is adopted, the position is
+                # not given up.
+                [ "$_upa_at" -lt "$_upa_shown" ] && _upa_at="$_upa_shown"
+                _upa_shown="$_upa_at"
+                ui_progress_line "$_upa_at" "$_upa_label" \
+                    "$(( _upa_now - $2 ))" "$_upa_frame" "$_upa_cols"
+                _upa_frame=$(( _upa_frame + 1 ))
+                ;;
+        esac
+        sleep 0.2
+    done
+}
+
+# --- driving the bar --------------------------------------------------------
+# The animator reads its position from a FILE, because the thing doing the work
+# usually cannot reach the animator's variables: a pipeline's right-hand side, a
+# subshell, a loop whose output is captured. One short line, rewritten whenever
+# the job reaches a new stage:
+#
+#   pct|ceiling|seconds|segment-start|phase
+#
+# pct is where the job actually is, ceiling is where the NEXT stage sits, and
+# seconds is how long this stage usually takes -- which is what lets the bar
+# keep moving between the two without ever claiming the next stage. See
+# ui_progress_creep.
+
+# ui_progress_state <file> <pct> <ceiling> <seconds> <phase> — the job has
+# reached a new stage. The segment's own clock starts now.
+ui_progress_state() {
+    printf '%s|%s|%s|%s|%s\n' "$2" "$3" "$4" \
+        "$(date +%s 2>/dev/null || echo 0)" "$5" > "$1"
+}
+
+# ui_progress_begin <file> <t0> — start painting, in the UI layer's single
+# animation slot (_UI_SPIN_PID), so the installer's existing EXIT trap stops it
+# and gives the cursor back if the run is interrupted or dies mid-job.
+#
+# Live only on an interactive fancy terminal, checked HERE rather than at load
+# time so a redrawing line can never leak into a capture or a log. Returns 1 when
+# it did not start, which is the caller's cue to narrate in plain lines instead.
+ui_progress_begin() {
+    [ "${UI_FANCY:-0}" = 1 ] || return 1
+    [ -t 1 ] || return 1
+    printf '\033[?25l'
+    ui_progress_animate "$1" "$2" &
+    _UI_SPIN_PID=$!
+    return 0
+}
+
+# ui_progress_end — stop it and clear the line. Same call as ui_spin_end; named
+# for symmetry so a caller never has to know which of the two it started.
+ui_progress_end() { ui_spin_end; }
 
 # --- progress bar (determinate) --------------------------------------------
 # ui_progress <current> <total> <label> — redraws in place; caller prints a

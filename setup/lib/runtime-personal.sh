@@ -381,34 +381,11 @@ _personal_deploy_milestone() {
         *"fetching resource"*|*"found resource in cache"*)
                                                    printf '35|65|25|Fetching the Exasol runtime' ;;
         *"starting deployment"*)                   printf '45|65|15|Starting the database' ;;
-        *"waiting for database to start"*)         printf '65|90|10|Waiting for the database to start' ;;
-        *"installing script language container"*)  printf '80|90|15|Installing the script language container' ;;
+        *"waiting for database to start"*)         printf '65|90|10|Waiting for the database' ;;
+        *"installing script language container"*)  printf '80|90|15|Installing script languages' ;;
         *"no installation steps defined"*)         printf '90|100|4|Finishing up' ;;
         *"Completed deploying"*)                   printf '100|100|0|Deployed' ;;
     esac
-}
-
-# _personal_deploy_creep <pct> <ceiling> <seconds> <elapsed-in-segment> — where
-# the bar should sit RIGHT NOW, between the stage the launcher last reported and
-# the one it will report next.
-#
-# A milestone-only bar stands still for as long as the launcher is quiet, and the
-# launcher is quiet for the longest part of the deploy. So the milestones stay
-# the truth -- the bar never claims a stage that has not been reached -- and the
-# time between them is filled in at the pace a typical deploy takes. The creep is
-# capped one point BELOW the next milestone, so arriving at it is still something
-# you see happen, and a stage that runs long simply waits there instead of
-# walking into the next one's territory.
-_personal_deploy_creep() {
-    _pdc_span=$(( $2 - $1 ))
-    if [ "$_pdc_span" -le 0 ] || [ "$3" -le 0 ]; then
-        printf '%s\n' "$1"
-        return 0
-    fi
-    _pdc_step=$(( _pdc_span * $4 / $3 ))
-    [ "$_pdc_step" -gt $(( _pdc_span - 1 )) ] && _pdc_step=$(( _pdc_span - 1 ))
-    [ "$_pdc_step" -lt 0 ] && _pdc_step=0
-    printf '%s\n' "$(( $1 + _pdc_step ))"
 }
 
 # Eighths of a block. A twenty-cell bar advancing in whole cells steps 5% at a
@@ -416,135 +393,6 @@ _personal_deploy_creep() {
 # jumps. The partial-block glyphs give the same bar eight times the resolution,
 # so it creeps. Index 0 is a space: the frontier cell is EMPTY when there is no
 # fraction to draw, which is what keeps the dim remainder unbroken.
-UI_DEPLOY_EIGHTHS=' ▏▎▍▌▋▊▉'
-
-# _personal_deploy_paint <pct> <phase> <elapsed-seconds> <frame> <columns> — the
-# progress line.
-#
-# Laid out in four cells across the terminal's own width, so the bar starts at
-# the same column whatever the phase is called and nothing shuffles sideways as
-# the text changes underneath it:
-#
-#   45% phase text · 40% bar · 7% percentage · 8% elapsed
-#
-# The phase leads because it is the part a reader is actually reading; the
-# numbers trail because they are the part they glance at. A braille head sits in
-# front of the whole thing: the bar can legitimately sit still (a cold cache
-# downloading for four minutes holds its position on purpose), and the head is
-# what says the run is alive while it does.
-#
-# Local to this file on purpose: Exasol Personal is macOS-only, so this is not
-# part of the shared visual layer ui.ps1 mirrors.
-_personal_deploy_paint() {
-    _pdp_pct="$1"; _pdp_phase="$2"; _pdp_el="$3"; _pdp_frame="${4:-0}"; _pdp_cols="${5:-80}"
-
-    # The gutter the rest of the step's lines use, plus the head and its space.
-    _pdp_avail=$(( _pdp_cols - 6 - 2 ))
-    [ "$_pdp_avail" -ge 24 ] || _pdp_avail=24
-    _pdp_tw=$(( _pdp_avail * 45 / 100 ))
-    _pdp_bw=$(( _pdp_avail * 40 / 100 ))
-    _pdp_nw=$(( _pdp_avail * 7 / 100 ))
-    _pdp_ew=$(( _pdp_avail - _pdp_tw - _pdp_bw - _pdp_nw ))
-    # Floors, because a cell that cannot hold its content is worse than a
-    # narrower neighbour: "100%" needs four columns and "(120s)" needs six. The
-    # text cell pays for them, since it is the only one that can be shortened
-    # without losing information the others carry exactly.
-    [ "$_pdp_nw" -ge 5 ] || { _pdp_tw=$(( _pdp_tw - (5 - _pdp_nw) )); _pdp_nw=5; }
-    [ "$_pdp_ew" -ge 7 ] || { _pdp_tw=$(( _pdp_tw - (7 - _pdp_ew) )); _pdp_ew=7; }
-    [ "$_pdp_bw" -ge 8 ] || _pdp_bw=8
-    [ "$_pdp_tw" -ge 8 ] || _pdp_tw=8
-
-    # The phase, truncated to its cell MINUS ONE: a phase long enough to fill
-    # the cell would otherwise run straight into the bar with no gap between
-    # them, which is what a narrow terminal does to every long phase there is.
-    # _ui_fit_row measures what the reader SEES, so a phase carrying an escape
-    # sequence is not cut by byte count.
-    _pdp_text="$(_ui_fit_row "$_pdp_phase" 0 $(( _pdp_tw - 1 )))"
-    _pdp_pad=$(( _pdp_tw - $(_ui_visible_len "$_pdp_text") ))
-    [ "$_pdp_pad" -ge 0 ] || _pdp_pad=0
-
-    # Eighths across the whole bar, from integer percent: at forty cells one
-    # percent is three eighths, so every step of the creep moves something.
-    if [ "${UI_FANCY:-0}" = 1 ]; then
-        _pdp_units=$(( _pdp_pct * _pdp_bw * 8 / 100 ))
-        _pdp_full=$(( _pdp_units / 8 ))
-        _pdp_rem=$(( _pdp_units % 8 ))
-        [ "$_pdp_full" -gt "$_pdp_bw" ] && { _pdp_full="$_pdp_bw"; _pdp_rem=0; }
-        _pdp_head=""
-        if [ "$_pdp_full" -lt "$_pdp_bw" ] && [ "$_pdp_rem" -gt 0 ]; then
-            _pdp_head="$(printf '%s' "$UI_DEPLOY_EIGHTHS" | cut -c $((_pdp_rem + 1)))"
-        fi
-        _pdp_empty=$(( _pdp_bw - _pdp_full ))
-        [ -n "$_pdp_head" ] && _pdp_empty=$(( _pdp_empty - 1 ))
-        [ "$_pdp_empty" -ge 0 ] || _pdp_empty=0
-        _pdp_bar="${UI_ACCENT:-}$(ui_repeat "${UI_BAR_FULL:-#}" "$_pdp_full")${UI_DIM:-}${_pdp_head}$(ui_repeat "${UI_BAR_EMPTY:-.}" "$_pdp_empty")${UI_RESET:-}"
-        _pdp_spin="${UI_SPIN_FRAMES[$(( _pdp_frame % 10 ))]}"
-    else
-        _pdp_full=$(( _pdp_pct * _pdp_bw / 100 ))
-        [ "$_pdp_full" -gt "$_pdp_bw" ] && _pdp_full="$_pdp_bw"
-        _pdp_bar="$(ui_repeat "${UI_BAR_FULL:-#}" "$_pdp_full")$(ui_repeat "${UI_BAR_EMPTY:-.}" $(( _pdp_bw - _pdp_full )))"
-        _pdp_spin='>'
-    fi
-
-    printf '\r      %s%s%s %s%s%s%s%s%*s%%%s%s%*s%s\033[K' \
-        "${UI_ACCENT:-}" "$_pdp_spin" "${UI_RESET:-}" \
-        "$_pdp_text" "$(ui_repeat ' ' "$_pdp_pad")" \
-        "$_pdp_bar" \
-        "${UI_BOLD:-}" "" $(( _pdp_nw - 1 )) "$_pdp_pct" "${UI_RESET:-}" \
-        "${UI_DIM:-}" "$_pdp_ew" "($_pdp_el""s)" "${UI_RESET:-}"
-}
-
-# _personal_deploy_animate <state-file> <t0> — redraw the progress line five
-# times a second from whatever the collector last wrote, so the elapsed counter
-# keeps moving through the launcher's long silences (13s between messages on a
-# warm cache, minutes on a cold one).
-#
-# It runs in the UI layer's single spinner slot (_UI_SPIN_PID), so the
-# installer's existing EXIT trap -- which calls ui_spin_end and
-# ui_restore_cursor -- stops it and gives the cursor back if the run is
-# interrupted or dies mid-deploy. Only one animation is ever on screen, so the
-# slot is free while this runs.
-_personal_deploy_animate() {
-    _pda_shown=0
-    _pda_frame=0
-    # Measured ONCE. _ui_term_cols forks stty or tput, and this loop runs five
-    # times a second for as long as the deploy takes; a terminal resized mid
-    # deploy keeps the width it started with, which is a fair trade for not
-    # forking a process per frame.
-    _pda_cols="$(_ui_term_cols 2>/dev/null || echo 80)"
-    while :; do
-        _pda_state=""
-        read -r _pda_state < "$1" 2>/dev/null || true
-        # A read that caught the file mid-write has no phase yet: skip the frame
-        # rather than paint a half-written one.
-        case "$_pda_state" in
-            *"|"*"|"*"|"*"|"*)
-                _pda_now="$(date +%s 2>/dev/null || echo 0)"
-                # pct|ceiling|seconds|segment-start|label
-                _pda_rest="${_pda_state#*|}"
-                _pda_pct="${_pda_state%%|*}"
-                _pda_ceil="${_pda_rest%%|*}"; _pda_rest="${_pda_rest#*|}"
-                _pda_secs="${_pda_rest%%|*}"; _pda_rest="${_pda_rest#*|}"
-                _pda_t0="${_pda_rest%%|*}"
-                _pda_label="${_pda_rest#*|}"
-                _pda_at="$(_personal_deploy_creep "$_pda_pct" "$_pda_ceil" \
-                    "$_pda_secs" "$(( _pda_now - _pda_t0 ))")"
-                # The bar never walks backwards. A milestone can arrive BELOW
-                # where the creep has already reached (the launcher emits
-                # "starting deployment" twenty seconds into a segment whose
-                # ceiling is higher); the new segment is adopted, the position is
-                # not given up.
-                [ "$_pda_at" -lt "$_pda_shown" ] && _pda_at="$_pda_shown"
-                _pda_shown="$_pda_at"
-                _personal_deploy_paint "$_pda_at" "$_pda_label" \
-                    "$(( _pda_now - $2 ))" "$_pda_frame" "$_pda_cols"
-                _pda_frame=$(( _pda_frame + 1 ))
-                ;;
-        esac
-        sleep 0.2
-    done
-}
-
 # _personal_deploy_collect <state-file> <tail-file> <notice-file> — consume the
 # launcher's output: log every line, keep the tail, keep the EULA notice, and
 # turn the lines that mean something into progress. It runs on the right-hand
@@ -570,10 +418,7 @@ _personal_deploy_collect() {
         _pdc_ceil="${_pdc_rest%%|*}"; _pdc_rest="${_pdc_rest#*|}"
         _pdc_secs="${_pdc_rest%%|*}"
         _pdc_phase="${_pdc_rest#*|}"
-        # The segment's own clock starts now: the animator fills the gap to the
-        # ceiling at the pace this stage usually takes.
-        printf '%s|%s|%s|%s|%s\n' "$_pdc_pct" "$_pdc_ceil" "$_pdc_secs" \
-            "$(date +%s 2>/dev/null || echo 0)" "$_pdc_phase" > "$1"
+        ui_progress_state "$1" "$_pdc_pct" "$_pdc_ceil" "$_pdc_secs" "$_pdc_phase"
         # Nothing is animating (piped, CI, NO_COLOR, a dumb terminal): one plain
         # logged line per phase, rather than a line that redraws nothing.
         if [ "${EXAKIT_DEPLOY_LIVE:-0}" != 1 ] && [ "$_pdc_phase" != "$_pdc_shown" ]; then
@@ -683,23 +528,16 @@ personal_deploy_local() {
     _deploy_tail="$_deploy_tmp/tail"
     _deploy_notice="$_deploy_tmp/notice"
     _deploy_t0="$(date +%s 2>/dev/null || echo 0)"
-    printf '0|5|3|%s|Preparing the deployment\n' "$_deploy_t0" > "$_deploy_state"
+    ui_progress_state "$_deploy_state" 0 5 3 "Preparing the deployment"
     : > "$_deploy_tail"
     : > "$_deploy_notice"
 
-    # Live only on an interactive fancy terminal, checked here rather than at
-    # load time so a redrawing line can never leak into a capture or a log.
     EXAKIT_DEPLOY_LIVE=0
-    if [ "${UI_FANCY:-0}" = 1 ] && [ -t 1 ]; then
-        EXAKIT_DEPLOY_LIVE=1
-        printf '\033[?25l'                       # hide cursor; ui_spin_end restores it
-        _personal_deploy_animate "$_deploy_state" "$_deploy_t0" &
-        _UI_SPIN_PID=$!
-    fi
+    ui_progress_begin "$_deploy_state" "$_deploy_t0" && EXAKIT_DEPLOY_LIVE=1
     "$(personal_cli)" install local 2>&1 | \
         _personal_deploy_collect "$_deploy_state" "$_deploy_tail" "$_deploy_notice"
     _deploy_rc=${PIPESTATUS[0]}
-    ui_spin_end
+    ui_progress_end
     EXAKIT_DEPLOY_LIVE=0
 
     if [ "$_deploy_rc" -ne 0 ]; then

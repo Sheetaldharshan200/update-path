@@ -143,7 +143,7 @@ EXAKIT_DEPLOY_LIVE=0
 PLAIN="$(_personal_deploy_collect "$STATE" "$TAIL" "$NOTICE" < "$WORK/launcher.txt")"
 has "phase: preparing"  "Preparing the deployment"          "$PLAIN"
 has "phase: fetching"   "Fetching the Exasol runtime"       "$PLAIN"
-has "phase: waiting"    "Waiting for the database to start" "$PLAIN"
+has "phase: waiting"    "Waiting for the database" "$PLAIN"
 has "phase: finishing"  "Finishing up"                      "$PLAIN"
 has "phase: deployed"   "Deployed"                          "$PLAIN"
 lacks "still no JSON" '"level":"INFO"' "$PLAIN"
@@ -172,31 +172,31 @@ printf '\n== the bar keeps moving while the launcher says nothing ==\n'
 # the deploy. Milestones stay the truth; the time between them is filled in.
 SEG="$(_personal_deploy_milestone '{"msg":"found resource in cache"}')"
 check "the segment knows where it ends" "35|65|25" "${SEG%|*}"
-check "at the start it is the milestone" "35" "$(_personal_deploy_creep 35 65 25 0)"
-check "a third of the way in"            "44" "$(_personal_deploy_creep 35 65 25 8)"
-check "two thirds"                       "54" "$(_personal_deploy_creep 35 65 25 16)"
+check "at the start it is the milestone" "35" "$(ui_progress_creep 35 65 25 0)"
+check "a third of the way in"            "44" "$(ui_progress_creep 35 65 25 8)"
+check "two thirds"                       "54" "$(ui_progress_creep 35 65 25 16)"
 # Capped one point BELOW the next milestone: arriving at it must still be
 # something the reader sees happen...
-check "just before the next stage"       "64" "$(_personal_deploy_creep 35 65 25 25)"
+check "just before the next stage"       "64" "$(ui_progress_creep 35 65 25 25)"
 # ...and a stage that runs long waits there rather than walking into the next
 # one's territory.
-check "a stage that overruns waits"      "64" "$(_personal_deploy_creep 35 65 25 300)"
-check "never before its own milestone"   "35" "$(_personal_deploy_creep 35 65 25 0)"
+check "a stage that overruns waits"      "64" "$(ui_progress_creep 35 65 25 300)"
+check "never before its own milestone"   "35" "$(ui_progress_creep 35 65 25 0)"
 # A milestone with nowhere to creep to just sits on its number.
-check "the final milestone does not creep" "100" "$(_personal_deploy_creep 100 100 0 9)"
-check "nor does a zero-length segment"     "65"  "$(_personal_deploy_creep 65 65 10 5)"
+check "the final milestone does not creep" "100" "$(ui_progress_creep 100 100 0 9)"
+check "nor does a zero-length segment"     "65"  "$(ui_progress_creep 65 65 10 5)"
 
 printf '\n== the progress line carries a bar, a percentage and a clock ==\n'
 
 UI_SPIN_FRAMES=(a b c d e f g h i j)
-BAR="$(_personal_deploy_paint 65 "Waiting for the database to start" 42 0 100)"
+BAR="$(ui_progress_line 65 "Waiting for the database" 42 0 100)"
 has "percentage rendered" "65%" "$BAR"
-has "phase rendered" "Waiting for the database to start" "$BAR"
+has "phase rendered" "Waiting for the database" "$BAR"
 has "elapsed rendered" "(42s)" "$BAR"
 has "bar is filled" "$UI_BAR_FULL" "$BAR"
 has "bar has a remainder" "$UI_BAR_EMPTY" "$BAR"
 # 100% must fill the bar exactly, not overflow it.
-FULL="$(_personal_deploy_paint 100 Deployed 9 0 100)"
+FULL="$(ui_progress_line 100 Deployed 9 0 100)"
 lacks "a full bar has no remainder" "$UI_BAR_EMPTY" "$FULL"
 
 printf '\n== a download animates instead of going silent ==\n'
@@ -239,107 +239,20 @@ lacks "no add-on redirects a fetch by hand" "( fetch " "$ADDONS"
 lacks "the VS Code install is not a bare redirect" \
     '_exasol_vscode_code --install-extension "$(_exasol_vscode_host_path "$_evi_vsix")" --force' "$ADDONS"
 
-printf '\n== an add-on install says what it is installing ==\n'
+printf '\n== an add-on install reports its own stages ==\n'
 
-# The spinner reads EXAKIT_ACTIVE_LABEL. Before the fix nothing set it here, so
-# an add-on installed after the last numbered step animated under that step's
-# title. Record what the label actually is while the install function runs.
-#
-# The label is a progress line now (id, bar, percentage, phase), so what is
-# asserted is that it names THIS add-on and THIS phase -- not the exact bytes,
-# which the bar's width would pin for no reason. tests/install-output-brevity.sh
-# owns the progress line's own shape.
-EXAKIT_ACTIVE_LABEL="Step 6/6  exakit helper"
-LABEL_SEEN=""
-LABEL_SEEN_VALIDATE=""
-dash_server_install()  { LABEL_SEEN="$EXAKIT_ACTIVE_LABEL"; return 0; }
-dash_server_validate() { LABEL_SEEN_VALIDATE="$EXAKIT_ACTIVE_LABEL"; return 0; }
-_exakit_marketplace_install_one dash-server >/dev/null 2>&1
-has "install names the add-on"  "dash-server" "$LABEL_SEEN"
-has "...and the phase"          "installing"  "$LABEL_SEEN"
-has "validate names the add-on" "dash-server" "$LABEL_SEEN_VALIDATE"
-has "...and its phase"          "validating"  "$LABEL_SEEN_VALIDATE"
-lacks "the previous step's title is gone" "Step 6/6" "$LABEL_SEEN"
-check "the previous label is restored" "Step 6/6  exakit helper" "$EXAKIT_ACTIVE_LABEL"
-
-# A failing install must still hand the label back, or every later step would
-# animate under a dead add-on's name.
-dash_server_install() { return 1; }
-_exakit_marketplace_install_one dash-server >/dev/null 2>&1
-check "a failed install still restores it" "Step 6/6  exakit helper" "$EXAKIT_ACTIVE_LABEL"
-
-printf '\n== the line is laid out in cells, so nothing shuffles sideways ==\n'
-
-# A test run is never a terminal, so ui.sh loaded the ASCII palette — which has
-# no partial blocks and a fixed head, i.e. exactly the branch these sections are
-# NOT about. Force the fancy table for the rest of the file.
-UI_FANCY=1
-UI_BAR_FULL="$(printf '\xe2\x96\x88')"
-UI_BAR_EMPTY="$(printf '\xe2\x96\x91')"
-UI_SPIN_FRAMES=(a b c d e f g h i j)
-
-# 45% phase · 40% bar · 7% percentage · 8% elapsed, measured off the terminal.
-# The point of the cells is that the bar starts at the SAME column whatever the
-# phase is called — the old bar-first line moved the text every time the phase
-# changed length.
-col_of_bar() { # col_of_bar <phase> <cols>
-    _personal_deploy_paint 50 "$1" 9 0 "$2" \
-        | sed 's/\r//; s/'"$(printf '\033')"'\[[0-9;]*[A-Za-z]//g' \
-        | awk '{ print index($0, "'"${UI_BAR_FULL}"'") }'
-}
-SHORT="$(col_of_bar "Deployed" 100)"
-LONG="$(col_of_bar "Installing the script language container" 100)"
-check "a short phase and a long one start the bar together" "$SHORT" "$LONG"
-check "and the column is where 45% puts it" "50" "$SHORT"
-
-# Every width keeps the four cells in proportion and the line within the
-# terminal. A line one column too long wraps, and a wrapped line makes every
-# redraw climb up the screen.
-for _w in 60 80 100 120 200; do
-    _len="$(_personal_deploy_paint 70 "Waiting for the database to start" 37 0 "$_w" \
-        | sed 's/\r//; s/'"$(printf '\033')"'\[[0-9;]*[A-Za-z]//g')"
-    check "at $_w columns the line fits" "yes" \
-        "$([ "$(_ui_visible_len "$_len")" -le "$_w" ] && echo yes || echo "no: $(_ui_visible_len "$_len")")"
-done
-
-# A phase too long for its cell is cut and gets an ellipsis — and keeps a gap
-# before the bar, which is the part a naive truncation loses.
-NARROW="$(_personal_deploy_paint 70 "Installing the script language container" 37 0 80 \
-    | sed 's/\r//; s/'"$(printf '\033')"'\[[0-9;]*[A-Za-z]//g')"
-has "a long phase is truncated" "…" "$NARROW"
-lacks "and never touches the bar" "…$UI_BAR_FULL" "$NARROW"
-
-printf '\n== the bar moves in eighths, not whole cells ==\n'
-
-# A forty-cell bar stepping whole cells jumps 2.5% at a time and reads as stuck.
-# The partial-block glyphs give it eight times the resolution, so consecutive
-# percentages differ ON SCREEN.
-frame_at() { _personal_deploy_paint "$1" "Waiting" 9 0 100 \
-    | sed 's/\r//; s/'"$(printf '\033')"'\[[0-9;]*[A-Za-z]//g'; }
-check "68 and 69 percent look different" "different" \
-    "$([ "$(frame_at 68)" != "$(frame_at 69)" ] && echo different || echo same)"
-check "69 and 70 too" "different" \
-    "$([ "$(frame_at 69)" != "$(frame_at 70)" ] && echo different || echo same)"
-check "a partial block is drawn" "yes" \
-    "$(printf '%s' "$(frame_at 71)" | grep -q '[▏▎▍▌▋▊▉]' && echo yes || echo no)"
-# The frontier cell is empty when there is no fraction, so the dim remainder
-# stays unbroken rather than carrying a stray glyph.
-check "0%% draws no fill" "0" \
-    "$(frame_at 0 | awk '{ n = gsub(/'"$UI_BAR_FULL"'/, ""); print n }')"
-lacks "and no partial either" "▏" "$(frame_at 0)"
-
-printf '\n== the head says the run is alive even when the bar is parked ==\n'
-
-# The bar can legitimately hold its position for minutes (a cold cache). The
-# braille head is what moves in that case, so it has to change per frame.
-A="$(_personal_deploy_paint 64 "Fetching the Exasol runtime" 90 0 100)"
-B="$(_personal_deploy_paint 64 "Fetching the Exasol runtime" 90 1 100)"
-check "the same percentage, two frames, different lines" "different" \
-    "$([ "$A" != "$B" ] && echo different || echo same)"
-has "the animator counts frames" "_pda_frame=\$(( _pda_frame + 1 ))" \
-    "$(cat "$ROOT/setup/lib/runtime-personal.sh")"
-has "and measures the width once" "_pda_cols=\"\$(_ui_term_cols" \
-    "$(cat "$ROOT/setup/lib/runtime-personal.sh")"
+# The add-on install writes into the shared progress state now, not into the
+# spinner's label. tests/install-output-brevity.sh owns the rest of that flow;
+# what is asserted here is that the state carries this add-on and this stage.
+ADDON_STATE="$WORK/addon-state"
+_exakit_addon_progress "$ADDON_STATE" dash-server 0 65 40 "installing"
+check "the stage it is at"       "0"  "$(cut -d'|' -f1 "$ADDON_STATE")"
+check "and where that stage ends" "65" "$(cut -d'|' -f2 "$ADDON_STATE")"
+has "the add-on is named"        "dash-server" "$(cut -d'|' -f5 "$ADDON_STATE")"
+has "so is the phase"            "installing"  "$(cut -d'|' -f5 "$ADDON_STATE")"
+_exakit_addon_progress "$ADDON_STATE" dash-server 65 90 8 "validating"
+check "validating starts at 65"  "65" "$(cut -d'|' -f1 "$ADDON_STATE")"
+has "...and says so"             "validating" "$(cut -d'|' -f5 "$ADDON_STATE")"
 
 printf '\n%s: %d passed, %d failed\n' "$(basename "$0")" "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

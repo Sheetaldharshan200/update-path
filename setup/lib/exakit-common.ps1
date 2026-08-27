@@ -3521,20 +3521,21 @@ function Show-ExakitMarketplaceMenu {
     Invoke-ExakitMarketplaceApply -Ids $picked
 }
 
-# Set-ExakitAddonProgress <id> <pct> <phase> - the add-on install's one line of
-# progress. Prints nothing itself: it sets the label the spinner is about to
-# draw, so the animation, the bar, the percentage and the phase share one line.
-# Twin of _exakit_addon_progress in common.sh.
+# Set-ExakitAddonProgress <id> <pct> <ceiling> <secs> <phase> - the add-on
+# install has reached a new stage.
+#
+# The percentages are milestone positions weighted by where the TIME goes:
+# fetching and installing is nearly all of it, validating a little, starting
+# almost none. The seconds are what the creep fills the gaps with, capped below
+# the next stage - so a slow PyPI resolve makes the bar wait rather than walk
+# into "validating". Twin of _exakit_addon_progress in common.sh.
 function Set-ExakitAddonProgress {
     param(
         [Parameter(Mandatory)][string]$Id, [Parameter(Mandatory)][int]$Pct,
+        [Parameter(Mandatory)][int]$Ceiling, [Parameter(Mandatory)][int]$Secs,
         [Parameter(Mandatory)][string]$Phase
     )
-    $script:ExakitActiveLabel = ("{0} {1} {2}{3,3}%{4} {5}" -f $Id, (Get-ExakitBar -Pct $Pct),
-        $script:UiBold, $Pct, $script:UiReset, $Phase)
-    # A spinner already on screen reads its label live from a synchronized
-    # hashtable, so a phase that moves the bar mid-flight is picked up.
-    if ($script:UiSpinFlag) { try { $script:UiSpinFlag.Label = $script:ExakitActiveLabel } catch { } }
+    Set-ExakitProgress -Pct $Pct -Ceiling $Ceiling -Secs $Secs -Phase "$Id - $Phase"
 }
 
 # Install each picked add-on in turn. One failure does not strand the rest.
@@ -3566,7 +3567,7 @@ function Invoke-ExakitMarketplaceApply {
         $prevQuiet = $script:ExakitQuietDetail
         try {
             $script:ExakitQuietDetail = $true
-            Set-ExakitAddonProgress -Id $id -Pct 0 -Phase "installing"
+            [void](Start-ExakitProgress -Pct 0 -Ceiling 65 -Secs 40 -Phase "$id - installing")
             $installed = & $addon.InstallFn
         } catch {
             Warn2 "$id installer reported: $_"
@@ -3575,7 +3576,7 @@ function Invoke-ExakitMarketplaceApply {
         if ($installed) {
             if ($addon.ValidateFn -and (Get-Command $addon.ValidateFn -ErrorAction SilentlyContinue)) {
                 try {
-                    Set-ExakitAddonProgress -Id $id -Pct 65 -Phase "validating"
+                    Set-ExakitAddonProgress -Id $id -Pct 65 -Ceiling 90 -Secs 8 -Phase "validating"
                     & $addon.ValidateFn
                 } catch { Warn2 "$id validation reported: $_" }
             }
@@ -3595,12 +3596,13 @@ function Invoke-ExakitMarketplaceApply {
             # `exakit status` reported the add-on just installed as "stopped".
             if ($addon.PSObject.Properties["StartFn"] -and
                 (Get-Command $addon.StartFn -ErrorAction SilentlyContinue)) {
-                Set-ExakitAddonProgress -Id $id -Pct 90 -Phase "starting"
+                Set-ExakitAddonProgress -Id $id -Pct 90 -Ceiling 100 -Secs 3 -Phase "starting"
                 try { [void](& $addon.StartFn) }
                 catch { Warn2 "$id installed but did not start - start it with: exakit start" }
             }
             # The add-on's own panel already carries an "Update  exakit update
             # <id>" row, so the result line does not repeat it twice.
+            Stop-ExakitProgress
             $script:ExakitQuietDetail = $prevQuiet
             $script:ExakitActiveLabel = $prevLabel
             # SummaryFn is OPTIONAL: the one fact worth carrying out of an
@@ -3613,6 +3615,7 @@ function Invoke-ExakitMarketplaceApply {
             }
             if ($note) { Ok "$id installed - $note" } else { Ok "$id installed" }
         } else {
+            Stop-ExakitProgress
             $script:ExakitQuietDetail = $prevQuiet
             $script:ExakitActiveLabel = $prevLabel
             Warn2 "$id did not finish installing - retry with: exakit marketplace (or exakit update $id)"

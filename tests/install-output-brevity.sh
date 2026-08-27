@@ -250,11 +250,16 @@ has "ui.ps1 has its twin" "function Write-ExakitRule"  "$(cat "$ROOT/setup/lib/u
 
 printf '\n== an add-on install is two lines and its own panel ==\n'
 
-_exakit_addon_progress dash-server 65 "validating"
-has "the add-on is named"  "dash-server"  "$EXAKIT_ACTIVE_LABEL"
-has "the percentage"       "65%"          "$EXAKIT_ACTIVE_LABEL"
-has "the phase"            "validating"   "$EXAKIT_ACTIVE_LABEL"
-has "a filled bar"         "$UI_BAR_FULL" "$EXAKIT_ACTIVE_LABEL"
+# The add-on install writes into the shared progress state, which the animator
+# draws — rather than baking a bar into the spinner's label, which could only
+# change when a phase did.
+ADDON_STATE="$WORK/addon-progress"
+_exakit_addon_progress "$ADDON_STATE" dash-server 65 90 8 "validating"
+check "the stage it is at"        "65" "$(cut -d'|' -f1 "$ADDON_STATE")"
+check "and where that stage ends" "90" "$(cut -d'|' -f2 "$ADDON_STATE")"
+check "how long it usually takes" "8"  "$(cut -d'|' -f3 "$ADDON_STATE")"
+has "the add-on is named"  "dash-server" "$(cut -d'|' -f5 "$ADDON_STATE")"
+has "the phase"            "validating"  "$(cut -d'|' -f5 "$ADDON_STATE")"
 
 # One add-on, stubbed end to end: chatter, a usage panel, autostart and a start
 # hook — the same shape every real add-on module has.
@@ -320,7 +325,9 @@ printf '\n== the PowerShell twin gates at the same sink ==\n'
 has "Info is gated"        'if (-not $script:ExakitQuietDetail) {' "$COMMON_PS1"
 has "the flag is declared" '$script:ExakitQuietDetail = $false'    "$COMMON_PS1"
 has "the progress helper"  'function Set-ExakitAddonProgress'      "$COMMON_PS1"
-has "the apply loop sets it" 'Set-ExakitAddonProgress -Id $id -Pct 0 -Phase "installing"' "$COMMON_PS1"
+has "the apply loop starts the bar" 'Start-ExakitProgress -Pct 0 -Ceiling 65 -Secs 40' "$COMMON_PS1"
+has "...and reports each stage"      'Set-ExakitAddonProgress -Id $id -Pct 65 -Ceiling 90' "$COMMON_PS1"
+has "...and stops it"                'Stop-ExakitProgress' "$COMMON_PS1"
 has "and hands it back"      '$script:ExakitQuietDetail = $prevQuiet' "$COMMON_PS1"
 
 printf '\n== exakit help lists each command once ==\n'

@@ -1073,9 +1073,16 @@ function Import-ExakitLocalFolder {
 
     Confirm-ExakitSchemaExists $schema | Out-Null
     $script:ExakitUploadQuiet = $true
+    # Weighted by BYTES, like a bundled dataset: a folder is usually one big
+    # export and a handful of small ones, and counting files would put the bar at
+    # 90% while the only file that matters is still going.
+    $totalWeight = [long]0
+    foreach ($row in $chosen) { $totalWeight += (Get-ExakitLoadWeight $row.Split('|', 3)[2]) }
+    $doneWeight = [long]0
     $done = 0
     $failed = 0
     $i = 0
+    [void](Start-ExakitProgress -Pct 0 -Ceiling 1 -Secs 2 -Phase "reading $($chosen.Count) file(s)")
     try {
         foreach ($row in $chosen) {
             $i++
@@ -1085,7 +1092,10 @@ function Import-ExakitLocalFolder {
             # The spinner names the file it is actually on, and how far through
             # the folder it is - a forty-file load must never animate under one
             # label.
-            $script:ExakitActiveLabel = "Loading $(Split-Path $file -Leaf) ($i/$($chosen.Count))"
+            $w = Get-ExakitLoadWeight $file
+            Set-ExakitLoadStep -DoneWeight $doneWeight -StepWeight $w -TotalWeight $totalWeight `
+                -Seconds (Get-ExakitLoadSeconds $w) `
+                -Phase "$(Split-Path $file -Leaf) ($i/$($chosen.Count))"
             # @(...)[-1]: the function writes its progress with Write-Host, but
             # taking the LAST emitted value keeps the boolean even if a helper
             # underneath it ever starts writing to the pipeline.
@@ -1096,14 +1106,18 @@ function Import-ExakitLocalFolder {
                 $uploaded = $false
             }
             if ($uploaded) {
-                Ok "$(Split-Path $file -Leaf) -> $target"
+                # To the logfile: the plan above the confirm already listed every
+                # file and its target, and a redrawing bar cannot share the row.
+                Write-ExakitLog "OK" "$(Split-Path $file -Leaf) -> $target"
                 $done++
+                $doneWeight += $w
             } else {
                 Warn2 "$(Split-Path $file -Leaf) could not be loaded (see log) - the rest of the folder continues."
                 $failed++
             }
         }
     } finally {
+        Stop-ExakitProgress
         $script:ExakitUploadQuiet = $false
         $script:ExakitActiveLabel = ""
     }
@@ -1394,41 +1408,49 @@ function Get-ExakitGroupedDigits {
     return $Value.ToString("N0", [System.Globalization.CultureInfo]::InvariantCulture)
 }
 
-# Set-ExakitDatasetProgress - the dataset load's one line of progress.
+# --- weighting a load by what it actually costs ------------------------------
+# A dataset is a dozen steps and one of them is most of the wall clock: TPC-H's
+# lineitem.csv is fifteen megabytes of twenty-one, so counted as steps the bar
+# reached 25% while the file that is 63% of the job was still going.
 #
-# It prints nothing itself. It sets ExakitActiveLabel, which is what the spinner
-# draws for the step that is about to run - so the braille animation, the bar,
-# the percentage and the file being loaded right now are ONE line that repaints
-# itself, instead of four kinds of output competing for the screen. Off a
-# console the spinner draws nothing and there is deliberately no output between
-# a dataset's opening line and its result.
-# Twin of _exakit_dataset_progress in exapump.sh.
-function Set-ExakitDatasetProgress {
-    param(
-        [Parameter(Mandatory)][string]$Id, [Parameter(Mandatory)][int]$Done,
-        [Parameter(Mandatory)][int]$Total, [Parameter(Mandatory)][string]$Label
-    )
-    $pct = 0
-    if ($Total -gt 0) { $pct = [int]($Done * 100 / $Total) }
-    if ($pct -gt 100) { $pct = 100 }
-    $script:ExakitActiveLabel = ("{0} {1} {2}{3,3}%{4} {5}" -f $Id, (Get-ExakitBar -Pct $pct),
-        $script:UiBold, $pct, $script:UiReset, $Label)
-    # A spinner already on screen reads its label live from a synchronized
-    # hashtable, so a step that moves the bar mid-flight is picked up.
-    if ($script:UiSpinFlag) { try { $script:UiSpinFlag.Label = $script:ExakitActiveLabel } catch { } }
+# So the denominator is BYTES. The steps that move no bytes (a schema script,
+# the load statements, the verification, the row counts) are worth a nominal
+# share each, measured on the same scale.
+# Twin of the same block in exapump.sh.
+$script:ExakitLoadStepShare = 5          # percent of the byte total, per byteless step
+$script:ExakitLoadBytesPerSec = 1048576
+
+function Get-ExakitLoadWeight {
+    param([string]$Path)
+    if (-not $Path -or -not (Test-Path $Path)) { return 0 }
+    try { return [long](Get-Item $Path).Length } catch { return 0 }
 }
 
-# Invoke-ExakitDatasetStep - run one step of a dataset load under the progress
-# line. The bash twin gets the animation for free, because run_logged starts the
-# spinner itself; the exapump wrapper on this side does not, so each step asks.
-function Invoke-ExakitDatasetStep {
+# How long that much weight usually takes, for the creep to fill in with. Only
+# ever an estimate, and a safe one: the creep is capped below the next stage, so
+# guessing short makes the bar wait and guessing long makes it move slowly.
+function Get-ExakitLoadSeconds {
+    param([long]$Weight)
+    $s = [int]($Weight / $script:ExakitLoadBytesPerSec)
+    if ($s -lt 2) { $s = 2 }
+    return $s
+}
+
+# Set-ExakitLoadStep - the load has reached a new stage: where it is, and where
+# this stage ends. Prints nothing; the progress animator is what draws.
+function Set-ExakitLoadStep {
     param(
-        [Parameter(Mandatory)][string]$Id, [Parameter(Mandatory)][int]$Done,
-        [Parameter(Mandatory)][int]$Total, [Parameter(Mandatory)][string]$Label,
-        [Parameter(Mandatory)][scriptblock]$Body
+        [long]$DoneWeight, [long]$StepWeight, [long]$TotalWeight,
+        [int]$Seconds, [string]$Phase
     )
-    Set-ExakitDatasetProgress -Id $Id -Done $Done -Total $Total -Label $Label
-    return (Invoke-ExakitWithSpinner -Label $script:ExakitActiveLabel -Body $Body)
+    $pct = 0; $ceil = 0
+    if ($TotalWeight -gt 0) {
+        $pct = [int]($DoneWeight * 100 / $TotalWeight)
+        $ceil = [int](($DoneWeight + $StepWeight) * 100 / $TotalWeight)
+    }
+    if ($ceil -gt 100) { $ceil = 100 }
+    if ($pct -gt 100) { $pct = 100 }
+    Set-ExakitProgress -Pct $pct -Ceiling $ceil -Secs $Seconds -Phase $Phase
 }
 
 function Invoke-ExakitDatasetDirLoad {
@@ -1477,7 +1499,7 @@ function Invoke-ExakitDatasetDirLoad {
     # the work rather than a guess: the schema script, one per CSV, the load
     # statements, the verification, and the row count at the end.
     # ExakitUploadQuiet silences the narration underneath; the progress line IS
-    # the narration now (see Set-ExakitDatasetProgress). Nothing is lost - every
+    # the narration now (see Set-ExakitLoadStep). Nothing is lost - every
     # suppressed line still goes to the logfile, including the per-table row
     # counts, and a FAILED verification still prints in full.
     $schemaSql = Join-Path $dir "01_create_schema.sql"
@@ -1485,11 +1507,16 @@ function Invoke-ExakitDatasetDirLoad {
     $verifySql = Join-Path $dir "03_verify_setup.sql"
     $csvFiles = @(Get-ChildItem -Path (Join-Path $dir "data\*.csv") -ErrorAction SilentlyContinue |
         Where-Object { $_.Length -gt 0 })
-    $total = 1 + $csvFiles.Count + 1                 # schema + files + row count
-    if ((Test-Path $loadSql) -and (Get-Item $loadSql).Length -gt 0) { $total++ }
-    if ((Test-Path $verifySql) -and (Get-Item $verifySql).Length -gt 0) { $total++ }
-    $step = 0
+    $bytes = [long]0
+    foreach ($csv in $csvFiles) { $bytes += [long]$csv.Length }
+    $nominal = [long]($bytes * $script:ExakitLoadStepShare / 100)
+    if ($nominal -lt 1) { $nominal = 1 }
+    $totalWeight = $bytes + $nominal + $nominal          # + schema + row counts
+    if ((Test-Path $loadSql) -and (Get-Item $loadSql).Length -gt 0) { $totalWeight += $nominal }
+    if ((Test-Path $verifySql) -and (Get-Item $verifySql).Length -gt 0) { $totalWeight += $nominal }
+    $doneWeight = [long]0
     $started = Get-Date
+    [void](Start-ExakitProgress -Pct 0 -Ceiling 1 -Secs 2 -Phase "$Id - reading the dataset")
     $script:ExakitUploadQuiet = $true
     $tableCount = 0
     $rowTotal = [long]0
@@ -1500,9 +1527,9 @@ function Invoke-ExakitDatasetDirLoad {
     # table itself when none exists; the script exists to pin exact types and
     # primary keys. Verify the DDL really landed and re-run once if not.
     if ((Test-Path $schemaSql) -and (Get-Item $schemaSql).Length -gt 0) {
-        Invoke-ExakitDatasetStep -Id $Id -Done $step -Total $total -Label "creating schema $schema" -Body {
-            Invoke-ExapumpSqlFile $schemaSql "$Id schema (01_create_schema.sql)"
-        } | Out-Null
+        Set-ExakitLoadStep -DoneWeight $doneWeight -StepWeight $nominal -TotalWeight $totalWeight `
+            -Seconds 2 -Phase "$Id - creating schema $schema"
+        Invoke-ExapumpSqlFile $schemaSql "$Id schema (01_create_schema.sql)" | Out-Null
         if (-not (Test-ExapumpSchemaPresent $schema.ToUpper())) {
             Warn2 "Schema $schema is not present after creation - re-running the schema script"
             Invoke-ExapumpSqlFile $schemaSql "$Id schema (re-run)" | Out-Null
@@ -1511,34 +1538,34 @@ function Invoke-ExakitDatasetDirLoad {
             }
         }
     } else {
-        Invoke-ExakitDatasetStep -Id $Id -Done $step -Total $total -Label "creating schema $schema" -Body {
-            $r = Invoke-Exapump @("sql", "-p", $script:ExapumpProfile, "CREATE SCHEMA IF NOT EXISTS $($schema.ToUpper())")
-            if (-not $r.Success) { Fail "Could not create schema $schema." }
-        } | Out-Null
+        Set-ExakitLoadStep -DoneWeight $doneWeight -StepWeight $nominal -TotalWeight $totalWeight `
+            -Seconds 2 -Phase "$Id - creating schema $schema"
+        $r = Invoke-Exapump @("sql", "-p", $script:ExapumpProfile, "CREATE SCHEMA IF NOT EXISTS $($schema.ToUpper())")
+        if (-not $r.Success) { Fail "Could not create schema $schema." }
     }
 
+    $doneWeight += $nominal
     foreach ($csv in $csvFiles) {
         $table = [System.IO.Path]::GetFileNameWithoutExtension($csv.Name).ToUpper()
-        $step++
-        $csvPath = $csv.FullName
-        $csvTarget = "$schema.$table"
-        Invoke-ExakitDatasetStep -Id $Id -Done $step -Total $total -Label $csv.Name -Body {
-            Invoke-ExapumpUpload $csvPath $csvTarget
-        } | Out-Null
+        $w = [long]$csv.Length
+        Set-ExakitLoadStep -DoneWeight $doneWeight -StepWeight $w -TotalWeight $totalWeight `
+            -Seconds (Get-ExakitLoadSeconds $w) -Phase "$Id - $($csv.Name)"
+        Invoke-ExapumpUpload $csv.FullName "$schema.$table" | Out-Null
+        $doneWeight += $w
     }
 
     if ((Test-Path $loadSql) -and (Get-Item $loadSql).Length -gt 0) {
-        $step++
-        Invoke-ExakitDatasetStep -Id $Id -Done $step -Total $total -Label "running load statements" -Body {
-            Invoke-ExapumpSqlFile $loadSql "$Id load statements (02_load_data.sql)"
-        } | Out-Null
+        Set-ExakitLoadStep -DoneWeight $doneWeight -StepWeight $nominal -TotalWeight $totalWeight `
+            -Seconds 3 -Phase "$Id - running load statements"
+        Invoke-ExapumpSqlFile $loadSql "$Id load statements (02_load_data.sql)" | Out-Null
+        $doneWeight += $nominal
     }
 
     if ((Test-Path $verifySql) -and (Get-Item $verifySql).Length -gt 0) {
-        $step++
-        $result = Invoke-ExakitDatasetStep -Id $Id -Done $step -Total $total -Label "verifying" -Body {
-            Invoke-ExapumpSqlFileCapture $verifySql
-        }
+        Set-ExakitLoadStep -DoneWeight $doneWeight -StepWeight $nominal -TotalWeight $totalWeight `
+            -Seconds 3 -Phase "$Id - verifying"
+        $result = Invoke-ExapumpSqlFileCapture $verifySql
+        $doneWeight += $nominal
         # Grade on the STATUS *column value* ",FAIL," - not the bare word. The
         # verify SQL is full of the literal string (the header comment "a 'FAIL'
         # row means..." and 17 "CASE ... ELSE 'FAIL' END" clauses), and exapump
@@ -1551,6 +1578,7 @@ function Invoke-ExakitDatasetDirLoad {
         # Eighteen rows of "OK, 0 orphaned row(s)" say nothing the result line
         # does not already say - a FAIL row says everything.
         if (-not $result.Success -or $result.Output -match ",FAIL,") {
+                Stop-ExakitProgress
             $script:ExakitUploadQuiet = $false
             $script:ExakitActiveLabel = ""
             Write-ExapumpOutput -Output $result.Output -Header "Verification failed for dataset '$Id':"
@@ -1579,10 +1607,11 @@ function Invoke-ExakitDatasetDirLoad {
     # dataset. Their totals land in the result line instead, which is the part a
     # reader actually checks against what they expected.
     if ($tables.Count -gt 0) {
-        $step++
         $tableList = $tables
         $schemaName = $schema
-        $counted = Invoke-ExakitDatasetStep -Id $Id -Done $step -Total $total -Label "counting rows" -Body {
+        Set-ExakitLoadStep -DoneWeight $doneWeight -StepWeight $nominal -TotalWeight $totalWeight `
+            -Seconds 2 -Phase "$Id - counting rows"
+        $counted = & {
             $acc = New-Object 'System.Collections.Generic.List[string]'
             foreach ($t in $tableList) {
                 $rows = Get-ExapumpRowCount "$schemaName.$t"
@@ -1600,6 +1629,7 @@ function Invoke-ExakitDatasetDirLoad {
     }
 
     } finally {
+        Stop-ExakitProgress
         $script:ExakitUploadQuiet = $false
         $script:ExakitActiveLabel = ""
     }

@@ -98,18 +98,35 @@ check "thousands are grouped"  "173,745" "$(exakit_group_digits 173745)"
 check "millions too"           "1,234,567" "$(exakit_group_digits 1234567)"
 check "small numbers untouched" "25" "$(exakit_group_digits 25)"
 
-printf '\n== the progress label carries the whole story ==\n'
+printf '\n== the load is weighted by bytes, not by step count ==\n'
 
-_exakit_dataset_progress tpch 3 12 "lineitem.csv"
-LABEL="$EXAKIT_ACTIVE_LABEL"
-has "the dataset id"    "tpch"          "$LABEL"
-has "the percentage"    "25%"           "$LABEL"
-has "the current file"  "lineitem.csv"  "$LABEL"
-has "a filled bar"      "$UI_BAR_FULL"  "$LABEL"
-has "a remaining bar"   "$UI_BAR_EMPTY" "$LABEL"
-# The label is what the spinner paints. It must never print on its own, or a
-# non-terminal run would get one of these per step.
-check "setting it prints nothing" "" "$(_exakit_dataset_progress tpch 1 4 x)"
+# TPC-H is twelve steps and lineitem.csv is fifteen megabytes of twenty-one.
+# Counted as steps the bar reached 25% while the file that is most of the job was
+# still going; weighted by bytes it reports what is actually left.
+BIG="$WORK/big.csv"; SMALL="$WORK/small.csv"
+head -c 400000 /dev/zero | tr '\0' 'x' > "$BIG"
+head -c 1000 /dev/zero   | tr '\0' 'x' > "$SMALL"
+check "a file weighs its bytes" "400000" "$(exakit_load_weight_of "$BIG")"
+check "a small one weighs less" "1000"   "$(exakit_load_weight_of "$SMALL")"
+check "a file that is not there weighs nothing" "0" "$(exakit_load_weight_of "$WORK/absent.csv")"
+
+# Seconds are an estimate, and a floor keeps a tiny file from claiming zero.
+check "a big file is given time"   "2" "$(exakit_load_secs_for 2097152)"
+check "a tiny one gets the floor"  "2" "$(exakit_load_secs_for 10)"
+
+# The step reports where it is and where the stage ends, as percentages of the
+# whole weight.
+LOAD_STATE="$WORK/load-state"
+exakit_load_step "$LOAD_STATE" 0 400000 500000 4 "tpch · big.csv"
+check "it starts at nought"        "0"  "$(cut -d'|' -f1 "$LOAD_STATE")"
+check "and ends at four fifths"    "80" "$(cut -d'|' -f2 "$LOAD_STATE")"
+has "naming the file"              "big.csv" "$(cut -d'|' -f5 "$LOAD_STATE")"
+exakit_load_step "$LOAD_STATE" 400000 100000 500000 2 "tpch · small.csv"
+check "the next stage starts where that ended" "80" "$(cut -d'|' -f1 "$LOAD_STATE")"
+check "and finishes the job"                   "100" "$(cut -d'|' -f2 "$LOAD_STATE")"
+# A weightless total must not divide by zero.
+exakit_load_step "$LOAD_STATE" 0 0 0 2 "empty"
+check "an empty load reports nought" "0" "$(cut -d'|' -f1 "$LOAD_STATE")"
 
 printf '\n== a SQL script is quiet when the caller narrates ==\n'
 
@@ -205,8 +222,11 @@ printf '\n== the PowerShell twin moves with it ==\n'
 UI_PS1="$(cat "$ROOT/setup/lib/ui.ps1")"
 EXAPUMP_PS1="$(cat "$ROOT/setup/lib/exapump.ps1")"
 has "ui.ps1 has the bar helper"        "function Get-ExakitBar"           "$UI_PS1"
-has "exapump.ps1 sets the progress"    "function Set-ExakitDatasetProgress" "$EXAPUMP_PS1"
-has "...and runs steps under it"       "function Invoke-ExakitDatasetStep"  "$EXAPUMP_PS1"
+has "exapump.ps1 weighs its files"     "function Get-ExakitLoadWeight"  "$EXAPUMP_PS1"
+has "...and reports each stage"        "function Set-ExakitLoadStep"    "$EXAPUMP_PS1"
+has "...driving the shared bar"        "Start-ExakitProgress -Pct 0"    "$EXAPUMP_PS1"
+has "ui.ps1 has the progress line"     "function Write-ExakitProgressLine" "$UI_PS1"
+has "...and the animator"              "function Start-ExakitProgress"     "$UI_PS1"
 has "it groups the row total"          "function Get-ExakitGroupedDigits"   "$EXAPUMP_PS1"
 lacks "no row-count panel on Windows either" 'Start-ExakitPanel "Row counts"' "$EXAPUMP_PS1"
 lacks "no unconditional verify header" 'Info "Verification ($Id 03_verify_setup.sql):"' "$EXAPUMP_PS1"

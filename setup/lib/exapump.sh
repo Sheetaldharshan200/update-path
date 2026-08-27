@@ -512,21 +512,49 @@ exakit_group_digits() {
     printf '%s' "$1" | sed -e :a -e 's/\(.*[0-9]\)\([0-9]\{3\}\)/\1,\2/;ta'
 }
 
-# _exakit_dataset_progress <id> <done> <total> <label> — the dataset load's one
-# line of progress.
+# --- weighting a load by what it actually costs ------------------------------
+# A dataset is twelve steps and one of them is most of the wall clock: TPC-H's
+# lineitem.csv is fifteen megabytes against seven files of a few hundred
+# kilobytes each. Counted as steps, the bar leapt to 58% through the small files
+# and then sat there for twenty seconds — honest arithmetic, useless to watch.
 #
-# It prints nothing itself. It sets EXAKIT_ACTIVE_LABEL, which is what
-# run_logged hands to the spinner for the step that is about to run — so the
-# braille animation, the bar, the percentage and the file being loaded right now
-# are ONE line that repaints itself, instead of four kinds of output competing
-# for the screen. Off a terminal the spinner draws nothing and there is
-# deliberately no output between a dataset's opening line and its result.
-# ⇄ twin: Set-ExakitDatasetProgress in exapump.ps1.
-_exakit_dataset_progress() {
-    _dp_pct=0
-    [ "$3" -gt 0 ] 2>/dev/null && _dp_pct=$(( $2 * 100 / $3 ))
-    [ "$_dp_pct" -gt 100 ] && _dp_pct=100
-    EXAKIT_ACTIVE_LABEL="$1 $(ui_bar "$_dp_pct") ${UI_BOLD:-}$(printf '%3s' "$_dp_pct")%${UI_RESET:-} $4"
+# So the denominator is BYTES, which is the one thing known before any of it
+# runs. The steps that move no bytes (a schema script, the load statements, the
+# verification, the row counts) are worth a nominal share each, measured against
+# the same scale, so they neither vanish nor dominate.
+EXAKIT_LOAD_STEP_SHARE="${EXAKIT_LOAD_STEP_SHARE:-5}"     # percent of the byte total, per byteless step
+EXAKIT_LOAD_BYTES_PER_SEC="${EXAKIT_LOAD_BYTES_PER_SEC:-1048576}"
+
+# exakit_load_weight_of <file> — a file's weight, which is its size.
+exakit_load_weight_of() {
+    [ -f "$1" ] || { printf '0\n'; return 0; }
+    wc -c < "$1" 2>/dev/null | tr -d ' '
+}
+
+# exakit_load_secs_for <weight> — how long that much weight usually takes, for
+# the creep to fill in with. Only ever an estimate, and a safe one: the creep is
+# capped below the next stage, so guessing short makes the bar wait and guessing
+# long makes it move slowly. Neither lies.
+exakit_load_secs_for() {
+    _lsf=$(( ${1:-0} / EXAKIT_LOAD_BYTES_PER_SEC ))
+    [ "$_lsf" -ge 2 ] || _lsf=2
+    printf '%s\n' "$_lsf"
+}
+
+# exakit_load_step <state-file> <done-weight> <step-weight> <total-weight>
+#                  <seconds> <phase>
+# The load has reached a new stage: report where it is and where this stage ends.
+# Prints nothing — ui_progress_animate is what draws.
+exakit_load_step() {
+    _lst_pct=0
+    _lst_ceil=0
+    if [ "${4:-0}" -gt 0 ]; then
+        _lst_pct=$(( $2 * 100 / $4 ))
+        _lst_ceil=$(( ($2 + $3) * 100 / $4 ))
+    fi
+    [ "$_lst_ceil" -gt 100 ] && _lst_ceil=100
+    [ "$_lst_pct" -gt 100 ] && _lst_pct=100
+    ui_progress_state "$1" "$_lst_pct" "$_lst_ceil" "$5" "$6"
 }
 
 exapump_record_manifest() {
@@ -1216,6 +1244,23 @@ exakit_load_local_folder() {
     exakit_ensure_schema "$_blf_schema"
     EXAKIT_UPLOAD_QUIET=1
     export EXAKIT_UPLOAD_QUIET
+    # Weighted by BYTES, like a bundled dataset: a folder is usually one big
+    # export and a handful of small ones, and counting files would put the bar
+    # at 90% while the only file that matters is still going.
+    _blf_total_w=0
+    while IFS='|' read -r _blf_k _blf_t _blf_p; do
+        [ -n "$_blf_p" ] || continue
+        _blf_total_w=$(( _blf_total_w + $(exakit_load_weight_of "$_blf_p") ))
+    done <<EXAKIT_BULK_WEIGH_EOF
+$_blf_chosen
+EXAKIT_BULK_WEIGH_EOF
+    _blf_done_w=0
+    _blf_t0="$(date +%s 2>/dev/null || echo 0)"
+    _blf_state="$(mktemp "${TMPDIR:-/tmp}/exakit-folder.XXXXXX")" || _blf_state=""
+    if [ -n "$_blf_state" ]; then
+        ui_progress_state "$_blf_state" 0 1 2 "reading $_blf_n file(s)"
+        ui_progress_begin "$_blf_state" "$_blf_t0" || true
+    fi
     _blf_done=0
     _blf_failed=0
     _blf_i=0
@@ -1223,15 +1268,20 @@ exakit_load_local_folder() {
         [ -n "$_blf_path" ] || continue
         _blf_i=$((_blf_i + 1))
         _blf_target="$_blf_schema.$_blf_table"
-        # The spinner names the file it is actually on, and how far through the
+        # The bar names the file it is actually on and how far through the
         # folder it is — a forty-file load must never animate under one label.
-        EXAKIT_ACTIVE_LABEL="Loading $(basename "$_blf_path") ($_blf_i/$_blf_n)"
-        export EXAKIT_ACTIVE_LABEL
+        _blf_w="$(exakit_load_weight_of "$_blf_path")"
+        if [ -n "$_blf_state" ]; then
+            exakit_load_step "$_blf_state" "$_blf_done_w" "$_blf_w" "$_blf_total_w" \
+                "$(exakit_load_secs_for "$_blf_w")" \
+                "$(basename "$_blf_path") ($_blf_i/$_blf_n)"
+        fi
         if [ "$_blf_kind" = "json" ]; then
             EXAKIT_LAST_LOAD_TARGET=""
             if exakit_load_local_json "$_blf_path" "$_blf_target"; then
-                ok "$(basename "$_blf_path") -> ${EXAKIT_LAST_LOAD_TARGET:-$_blf_target}"
+                _exakit_log_file "OK    $(basename "$_blf_path") -> ${EXAKIT_LAST_LOAD_TARGET:-$_blf_target}"
                 _blf_done=$((_blf_done + 1))
+                _blf_done_w=$(( _blf_done_w + _blf_w ))
             else
                 warn "$(basename "$_blf_path") could not be loaded (see log) — the rest of the folder continues."
                 _blf_failed=$((_blf_failed + 1))
@@ -1241,8 +1291,9 @@ exakit_load_local_folder() {
         # exapump_upload dies on failure; the subshell keeps that soft, so one
         # bad file in forty does not end the job.
         if ( exapump_upload "$_blf_path" "$_blf_target" ); then
-            ok "$(basename "$_blf_path") -> $_blf_target"
+            _exakit_log_file "OK    $(basename "$_blf_path") -> $_blf_target"
             _blf_done=$((_blf_done + 1))
+            _blf_done_w=$(( _blf_done_w + _blf_w ))
         else
             warn "$(basename "$_blf_path") could not be loaded (see log) — the rest of the folder continues."
             _blf_failed=$((_blf_failed + 1))
@@ -1250,6 +1301,8 @@ exakit_load_local_folder() {
     done <<EXAKIT_BULK_LOAD_EOF
 $_blf_chosen
 EXAKIT_BULK_LOAD_EOF
+    ui_progress_end
+    [ -n "$_blf_state" ] && rm -f "$_blf_state"
     EXAKIT_UPLOAD_QUIET=0
     EXAKIT_ACTIVE_LABEL=""
 
@@ -1621,18 +1674,28 @@ exakit_load_dataset_dir() {
     # IS the narration now (see _exakit_dataset_progress). Nothing is lost —
     # every suppressed line still goes to the logfile, including the per-table
     # row counts, and a FAILED verification still prints in full.
-    _ld_csv_n=0
+    _ld_bytes=0
     for _ld_csv in "$_ld_dir"/data/*.csv; do
-        [ -s "$_ld_csv" ] && _ld_csv_n=$((_ld_csv_n + 1))
+        [ -s "$_ld_csv" ] || continue
+        _ld_bytes=$(( _ld_bytes + $(exakit_load_weight_of "$_ld_csv") ))
     done
-    _ld_total=$((1 + _ld_csv_n + 1))                 # schema + files + row count
-    [ -s "$_ld_dir/02_load_data.sql" ] && _ld_total=$((_ld_total + 1))
-    [ -s "$_ld_dir/03_verify_setup.sql" ] && _ld_total=$((_ld_total + 1))
-    _ld_step=0
+    # A byteless step is worth a nominal share of the same scale, so the schema
+    # script and the verification neither vanish next to fifteen megabytes of
+    # lineitem nor pretend to be a twelfth of the job.
+    _ld_nominal=$(( _ld_bytes * EXAKIT_LOAD_STEP_SHARE / 100 ))
+    [ "$_ld_nominal" -ge 1 ] || _ld_nominal=1
+    _ld_total_w=$(( _ld_bytes + _ld_nominal + _ld_nominal ))   # + schema + row counts
+    [ -s "$_ld_dir/02_load_data.sql" ]    && _ld_total_w=$(( _ld_total_w + _ld_nominal ))
+    [ -s "$_ld_dir/03_verify_setup.sql" ] && _ld_total_w=$(( _ld_total_w + _ld_nominal ))
+    _ld_done_w=0
     _ld_t0="$(date +%s 2>/dev/null || echo 0)"
+    _ld_state="$(mktemp "${TMPDIR:-/tmp}/exakit-load.XXXXXX")" || \
+        die "Could not create a temporary file for the load progress."
     EXAKIT_UPLOAD_QUIET=1
     export EXAKIT_UPLOAD_QUIET
-    _exakit_dataset_progress "$_ld_id" "$_ld_step" "$_ld_total" "creating schema $_ld_schema"
+    exakit_load_step "$_ld_state" "$_ld_done_w" "$_ld_nominal" "$_ld_total_w" 2 \
+        "$_ld_id · creating schema $_ld_schema"
+    ui_progress_begin "$_ld_state" "$_ld_t0" || true
 
     # Schema script is OPTIONAL: exapump infers column types and creates the
     # table itself when none exists, so a dataset can ship as bare CSVs. The
@@ -1651,35 +1714,37 @@ exakit_load_dataset_dir() {
     else
         exakit_ensure_schema "$_ld_schema" || die "Could not create schema $_ld_schema."
     fi
+    _ld_done_w=$(( _ld_done_w + _ld_nominal ))
 
     _ld_tables=""
     for _ld_csv in "$_ld_dir"/data/*.csv; do
         [ -s "$_ld_csv" ] || continue
         _ld_table="$(basename "$_ld_csv" .csv | tr '[:lower:]' '[:upper:]')"
-        _ld_step=$((_ld_step + 1))
-        _exakit_dataset_progress "$_ld_id" "$_ld_step" "$_ld_total" "$(basename "$_ld_csv")"
+        _ld_w="$(exakit_load_weight_of "$_ld_csv")"
+        exakit_load_step "$_ld_state" "$_ld_done_w" "$_ld_w" "$_ld_total_w" \
+            "$(exakit_load_secs_for "$_ld_w")" "$_ld_id · $(basename "$_ld_csv")"
         exapump_upload "$_ld_csv" "$_ld_schema.$_ld_table"
+        _ld_done_w=$(( _ld_done_w + _ld_w ))
         _ld_tables="$_ld_tables $_ld_table"
     done
 
     if [ -s "$_ld_dir/02_load_data.sql" ]; then
-        _ld_step=$((_ld_step + 1))
-        _exakit_dataset_progress "$_ld_id" "$_ld_step" "$_ld_total" "running load statements"
+        exakit_load_step "$_ld_state" "$_ld_done_w" "$_ld_nominal" "$_ld_total_w" 3 \
+            "$_ld_id · running load statements"
         exapump_run_sql_file "$_ld_dir/02_load_data.sql" "$_ld_id load statements (02_load_data.sql)"
+        _ld_done_w=$(( _ld_done_w + _ld_nominal ))
     fi
 
     if [ -s "$_ld_dir/03_verify_setup.sql" ]; then
-        _ld_step=$((_ld_step + 1))
-        _exakit_dataset_progress "$_ld_id" "$_ld_step" "$_ld_total" "verifying"
+        exakit_load_step "$_ld_state" "$_ld_done_w" "$_ld_nominal" "$_ld_total_w" 3 \
+            "$_ld_id · verifying"
         _ld_verify="$(mktemp "${TMPDIR:-/tmp}/exakit-verify.XXXXXX")" || \
             die "Could not create a temporary file for verification output."
         # Not run_logged: the output is the answer, so it is captured rather than
-        # logged away. The spinner is started by hand for the same reason.
-        ui_spin_begin "$EXAKIT_ACTIVE_LABEL"
+        # logged away. No spinner either — the load's own bar is already running.
         "$(exapump_cli)" sql -p "$EXAKIT_EXAPUMP_PROFILE" < "$_ld_dir/03_verify_setup.sql" \
             > "$_ld_verify" 2>> "${EXAKIT_LOG_FILE:-/dev/null}"
         _ld_verify_status=$?
-        ui_spin_end
         # Every check goes to the logfile whatever the outcome; they reach the
         # SCREEN only when one of them failed. Eighteen rows of "OK, 0 orphaned
         # row(s)" say nothing the result line does not already say — a FAIL row
@@ -1691,6 +1756,8 @@ exakit_load_dataset_dir() {
         # dataset even when every row reads OK. A real failing check emits an
         # unquoted STATUS column (check_name,FAIL,detail). Mirrors exapump.ps1.
         if [ "$_ld_verify_status" -ne 0 ] || grep -q ',FAIL,' "$_ld_verify"; then
+            ui_progress_end
+            rm -f "$_ld_state"
             EXAKIT_UPLOAD_QUIET=0
             EXAKIT_ACTIVE_LABEL=""
             error "Verification failed for dataset '$_ld_id':"
@@ -1715,13 +1782,13 @@ exakit_load_dataset_dir() {
     # changed is that they no longer take a ten-line panel on screen per
     # dataset. Their totals land in the result line instead, which is the part
     # a reader actually checks against what they expected.
-    _ld_step=$((_ld_step + 1))
-    _exakit_dataset_progress "$_ld_id" "$_ld_step" "$_ld_total" "counting rows"
+    _ld_done_w=$(( _ld_done_w + _ld_nominal ))
+    exakit_load_step "$_ld_state" "$_ld_done_w" "$_ld_nominal" "$_ld_total_w" 2 \
+        "$_ld_id · counting rows"
     _ld_tables_n=0
     _ld_rows_total=0
     _ld_rows_known=1
     if [ -n "$_ld_tables" ]; then
-        ui_spin_begin "$EXAKIT_ACTIVE_LABEL"
         for _ld_table in $_ld_tables; do
             _ld_rows="$(exapump_count "$_ld_schema.$_ld_table")"
             _ld_tables_n=$((_ld_tables_n + 1))
@@ -1732,7 +1799,6 @@ exakit_load_dataset_dir() {
             fi
             _exakit_log_file "DATA  $(printf '%-30s %s rows' "$_ld_schema.$_ld_table" "${_ld_rows:-?}")"
         done
-        ui_spin_end
     fi
 
     manifest_set "$_ld_flag" true
@@ -1742,6 +1808,8 @@ exakit_load_dataset_dir() {
     _ld_canonical="data.datasets.${_ld_id}.loaded"
     [ "$_ld_flag" = "$_ld_canonical" ] || manifest_set "$_ld_canonical" true
     manifest_set data.last_load.source "dataset:$_ld_id"
+    ui_progress_end
+    rm -f "$_ld_state"
     EXAKIT_UPLOAD_QUIET=0
     EXAKIT_ACTIVE_LABEL=""
     _ld_elapsed=$(( $(date +%s 2>/dev/null || echo 0) - _ld_t0 ))

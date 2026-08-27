@@ -84,11 +84,19 @@ function Set-ExakitPalette {
         $script:UiHr="─"; $script:UiTL="╭"; $script:UiTR="╮"; $script:UiBL="╰"; $script:UiBR="╯"; $script:UiVB="│"
         $script:UiTee="├─"; $script:UiCorner="└─"
         $script:UiBarFull="█"; $script:UiBarEmpty="░"
+        # Eighths of a block: the frontier cell of a progress bar, so a forty-cell
+        # bar has 320 positions instead of 40 and every percent shows on screen.
+        # Index 0 is a space - an empty frontier when there is no fraction to
+        # draw, which keeps the dim remainder unbroken. Twin of
+        # UI_PROGRESS_EIGHTHS in ui.sh; the glyphs live HERE because this is the
+        # one .ps1 with a BOM (see ps-encoding-guard).
+        $script:UiProgressEighths = @(' ','▏','▎','▍','▌','▋','▊','▉')
     } else {
         $script:UiTick="+"; $script:UiCross="x"; $script:UiBullet="-"; $script:UiArrow=">"
         $script:UiHr="-"; $script:UiTL="+"; $script:UiTR="+"; $script:UiBL="+"; $script:UiBR="+"; $script:UiVB="|"
         $script:UiTee="|-"; $script:UiCorner='`-'
         $script:UiBarFull="#"; $script:UiBarEmpty="."
+        $script:UiProgressEighths = @(' ',' ',' ',' ',' ',' ',' ',' ')
     }
 }
 
@@ -231,7 +239,16 @@ function Write-ExakitRule {
     Write-Host ""
 }
 
+# ONE animation at a time. There is a single line being redrawn, so a second
+# request to animate is a no-op rather than a second painter. This is what lets a
+# progress line survive the work underneath it: a dataset load paints its own bar
+# and then calls exapump through Invoke-ExakitLogged, which asks for a spinner of
+# its own; without the counter that call's Stop would kill the bar after the
+# first file. Twin of _UI_SPIN_NESTED in ui.sh.
+$script:UiSpinNested = 0
+
 function Start-ExakitSpinner([string]$Label) {
+    if ($null -ne $script:UiSpinFlag) { $script:UiSpinNested++; return }
     if (-not $script:UiFancy) { return }
     try {
         $script:UiSpinFlag = [hashtable]::Synchronized(@{ Run = $true; Label = $Label; T0 = (Get-Date) })
@@ -261,6 +278,9 @@ function Start-ExakitSpinner([string]$Label) {
 }
 
 function Stop-ExakitSpinner {
+    # Give back a reference taken while something else owned the line; only the
+    # call that actually started the animation stops it.
+    if ($script:UiSpinNested -gt 0) { $script:UiSpinNested--; return }
     if ($null -eq $script:UiSpinFlag) { return }
     try { $script:UiSpinFlag.Run = $false; Start-Sleep -Milliseconds 110 } catch { }
     try { if ($script:UiSpinPs) { $script:UiSpinPs.Stop(); $script:UiSpinPs.Dispose() } } catch { }
@@ -286,6 +306,179 @@ function Write-ExakitProgress([int]$Current, [int]$Total, [string]$Label = "") {
     } else {
         Write-Host ("  [{0}{1}] {2}%  {3}" -f ($script:UiBarFull * $filled), ($script:UiBarEmpty * ($wide - $filled)), $pct, $Label)
     }
+}
+
+# Start-ExakitProgress / Set-ExakitProgress / Stop-ExakitProgress - the bar that
+# every long job the kit runs drives.
+#
+# The spinner's runspace already reads its state live out of a synchronized
+# hashtable, so the state goes in there rather than into a file the way the bash
+# twin needs. Milestones are the truth - Pct is where the job actually is - and
+# the runspace fills the gap to Ceiling at the pace Secs says the stage takes,
+# capped one point below it. A stage that overruns waits rather than walking into
+# the next one's territory. Twin of ui_progress_begin / ui_progress_state /
+# ui_progress_end in ui.sh.
+function Start-ExakitProgress {
+    param([int]$Pct = 0, [int]$Ceiling = 1, [int]$Secs = 2, [string]$Phase = "")
+    if ($null -ne $script:UiSpinFlag) { $script:UiSpinNested++; return $false }
+    if (-not $script:UiFancy) { return $false }
+    try {
+        $now = Get-Date
+        $script:UiSpinFlag = [hashtable]::Synchronized(@{
+            Run = $true; Label = $Phase; T0 = $now
+            Pct = $Pct; Ceiling = $Ceiling; Secs = $Secs; SegT0 = $now; Shown = 0
+            Cols = 80
+        })
+        try { $script:UiSpinFlag.Cols = [Console]::WindowWidth } catch { }
+        $rs = [runspacefactory]::CreateRunspace()
+        $rs.Open()
+        $rs.SessionStateProxy.SetVariable('flag', $script:UiSpinFlag)
+        $rs.SessionStateProxy.SetVariable('pal', @{
+            Accent = $script:UiAccent; Dim = $script:UiDim; Reset = $script:UiReset
+            Bold = $script:UiBold; Full = $script:UiBarFull; Empty = $script:UiBarEmpty
+            Eighths = $script:UiProgressEighths; Esc = $script:UiEsc
+        })
+        $ps = [powershell]::Create()
+        $ps.Runspace = $rs
+        [void]$ps.AddScript({
+            $frames = @('⠋','⠙','⠹','⠸','⠼','⠴','⠦','⠧','⠇','⠏')
+            $i = 0
+            while ($flag.Run) {
+                $avail = $flag.Cols - 9
+                if ($avail -gt 112) { $avail = 112 }
+                if ($avail -lt 24) { $avail = 24 }
+                $tw = [int]($avail * 30 / 100); $bw = [int]($avail * 40 / 100)
+                $nw = [int]($avail * 10 / 100); $ew = [int]($avail * 10 / 100)
+                $gap = $avail - $tw - $bw - $nw - $ew
+                if ($gap -lt 1) { $gap = 1 }
+                if ($nw -lt 5) { $tw -= (5 - $nw); $nw = 5 }
+                if ($ew -lt 7) { $tw -= (7 - $ew); $ew = 7 }
+                if ($bw -lt 8) { $bw = 8 }
+                if ($tw -lt 8) { $tw = 8 }
+
+                # Where the bar sits right now: the milestone, plus as much of
+                # the way to the next one as the clock has earned.
+                $pct = $flag.Pct
+                $span = $flag.Ceiling - $pct
+                if ($span -gt 0 -and $flag.Secs -gt 0) {
+                    $inSeg = [int]((Get-Date) - $flag.SegT0).TotalSeconds
+                    $step = [int]($span * $inSeg / $flag.Secs)
+                    if ($step -gt ($span - 1)) { $step = $span - 1 }
+                    if ($step -lt 0) { $step = 0 }
+                    $pct = $pct + $step
+                }
+                if ($pct -lt $flag.Shown) { $pct = $flag.Shown }
+                $flag.Shown = $pct
+
+                $text = "$($flag.Label)"
+                if ($text.Length -gt ($tw - 1)) { $text = $text.Substring(0, $tw - 2) + "…" }
+                $text = $text.PadRight($tw + $gap)
+                $units = [int]($pct * $bw * 8 / 100)
+                $full = [int]($units / 8); $rem = $units % 8
+                if ($full -gt $bw) { $full = $bw; $rem = 0 }
+                $head = ""
+                if ($full -lt $bw -and $rem -gt 0) { $head = $pal.Eighths[$rem] }
+                $empty = $bw - $full - $head.Length
+                if ($empty -lt 0) { $empty = 0 }
+                $bar = $pal.Accent + ($pal.Full * $full) + $pal.Dim + $head + ($pal.Empty * $empty) + $pal.Reset
+                $el = [int]((Get-Date) - $flag.T0).TotalSeconds
+                [Console]::Write("`r      $($pal.Accent)$($frames[$i])$($pal.Reset) $text$bar$($pal.Bold)$(("$pct%").PadLeft($nw))$($pal.Reset)$($pal.Dim)$(("($el" + "s)").PadLeft($ew))$($pal.Reset)$($pal.Esc)[K")
+                $i = ($i + 1) % 10
+                Start-Sleep -Milliseconds 200
+            }
+        })
+        [Console]::Write("$($script:UiEsc)[?25l")
+        $script:UiSpinPs = $ps
+        $script:UiSpinRs = $rs
+        [void]$ps.BeginInvoke()
+        return $true
+    } catch {
+        $script:UiSpinFlag = $null; $script:UiSpinPs = $null; $script:UiSpinRs = $null
+        return $false
+    }
+}
+
+# Set-ExakitProgress - the job has reached a new stage. The segment's clock
+# starts now, which is what the creep measures against.
+function Set-ExakitProgress {
+    param([int]$Pct, [int]$Ceiling, [int]$Secs, [string]$Phase)
+    if ($null -eq $script:UiSpinFlag) { return }
+    try {
+        $script:UiSpinFlag.Pct = $Pct
+        $script:UiSpinFlag.Ceiling = $Ceiling
+        $script:UiSpinFlag.Secs = $Secs
+        $script:UiSpinFlag.SegT0 = Get-Date
+        $script:UiSpinFlag.Label = $Phase
+    } catch { }
+}
+
+function Stop-ExakitProgress { Stop-ExakitSpinner }
+
+# Write-ExakitProgressLine <pct> <phase> <elapsed> <frame> <cols> - the progress
+# line every long job the kit runs shares.
+#
+# Four cells across the console's own width:
+#
+#   30% phase - 40% bar - 10% percentage - 10% elapsed, and a tenth as the gap
+#
+# The phase leads because it is what a reader is actually reading; the numbers
+# trail because they are what they glance at. The bar starts at the same column
+# whatever the phase is called. One column is left unwritten: a line that fills
+# the last cell sets the terminal's pending-wrap flag and the next carriage
+# return lands a row lower. Capped, because the cells are proportions and a very
+# wide console turns the phase cell into dead air.
+# Twin of ui_progress_line in ui.sh.
+function Write-ExakitProgressLine {
+    param(
+        [int]$Pct, [string]$Phase, [int]$Elapsed, [int]$Frame = 0, [int]$Cols = 80
+    )
+    $avail = $Cols - 6 - 2 - 1
+    if ($avail -gt 112) { $avail = 112 }
+    if ($avail -lt 24) { $avail = 24 }
+    $tw = [int]($avail * 30 / 100)
+    $bw = [int]($avail * 40 / 100)
+    $nw = [int]($avail * 10 / 100)
+    $ew = [int]($avail * 10 / 100)
+    $gap = $avail - $tw - $bw - $nw - $ew
+    if ($gap -lt 1) { $gap = 1 }
+    # Floors: a cell that cannot hold "100%" or "(120s)" is worse than a
+    # narrower neighbour, and the phase is the only cell that can be shortened
+    # without losing something the others carry exactly.
+    if ($nw -lt 5) { $tw -= (5 - $nw); $nw = 5 }
+    if ($ew -lt 7) { $tw -= (7 - $ew); $ew = 7 }
+    if ($bw -lt 8) { $bw = 8 }
+    if ($tw -lt 8) { $tw = 8 }
+
+    # Truncated to its cell MINUS ONE, so a long phase keeps a gap before the bar.
+    $text = $Phase
+    if ($text.Length -gt ($tw - 1)) { $text = $text.Substring(0, $tw - 2) + "…" }
+    $text = $text.PadRight($tw + $gap)
+
+    if ($script:UiFancy) {
+        $units = [int]($Pct * $bw * 8 / 100)
+        $full = [int]($units / 8)
+        $rem = $units % 8
+        if ($full -gt $bw) { $full = $bw; $rem = 0 }
+        $head = ""
+        if ($full -lt $bw -and $rem -gt 0) { $head = $script:UiProgressEighths[$rem] }
+        $empty = $bw - $full - $head.Length
+        if ($empty -lt 0) { $empty = 0 }
+        $bar = $script:UiAccent + ($script:UiBarFull * $full) + $script:UiDim + $head +
+               ($script:UiBarEmpty * $empty) + $script:UiReset
+        $frames = @('⠋','⠙','⠹','⠸','⠼','⠴','⠦','⠧','⠇','⠏')
+        $spin = $frames[$Frame % 10]
+    } else {
+        $full = [int]($Pct * $bw / 100)
+        if ($full -gt $bw) { $full = $bw }
+        $bar = ($script:UiBarFull * $full) + ($script:UiBarEmpty * ($bw - $full))
+        $spin = ">"
+    }
+    $num = ("{0}%" -f $Pct).PadLeft($nw)
+    $el = ("({0}s)" -f $Elapsed).PadLeft($ew)
+    [Console]::Write("`r      {0}{1}{2} {3}{4}{5}{6}{7}{8}{9}{10}{11}[K" -f
+        $script:UiAccent, $spin, $script:UiReset, $text, $bar,
+        $script:UiBold, $num, $script:UiReset, $script:UiDim, $el, $script:UiReset,
+        $script:UiEsc)
 }
 
 # Get-ExakitBar <pct> [width] - the bar on its own, as a STRING.
