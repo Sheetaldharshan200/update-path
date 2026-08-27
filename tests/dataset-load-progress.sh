@@ -55,11 +55,42 @@ UI_BAR_EMPTY="$(printf '\xe2\x96\x91')"
 
 printf '\n== the bar renders as a string, for embedding in a label ==\n'
 
-check "0% is all empty"   "$(printf '\xe2\x96\x91%.0s' 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20)" "$(ui_bar 0)"
-check "100% is all full"  "$(printf '\xe2\x96\x88%.0s' 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20)" "$(ui_bar 100)"
-check "50% is half full"  "10" "$(ui_bar 50 | tr -dc "$UI_BAR_FULL" | wc -c | tr -d ' ' | awk '{print $1/3}')"
-check "over 100% is clamped" "20" "$(ui_bar 140 | tr -dc "$UI_BAR_FULL" | wc -c | tr -d ' ' | awk '{print $1/3}')"
-check "a narrower bar is honoured" "8" "$(ui_bar 100 8 | tr -dc "$UI_BAR_FULL" | wc -c | tr -d ' ' | awk '{print $1/3}')"
+# COUNT NOTHING IN BYTES: COMPARE THE WHOLE BAR.
+#
+# These used to count full blocks with `ui_bar 50 | tr -dc "$UI_BAR_FULL" |
+# wc -c | awk '{print $1/3}'`, and it was wrong in a way only Linux showed.
+# GNU tr is BYTE-oriented, and the two glyphs share their first two bytes --
+# U+2588 is e2 96 88, U+2591 is e2 96 91 -- so a filter meant to keep only
+# FULL blocks also kept two bytes out of every EMPTY one. At 50% that is 30
+# bytes of full plus 20 bytes of empty, and 50/3 = 16.6667: a count of
+# characters came out fractional, which is the tell. BSD tr on macOS treats
+# the argument as one multibyte character and drops the empties, so the same
+# line passed there and failed only on ubuntu.
+#
+# The two clamping checks passed everywhere for a reason worth keeping in
+# mind: both clamp to a COMPLETELY FULL bar, so there were no empty blocks to
+# contaminate the count. The idiom was equally broken in all three; only the
+# mixed bar could ever reveal it.
+#
+# So compare the entire rendered string. No byte arithmetic, no locale, no
+# division -- and it asserts the ORDER too (filled first, then remaining),
+# which counting never did. bar_glyphs deliberately does not call ui_repeat:
+# an expected value must not be built by the code under test.
+bar_glyphs() { # bar_glyphs <glyph> <count>
+    _bg_out=""
+    _bg_i=0
+    while [ "$_bg_i" -lt "$2" ]; do
+        _bg_out="$_bg_out$1"
+        _bg_i=$((_bg_i + 1))
+    done
+    printf '%s' "$_bg_out"
+}
+
+check "0% is all empty"   "$(bar_glyphs "$UI_BAR_EMPTY" 20)" "$(ui_bar 0)"
+check "100% is all full"  "$(bar_glyphs "$UI_BAR_FULL" 20)" "$(ui_bar 100)"
+check "50% is half full"  "$(bar_glyphs "$UI_BAR_FULL" 10)$(bar_glyphs "$UI_BAR_EMPTY" 10)" "$(ui_bar 50)"
+check "over 100% is clamped" "$(bar_glyphs "$UI_BAR_FULL" 20)" "$(ui_bar 140)"
+check "a narrower bar is honoured" "$(bar_glyphs "$UI_BAR_FULL" 8)" "$(ui_bar 100 8)"
 
 printf '\n== the row total is readable ==\n'
 
