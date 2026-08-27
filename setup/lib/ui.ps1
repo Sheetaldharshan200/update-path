@@ -626,15 +626,37 @@ function Get-ExakitTableWidths {
         # The tree connector plus its space is 3 columns of the name cell.
         if ($row.Kind -eq "tee" -or $row.Kind -eq "corner") { $len += 3 }
         if ($len -gt $nameW) { $nameW = $len }
-        if ($row.Final -and $row.Final.Length -gt $statW) { $statW = $row.Final.Length }
+        # Measured the way Get-ExakitTableCell RENDERS it, not as stored: a
+        # finished cell is "<tick> <final>", so a column sized to the bare string
+        # is short by the glyph and its space. Short means a row wider than the
+        # box, which wraps, which makes the frame one line taller than the height
+        # the animator moves the cursor up by.
+        if ($row.Final) {
+            $finalLen = $row.Final.Length + $script:UiTick.Length + 1
+            if ($finalLen -gt $statW) { $statW = $finalLen }
+        }
     }
     $cols = 80
     if ([int]$Table.Cols -gt 0) { $cols = [int]$Table.Cols }
     # 2 border + 1 space + 4 checkbox + name + 2 gap + status + 1 space + 1 border
-    $over = 11 + $nameW + $statW - $cols + 1
+    # = 11, PLUS the two-column left margin every row is built with below and one
+    # column left unwritten at the right. The margin was missing, so a table sized
+    # to fit "exactly" wrote the console's last column - which wraps the row, and
+    # a wrapped row is two lines where the frame counted one, so the next
+    # cursor-up lands inside the frame before it and strands its top border on
+    # screen. The one-line progress bar reserves its last column for this reason.
+    $over = 11 + $nameW + $statW + 3 - $cols
     if ($over -gt 0) {
         $nameW -= $over
-        if ($nameW -lt 12) { $nameW = 12 }
+        if ($nameW -lt 12) {
+            # The name column has given all it can. Take the rest off the status
+            # column rather than overflow: a narrow bar still reads, a wrapped row
+            # does not.
+            $rest = 12 - $nameW
+            $nameW = 12
+            $statW -= $rest
+            if ($statW -lt 12) { $statW = 12 }
+        }
     }
     return @{ Name = $nameW; Status = $statW }
 }

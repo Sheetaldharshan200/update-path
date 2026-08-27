@@ -79,6 +79,16 @@ printf '\n== the cell is a bar over a phase, with the numbers stacked ==\n'
 # percentage sits vertically above the seconds.
 has "the eighths come from the palette" '$script:UiProgressEighths[$rem]' "$UI_PS1"
 has "the percentage is right-aligned"   '$pctText.PadLeft($num)'          "$UI_PS1"
+
+# The width budget, which is the one piece of arithmetic in here that cannot be
+# checked by running it. Both halves of it were wrong on the shell side and made
+# the table flicker into two: the two-column left margin every row is built with
+# was missing from the budget, so the table wrote the console's LAST column and
+# the row wrapped; and the status column was measured from the stored string
+# while the cell renders "<tick> <final>", two columns wider.
+has "the left margin is in the width budget" '$over = 11 + $nameW + $statW + 3 - $cols' "$UI_PS1"
+has "the status column is measured as rendered" '$row.Final.Length + $script:UiTick.Length + 1' "$UI_PS1"
+has "and the status column gives way too"      '$statW -= $rest' "$UI_PS1"
 has "the second line carries the phase" '$cell.Text2 = $script:UiDim + $phase' "$UI_PS1"
 # Floors keep the frame ONE height in every state, or a growing frame scrolls the
 # screen and every later cursor-up lands one line off.
