@@ -668,8 +668,14 @@ ui_bar() {
 #
 #   kind    group | tee | corner | plain   — the tree connector to draw
 #   tick    1 while the row is selected
-#   state   idle | waiting | running | done | failed
+#   state   idle | waiting | running | done | failed | disabled
 #   final   what the Status column says once the row is finished
+#
+# A "disabled" row is one the reader can look at but never pick — an AI client
+# that is not installed on this machine. It is drawn by ui_table_frame itself
+# (dim, no checkbox, its note reading on from the label) and never reaches
+# _ui_table_cell, because it has no Status of its own to report. See
+# ui_table_disable.
 #
 # The redraw is the same one ui_checkbox_menu has always used: count the lines
 # the last frame REALLY occupied (a wrapped row is two), go up by that many, and
@@ -808,7 +814,11 @@ ui_table_frame() {
     [ "$_utr_fill" -ge 0 ] || _utr_fill=0
     _utr_f="  ${UI_ACCENT:-}${UI_TL:-+}${UI_HR:--}${UI_RESET:-}${UI_BOLD:-}${_utr_title}${UI_RESET:-}${UI_ACCENT:-}${_UI_TABLE_HR:0:$_utr_fill}${UI_TR:-+}${UI_RESET:-}
 "
-    _utr_head="     Dataset${_UI_TABLE_SP:0:$(( UI_TABLE_NAME_W - 7 ))}  Status"
+    # The first column is named by its caller: the dataset load fills it with
+    # datasets, the MCP step with AI clients. Its width is UI_TABLE_NAME_W,
+    # whose floor is 10, so any short heading pads without going negative.
+    _utr_col1="${UI_TABLE_COL1:-Dataset}"
+    _utr_head="     ${_utr_col1}${_UI_TABLE_SP:0:$(( UI_TABLE_NAME_W - ${#_utr_col1} ))}  Status"
     _utr_f="$_utr_f  ${UI_ACCENT:-}${UI_VB:-|}${UI_RESET:-}${_utr_head}${_UI_TABLE_SP:0:$(( _utr_inner - ${#_utr_head} ))}${UI_ACCENT:-}${UI_VB:-|}${UI_RESET:-}
 "
     _utr_lines=2
@@ -824,6 +834,24 @@ ui_table_frame() {
             corner) _utr_conn="${UI_CORNER:-\`-} " ;;
             *)      _utr_conn="" ;;
         esac
+        # A row nobody can pick: no checkbox at all (an empty one invites the
+        # reader to try), and the note reads straight on from the label —
+        # "Cursor · not installed" is one sentence. Putting the note in the
+        # Status column instead would size that column, and the columns would
+        # then be measured for text that is neither a name nor a status. The
+        # 5-space indent is the width of the pointer and checkbox it replaces,
+        # so the tree connectors still line up.
+        if [ "$_utr_state" = "disabled" ]; then
+            _utr_note="${_utr_final# }"
+            _utr_text="$_utr_conn$_utr_label${_utr_note:+ · $_utr_note}"
+            _utr_max=$(( _utr_inner - 5 ))
+            [ "${#_utr_text}" -le "$_utr_max" ] || \
+                _utr_text="${_utr_text:0:$(( _utr_max - 1 ))}…"
+            _utr_f="$_utr_f  ${UI_ACCENT:-}${UI_VB:-|}${UI_RESET:-}     ${UI_DIM:-}${_utr_text}${UI_RESET:-}${_UI_TABLE_SP:0:$(( _utr_inner - 5 - ${#_utr_text} ))}${UI_ACCENT:-}${UI_VB:-|}${UI_RESET:-}
+"
+            _utr_lines=$(( _utr_lines + 1 ))
+            continue
+        fi
         if [ "$_utr_tick" = "1" ]; then
             # A plain "x", not the palette tick, when there is no colour: the
             # plain-palette UI_TICK is the multi-character "[ok]", and a checkbox
@@ -949,10 +977,43 @@ ui_table_tick() {
         [ -n "$_u1" ] || continue
         _utt_i=$(( _utt_i + 1 ))
         case ",$2," in *",$_utt_i,"*) _u3=1 ;; *) _u3=0 ;; esac
+        # A disabled row can never carry a tick, whoever asked. Select All spans
+        # a range that may contain one, and the defaults are built by the caller
+        # — this is the one place both of those pass through.
+        [ "$_u4" = "disabled" ] && _u3=0
         printf '%s|%s|%s|%s|%s|%s|%s|%s|%s|%s\n' "$_u1" "$_u2" "$_u3" "$_u4" \
             "$_u5" "$_u6" "$_u7" "$_u8" "$_u9" "$_u10"
     done < "$1" > "$_utt_tmp"
     mv -f "$_utt_tmp" "$1"
+}
+
+# ui_table_disable <state-file> <row> <note> — that row can be read but never
+# picked: drawn dim with no checkbox and the note reading on from the label
+# ("Cursor · not installed"), skipped by the cursor, by Space and by Select All.
+#
+# It exists so a menu can show the WHOLE set of options and say why the ones it
+# cannot offer are missing. The MCP client list is the case: a list that quietly
+# omitted the clients this machine does not have would read as "the kit supports
+# four clients", and the reader has no way to tell a short list from a filtered
+# one. The note is the answer to the question the row raises.
+ui_table_disable() {
+    _utx_f="$1"; _utx_row="$2"; _utx_note="$3"
+    _utx_tmp="$_utx_f.new"
+    _utx_i=0
+    while IFS='|' read -r _u1 _u2 _u3 _u4 _u5 _u6 _u7 _u8 _u9 _u10; do
+        [ -n "$_u1" ] || continue
+        _utx_i=$(( _utx_i + 1 ))
+        if [ "$_utx_i" = "$_utx_row" ]; then
+            # The note goes in the FINAL field: it is what this row has to say
+            # for itself, which is exactly what that field is for.
+            printf '%s|%s|0|disabled|%s|%s|%s|%s|%s|%s\n' "$_u1" "$_u2" \
+                "$_u5" "$_u6" "$_u7" "$_u8" "$_u9" "$_utx_note"
+        else
+            printf '%s|%s|%s|%s|%s|%s|%s|%s|%s|%s\n' "$_u1" "$_u2" "$_u3" "$_u4" \
+                "$_u5" "$_u6" "$_u7" "$_u8" "$_u9" "$_u10"
+        fi
+    done < "$_utx_f" > "$_utx_tmp"
+    mv -f "$_utx_tmp" "$_utx_f"
 }
 
 # ui_table_begin <state-file> — animate the table in place. Returns 1 when it
@@ -1091,15 +1152,49 @@ ui_animation_stop() {
 #
 # The key handling is ui_checkbox_menu's, deliberately: same keys, same hint,
 # same group and exclusive semantics, so there is one thing to learn.
+#
+# UI_TABLE_MENU_ONSCREEN (optional, cleared on use): how many lines of this
+# table — frame plus anything printed under it — are ALREADY on screen, so a
+# re-ask overwrites them instead of drawing a second table below them. The MCP
+# step sets it when an unconfirmed "Skip" sends the reader back to the menu.
 ui_table_menu() {
     _utm_f="$1"
     _utm_n=0
-    while IFS='|' read -r _u1 _u2 _urest; do
+    # Which rows can be ticked at all. A disabled row is drawn but never
+    # selectable: the cursor steps over it, Space ignores it, and Select All
+    # leaves it alone — that last one through _UI_CHECKBOX_SELECTABLE, which the
+    # group helpers already consult, so there is no second rule to keep in step.
+    _utm_dis=""
+    _UI_CHECKBOX_SELECTABLE=""
+    while IFS='|' read -r _u1 _u2 _u3 _u4 _urest; do
         [ -n "$_u1" ] || continue
         _utm_n=$(( _utm_n + 1 ))
+        if [ "$_u4" = "disabled" ]; then
+            _utm_dis="$_utm_dis $_utm_n"
+        else
+            _UI_CHECKBOX_SELECTABLE="${_UI_CHECKBOX_SELECTABLE:+$_UI_CHECKBOX_SELECTABLE }$_utm_n"
+        fi
     done < "$_utm_f"
-    _utm_cur=2
-    [ "$_utm_n" -ge 2 ] || _utm_cur=1
+    _utm_pickable() { # _utm_pickable <row>
+        case " $_utm_dis " in *" $1 "*) return 1 ;; esac
+        return 0
+    }
+    _utm_move() { # _utm_move <dir:+1|-1> — move the cursor, stepping over disabled rows
+        _utm_tries=0
+        while [ "$_utm_tries" -lt "$_utm_n" ]; do
+            _utm_cur=$(( _utm_cur + $1 ))
+            [ "$_utm_cur" -lt 1 ] && _utm_cur="$_utm_n"
+            [ "$_utm_cur" -gt "$_utm_n" ] && _utm_cur=1
+            _utm_pickable "$_utm_cur" && return 0
+            _utm_tries=$(( _utm_tries + 1 ))
+        done
+        return 0
+    }
+    # Row 2 as before — past the group row — but never a row that cannot be
+    # picked, or the first Space would land on one.
+    _utm_cur=1
+    [ "$_utm_n" -ge 2 ] && _utm_move 1
+    _utm_pickable "$_utm_cur" || _utm_move 1
     _utm_sel="$EXAKIT_TABLE_DEFAULTS"
     _utm_tty="$(_exakit_prompt_tty)"
     if [ -z "$_utm_tty" ] || [ "${UI_FANCY:-0}" != 1 ]; then
@@ -1108,10 +1203,14 @@ ui_table_menu() {
         ui_table_tick "$_utm_f" "$_utm_sel"
         ui_table_render "$_utm_f" 0
         EXAKIT_TABLE_SELECTION="${_utm_sel:-none}"
+        _UI_CHECKBOX_SELECTABLE=""
         return 0
     fi
     _utm_first=1
-    _utm_drawn=0
+    # Normally nothing of this table is on screen yet; a re-ask says otherwise.
+    _utm_drawn="${UI_TABLE_MENU_ONSCREEN:-0}"
+    case "$_utm_drawn" in ''|*[!0-9]*) _utm_drawn=0 ;; esac
+    UI_TABLE_MENU_ONSCREEN=""
     while :; do
         ui_table_tick "$_utm_f" "$_utm_sel"
         # Built first, then clear and draw in ONE write. The old order — clear,
@@ -1134,6 +1233,10 @@ ui_table_menu() {
         case "$_utm_key" in
             "") [ -n "$_utm_sel" ] && break ;;
             " ")
+                # A row that cannot be picked cannot be toggled either. The
+                # cursor never rests on one, so this catches only the keypress
+                # that arrives before the cursor has moved at all.
+                _utm_pickable "$_utm_cur" || continue
                 _utm_sel="$(_ui_checkbox_toggle "$_utm_sel" "$_utm_n" "$_utm_cur")"
                 _utm_sel="$(_ui_checkbox_apply_group "$_utm_sel" "$_utm_cur" "$EXAKIT_TABLE_GROUP")"
                 _utm_sel="$(_ui_checkbox_apply_exclusive "$_utm_sel" "$_utm_cur" "$EXAKIT_TABLE_EXCLUSIVE")"
@@ -1145,12 +1248,12 @@ ui_table_menu() {
                     IFS= read -rsn2 -t 1 _utm_seq || _utm_seq=""
                 fi
                 case "$_utm_seq" in
-                    '[A') _utm_cur=$(( _utm_cur - 1 )); [ "$_utm_cur" -ge 1 ] || _utm_cur="$_utm_n" ;;
-                    '[B') _utm_cur=$(( _utm_cur + 1 )); [ "$_utm_cur" -le "$_utm_n" ] || _utm_cur=1 ;;
+                    '[A') _utm_move -1 ;;
+                    '[B') _utm_move 1 ;;
                 esac
                 ;;
-            k|K) _utm_cur=$(( _utm_cur - 1 )); [ "$_utm_cur" -ge 1 ] || _utm_cur="$_utm_n" ;;
-            j|J) _utm_cur=$(( _utm_cur + 1 )); [ "$_utm_cur" -le "$_utm_n" ] || _utm_cur=1 ;;
+            k|K) _utm_move -1 ;;
+            j|J) _utm_move 1 ;;
         esac
     done
     # Redraw once without the pointer or the hint: the selection is made, and
@@ -1159,6 +1262,7 @@ ui_table_menu() {
     UI_TABLE_LINES="$_utm_drawn"
     ui_table_redraw "$_utm_f" 0
     EXAKIT_TABLE_SELECTION="${_utm_sel:-none}"
+    _UI_CHECKBOX_SELECTABLE=""
     return 0
 }
 

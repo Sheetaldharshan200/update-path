@@ -3083,6 +3083,175 @@ EXAKIT_MP_EOF
 )" ]
 }
 
+# --- the add-ons table --------------------------------------------------------
+# The SELECTION and the install progress are ONE table -- the same component the
+# dataset load uses (ui_table_* in ui.sh) -- so the rows a reader ticks are the
+# rows whose Status column then fills in, and nothing has to be mapped from one
+# screen onto another. What lives here is which rows there are and what their
+# Status column says.
+#
+# Every row's state lives in a FILE because the animator that draws it is a
+# background subshell: it can read a file and could never read a variable this
+# shell set.
+
+EXAKIT_ADDON_TABLE_STATE=""
+EXAKIT_ADDON_TABLE_LIVE=0
+EXAKIT_ADDON_TABLE_IDS=""
+EXAKIT_ADDON_TABLE_ROW=""
+EXAKIT_ADDON_TABLE_ROW_SKIP=0
+# Said once the table has stopped redrawing — see _exakit_addon_note.
+EXAKIT_ADDON_NOTES=""
+
+# _exakit_addon_bar_live — is a table painting this install? True means the
+# one-line progress bar must keep its hands off the UI layer's single animation
+# slot; the table owns it.
+_exakit_addon_bar_live() {
+    [ "${EXAKIT_ADDON_TABLE_LIVE:-0}" = 1 ]
+}
+
+# _exakit_addon_note <info|warn> <text> — something the reader must see, said
+# AFTER the table has stopped. A line printed into a frame that is still being
+# repainted lands INSIDE the box, so while the table is live nothing speaks
+# except the table. With no table it is said where it stands, exactly as before.
+_exakit_addon_note() {
+    if _exakit_addon_bar_live; then
+        EXAKIT_ADDON_NOTES="${EXAKIT_ADDON_NOTES}$1|$2
+"
+        return 0
+    fi
+    case "$1" in
+        warn) warn "$2" ;;
+        *)    info "$2" ;;
+    esac
+}
+
+# _exakit_addon_notes_say — drain the collected notes, now that the table is off
+# the screen and a line can be read where it is printed.
+_exakit_addon_notes_say() {
+    while IFS='|' read -r _ans_kind _ans_text; do
+        [ -n "$_ans_text" ] || continue
+        case "$_ans_kind" in
+            warn) warn "$_ans_text" ;;
+            *)    info "$_ans_text" ;;
+        esac
+    done <<EXAKIT_ADDON_NOTES_EOF
+$EXAKIT_ADDON_NOTES
+EXAKIT_ADDON_NOTES_EOF
+    EXAKIT_ADDON_NOTES=""
+}
+
+# _exakit_addon_table_build <state-file> <id> [id ...] — the rows, in the order
+# they are drawn: the group row, one row per installable add-on hanging off a
+# tree connector, and the exclusive Skip. Sets EXAKIT_TABLE_DEFAULTS / _GROUP /
+# _EXCLUSIVE the way ui_table_menu expects, and EXAKIT_ADDON_TABLE_IDS to the
+# add-on id per row (empty for the rows that are not add-ons) so the installer
+# can find a row again.
+#
+# Only INSTALLABLE add-ons get a row. An add-on that is already present, or
+# whose module did not ship in this kit copy, is answered by the state table
+# above with its own version and status, and a checkbox that cannot be ticked
+# would be the same fact twice — the data-load table leaves already-loaded
+# datasets out for exactly that reason. This is also what keeps the group's
+# child range contiguous.
+_exakit_addon_table_build() {
+    _atb_f="$1"; shift
+    : > "$_atb_f"
+    _atb_n=$#
+    printf 'group|Select All|1|idle|||||| \n' >> "$_atb_f"
+    # Via a newline-separated STRING, one line per row, so a row that is not an
+    # add-on is an EMPTY line rather than a gap a space-separated list would
+    # close up — the row number is the index, and it has to stay one.
+    EXAKIT_ADDON_TABLE_IDS="
+"
+    _atb_i=0
+    for _atb_id in "$@"; do
+        _atb_i=$(( _atb_i + 1 ))
+        if [ "$_atb_i" -eq "$_atb_n" ]; then _atb_kind=corner; else _atb_kind=tee; fi
+        printf '%s|%s|1|idle|||||| \n' "$_atb_kind" "$_atb_id" >> "$_atb_f"
+        EXAKIT_ADDON_TABLE_IDS="$EXAKIT_ADDON_TABLE_IDS$_atb_id
+"
+    done
+    printf 'plain|Skip|0|idle|||||| \n' >> "$_atb_f"
+    EXAKIT_ADDON_TABLE_IDS="$EXAKIT_ADDON_TABLE_IDS
+"
+    EXAKIT_ADDON_TABLE_ROW_SKIP=$(( _atb_n + 2 ))
+    EXAKIT_TABLE_EXCLUSIVE="$EXAKIT_ADDON_TABLE_ROW_SKIP"
+    # "all": the parent is a master toggle, checked only while EVERY child is.
+    # Under the default "any" it stayed checked with one child ticked, so the
+    # summary row read "everything is selected" when it was not — on the row a
+    # user glances at to confirm what is about to be installed.
+    EXAKIT_TABLE_GROUP="1:2:$(( _atb_n + 1 )):all"
+    # The group AND every add-on pre-selected, so Enter alone installs what is
+    # on offer and Skip is the explicit opt-out. Mirrors exakit_data_load_select.
+    EXAKIT_TABLE_DEFAULTS=""
+    _atb_i=1
+    while [ "$_atb_i" -le $(( _atb_n + 1 )) ]; do
+        EXAKIT_TABLE_DEFAULTS="${EXAKIT_TABLE_DEFAULTS:+$EXAKIT_TABLE_DEFAULTS,}$_atb_i"
+        _atb_i=$(( _atb_i + 1 ))
+    done
+    # Every row here can be checked, and saying so is not optional:
+    # _UI_CHECKBOX_SELECTABLE is published by ui_checkbox_menu and never cleared,
+    # so the offer's two-row "Explore ?" question leaves "1 2" behind — and the
+    # group helpers would then treat row 2 as the only child, making Select All
+    # toggle the first add-on and nothing else. Empty means "every row".
+    _UI_CHECKBOX_SELECTABLE=""
+    return 0
+}
+
+# _exakit_addon_table_row <id> — which row that add-on is on, or 0.
+_exakit_addon_table_row() {
+    _atr_i=0
+    while IFS= read -r _atr_id; do
+        _atr_i=$(( _atr_i + 1 ))
+        [ "$_atr_id" = "$1" ] && { printf '%s\n' "$_atr_i"; return 0; }
+    done <<EXAKIT_ATR_EOF
+$EXAKIT_ADDON_TABLE_IDS
+EXAKIT_ATR_EOF
+    printf '0\n'
+}
+
+# _exakit_addon_table_cell <summary> <seconds> — the Status column for a
+# finished add-on. The tick in front of it already says "installed", so the cell
+# carries the add-on's own one fact instead ("dashboards at
+# http://127.0.0.1:8000"), with the elapsed time padded to a fixed width so the
+# times line up down the table rather than wandering with the length of the text
+# in front of them.
+#
+# Truncated to the column rather than allowed to widen it: ui_table_widths sizes
+# the Status column from the widest FINISHED status and only ever gives ground
+# from the name column, so a sixty-character summary pushes the table past an
+# 80-column terminal — and a row that wraps is two terminal lines the frame
+# counted as one, which is how a table starts stacking on every redraw. The full
+# text is in the logfile either way.
+_exakit_addon_table_cell() {
+    _atc_el="$(printf '%5s' "(${2}s)")"
+    _atc_text="${1:-installed}"
+    # The room is what is left of the column's FLOOR after the tick glyph and
+    # its space, the space before the elapsed time, and the time itself: the
+    # cell _ui_table_cell builds is "<tick> <final>", and a final that overruns
+    # the column makes ui_table_frame's padding arithmetic go negative — which
+    # is a bash substring error printed over the table, not a wider column.
+    _atc_tick="${UI_TICK:-[ok]}"
+    _atc_room=$(( ${UI_TABLE_STAT_MIN:-44} - ${#_atc_tick} - ${#_atc_el} - 2 ))
+    [ "${#_atc_text}" -le "$_atc_room" ] || \
+        _atc_text="${_atc_text:0:$(( _atc_room - 1 ))}…"
+    # Padded to the room, not merely fitted into it: the summaries are all
+    # different lengths, so an unpadded cell puts each row's elapsed time at a
+    # different column and the eye has nothing to run down.
+    printf "%-${_atc_room}s %s\n" "$_atc_text" "$_atc_el"
+}
+
+# _exakit_addon_table_cleanup — the state file and the animator's scratch files
+# go together with the table. Called on every path out of the selection, so a
+# cancelled marketplace leaves nothing in TMPDIR.
+_exakit_addon_table_cleanup() {
+    [ -n "$EXAKIT_ADDON_TABLE_STATE" ] || return 0
+    rm -f "$EXAKIT_ADDON_TABLE_STATE" "$EXAKIT_ADDON_TABLE_STATE.new" \
+          "$EXAKIT_ADDON_TABLE_STATE.lines" "$EXAKIT_ADDON_TABLE_STATE.stop"
+    EXAKIT_ADDON_TABLE_STATE=""
+    return 0
+}
+
 # _exakit_marketplace_install_one <id> — install + validate one add-on. The
 # validate half must not fail the install (same contract as the setup steps):
 # a component that installed but could not be validated explains itself and is
@@ -3091,7 +3260,7 @@ _exakit_marketplace_install_one() {
     _mi_install="$(_exakit_addon_fn "$1" install)"
     _mi_validate="$(_exakit_addon_fn "$1" validate)"
     command -v "$_mi_install" >/dev/null 2>&1 || {
-        warn "The $1 module is not part of this kit copy — update the kit first: exakit update exakit"
+        _exakit_addon_note warn "The $1 module is not part of this kit copy — update the kit first: exakit update exakit"
         return 1
     }
     # Every silent stretch of an add-on install — creating the venv, resolving
@@ -3119,12 +3288,17 @@ _exakit_marketplace_install_one() {
     _mi_t0="$(date +%s 2>/dev/null || echo 0)"
     if [ -n "$_mi_state" ]; then
         _exakit_addon_progress "$_mi_state" "$1" 0 65 40 "installing"
-        ui_progress_begin "$_mi_state" "$_mi_t0" || true
+        # The TABLE is already painting this add-on's row, and it holds the UI
+        # layer's single animation slot. A second painter here would fight it for
+        # the cursor, and the ui_progress_end below would kill the TABLE's
+        # animator instead of a bar of its own -- mid-frame, which leaves half a
+        # table on screen with the finished one printed under it.
+        _exakit_addon_bar_live || ui_progress_begin "$_mi_state" "$_mi_t0" || true
     fi
     "$_mi_install"
     _mi_rc=$?
     if [ "$_mi_rc" -ne 0 ]; then
-        ui_progress_end
+        _exakit_addon_bar_live || ui_progress_end
         [ -n "$_mi_state" ] && rm -f "$_mi_state"
         EXAKIT_QUIET_DETAIL="$_mi_prev_quiet"
         EXAKIT_ACTIVE_LABEL="$_mi_prev_label"
@@ -3149,9 +3323,9 @@ _exakit_marketplace_install_one() {
     if command -v "$_mi_start" >/dev/null 2>&1; then
         [ -n "$_mi_state" ] && _exakit_addon_progress "$_mi_state" "$1" 90 100 3 "starting"
         "$_mi_start" >/dev/null 2>&1 || \
-            warn "$1 installed but did not start — start it with: exakit start"
+            _exakit_addon_note warn "$1 installed but did not start — start it with: exakit start"
     fi
-    ui_progress_end
+    _exakit_addon_bar_live || ui_progress_end
     [ -n "$_mi_state" ] && rm -f "$_mi_state"
     EXAKIT_QUIET_DETAIL="$_mi_prev_quiet"
     EXAKIT_ACTIVE_LABEL="$_mi_prev_label"
@@ -3168,6 +3342,14 @@ _exakit_marketplace_install_one() {
 # than walk into "validating".
 # ⇄ twin: Set-ExakitAddonProgress in exakit-common.ps1.
 _exakit_addon_progress() {
+    # An add-on being installed from the TABLE reports into its ROW; the row
+    # already names it, so the "<id> · " prefix the one-line bar needs would be
+    # the same fact twice, in a cell that has to spell a phase in a fixed width.
+    if [ -n "${EXAKIT_ADDON_TABLE_ROW:-}" ] && [ -n "${EXAKIT_ADDON_TABLE_STATE:-}" ]; then
+        ui_table_set "$EXAKIT_ADDON_TABLE_STATE" "$EXAKIT_ADDON_TABLE_ROW" running \
+            "$3" "$4" "$5" "$6"
+        return 0
+    fi
     ui_progress_state "$1" "$3" "$4" "$5" "$2 · $6"
 }
 
@@ -3176,9 +3358,10 @@ _exakit_addon_progress() {
 #   1. the STATE, as the same aligned table `exakit version` prints
 #      (Add-on / Status / Version / Action, one row per add-on, whatever its
 #      state — installed, on the system, missing module, or available);
-#   2. the SELECTION, as the same tree-checkbox the data-load menu uses: a
-#      group row with the add-ons hanging off UI_TEE/UI_CORNER connectors,
-#      Space toggles, Enter installs, Cancel as the exclusive default.
+#   2. the SELECTION, as the same live table the data-load menu uses: a group
+#      row with the add-ons hanging off UI_TEE/UI_CORNER connectors, Space
+#      toggles, Enter installs, Skip as the exclusive default — and the Status
+#      column of those very rows is what the install then fills in.
 # Only installable add-ons become menu rows — everything else is answered by
 # the table, exactly like already-loaded datasets are not re-offered.
 #
@@ -3186,7 +3369,6 @@ _exakit_addon_progress() {
 # ids, "all", or "none" — same contract as EXAKIT_MCP_CLIENTS / EXAKIT_DATASETS.
 exakit_marketplace_menu() {
     _mm_ids=()
-    _mm_labels=()
     _mm_rows=()
     _mm_selectable=0
     while IFS='|' read -r _mm_id _mm_label <&3; do
@@ -3194,27 +3376,26 @@ exakit_marketplace_menu() {
         # Not applicable here and not installed: it is not an option on this
         # machine, so it is not shown at all — no row, no table line.
         _exakit_addon_offerable "$_mm_id" || continue
-        # Every add-on gets BOTH a table row and a menu row. The menu row for a
-        # state that cannot be installed is a disabled row ("!" prefix): shown,
-        # dimmed, unselectable, saying why. That is what lets the table drop its
-        # Status and Action columns without hiding anything — a first-time user
-        # reads three columns of catalogue, and anyone re-running the command
-        # still sees why a row is not on offer, in the menu where they are
-        # looking. The Description column carries the state for a row that is
-        # not simply available, because the all-covered path returns before the
-        # menu is ever drawn and the table is then the only output.
+        # Every add-on gets a STATE row; only an installable one also gets a
+        # selection row. A state that cannot be installed is answered by the
+        # state table — its own version, and a last column that says why it is
+        # not on offer — which is more room than a dimmed one-line menu label
+        # had, and it is the only output on the all-covered path, where the
+        # selection is never drawn at all. "__disabled__" keeps the row in
+        # _mm_ids so the env answer can still tell a real add-on it names from
+        # an unknown one.
         if exakit_marketplace_addon_installed "$_mm_id"; then
             _mm_ver="$(exakit_component_current "$_mm_id" 2>/dev/null || true)"
             _mm_rows+=("$(printf '%-14s %-14s %s' "$_mm_id" "$(exakit_version_plain "${_mm_ver:-?}")" "Installed")")
-            _mm_ids+=("__disabled__"); _mm_labels+=("$_mm_id - already installed")
+            _mm_ids+=("__disabled__")
         elif _exakit_addon_system_present "$_mm_id"; then
             # The user already has the tool from somewhere else: covered, and
             # the kit does not manage it.
             _mm_rows+=("$(printf '%-14s %-14s %s' "$_mm_id" "-" "Already on this system, managed outside the kit")")
-            _mm_ids+=("__disabled__"); _mm_labels+=("$_mm_id - already on this system")
+            _mm_ids+=("__disabled__")
         elif ! exakit_marketplace_addon_available "$_mm_id"; then
             _mm_rows+=("$(printf '%-14s %-14s %s' "$_mm_id" "-" "Not in this kit copy. Run: exakit update exakit")")
-            _mm_ids+=("__disabled__"); _mm_labels+=("$_mm_id - not in this kit copy")
+            _mm_ids+=("__disabled__")
         else
             _mm_adv="$(exakit_component_available "$_mm_id" 2>/dev/null || true)"
             # Only an installable row shows a description, and only a run that
@@ -3237,11 +3418,6 @@ exakit_marketplace_menu() {
             fi
             _mm_rows+=("$(printf '%-14s %-14s %s' "$_mm_id" "$(exakit_version_plain "${_mm_adv:-unknown}")" "$_mm_cell")")
             _mm_ids+=("$_mm_id")
-            # The label NAMES the row, it does not re-explain it: the full text
-            # is in the table directly above, and _ui_fit_row would truncate a
-            # description here to keep every menu row exactly one terminal line
-            # (the redraw arithmetic depends on that, for every menu in the kit).
-            _mm_labels+=("$_mm_id")
             _mm_selectable=$((_mm_selectable + 1))
         fi
     done 3<<EXAKIT_MM_EOF
@@ -3325,86 +3501,58 @@ EXAKIT_MM_EOF
         return 0
     fi
 
-    # The selection — same tree the data-load menu draws: a group row with the
-    # add-ons hanging off connectors (UI_TEE/UI_CORNER from the ui palette;
-    # ASCII in plain mode), the available add-ons pre-selected so Enter alone
-    # installs what is on offer, and Cancel as the exclusive opt-out. A
+    # The selection — the same live table the data-load menu draws: a group row
+    # with the add-ons hanging off connectors (UI_TEE/UI_CORNER from the ui
+    # palette; ASCII in plain mode), the available add-ons pre-selected so Enter
+    # alone installs what is on offer, and Skip as the exclusive opt-out. A
     # non-interactive run keeps the pre-selected defaults, exactly like the
     # data-load menu (EXAKIT_MARKETPLACE_ADDONS=none is the scripted opt-out).
     # Mirrors exakit_data_load_select / Show-ExakitMarketplaceMenu.
-    _mm_tee="${UI_TEE:-|-}"; _mm_corner="${UI_CORNER:-\`-}"
-    _mm_menu_labels=("Select All")
-    _mm_menu_ids=("__group__")
-    # Children in two passes: installable rows first, so the group's child range
-    # (2 .. selectable+1) stays contiguous, then the disabled rows. The corner
-    # connector belongs to the last child overall, whichever pass produced it.
-    _mm_disabled=0
-    _mm_i=0
-    while [ "$_mm_i" -lt "${#_mm_ids[@]}" ]; do
-        case "${_mm_ids[$_mm_i]}" in __disabled__) _mm_disabled=$((_mm_disabled + 1)) ;; esac
-        _mm_i=$((_mm_i + 1))
-    done
-    _mm_children=$((_mm_selectable + _mm_disabled))
-    _mm_child=0
+    #
+    # The rows the reader ticks here are the rows _exakit_marketplace_apply then
+    # fills in, so the choice and the progress are one screen. The disabled rows
+    # the checkbox version carried are gone: the state table directly above
+    # already gives each of them a version and a status, in more room than a
+    # dimmed one-line label had.
+    EXAKIT_ADDON_TABLE_STATE="$(mktemp "${TMPDIR:-/tmp}/exakit-addons.XXXXXX")" || {
+        warn "Could not create a temporary file for the add-ons table."
+        return 1
+    }
+    _mm_pick_ids=()
     _mm_i=0
     while [ "$_mm_i" -lt "${#_mm_ids[@]}" ]; do
         case "${_mm_ids[$_mm_i]}" in
             __*__) ;;
-            *)
-                _mm_child=$((_mm_child + 1))
-                if [ "$_mm_child" -eq "$_mm_children" ]; then _mm_conn="$_mm_corner"; else _mm_conn="$_mm_tee"; fi
-                _mm_menu_labels+=("$_mm_conn ${_mm_labels[$_mm_i]}")
-                _mm_menu_ids+=("${_mm_ids[$_mm_i]}")
-                ;;
+            *) _mm_pick_ids+=("${_mm_ids[$_mm_i]}") ;;
         esac
         _mm_i=$((_mm_i + 1))
     done
-    _mm_i=0
-    while [ "$_mm_i" -lt "${#_mm_ids[@]}" ]; do
-        case "${_mm_ids[$_mm_i]}" in
-            __disabled__)
-                _mm_child=$((_mm_child + 1))
-                if [ "$_mm_child" -eq "$_mm_children" ]; then _mm_conn="$_mm_corner"; else _mm_conn="$_mm_tee"; fi
-                # "!" first: _cb_is_disabled tests the label's first byte.
-                _mm_menu_labels+=("!$_mm_conn ${_mm_labels[$_mm_i]}")
-                _mm_menu_ids+=("__disabled__")
-                ;;
-        esac
-        _mm_i=$((_mm_i + 1))
-    done
-    _mm_menu_labels+=("Skip")
-    _mm_menu_ids+=("__cancel__")
-    _mm_cancel_idx="${#_mm_menu_labels[@]}"
-    # Default: the group AND every available add-on pre-selected — the same
-    # posture as the data-load menu, where Enter alone acts on what is on
-    # offer and Cancel is the explicit opt-out. Mirrors exakit_data_load_select.
-    _mm_defaults=""
-    _mm_i=1
-    while [ "$_mm_i" -le $((_mm_selectable + 1)) ]; do
-        _mm_defaults="${_mm_defaults:+$_mm_defaults,}$_mm_i"
-        _mm_i=$((_mm_i + 1))
-    done
-    # "all": the parent is a master toggle, checked only while EVERY child is.
-    # Under the default "any" it stayed checked with one child ticked, so the
-    # summary row read "everything is selected" when it was not — on the row a
-    # user glances at to confirm what is about to be installed.
-    EXAKIT_CHECKBOX_GROUP="1:2:$((_mm_selectable + 1)):all"
-    EXAKIT_CHECKBOX_EXCLUSIVE="$_mm_cancel_idx"
-    ui_checkbox_menu "Select add-ons to install" "$_mm_defaults" "${_mm_menu_labels[@]}"
-    case ",$EXAKIT_CHECKBOX_SELECTION," in
-        *",$_mm_cancel_idx,"*)
+    _exakit_addon_table_build "$EXAKIT_ADDON_TABLE_STATE" "${_mm_pick_ids[@]}"
+    UI_TABLE_TITLE="Add-ons to install"
+    # The first column's heading, or the add-ons would sit under "Dataset".
+    UI_TABLE_COL1="Add-on"
+    ui_table_menu "$EXAKIT_ADDON_TABLE_STATE"
+    case ",$EXAKIT_TABLE_SELECTION," in
+        *",$EXAKIT_ADDON_TABLE_ROW_SKIP,"*)
+            _exakit_addon_table_cleanup
             info "Marketplace closed — nothing was installed."
             return 0
             ;;
     esac
     _mm_picked=""
-    for _mm_idx in $(printf '%s' "$EXAKIT_CHECKBOX_SELECTION" | tr ',' ' '); do
-        [ "$_mm_idx" -ge 1 ] && [ "$_mm_idx" -lt "$_mm_cancel_idx" ] || continue
-        _mm_id="${_mm_menu_ids[$((_mm_idx - 1))]}"
-        case "$_mm_id" in __*__) continue ;; esac
+    for _mm_idx in $(printf '%s' "$EXAKIT_TABLE_SELECTION" | tr ',' ' '); do
+        # "none" is a selection too (a read that hit EOF), and it would reach sed
+        # as a line address it cannot parse.
+        case "$_mm_idx" in ''|*[!0-9]*) continue ;; esac
+        _mm_id="$(printf '%s\n' "$EXAKIT_ADDON_TABLE_IDS" | sed -n "${_mm_idx}p")"
+        [ -n "$_mm_id" ] || continue
         _mm_picked="${_mm_picked:+$_mm_picked,}$_mm_id"
     done
-    [ -n "$_mm_picked" ] || { info "Nothing selected — nothing was installed."; return 0; }
+    if [ -z "$_mm_picked" ]; then
+        _exakit_addon_table_cleanup
+        info "Nothing selected — nothing was installed."
+        return 0
+    fi
     _exakit_marketplace_apply "$_mm_picked"
 }
 
@@ -3470,8 +3618,31 @@ exakit_marketplace_offer() {
 # failure does not strand the rest; the exit status says whether all made it.
 _exakit_marketplace_apply() {
     _mp_status=0
+    # The SAME table the selection was just made in becomes the progress display:
+    # the rows do not move, so nobody has to map one screen onto another. It
+    # animates only where there is a terminal to animate on, and a scripted
+    # answer (EXAKIT_MARKETPLACE_ADDONS) never built a table at all — every
+    # add-on then narrates in plain lines exactly as it did before.
+    EXAKIT_ADDON_TABLE_LIVE=0
+    if [ -n "$EXAKIT_ADDON_TABLE_STATE" ]; then
+        ui_table_begin "$EXAKIT_ADDON_TABLE_STATE" && EXAKIT_ADDON_TABLE_LIVE=1
+    fi
+    # With the table narrating, the per-add-on lines underneath it are the same
+    # facts twice — and printing one scrolls the frame the animator is redrawing.
+    # EXAKIT_QUIET_DETAIL routes them to the logfile instead, which is what it is
+    # for; install_one saves and restores it, so nesting is already handled.
+    _mp_prev_quiet="${EXAKIT_QUIET_DETAIL:-0}"
+    _exakit_addon_bar_live && EXAKIT_QUIET_DETAIL=1
     for _mp_id in $(printf '%s' "$1" | tr ',' ' '); do
+        # Which row this add-on owns, if a table is on screen. Empty means there
+        # is none and the single-line bar takes over, unchanged.
+        EXAKIT_ADDON_TABLE_ROW=""
+        if _exakit_addon_bar_live; then
+            EXAKIT_ADDON_TABLE_ROW="$(_exakit_addon_table_row "$_mp_id")"
+            [ "$EXAKIT_ADDON_TABLE_ROW" = "0" ] && EXAKIT_ADDON_TABLE_ROW=""
+        fi
         info "Installing add-on: $_mp_id"
+        _mp_t0="$(date +%s 2>/dev/null || echo 0)"
         if _exakit_marketplace_install_one "$_mp_id"; then
             # <id>_summary is an OPTIONAL hook: the one fact worth carrying out
             # of an install whose reference panel is now log-only. Resolved
@@ -3482,12 +3653,35 @@ _exakit_marketplace_apply() {
             if command -v "$_mp_summary_fn" >/dev/null 2>&1; then
                 _mp_note="$("$_mp_summary_fn" 2>/dev/null || true)"
             fi
+            _mp_elapsed=$(( $(date +%s 2>/dev/null || echo 0) - _mp_t0 ))
+            [ "$_mp_elapsed" -ge 0 ] 2>/dev/null || _mp_elapsed=0
+            # ok() is the record either way: it writes the FULL summary to the
+            # logfile whether or not the screen is showing it, which is what
+            # keeps a summary too long for the column from being lost.
             ok "$_mp_id installed${_mp_note:+ — $_mp_note}"
+            [ -n "$EXAKIT_ADDON_TABLE_ROW" ] && \
+                ui_table_set "$EXAKIT_ADDON_TABLE_STATE" "$EXAKIT_ADDON_TABLE_ROW" \
+                    done "" "" "" "" \
+                    "$(_exakit_addon_table_cell "$_mp_note" "$_mp_elapsed")"
         else
-            warn "$_mp_id did not finish installing — retry with: exakit marketplace (or exakit update $_mp_id)"
+            [ -n "$EXAKIT_ADDON_TABLE_ROW" ] && \
+                ui_table_set "$EXAKIT_ADDON_TABLE_STATE" "$EXAKIT_ADDON_TABLE_ROW" \
+                    failed "" "" "" "" "did not finish — see the log"
+            _exakit_addon_note warn \
+                "$_mp_id did not finish installing — retry with: exakit marketplace (or exakit update $_mp_id)"
             _mp_status=1
         fi
+        EXAKIT_ADDON_TABLE_ROW=""
     done
+    # The table stops redrawing BEFORE anything is said over it, and only then is
+    # what was collected on the way said.
+    if _exakit_addon_bar_live; then
+        ui_table_end "$EXAKIT_ADDON_TABLE_STATE"
+        EXAKIT_ADDON_TABLE_LIVE=0
+    fi
+    EXAKIT_QUIET_DETAIL="$_mp_prev_quiet"
+    _exakit_addon_notes_say
+    _exakit_addon_table_cleanup
     return "$_mp_status"
 }
 
@@ -6106,7 +6300,15 @@ exakit_run_mcp_setup_cli() {
         warn "Could not find the MCP package source to configure MCP clients."
         return 1
     }
-    exakit_configure_mcp_readonly_access || return 1
+    # The caller may have prepared the read-only user already: it narrates as it
+    # goes, and the client table is animating by the time this runs, so nothing
+    # may print. One call only — the flag is cleared here, so a later run in the
+    # same process (a refresh after a redeploy) prepares the user again.
+    if [ "${EXAKIT_MCP_READONLY_READY:-0}" = 1 ]; then
+        EXAKIT_MCP_READONLY_READY=0
+    else
+        exakit_configure_mcp_readonly_access || return 1
+    fi
     _old_ifs="$IFS"
     IFS=','
     set -- $_clients_csv
@@ -6119,6 +6321,11 @@ exakit_run_mcp_setup_cli() {
                 --clients "$@"
     ) > "$_output_file" 2>> "${EXAKIT_LOG_FILE:-/dev/null}"; then
         _exakit_log_mcp_result_failure "$_output_file"
+        # First, not last: the client table may be animating, and its next frame
+        # moves the cursor up and clears — which would wipe this warning off the
+        # screen before anyone could read it. die() stops the animation for the
+        # same reason.
+        command -v ui_animation_stop >/dev/null 2>&1 && ui_animation_stop
         warn "MCP client setup failed (see log)."
         return 1
     fi
@@ -6194,10 +6401,15 @@ exakit_run_mcp_operation_cli() {
 # "restart it like this" lines, which differ per client — stays, as plain lines
 # rather than boxed rows. Python emits typed records; the shell renders each
 # through the same info/ok/warn the rest of the run uses.
+#
+# <table-shown> = 1 when the client table carried the per-client outcome: the
+# headline is then dropped, because the table said it row by row and said which
+# client got what. A run that did NOT finish clean still says so here.
 exakit_print_mcp_setup_summary() {
     _result_file="$1"
+    _table_shown="${2:-0}"
     require_python3
-    _summary_lines="$(run_python - "$_result_file" <<'PY'
+    _summary_lines="$(run_python - "$_result_file" "$_table_shown" <<'PY'
 import json, sys
 
 LABELS = {
@@ -6219,8 +6431,12 @@ with open(sys.argv[1], encoding="utf-8") as handle:
 clients = ", ".join(LABELS.get(item, item) for item in doc.get("selected_clients", []))
 lines = []
 status = doc.get("status", "unknown")
+table_shown = len(sys.argv) > 2 and sys.argv[2] == "1"
 if str(status).startswith("success"):
-    lines.append(f"ok|MCP configured for {clients or 'no clients'}")
+    # The table already named every client and what happened to it, so this
+    # line would be the same fact twice, the second time less precisely.
+    if not table_shown:
+        lines.append(f"ok|MCP configured for {clients or 'no clients'}")
 else:
     lines.append(f"warn|MCP setup finished as '{status}' for {clients or 'no clients'}")
 
@@ -6603,12 +6819,66 @@ exakit_ensure_runtime_running() {
     esac
 }
 
+# The AI-client table: the rows a reader ticks in the selection phase are the
+# rows the progress phase fills in. The state file is what the two phases share
+# (see ui_table_* in ui.sh); empty means this run has no table — a scripted
+# EXAKIT_MCP_CLIENTS answer, or no terminal to draw one on.
+EXAKIT_MCP_TABLE_STATE=""
+
+# _exakit_mcp_table_release — the table is finished with: drop its state file and
+# the two globals the component reads from the caller, so the NEXT table in the
+# same run (the dataset load) is not left wearing this one's title and column
+# heading.
+_exakit_mcp_table_release() {
+    UI_TABLE_TITLE=""
+    UI_TABLE_COL1=""
+    # And the read-only user's "already done" flag, which only ever covers the
+    # one CLI call this table was drawn for: a later run in the same process
+    # (mcp.sh's refresh after a redeploy) must prepare it again.
+    EXAKIT_MCP_READONLY_READY=0
+    if [ -n "$EXAKIT_MCP_TABLE_STATE" ]; then
+        rm -f "$EXAKIT_MCP_TABLE_STATE" "$EXAKIT_MCP_TABLE_STATE.lines" \
+            "$EXAKIT_MCP_TABLE_STATE.stop" "$EXAKIT_MCP_TABLE_STATE.new"
+    fi
+    EXAKIT_MCP_TABLE_STATE=""
+    return 0
+}
+
+# _exakit_mcp_result_states <result-json> — one "<client-id> configured" or
+# "<client-id> skipped" line per client the run touched, straight from the CLI's
+# own record of what it wrote. The table's final cells are built from this rather
+# than from the exit status, which cannot tell "one client's config file was
+# unusable" from "nothing was configured".
+_exakit_mcp_result_states() {
+    [ -s "$1" ] || return 1
+    exakit_can_run_python || return 1
+    run_python - "$1" <<'PY' 2>/dev/null
+import json, sys
+
+try:
+    with open(sys.argv[1], encoding="utf-8") as handle:
+        doc = json.load(handle)
+except (OSError, ValueError):
+    sys.exit(1)
+details = doc.get("details") or {}
+for client in details.get("configured_clients") or []:
+    print(f"{client} configured")
+for item in details.get("skipped_clients") or []:
+    client = item.get("client")
+    if client:
+        print(f"{client} skipped")
+PY
+}
+
 exakit_mcp_setup() {
     # About to create/verify the read-only database user: a stopped database
     # here used to surface as a bare "Connection refused" — heal it first.
     exakit_ensure_runtime_running
 
     info "MCP setup will edit the selected AI client config files."
+
+    EXAKIT_MCP_TABLE_STATE=""
+    _mcp_rows=""                    # the table rows the progress phase fills in
 
     # EXAKIT_MCP_CLIENTS lets an agent-driven or scripted install pick clients
     # without a prompt (e.g. "claude", "claude,cursor", "all", or "1,2").
@@ -6625,15 +6895,14 @@ exakit_mcp_setup() {
         }
         info "Configuring MCP clients from EXAKIT_MCP_CLIENTS: $_clients_csv"
     else
-        printf '\n'
         # Show the FULL list of supported clients so the user sees everything
         # the kit can connect: pending clients (installed, not connected yet)
         # are selectable and pre-selected; clients that are already connected
-        # or not installed on this machine appear greyed out with the reason
-        # and cannot be checked. One "Claude" row covers both Claude surfaces
-        # (desktop app + Claude Code CLI) while their states match; when they
-        # differ, each surface gets its own row. Falls back to everything
-        # selectable when discovery is unavailable.
+        # or not installed on this machine appear as DISABLED rows with the
+        # reason and cannot be checked. One "Claude" row covers both Claude
+        # surfaces (desktop app + Claude Code CLI) while their states match;
+        # when they differ, each surface gets its own row. Falls back to
+        # everything selectable when discovery is unavailable.
         _cd_state=pending; _cc_state=pending; _codex_state=pending
         _cursor_state=pending; _copilot_state=pending; _gemini_state=pending
         _opencode_state=pending; _continue_state=pending
@@ -6656,18 +6925,21 @@ EOF
         fi
         _menu_labels=()
         _menu_ids=()
+        _menu_notes=()
         _pending_count=0
         # _exakit_mcp_menu_row <label> <state> <ids_csv> — one client row:
-        # pending rows carry their ids and count as selectable; connected and
-        # missing rows are disabled ("!" prefix) with an empty id.
+        # pending rows carry their ids and are selectable; connected and missing
+        # rows carry no id and a note saying why, which is what makes them a
+        # disabled row in the table.
         _exakit_mcp_menu_row() {
+            _menu_labels+=("$1")
             case "$2" in
                 pending)
-                    _menu_labels+=("$1"); _menu_ids+=("$3")
+                    _menu_ids+=("$3"); _menu_notes+=("")
                     _pending_count=$((_pending_count + 1))
                     ;;
-                connected) _menu_labels+=("!$1 · already connected"); _menu_ids+=("") ;;
-                *)         _menu_labels+=("!$1 · not installed"); _menu_ids+=("") ;;
+                connected) _menu_ids+=(""); _menu_notes+=("already connected") ;;
+                *)         _menu_ids+=(""); _menu_notes+=("not installed") ;;
             esac
         }
         if [ "$_cd_state" = "$_cc_state" ]; then
@@ -6687,55 +6959,188 @@ EOF
             info "Check them with 'exakit mcp-status'; new clients appear here once installed."
             return 0
         fi
-        _menu_labels+=("Skip")
-        _skip_idx="${#_menu_labels[@]}"
-        # Pre-select every pending client (ascending indices) — never a
-        # disabled row, never Skip.
-        _defaults=""
-        _menu_i=1
-        while [ "$_menu_i" -lt "$_skip_idx" ]; do
-            [ -n "${_menu_ids[$((_menu_i - 1))]}" ] && _defaults="${_defaults:+$_defaults,}$_menu_i"
-            _menu_i=$((_menu_i + 1))
+        # The read-only database user is prepared BEFORE the table is drawn.
+        # Everything it does narrates itself, and from the moment the table is on
+        # screen a line printed under it shifts the frame out from under the
+        # cursor arithmetic that redraws it: the animator's first frame would
+        # then repaint over its own table instead of the menu's, and the top of a
+        # stale table is left stranded above it (the failure ui.sh's comments
+        # describe). It is the kit's own database user, not any client's, so
+        # preparing it before the choice costs a skipped run nothing but an idle
+        # user — and it is what the next 'exakit mcp-setup' needs anyway.
+        exakit_configure_mcp_readonly_access || return 1
+        EXAKIT_MCP_READONLY_READY=1
+
+        # ONE table for the whole step, the same component the dataset load uses
+        # (ui_table_* in ui.sh): the rows a reader ticks are the rows that then
+        # fill in, so nobody has to map one screen onto another.
+        EXAKIT_MCP_TABLE_STATE="$(mktemp "${TMPDIR:-/tmp}/exakit-mcp-table.XXXXXX")" || {
+            warn "Could not create a temporary file for the AI client table."
+            _exakit_mcp_table_release
+            return 1
+        }
+        _mcp_client_n="${#_menu_labels[@]}"
+        _mcp_row_first=2
+        _mcp_row_last=$(( _mcp_row_first + _mcp_client_n - 1 ))
+        _mcp_row_skip=$(( _mcp_row_last + 1 ))
+        printf 'group|Select All|0|idle|||||| \n' > "$EXAKIT_MCP_TABLE_STATE"
+        _menu_i=0
+        while [ "$_menu_i" -lt "$_mcp_client_n" ]; do
+            if [ "$_menu_i" -eq $(( _mcp_client_n - 1 )) ]; then
+                _mcp_kind=corner
+            else
+                _mcp_kind=tee
+            fi
+            printf '%s|%s|0|idle|||||| \n' "$_mcp_kind" "${_menu_labels[$_menu_i]}" \
+                >> "$EXAKIT_MCP_TABLE_STATE"
+            _menu_i=$(( _menu_i + 1 ))
         done
+        printf 'plain|Skip|0|idle|||||| \n' >> "$EXAKIT_MCP_TABLE_STATE"
+        # Pre-select every pending client, and the group row with them: under the
+        # all-or-none parent it is ticked exactly while every pickable child is.
+        # A client with no id is one this machine cannot offer — it becomes a
+        # disabled row carrying the reason, so the list is the whole answer
+        # rather than a list that quietly omits things.
+        _defaults="1"
+        _menu_i=0
+        while [ "$_menu_i" -lt "$_mcp_client_n" ]; do
+            _mcp_row=$(( _mcp_row_first + _menu_i ))
+            if [ -n "${_menu_ids[$_menu_i]}" ]; then
+                _defaults="$_defaults,$_mcp_row"
+            else
+                ui_table_disable "$EXAKIT_MCP_TABLE_STATE" "$_mcp_row" "${_menu_notes[$_menu_i]}"
+            fi
+            _menu_i=$(( _menu_i + 1 ))
+        done
+        EXAKIT_TABLE_GROUP="1:$_mcp_row_first:$_mcp_row_last:all"
+        EXAKIT_TABLE_EXCLUSIVE="$_mcp_row_skip"
+        EXAKIT_TABLE_DEFAULTS="$_defaults"
+        UI_TABLE_TITLE="AI clients to connect"
+        UI_TABLE_COL1="Client"
+        printf '\n'
         # Loop so a not-confirmed skip returns the user to the menu.
         while :; do
-            EXAKIT_CHECKBOX_EXCLUSIVE="$_skip_idx"
-            ui_checkbox_menu "Select the AI clients to connect (MCP)" "$_defaults" "${_menu_labels[@]}"
-            case ",$EXAKIT_CHECKBOX_SELECTION," in
-                *",$_skip_idx,"*)
+            ui_table_menu "$EXAKIT_MCP_TABLE_STATE"
+            case ",$EXAKIT_TABLE_SELECTION," in
+                *",$_mcp_row_skip,"*)
                     warn "No AI client will be connected to your database."
                     if confirm "Are you sure you want to continue without an AI client?" y; then
                         info "Okay — you can connect one any time with: exakit mcp-setup"
                         exakit_print_no_ai_panel
+                        _exakit_mcp_table_release
                         return 0
                     fi
-                    printf '\n'
+                    # Back into the SAME table, not a second one under it: the
+                    # frame is still on screen with the warning and the question
+                    # below it (one line each), so the menu is told how far up
+                    # its own top border is.
+                    UI_TABLE_MENU_ONSCREEN=$(( UI_TABLE_LINES + 2 ))
                     continue                              # back to the menu
                     ;;
             esac
             break
         done
         _clients_csv=""
-        for _client_idx in $(printf '%s' "$EXAKIT_CHECKBOX_SELECTION" | tr ',' ' '); do
-            [ "$_client_idx" -ge 1 ] && [ "$_client_idx" -lt "$_skip_idx" ] || continue
-            _client_id="${_menu_ids[$((_client_idx - 1))]}"
+        for _client_idx in $(printf '%s' "$EXAKIT_TABLE_SELECTION" | tr ',' ' '); do
+            [ "$_client_idx" -ge "$_mcp_row_first" ] && [ "$_client_idx" -le "$_mcp_row_last" ] || continue
+            _client_id="${_menu_ids[$(( _client_idx - _mcp_row_first ))]}"
             [ -n "$_client_id" ] || continue              # disabled rows carry no id
             _clients_csv="${_clients_csv:+$_clients_csv,}$_client_id"
+            _mcp_rows="${_mcp_rows:+$_mcp_rows,}$_client_idx"
         done
+        if [ -z "$_clients_csv" ]; then
+            # Enter needs a selection and the group row can never be the only
+            # one ticked, so this is the impossible answer rather than a real
+            # one. Still: never call the setup CLI with an empty client list.
+            info "No AI client selected — connect one any time with: exakit mcp-setup"
+            _exakit_mcp_table_release
+            return 0
+        fi
     fi
 
     _result_file="$(mktemp "${TMPDIR:-/tmp}/exakit-mcp-setup.XXXXXX")"
-    info "Applying MCP setup"
     _setup_status=0
+    _mcp_table_shown=0
+    if [ -n "$EXAKIT_MCP_TABLE_STATE" ] && [ -n "$_mcp_rows" ]; then
+        for _mcp_row in $(printf '%s' "$_mcp_rows" | tr ',' ' '); do
+            ui_table_set "$EXAKIT_MCP_TABLE_STATE" "$_mcp_row" waiting
+        done
+        if ui_table_begin "$EXAKIT_MCP_TABLE_STATE"; then
+            _mcp_table_shown=1
+            # The bar sits on the GROUP row, not on a client row: ONE python
+            # process configures every selected client, so there is no
+            # per-client checkpoint a per-client bar could be honest about. The
+            # client rows wait, and each one's final cell is read out of the
+            # result file afterwards — nothing on screen calls a client done
+            # before the run says it is.
+            ui_table_set "$EXAKIT_MCP_TABLE_STATE" 1 running 5 90 20 "writing client configs"
+        fi
+    fi
+    # No live table to say what is happening: say it in a line, as before. With
+    # the table there is nothing to add — and a line printed here would land
+    # between the menu's frame and the animator's first frame, which is the one
+    # place on this screen where nothing may be printed.
+    [ "$_mcp_table_shown" = 1 ] || info "Applying MCP setup"
     if exakit_run_mcp_setup_cli "$_clients_csv" "$_result_file"; then
         :
     else
         _setup_status=$?
     fi
+    if [ "$_mcp_table_shown" = 1 ]; then
+        # What each row ends up saying comes from the result file, client by
+        # client: one client can be skipped on its own (an unparseable config
+        # file of its own) while every other client is configured, and the exit
+        # status cannot tell those two apart.
+        _mcp_states="$(_exakit_mcp_result_states "$_result_file" 2>/dev/null || true)"
+        _mcp_ok_n=0
+        _mcp_sel_n=0
+        for _mcp_row in $(printf '%s' "$_mcp_rows" | tr ',' ' '); do
+            _mcp_sel_n=$(( _mcp_sel_n + 1 ))
+            _mcp_id_n=0
+            _mcp_id_ok=0
+            for _mcp_id in $(printf '%s' "${_menu_ids[$(( _mcp_row - _mcp_row_first ))]}" | tr ',' ' '); do
+                _mcp_id_n=$(( _mcp_id_n + 1 ))
+                # grep, not a case pattern: bash 3.2 mis-parses case patterns
+                # written inside $( ).
+                if printf '%s\n' "$_mcp_states" | grep -qxF "$_mcp_id configured"; then
+                    _mcp_id_ok=$(( _mcp_id_ok + 1 ))
+                fi
+            done
+            if [ "$_mcp_id_ok" -eq 0 ]; then
+                ui_table_set "$EXAKIT_MCP_TABLE_STATE" "$_mcp_row" failed "" "" "" "" \
+                    "not configured"
+            elif [ "$_mcp_id_ok" -eq "$_mcp_id_n" ]; then
+                ui_table_set "$EXAKIT_MCP_TABLE_STATE" "$_mcp_row" done "" "" "" "" \
+                    "configured"
+                _mcp_ok_n=$(( _mcp_ok_n + 1 ))
+            else
+                # The Claude row is two surfaces behind one label; say which
+                # rather than call a half-written row configured.
+                ui_table_set "$EXAKIT_MCP_TABLE_STATE" "$_mcp_row" done "" "" "" "" \
+                    "configured · $_mcp_id_ok of $_mcp_id_n"
+                _mcp_ok_n=$(( _mcp_ok_n + 1 ))
+            fi
+        done
+        if [ "$_mcp_sel_n" = 1 ]; then _mcp_unit=client; else _mcp_unit=clients; fi
+        if [ "$_mcp_ok_n" -eq "$_mcp_sel_n" ]; then
+            ui_table_set "$EXAKIT_MCP_TABLE_STATE" 1 done "" "" "" "" \
+                "configured · $_mcp_sel_n $_mcp_unit"
+        else
+            ui_table_set "$EXAKIT_MCP_TABLE_STATE" 1 failed "" "" "" "" \
+                "$_mcp_ok_n of $_mcp_sel_n $_mcp_unit configured"
+        fi
+        # Normally still animating. A failed CLI stops the animation itself
+        # before it warns, so that its warning is not painted into the frame —
+        # and then the frame on screen is already the last one.
+        if [ -n "${_UI_TABLE_ACTIVE:-}" ]; then
+            ui_table_end "$EXAKIT_MCP_TABLE_STATE"
+        fi
+    fi
     if [ -s "$_result_file" ]; then
-        exakit_print_mcp_setup_summary "$_result_file"
+        exakit_print_mcp_setup_summary "$_result_file" "$_mcp_table_shown"
     fi
     rm -f "$_result_file"
+    _exakit_mcp_table_release
     if [ "$_setup_status" -ne 0 ]; then
         return "$_setup_status"
     fi
