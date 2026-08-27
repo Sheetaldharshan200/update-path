@@ -492,6 +492,86 @@ exapump_upload() {
     [ "${EXAKIT_UPLOAD_QUIET:-0}" = 1 ] || ok "$(basename "$1") loaded"
 }
 
+# exakit_upload_parallel — how many uploads may run at once.
+#
+# WHY UPLOADS OVERLAP AT ALL: an exapump call is a process launch, and on a
+# fresh Windows install each one measured ~4.4s against 185ms once warm. A
+# dataset load is dominated by that, not by row throughput — weather (10,970
+# rows) took as long as energy (108,050) because both made the same number of
+# launches. The launches cannot be merged: exapump upload takes many FILES but
+# only one --table, and IMPORT ... FROM LOCAL CSV FILE is refused by the server
+# over this protocol ("only supported via JDBC or EXAplus"). Overlapping them
+# is what is left.
+#
+# EXAKIT_UPLOAD_PARALLEL=1 restores exactly the old serial behaviour.
+exakit_upload_parallel() {
+    _up_n="${EXAKIT_UPLOAD_PARALLEL:-4}"
+    case "$_up_n" in
+        ''|*[!0-9]*) _up_n=4 ;;
+    esac
+    [ "$_up_n" -ge 1 ] 2>/dev/null || _up_n=1
+    [ "$_up_n" -le 8 ] 2>/dev/null || _up_n=8
+    printf '%s' "$_up_n"
+}
+
+# exapump_upload_many <schema> <file>... — upload every file CONCURRENTLY, one
+# exapump process each, in waves of exakit_upload_parallel.
+#
+# Waves rather than a rolling window because bash 3.2 has no `wait -n`: it can
+# only wait for ALL background jobs, so a wave pays for its slowest member.
+# That is still far better than one-at-a-time and it keeps the control flow
+# simple enough to be obviously correct.
+#
+# Sets EXAKIT_UPLOAD_FAILED to the failing "file -> table" pairs (empty when
+# all succeeded). Failures are COLLECTED, not fatal on the spot: die() inside a
+# background job cannot stop the parent, and abandoning the wave would leave
+# the other uploads running unreaped.
+exapump_upload_many() {
+    _um_schema="$1"; shift
+    EXAKIT_UPLOAD_FAILED=""
+    [ $# -gt 0 ] || return 0
+    _um_cap="$(exakit_upload_parallel)"
+    _um_dir="$(mktemp -d "${TMPDIR:-/tmp}/exakit-upload.XXXXXX")" || \
+        die "Could not create a temporary directory for the upload batch."
+    _um_i=0
+    for _um_file in "$@"; do
+        _um_i=$((_um_i + 1))
+        _um_table="$(basename "$_um_file" .csv | tr '[:lower:]' '[:upper:]')"
+        printf '%s\n' "$_um_file" > "$_um_dir/$_um_i.file"
+        printf '%s\n' "$_um_schema.$_um_table" > "$_um_dir/$_um_i.table"
+        (
+            "$(exapump_cli)" upload "$_um_file" --table "$_um_schema.$_um_table" \
+                -p "$EXAKIT_EXAPUMP_PROFILE" > "$_um_dir/$_um_i.out" 2>&1
+            printf '%s' "$?" > "$_um_dir/$_um_i.rc"
+        ) &
+        if [ $((_um_i % _um_cap)) -eq 0 ]; then wait; fi
+    done
+    wait
+    # Logged in FILE ORDER once every process has finished, so the logfile still
+    # reads as one block per upload rather than interleaved fragments.
+    _um_j=0
+    while [ "$_um_j" -lt "$_um_i" ]; do
+        _um_j=$((_um_j + 1))
+        _um_f="$(cat "$_um_dir/$_um_j.file" 2>/dev/null)"
+        _um_t="$(cat "$_um_dir/$_um_j.table" 2>/dev/null)"
+        _um_rc="$(cat "$_um_dir/$_um_j.rc" 2>/dev/null)"
+        if [ -n "${EXAKIT_LOG_FILE:-}" ]; then
+            printf 'exapump upload %s --table %s -p %s\n' "$_um_f" "$_um_t" \
+                "$EXAKIT_EXAPUMP_PROFILE" >> "$EXAKIT_LOG_FILE"
+            cat "$_um_dir/$_um_j.out" >> "$EXAKIT_LOG_FILE" 2>/dev/null
+        fi
+        if [ "$_um_rc" = "0" ]; then
+            [ "${EXAKIT_UPLOAD_QUIET:-0}" = 1 ] || ok "$(basename "$_um_f") loaded"
+        else
+            [ -n "${EXAKIT_LOG_FILE:-}" ] && \
+                exakit_explain_db_error "$(tail -8 "$_um_dir/$_um_j.out" 2>/dev/null)"
+            EXAKIT_UPLOAD_FAILED="${EXAKIT_UPLOAD_FAILED:+$EXAKIT_UPLOAD_FAILED; }$_um_f -> $_um_t"
+        fi
+    done
+    rm -rf "$_um_dir"
+    [ -z "$EXAKIT_UPLOAD_FAILED" ]
+}
+
 # exapump_count <schema.table> — row count (prints the number, empty on failure).
 # Wrap the count in a unique delimited token (EXAKIT_RC[<n>]) and recover it with
 # a regex instead of scraping the last line for digits. The old "tail -1 |
@@ -1697,14 +1777,26 @@ exakit_load_dataset_dir() {
     fi
 
     _ld_tables=""
+    # Uploads run CONCURRENTLY (see exapump_upload_many). Still one launch per
+    # file - what changes is how many are in flight at once, which is the only
+    # lever left: exapump upload cannot target more than one table per call,
+    # and the server refuses IMPORT of local files over this protocol.
+    _ld_csvs=""
     for _ld_csv in "$_ld_dir"/data/*.csv; do
         [ -s "$_ld_csv" ] || continue
         _ld_table="$(basename "$_ld_csv" .csv | tr '[:lower:]' '[:upper:]')"
-        _ld_step=$((_ld_step + 1))
-        _exakit_dataset_progress "$_ld_id" "$_ld_step" "$_ld_total" "$(basename "$_ld_csv")"
-        exapump_upload "$_ld_csv" "$_ld_schema.$_ld_table"
         _ld_tables="$_ld_tables $_ld_table"
+        _ld_csvs="${_ld_csvs:+$_ld_csvs }$_ld_csv"
+        _ld_step=$((_ld_step + 1))
     done
+    if [ -n "$_ld_csvs" ]; then
+        _exakit_dataset_progress "$_ld_id" "$_ld_step" "$_ld_total" "loading data files"
+        ui_spin_begin "$EXAKIT_ACTIVE_LABEL"
+        exapump_upload_many "$_ld_schema" $_ld_csvs
+        ui_spin_end
+        [ -z "$EXAKIT_UPLOAD_FAILED" ] || \
+            die "Upload failed: $EXAKIT_UPLOAD_FAILED (see log)"
+    fi
 
     if [ -s "$_ld_dir/02_load_data.sql" ]; then
         _ld_step=$((_ld_step + 1))
