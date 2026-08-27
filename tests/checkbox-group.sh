@@ -113,7 +113,7 @@ EOF
 
 # 5. PowerShell twins must ask for the same mode (no ASCII/glyph concerns here,
 #    purely that the parameter is passed).
-for _ps in setup/lib/exakit-common.ps1 setup/lib/exapump.ps1; do
+for _ps in setup/lib/exakit-common.ps1 setup/lib/exapump.ps1 setup/lib/mcp.ps1; do
     if grep -q 'GroupLast[^)]*)* *-GroupMode "all"' "$ROOT/$_ps"; then
         pass "$_ps passes -GroupMode all"
     else

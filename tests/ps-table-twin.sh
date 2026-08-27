@@ -33,7 +33,9 @@ UI_SH="$ROOT/setup/lib/ui.sh"
 UI_PS1="$ROOT/setup/lib/ui.ps1"
 PUMP_SH="$ROOT/setup/lib/exapump.sh"
 PUMP_PS1="$ROOT/setup/lib/exapump.ps1"
+COMMON_SH="$ROOT/setup/lib/common.sh"
 COMMON_PS1="$ROOT/setup/lib/exakit-common.ps1"
+MCP_PS1="$ROOT/setup/lib/mcp.ps1"
 
 printf '\n== every ui_table_* has a named PowerShell twin ==\n'
 
@@ -63,6 +65,7 @@ ui_table_tick|Set-ExakitTableTicks
 ui_table_begin|Start-ExakitTable
 ui_table_end|Stop-ExakitTable
 ui_table_menu|Invoke-ExakitTableMenu
+ui_table_disable|Disable-ExakitTableRow
 ui_animation_stop|Stop-ExakitAnimation
 MAPEOF
 
@@ -151,6 +154,158 @@ has "the spinner defers to a live table"  '$script:UiTableLive) { $script:UiSpin
 has "a failure stops the animation first" "Stop-ExakitAnimation"           "$COMMON_PS1"
 # A missing ui.ps1 must degrade to plainer output, not to CommandNotFoundException.
 has "the no-ui fallback stubs the table" 'function Start-ExakitTable($Table = $null) { return $false }' "$COMMON_PS1"
+has "...and the disabled-row call"       'function Disable-ExakitTableRow('           "$COMMON_PS1"
+
+printf '\n== all THREE selections are the same table, not a checkbox ==\n'
+
+# The shell side moved every one of its three selections onto the one component;
+# Windows had it for datasets only, and the other two were still the old
+# Read-ExakitCheckboxMenu. A checkbox menu scrolls away and the progress is
+# printed underneath it, so the reader has to map one screen onto the other.
+has "the AI clients select in the table"  "Invoke-ExakitTableMenu -Table \$script:McpTable" "$MCP_PS1"
+lacks "and not in a checkbox any more"    'Read-ExakitCheckboxMenu -Title "Select the AI clients' "$MCP_PS1"
+has "the add-ons select in the table"     'Invoke-ExakitTableMenu -Table $script:ExakitAddonTable' "$COMMON_PS1"
+lacks "and neither do they"               'Read-ExakitCheckboxMenu -Title "Select add-ons to install"' "$COMMON_PS1"
+# Each table is titled and its first column named for what it holds, or the
+# add-ons would sit under "Dataset" - the heading the component defaults to.
+has "the client table is titled"   'New-ExakitTable -Title "AI clients to connect" -Col1 "Client"' "$MCP_PS1"
+has "the add-on table is titled"   'New-ExakitTable -Title "Add-ons to install" -Col1 "Add-on"'    "$COMMON_PS1"
+has "...and the shell agrees"      'UI_TABLE_COL1="Client"'                                        "$COMMON_SH"
+has "...for add-ons too"           'UI_TABLE_COL1="Add-on"'                                        "$COMMON_SH"
+# The heading comes off the TABLE, not out of module state: three tables are
+# built in one run and a heading left behind is how the second wears the first's.
+has "the frame reads its own heading" '$col1 = "" + $Table.Col1' "$UI_PS1"
+# The rows the reader ticked are the rows that fill in - for all three now.
+has "an add-on finds its own row"      "function Get-ExakitAddonTableRow"   "$COMMON_PS1"
+has "...and its finished cell"         "function Get-ExakitAddonTableCell"  "$COMMON_PS1"
+has "the install animates that table"  'Start-ExakitTable -Table $script:ExakitAddonTable' "$COMMON_PS1"
+has "...and stops it"                  'Stop-ExakitTable -Table $script:ExakitAddonTable'  "$COMMON_PS1"
+has "the add-on reports into its row"  'Set-ExakitTableRow -Row $script:ExakitAddonTableRow -State "running"' "$COMMON_PS1"
+# Nothing may print over a frame that is still being repainted, so the lines an
+# install has to say are collected and said after the table stops.
+has "the notes are held back"          "function Write-ExakitAddonNote"     "$COMMON_PS1"
+has "...and drained afterwards"        "Show-ExakitAddonNotes"              "$COMMON_PS1"
+# The MCP bar sits on the GROUP row: ONE python process configures every selected
+# client, so there is no per-client checkpoint a per-client bar could be honest
+# about. Each client's final cell comes from the run's own record instead.
+has "the MCP bar is on the group row" 'Set-ExakitTableRow -Row 1 -State "running" -Pct 5' "$MCP_PS1"
+has "the client cells come from the result" "configured_clients"            "$MCP_PS1"
+lacks "no invented per-client bar"    'Set-ExakitTableRow -Row $row -State "running"'      "$MCP_PS1"
+# A scripted answer must not build a table at all: it has no console to draw on
+# and its lines are the whole output. Pinned by ORDER - the env branch returns
+# before the table is ever created.
+_env_at="$(grep -n 'if ($env:EXAKIT_MCP_CLIENTS)' "$MCP_PS1" | head -1 | cut -d: -f1)"
+_tbl_at="$(grep -n 'New-ExakitTable -Title "AI clients to connect"' "$MCP_PS1" | head -1 | cut -d: -f1)"
+if [ -n "$_env_at" ] && [ -n "$_tbl_at" ] && [ "$_env_at" -lt "$_tbl_at" ]; then
+    pass "EXAKIT_MCP_CLIENTS is answered before any table is built"
+else
+    fail "EXAKIT_MCP_CLIENTS no longer short-circuits the client table (env=$_env_at table=$_tbl_at)"
+fi
+_env_at="$(grep -n 'if ($env:EXAKIT_MARKETPLACE_ADDONS) {' "$COMMON_PS1" | head -1 | cut -d: -f1)"
+_tbl_at="$(grep -n 'New-ExakitTable -Title "Add-ons to install"' "$COMMON_PS1" | head -1 | cut -d: -f1)"
+if [ -n "$_env_at" ] && [ -n "$_tbl_at" ] && [ "$_env_at" -lt "$_tbl_at" ]; then
+    pass "EXAKIT_MARKETPLACE_ADDONS is answered before any table is built"
+else
+    fail "EXAKIT_MARKETPLACE_ADDONS no longer short-circuits the add-on table (env=$_env_at table=$_tbl_at)"
+fi
+
+printf '\n== a disabled row can be read but never picked ==\n'
+
+# The client list shows the WHOLE set of supported clients and says why the ones
+# this machine cannot offer are missing. A list that quietly omitted them would
+# read as "the kit supports four clients", and the reader has no way to tell a
+# short list from a filtered one.
+has "the client list disables a row" "Disable-ExakitTableRow -Row \$rowAt" "$MCP_PS1"
+has "...saying it is not installed"  '"not installed"'                     "$MCP_PS1"
+has "...or already connected"        '"already connected"'                 "$MCP_PS1"
+# Drawn dim with no checkbox, the note reading on from the label.
+has "the frame draws it dim"       'if ($row.State -eq "disabled") {'       "$UI_PS1"
+# ...and refuses a tick whoever asked. Select All spans a range that may contain
+# one and the defaults are built by the caller; this is where both pass through.
+has "a tick is refused"            'if ($r.State -eq "disabled") { $on = $false }' "$UI_PS1"
+# The cursor steps over it, Space ignores it, and Select All leaves it alone.
+has "the cursor steps over it"     'if ($pickable.Contains($at)) { return $at }'   "$UI_PS1"
+has "Space ignores it"             'if ($pickable.Contains($cur)) {'               "$UI_PS1"
+has "Select All skips it"          'if (-not $pickable.Contains($c)) { [void]$sel.Remove($c); continue }' "$UI_PS1"
+has "and it is never where the cursor starts" 'if (-not $pickable.Contains($cur)) { $cur = [int](& $step $cur 1) }' "$UI_PS1"
+# The separator between a label and its note is a GLYPH, and every .ps1 but
+# ui.ps1 has to stay pure ASCII - so it comes from the palette. The old client
+# menu built one with [char]0xB7, which the encoding guard cannot see because the
+# source bytes are ASCII; the palette is the one place it may live.
+has "the disabled note uses the palette middot" '$script:UiMidDot' "$UI_PS1"
+lacks "mcp.ps1 constructs no glyph of its own"  '[char]0xB7'       "$MCP_PS1"
+has "and the truncation marker too"             '$script:UiEllipsis'  "$COMMON_PS1"
+has "...which the palette defines"              '$script:UiEllipsis = "'  "$UI_PS1"
+
+printf '\n== every frame is drawn from column 0 ==\n'
+
+# Cursor-up PRESERVES the column. A frame drawn while the cursor sits mid-row -
+# left there by anything that printed without a newline, a spinner frame or a
+# progress line - starts at that column, and clear-to-end only clears from there
+# rightwards. What stays on screen is the first N columns of the old frame with a
+# new one starting inside it: several top borders side by side on ONE line at
+# differing widths. One carriage return in front of every frame makes it
+# impossible, whoever left the cursor where. Twin of the same \r in
+# ui_table_redraw.
+# Every console write that puts a frame on screen - $frames is the spinner's
+# glyph list and is not one of them.
+_frame_writes="$(grep -n '::Write(' "$UI_PS1" | grep -F '$frame' | grep -vF '$frames')"
+_fw_n="$(printf '%s\n' "$_frame_writes" | grep -c .)"
+_fw_cr="$(printf '%s\n' "$_frame_writes" | grep -c 'Write("`r')"
+if [ "$_fw_n" -gt 0 ] && [ "$_fw_n" = "$_fw_cr" ]; then
+    pass "all $_fw_n frame writes in ui.ps1 start with a carriage return"
+else
+    fail "a frame in ui.ps1 is written without a leading carriage return ($_fw_cr of $_fw_n)"
+    printf '%s\n' "$_frame_writes" | grep -v 'Write("`r' | sed 's/^/       /'
+fi
+
+# ONE animation at a time, and the loser is STOPPED rather than orphaned: an
+# orphaned spinner keeps printing its own line without a trailing newline every
+# 90ms, which is what leaves the cursor mid-row for the frame above. Refusing
+# instead was safe but degraded - the caller reads $false as "no console" and
+# falls back to plain lines, so the table drew once and never moved.
+TABLE_BEGIN="$(sed -n '/^function Start-ExakitTable {/,/\$handle = \$ps.BeginInvoke()/p' "$UI_PS1")"
+case "$TABLE_BEGIN" in
+    *'$script:UiSpinNested = 0'*) pass "the table gives the spinner's reference back" ;;
+    *) fail "Start-ExakitTable does not zero the nesting count before stopping" ;;
+esac
+case "$TABLE_BEGIN" in
+    *"Stop-ExakitSpinner"*) pass "...and stops a live animation before taking the line" ;;
+    *) fail "Start-ExakitTable still refuses instead of stopping a live animation" ;;
+esac
+SH_TABLE_BEGIN="$(sed -n '/^ui_table_begin() {/,/printf .\\033\[?25l./p' "$UI_SH")"
+case "$SH_TABLE_BEGIN" in
+    *"_ui_step_stop_spinner"*) pass "the shell twin does the same" ;;
+    *) fail "ui_table_begin no longer stops a live animation - the twins have drifted" ;;
+esac
+
+printf '\n== an unchanged frame is overwritten, never cleared ==\n'
+
+# [0J erases from the cursor to the end of the screen, so clearing and then
+# writing leaves the region genuinely EMPTY for the instant between the two -
+# which five times a second is the table flickering: something, nothing,
+# something. Every line of a frame is padded to the box width, so while the
+# geometry is identical an overwrite cannot leave one stale character behind and
+# the erase buys nothing. It is kept for the case where the geometry DID change
+# (a resize, or the first frame after the menu, one line taller for its hint),
+# because then old content really is left over.
+has "the frame records its own width" '$Table.Width = $inner' "$UI_PS1"
+has "the redraw compares BOTH halves" '$same = ($prev -eq [int]$Table.Lines -and $prevWidth -eq [int]$Table.Width)' "$UI_PS1"
+has "an unchanged frame is overwritten" 'Write("`r$($script:UiEsc)[${prev}A" + $frame' "$UI_PS1"
+has "...and a changed one still erases" 'Write("`r$($script:UiEsc)[${prev}A$($script:UiEsc)[0J" + $frame' "$UI_PS1"
+# The menu's redraw is the one a reader watches keypress by keypress, so it needs
+# the same rule - it is a second write site, not a call into the first.
+has "the menu compares both halves too" '$sameGeom = ($drawn -eq ([int]$Table.Lines + 1) -and $drawnWidth -eq [int]$Table.Width)' "$UI_PS1"
+has "...overwriting in place"           'Write("`r$($script:UiEsc)[${drawn}A" + $frame' "$UI_PS1"
+has "...and erasing only on a change"   'Write("`r$($script:UiEsc)[${drawn}A$($script:UiEsc)[0J" + $frame' "$UI_PS1"
+# Exactly TWO erasing writes in the whole file, one per write site: a third would
+# be an unconditional clear creeping back in.
+_erase_n="$(grep -F '::Write(' "$UI_PS1" | grep -cF '[0J')"
+if [ "$_erase_n" = "2" ]; then
+    pass "ui.ps1 erases in exactly the two changed-geometry branches"
+else
+    fail "ui.ps1 has $_erase_n clear-to-end writes, expected 2 (one per write site)"
+fi
 
 printf '\n== the PowerShell stays 5.1-compatible ==\n'
 

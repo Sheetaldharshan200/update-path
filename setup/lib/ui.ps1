@@ -96,6 +96,11 @@ function Set-ExakitPalette {
         # ASCII (see tests/ps-encoding-guard.sh), so a caller that wants the same
         # glyph has to be handed it rather than type it.
         $script:UiMidDot = "·"
+        # The truncation marker, for the same reason: a caller that has to cut a
+        # cell to the column (the add-on Status cell) cannot type this byte in its
+        # own file. Its LENGTH differs between the palettes, so every user of it
+        # measures rather than assumes.
+        $script:UiEllipsis = "…"
     } else {
         $script:UiTick="+"; $script:UiCross="x"; $script:UiBullet="-"; $script:UiArrow=">"
         $script:UiHr="-"; $script:UiTL="+"; $script:UiTR="+"; $script:UiBL="+"; $script:UiBR="+"; $script:UiVB="|"
@@ -103,6 +108,7 @@ function Set-ExakitPalette {
         $script:UiBarFull="#"; $script:UiBarEmpty="."
         $script:UiProgressEighths = @(' ',' ',' ',' ',' ',' ',' ',' ')
         $script:UiMidDot = "-"
+        $script:UiEllipsis = "..."
     }
 }
 
@@ -537,14 +543,23 @@ function Get-ExakitBar {
 # very object the foreground mutates. The shape is otherwise the bash one:
 #
 #   Title    what the top border says
+#   Col1     what the first column is called (datasets, clients, add-ons)
 #   Reserve  how many phase sub-lines the frame ALWAYS has (see below)
 #   Cols     the console width, measured once
 #   Lines    how many lines the last frame really occupied
+#   Width    how wide the last frame's box was - see Update-ExakitTable, which
+#            overwrites in place rather than clearing while both are unchanged
 #   Rows     one hashtable per row:
 #              Kind    group | tee | corner | plain   - the tree connector
 #              Tick    $true while the row is selected
-#              State   idle | waiting | running | done | failed
+#              State   idle | waiting | running | done | failed | disabled
 #              Final   what the Status column says once the row is finished
+#
+# A "disabled" row is one the reader can look at but never pick - an AI client
+# that is not installed on this machine. It is drawn by Get-ExakitTableFrame
+# itself (dim, no checkbox, its note reading on from the label) and never reaches
+# Get-ExakitTableCell, because it has no Status of its own to report. See
+# Disable-ExakitTableRow.
 #
 # The redraw is Read-ExakitCheckboxMenu's: count the lines the last frame REALLY
 # occupied (a wrapped row is two), go up by that many, and clear from there.
@@ -565,15 +580,23 @@ $script:UiTableSrc = ""
 if ($PSCommandPath) { $script:UiTableSrc = $PSCommandPath }
 elseif ($PSScriptRoot) { $script:UiTableSrc = Join-Path $PSScriptRoot "ui.ps1" }
 
-# New-ExakitTable [-Title] [-Reserve] - a fresh, empty table. Returns it, and
-# also parks it as the module's current one so every other call can default to it.
+# New-ExakitTable [-Title] [-Col1] [-Reserve] - a fresh, empty table. Returns it,
+# and also parks it as the module's current one so every other call can default
+# to it.
+#
+# Col1 travels ON the table, not in a module variable the way ui.sh's
+# UI_TABLE_COL1 does: three screens in one run build a table each (clients,
+# datasets, add-ons), and a heading left behind in module state is how the second
+# one ends up wearing the first one's column name.
 function New-ExakitTable {
-    param([string]$Title = "Progress", [int]$Reserve = 1)
+    param([string]$Title = "Progress", [string]$Col1 = "Dataset", [int]$Reserve = 1)
     $t = [hashtable]::Synchronized(@{
         Title   = $Title
+        Col1    = $Col1
         Reserve = $Reserve
         Cols    = 80
         Lines   = 0
+        Width   = 0
         Rows    = [System.Collections.ArrayList]::Synchronized((New-Object System.Collections.ArrayList))
         Run     = $false
         Stop    = $false
@@ -757,9 +780,15 @@ function Get-ExakitTableFrame {
         $script:UiBold + $title + $script:UiReset + $script:UiAccent + ($script:UiHr * $fill) +
         $script:UiTR + $script:UiReset)
 
-    $headPad = $nameW - 7
+    # The first column is named by its caller: the dataset load fills it with
+    # datasets, the MCP step with AI clients, the marketplace with add-ons. Its
+    # width is $nameW, whose floor is 10, so any short heading pads without going
+    # negative. A table built before Col1 existed still says "Dataset".
+    $col1 = "" + $Table.Col1
+    if (-not $col1) { $col1 = "Dataset" }
+    $headPad = $nameW - $col1.Length
     if ($headPad -lt 0) { $headPad = 0 }
-    $head = "     Dataset" + (" " * $headPad) + "  Status"
+    $head = "     " + $col1 + (" " * $headPad) + "  Status"
     $headTail = $inner - $head.Length
     if ($headTail -lt 0) { $headTail = 0 }
     [void]$lines.Add("  " + $script:UiAccent + $script:UiVB + $script:UiReset + $head +
@@ -773,6 +802,33 @@ function Get-ExakitTableFrame {
         $conn = ""
         if ($row.Kind -eq "tee") { $conn = $script:UiTee + " " }
         elseif ($row.Kind -eq "corner") { $conn = $script:UiCorner + " " }
+        # A row nobody can pick: no checkbox at all (an empty one invites the
+        # reader to try), and the note reads straight on from the label -
+        # "Cursor - not installed" is one sentence. Putting the note in the Status
+        # column instead would size that column, and the columns would then be
+        # measured for text that is neither a name nor a status. The 5-space
+        # indent is the width of the pointer and checkbox it replaces, so the tree
+        # connectors still line up. Twin of the same branch in ui_table_frame.
+        if ($row.State -eq "disabled") {
+            $note = ("" + $row.Final).TrimStart()
+            $text = $conn + $row.Label
+            if ($note) { $text = $text + " " + $script:UiMidDot + " " + $note }
+            $dmax = $inner - 5
+            if ($text.Length -gt $dmax) {
+                # Measured from the marker's OWN width, not assumed to be one:
+                # the plain palette spells it "..." and a hard-coded 1 would put
+                # two columns of the note back over the border.
+                $dcut = $dmax - $script:UiEllipsis.Length
+                if ($dcut -lt 1) { $dcut = 1 }
+                $text = $text.Substring(0, $dcut) + $script:UiEllipsis
+            }
+            $dtail = $inner - 5 - $text.Length
+            if ($dtail -lt 0) { $dtail = 0 }
+            [void]$lines.Add("  " + $script:UiAccent + $script:UiVB + $script:UiReset + "     " +
+                $script:UiDim + $text + $script:UiReset + (" " * $dtail) +
+                $script:UiAccent + $script:UiVB + $script:UiReset)
+            continue
+        }
         if ($row.Tick) {
             # A plain "x", not the palette tick, when there is no colour: the
             # plain-palette tick is itself a marker and a checkbox is already
@@ -828,6 +884,11 @@ function Get-ExakitTableFrame {
         $script:UiBR + $script:UiReset)
 
     $Table.Lines = $lines.Count
+    # Recorded for Update-ExakitTable: while the geometry is unchanged it can
+    # overwrite the frame in place instead of erasing the region first, and the
+    # only two things that can make an overwrite leave something stale behind are
+    # a change in height or a change in width.
+    $Table.Width = $inner
     return ($lines -join "`r`n")
 }
 
@@ -840,24 +901,50 @@ function Show-ExakitTable {
     if ($null -eq $Table) { $Table = $script:UiTable }
     if ($null -eq $Table) { return }
     $frame = Get-ExakitTableFrame -Table $Table -Cursor $Cursor
-    try { [Console]::Write($frame + "`r`n") } catch { }
+    # Every frame in this file starts with a carriage return - see
+    # Update-ExakitTable for why an indented frame is not a cosmetic problem.
+    try { [Console]::Write("`r" + $frame + "`r`n") } catch { }
 }
 
 # Update-ExakitTable [-Table] [-Cursor] - replace the frame already on screen
-# with a new one, in ONE write. Clearing first and drawing after is what a reader
-# sees as a flicker. Twin of ui_table_redraw in ui.sh.
+# with a new one, in ONE write. Twin of ui_table_redraw in ui.sh.
+#
+# OVERWRITTEN, not cleared and redrawn. [0J erases from the cursor to the end of
+# the screen, so a clear-then-write leaves the region genuinely empty for the
+# instant between the two - and five times a second that reads as the table
+# flickering: something, nothing, something. Every line of a frame is padded to
+# the box width, so while the geometry is identical an overwrite cannot leave a
+# single stale character behind and the erase buys nothing.
+#
+# The erase is kept for the case where the geometry DID change - a resized
+# console, or the first frame after the selection menu, which is one line taller
+# because of the hint under it. Then old content really is left over and has to
+# go.
 function Update-ExakitTable {
     param([hashtable]$Table = $null, [int]$Cursor = 0)
     if ($null -eq $Table) { $Table = $script:UiTable }
     if ($null -eq $Table) { return }
+    # Both halves of the PREVIOUS draw's geometry, read before the new frame
+    # overwrites them on the table.
     $prev = [int]$Table.Lines
     if ($prev -lt 0) { $prev = 0 }
+    $prevWidth = [int]$Table.Width
     $frame = Get-ExakitTableFrame -Table $Table -Cursor $Cursor
+    $same = ($prev -eq [int]$Table.Lines -and $prevWidth -eq [int]$Table.Width)
+    # The leading `r is not decoration either. Cursor-up PRESERVES the column, so
+    # a cursor left mid-row by anything that printed without a newline - a spinner
+    # frame, a progress line - makes the whole frame draw from that column, and
+    # [0J clears only from there rightwards. What is left on screen is the first N
+    # columns of the old frame with a new one starting inside it: several top
+    # borders side by side on one line, at different widths. Twin of the same
+    # carriage return in ui_table_redraw.
     try {
-        if ($prev -gt 0) {
-            [Console]::Write("$($script:UiEsc)[${prev}A$($script:UiEsc)[0J" + $frame + "`r`n")
+        if ($prev -le 0) {
+            [Console]::Write("`r" + $frame + "`r`n")
+        } elseif ($same) {
+            [Console]::Write("`r$($script:UiEsc)[${prev}A" + $frame + "`r`n")
         } else {
-            [Console]::Write($frame + "`r`n")
+            [Console]::Write("`r$($script:UiEsc)[${prev}A$($script:UiEsc)[0J" + $frame + "`r`n")
         }
     } catch { }
 }
@@ -899,8 +986,42 @@ function Set-ExakitTableTicks {
     if ($null -eq $Table) { $Table = $script:UiTable }
     if ($null -eq $Table) { return }
     for ($i = 1; $i -le $Table.Rows.Count; $i++) {
-        $Table.Rows[$i - 1].Tick = [bool]($Rows -contains $i)
+        $r = $Table.Rows[$i - 1]
+        $on = [bool]($Rows -contains $i)
+        # A disabled row can never carry a tick, whoever asked. Select All spans a
+        # range that may contain one, and the defaults are built by the caller -
+        # this is the one place both of those pass through.
+        if ($r.State -eq "disabled") { $on = $false }
+        $r.Tick = $on
     }
+}
+
+# Disable-ExakitTableRow -Row <n> -Note <text> - that row can be read but never
+# picked: drawn dim with no checkbox and the note reading on from the label
+# ("Cursor - not installed"), skipped by the cursor, by Space and by Select All.
+#
+# It exists so a menu can show the WHOLE set of options and say why the ones it
+# cannot offer are missing. The MCP client list is the case: a list that quietly
+# omitted the clients this machine does not have would read as "the kit supports
+# four clients", and the reader has no way to tell a short list from a filtered
+# one. The note is the answer to the question the row raises.
+# Twin of ui_table_disable in ui.sh.
+function Disable-ExakitTableRow {
+    param(
+        [Parameter(Mandatory)][int]$Row,
+        [string]$Note = "",
+        [hashtable]$Table = $null
+    )
+    if ($null -eq $Table) { $Table = $script:UiTable }
+    if ($null -eq $Table) { return }
+    if ($Row -lt 1 -or $Row -gt $Table.Rows.Count) { return }
+    $r = $Table.Rows[$Row - 1]
+    $r.State = "disabled"
+    $r.Tick = $false
+    # The note goes in the FINAL field: it is what this row has to say for
+    # itself, which is exactly what that field is for.
+    $r.Final = $Note
+    $r.SegT0 = $null
 }
 
 # Start-ExakitTable [-Table] - animate the table in place. Returns $false when it
@@ -915,7 +1036,21 @@ function Start-ExakitTable {
     # ONE animation at a time: a spinner and a table redrawing the same rows
     # produce a flicker, and the loser's handle is lost the moment the winner
     # overwrites it.
-    if ($null -ne $script:UiSpinFlag) { return $false }
+    #
+    # STOPPED, not refused. Start-ExakitSpinner takes a nesting reference when
+    # something is already animating; this cannot, because the table REPLACES the
+    # step's narration - and refusing here meant the table was drawn and then
+    # never redrawn, which every caller reads as "no console" and answers by
+    # falling back to plain lines. Nor may the spinner simply be abandoned: an
+    # orphaned spinner keeps printing its own line without a trailing newline
+    # every 90ms, which leaves the cursor mid-row for the frame that follows, and
+    # cursor-up preserves the column (see Update-ExakitTable). The nesting count
+    # is zeroed first because Stop-ExakitSpinner gives back a reference instead of
+    # stopping while one is outstanding. Twin of the same block in ui_table_begin.
+    if ($null -ne $script:UiSpinFlag) {
+        $script:UiSpinNested = 0
+        try { Stop-ExakitSpinner } catch { }
+    }
     if (-not $script:UiTableSrc) { return $false }
     try {
         $src = [System.IO.File]::ReadAllText($script:UiTableSrc)
@@ -1045,13 +1180,20 @@ function Stop-ExakitAnimation {
 # The key handling is Read-ExakitCheckboxMenu's, deliberately: same keys, same
 # hint, same group and exclusive semantics, so there is one thing to learn.
 # Twin of ui_table_menu in ui.sh.
+#
+# -OnScreen (optional): how many lines of this table - frame plus anything
+# printed under it - are ALREADY on screen, so a re-ask overwrites them instead
+# of drawing a second table below them. The MCP step passes it when an
+# unconfirmed "Skip" sends the reader back to the menu. Twin of
+# UI_TABLE_MENU_ONSCREEN.
 function Invoke-ExakitTableMenu {
     param(
         [hashtable]$Table = $null,
         [int[]]$Defaults = @(),
         [int]$ExclusiveIndex = 0,
         [int]$GroupParent = 0, [int]$GroupFirst = 0, [int]$GroupLast = 0,
-        [string]$GroupMode = "any"
+        [string]$GroupMode = "any",
+        [int]$OnScreen = 0
     )
     if ($null -eq $Table) { $Table = $script:UiTable }
     if ($null -eq $Table) { return @() }
@@ -1060,6 +1202,30 @@ function Invoke-ExakitTableMenu {
     $sel = New-Object 'System.Collections.Generic.List[int]'
     foreach ($d in $Defaults) {
         if ($d -ge 1 -and $d -le $n -and -not $sel.Contains($d)) { [void]$sel.Add($d) }
+    }
+    # Which rows can be ticked at all. A disabled row is drawn but never
+    # selectable: the cursor steps over it, Space ignores it, and Select All
+    # leaves it alone - that last one because $applyGroup below walks only the
+    # pickable children, so there is no second rule to keep in step.
+    $pickable = New-Object 'System.Collections.Generic.List[int]'
+    for ($i = 1; $i -le $n; $i++) {
+        if ($Table.Rows[$i - 1].State -ne "disabled") { [void]$pickable.Add($i) }
+    }
+    # Move the cursor, stepping over the rows nobody can pick. Returns the new row
+    # rather than assigning it: a scriptblock runs in a child scope, so an
+    # assignment in here would never reach the caller's $cur.
+    $step = {
+        param($from, $dir)
+        $at = $from
+        $tries = 0
+        while ($tries -lt $n) {
+            $at = $at + $dir
+            if ($at -lt 1) { $at = $n }
+            if ($at -gt $n) { $at = 1 }
+            if ($pickable.Contains($at)) { return $at }
+            $tries++
+        }
+        return $from
     }
 
     # Interactivity is decided the way Test-ExakitInteractive decides it, inlined:
@@ -1087,6 +1253,9 @@ function Invoke-ExakitTableMenu {
             $parentOn = $sel.Contains($GroupParent)
             for ($c = $GroupFirst; $c -le $GroupLast; $c++) {
                 if ($c -lt 1 -or $c -gt $n) { continue }
+                # A disabled row can sit inside the range (a group spans a small
+                # tree), so Select All has to step over it rather than tick it.
+                if (-not $pickable.Contains($c)) { [void]$sel.Remove($c); continue }
                 if ($parentOn) { if (-not $sel.Contains($c)) { [void]$sel.Add($c) } }
                 else { [void]$sel.Remove($c) }
             }
@@ -1096,11 +1265,15 @@ function Invoke-ExakitTableMenu {
                 $on = $true
                 for ($c = $GroupFirst; $c -le $GroupLast; $c++) {
                     if ($c -lt 1 -or $c -gt $n) { continue }
+                    # ...and the all-children rule must not wait for one either,
+                    # or a machine missing one client could never tick Select All.
+                    if (-not $pickable.Contains($c)) { continue }
                     if (-not $sel.Contains($c)) { $on = $false; break }
                 }
             } else {
                 for ($c = $GroupFirst; $c -le $GroupLast; $c++) {
                     if ($c -lt 1 -or $c -gt $n) { continue }
+                    if (-not $pickable.Contains($c)) { continue }
                     if ($sel.Contains($c)) { $on = $true; break }
                 }
             }
@@ -1121,21 +1294,38 @@ function Invoke-ExakitTableMenu {
     }
 
     # The cursor starts on the FIRST DATASET, not on the "Select All" row above
-    # it: the group row is the one answer nobody has to move to.
-    $cur = 2
-    if ($n -lt 2) { $cur = 1 }
+    # it: the group row is the one answer nobody has to move to - and never on a
+    # row that cannot be picked, or the first Space would land on one.
+    $cur = 1
+    if ($n -ge 2) { $cur = [int](& $step $cur 1) }
+    if (-not $pickable.Contains($cur)) { $cur = [int](& $step $cur 1) }
+    # Normally nothing of this table is on screen yet; a re-ask says otherwise.
     $drawn = 0
+    if ($OnScreen -gt 0) { $drawn = $OnScreen }
     while ($true) {
         Set-ExakitTableTicks -Rows @($sel) -Table $Table
-        # Built first, then clear and draw in ONE write. The other order - clear,
-        # then spend time assembling - is what flickered: the region was genuinely
+        # Built first, then written in ONE write. The other order - clear, then
+        # spend time assembling - is what flickered: the region was genuinely
         # empty for that whole time.
+        $drawnWidth = [int]$Table.Width
         $frame = Get-ExakitTableFrame -Table $Table -Cursor $cur
         $hint = "      " + $script:UiDim + "↑/↓ to move · Space to toggle · Enter to confirm" + $script:UiReset
-        if ($drawn -gt 0) {
-            [Console]::Write("$($script:UiEsc)[${drawn}A$($script:UiEsc)[0J" + $frame + "`r`n" + $hint + "`r`n")
+        # Overwritten in place while the geometry is unchanged, and only erased
+        # when it is not - the same rule as Update-ExakitTable, for the same
+        # reason: [0J empties the region for the instant before the new frame
+        # lands, and on a keypress-driven redraw that is a visible blank flash.
+        # The hint is a constant, so its own line is always exactly as long.
+        #
+        # ...and from column 0, like every other frame this file writes: cursor-up
+        # preserves the column, so a cursor left mid-row would indent the frame and
+        # an erase would spare the first N columns of the one before it.
+        $sameGeom = ($drawn -eq ([int]$Table.Lines + 1) -and $drawnWidth -eq [int]$Table.Width)
+        if ($drawn -le 0) {
+            [Console]::Write("`r" + $frame + "`r`n" + $hint + "`r`n")
+        } elseif ($sameGeom) {
+            [Console]::Write("`r$($script:UiEsc)[${drawn}A" + $frame + "`r`n" + $hint + "`r`n")
         } else {
-            [Console]::Write($frame + "`r`n" + $hint + "`r`n")
+            [Console]::Write("`r$($script:UiEsc)[${drawn}A$($script:UiEsc)[0J" + $frame + "`r`n" + $hint + "`r`n")
         }
         $drawn = [int]$Table.Lines + 1
         $key = [Console]::ReadKey($true)
@@ -1144,18 +1334,23 @@ function Invoke-ExakitTableMenu {
         switch ($key.Key) {
             "Enter"     { if ($sel.Count -gt 0) { $confirmed = $true } }
             "Spacebar"  {
-                if ($sel.Contains($cur)) { [void]$sel.Remove($cur) } else { [void]$sel.Add($cur) }
-                & $applyGroup $cur
-                & $applyExclusive $cur
+                # A row that cannot be picked cannot be toggled either. The cursor
+                # never rests on one, so this catches only the keypress that
+                # arrives before the cursor has moved at all.
+                if ($pickable.Contains($cur)) {
+                    if ($sel.Contains($cur)) { [void]$sel.Remove($cur) } else { [void]$sel.Add($cur) }
+                    & $applyGroup $cur
+                    & $applyExclusive $cur
+                }
             }
-            "UpArrow"   { $cur--; if ($cur -lt 1) { $cur = $n } }
-            "DownArrow" { $cur++; if ($cur -gt $n) { $cur = 1 } }
+            "UpArrow"   { $cur = [int](& $step $cur (-1)) }
+            "DownArrow" { $cur = [int](& $step $cur 1) }
             default     { $handled = $false }
         }
         if (-not $handled) {
             switch -Regex ([string]$key.KeyChar) {
-                '^[kK]$' { $cur--; if ($cur -lt 1) { $cur = $n } }
-                '^[jJ]$' { $cur++; if ($cur -gt $n) { $cur = 1 } }
+                '^[kK]$' { $cur = [int](& $step $cur (-1)) }
+                '^[jJ]$' { $cur = [int](& $step $cur 1) }
             }
         }
         if ($confirmed) { break }

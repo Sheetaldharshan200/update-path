@@ -191,10 +191,12 @@ MCP_PS1_ALL="$(cat "$ROOT/setup/lib/mcp.ps1")"
 # row into the table's own state file rather than into a label array.
 has "the add-on group row"  "printf 'group|Select All|1|idle" "$COMMON"
 has "the dataset group row" "printf 'group|Select All|1|idle" "$EXAPUMP_SH"
-has "...and on Windows"     '[void]$menuLabels.Add("Select All")'               "$COMMON_PS1"
-# Windows draws the same live table now, so its parent row is a table row rather
-# than an entry in a label array.
+# Windows draws the same live table now - for all three selections, not only
+# datasets - so every parent row is a table row rather than an entry in a label
+# array.
+has "...and on Windows"     'Add-ExakitTableRow -Kind "group" -Label "Select All" -Table $script:ExakitAddonTable' "$COMMON_PS1"
 has "...for datasets too"   'Add-ExakitTableRow -Kind "group" -Label "Select All"' "$EXAPUMP_PS1"
+has "...and for AI clients" 'Add-ExakitTableRow -Kind "group" -Label "Select All" -Table $script:McpTable' "$MCP_PS1_ALL"
 
 # One word for the opt-out row, in every menu that has one. Five call sites on
 # the shell side, four on the PowerShell side.
@@ -203,8 +205,10 @@ lacks "no 'Cancel (install nothing)'" "Cancel (install nothing)"            "$CO
 lacks "no 'Cancel (load nothing)'"    "Cancel (load nothing)"               "$EXAPUMP_SH$EXAPUMP_PS1"
 lacks "no 'Skip for now (no dataset loading)'" "Skip for now (no dataset loading)" "$COMMON$EXAPUMP_PS1"
 lacks "no 'Skip for now (no MCP client changes)'" "Skip for now (no MCP client changes)" "$COMMON$MCP_PS1_ALL"
-has "the MCP menu opts out with Skip"  '_menu_labels+=("Skip")'             "$COMMON"
-has "...and its twin"                  '[void]$menuLabels.Add("Skip")'      "$MCP_PS1_ALL"
+# The MCP client menu is a live table on both sides now, so its opt-out is the
+# table's own last row rather than an entry in a label array. Still one word.
+has "the MCP menu opts out with Skip"  'printf '"'"'plain|Skip|0|idle|||||| \n'"'"' >> "$EXAKIT_MCP_TABLE_STATE"' "$COMMON"
+has "...and its twin"                  'Add-ExakitTableRow -Kind "plain" -Label "Skip" -Table $script:McpTable' "$MCP_PS1_ALL"
 has "the bulk-format menu too"         '_bsl_labels+=("Skip")'             "$EXAPUMP_SH"
 
 printf '\n== the closing offer is two words and a question ==\n'

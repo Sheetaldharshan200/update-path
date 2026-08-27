@@ -34,7 +34,7 @@ if (-not (Get-Command Start-ExakitSpinner -ErrorAction SilentlyContinue)) {
         Set-Variable -Scope script -Name $v -Value ""
     }
     $script:UiTick = "+"; $script:UiCross = "x"; $script:UiArrow = ">"; $script:UiBullet = "-"; $script:UiVB = "|"
-    $script:UiTee = "|-"; $script:UiCorner = '`-'; $script:UiMidDot = "-"
+    $script:UiTee = "|-"; $script:UiCorner = '`-'; $script:UiMidDot = "-"; $script:UiEllipsis = "..."
     function Start-ExakitSpinner([string]$Label) { }
     function Stop-ExakitSpinner { }
     function Restore-ExakitCursor { }
@@ -47,13 +47,14 @@ if (-not (Get-Command Start-ExakitSpinner -ErrorAction SilentlyContinue)) {
     # Each stub carries the real signature, because a function with NO parameter
     # list refuses named arguments: a bare `function Set-ExakitTableRow { }` would
     # only trade the missing-command error for a missing-parameter one.
-    function New-ExakitTable([string]$Title = "", [int]$Reserve = 1) { return $null }
+    function New-ExakitTable([string]$Title = "", [string]$Col1 = "", [int]$Reserve = 1) { return $null }
     function Add-ExakitTableRow([string]$Kind = "plain", [string]$Label = "",
         [switch]$Ticked, $Table = $null) { return 0 }
     function Set-ExakitTableRow([int]$Row = 0, [string]$State = "", [int]$Pct = 0,
         [int]$Ceiling = 0, [int]$Secs = 0, [string]$Phase = "", [string]$Final = "",
         $Table = $null) { }
     function Set-ExakitTableTicks([int[]]$Rows = @(), $Table = $null) { }
+    function Disable-ExakitTableRow([int]$Row = 0, [string]$Note = "", $Table = $null) { }
     function Show-ExakitTable($Table = $null, [int]$Cursor = 0) { }
     function Update-ExakitTable($Table = $null, [int]$Cursor = 0) { }
     function Start-ExakitTable($Table = $null) { return $false }
@@ -63,7 +64,7 @@ if (-not (Get-Command Start-ExakitSpinner -ErrorAction SilentlyContinue)) {
     # non-interactive run would have kept anyway.
     function Invoke-ExakitTableMenu($Table = $null, [int[]]$Defaults = @(),
         [int]$ExclusiveIndex = 0, [int]$GroupParent = 0, [int]$GroupFirst = 0,
-        [int]$GroupLast = 0, [string]$GroupMode = "any") {
+        [int]$GroupLast = 0, [string]$GroupMode = "any", [int]$OnScreen = 0) {
         return @($Defaults | Sort-Object)
     }
     function Get-ExakitTilde([string]$Path) { return $Path }
@@ -3374,13 +3375,17 @@ function Test-ExakitMarketplaceHasPending {
 # The marketplace menu body, wearing the kit's two established looks:
 #   1. the STATE, as the same aligned table Invoke-CmdUpdateCheck prints
 #      (Add-on / Status / Version / Action, one row per add-on);
-#   2. the SELECTION, as the same tree-checkbox the data-load menu uses: a
-#      group row with the add-ons hanging off UiTee/UiCorner connectors,
-#      Space toggles, Enter installs, Cancel as the exclusive default.
+#   2. the SELECTION, as the same live table the data-load menu uses: a group
+#      row with the add-ons hanging off UiTee/UiCorner connectors, Space
+#      toggles, Enter installs, Skip as the exclusive opt-out - and the Status
+#      column of those very rows is what the install then fills in.
 # Only installable add-ons become menu rows - everything else is answered by
 # the table. Non-interactive runs answer with EXAKIT_MARKETPLACE_ADDONS: a csv
 # of ids, "all", or "none". Twin of exakit_marketplace_menu in common.sh.
 function Show-ExakitMarketplaceMenu {
+    # A previous marketplace in this same process is finished with, and a stale
+    # table here is one the scripted path would animate over nothing.
+    Reset-ExakitAddonTable
     $rows = @()      # each: @{ Id = <id or $null when not selectable>; Label = <menu child>; Table = <state row> }
     foreach ($addon in Get-ExakitMarketplaceAddons) {
         # Not applicable here and not installed: not an option on this machine,
@@ -3499,57 +3504,159 @@ function Show-ExakitMarketplaceMenu {
         return
     }
 
-    # The selection - same tree the data-load menu draws: a group row with the
-    # add-ons hanging off connectors (UiTee/UiCorner from the ui palette;
+    # The selection - the same live table the data-load menu draws: a group row
+    # with the add-ons hanging off connectors (UiTee/UiCorner from the ui palette;
     # ASCII in plain mode), the available add-ons pre-selected so Enter alone
-    # installs what is on offer, and Cancel as the exclusive opt-out. A
+    # installs what is on offer, and Skip as the exclusive opt-out. A
     # non-interactive run keeps the pre-selected defaults, exactly like the
     # data-load menu (EXAKIT_MARKETPLACE_ADDONS=none is the scripted opt-out).
     # Mirrors exakit_marketplace_menu in common.sh.
-    $tee = $script:UiTee; $corner = $script:UiCorner
-    $menuLabels = New-Object System.Collections.Generic.List[string]
-    $menuIds = New-Object System.Collections.Generic.List[string]
-    [void]$menuLabels.Add("Select All")
-    [void]$menuIds.Add("__group__")
-    # Children in two passes: installable rows first, so the group's child range
-    # (2 .. selectable+1) stays contiguous, then the disabled rows. The corner
-    # connector belongs to the last child overall, whichever pass produced it.
-    $disabled = @($rows | Where-Object { -not $_.Id -and $_.Label })
-    $children = $selectable.Count + $disabled.Count
-    $child = 0
-    foreach ($row in $selectable) {
-        $child += 1
-        $conn = if ($child -eq $children) { $corner } else { $tee }
-        [void]$menuLabels.Add("$conn $($row.Label)")
-        [void]$menuIds.Add($row.Id)
+    #
+    # The rows the reader ticks here are the rows Invoke-ExakitMarketplaceApply
+    # then fills in, so the choice and the progress are one screen.
+    #
+    # Only INSTALLABLE add-ons get a row. The disabled rows the checkbox version
+    # carried are gone: the state table directly above already gives each of them
+    # a version and a status, in more room than a dimmed one-line label had - and
+    # a checkbox that cannot be ticked would be the same fact twice. This is also
+    # what keeps the group's child range contiguous.
+    $addonIds = New-Object 'System.Collections.Generic.List[string]'
+    $script:ExakitAddonTable = New-ExakitTable -Title "Add-ons to install" -Col1 "Add-on" -Reserve 1
+    [void](Add-ExakitTableRow -Kind "group" -Label "Select All" -Table $script:ExakitAddonTable)
+    [void]$addonIds.Add("")
+    $addonCount = $selectable.Count
+    for ($i = 0; $i -lt $addonCount; $i++) {
+        if ($i -eq ($addonCount - 1)) { $kind = "corner" } else { $kind = "tee" }
+        [void](Add-ExakitTableRow -Kind $kind -Label $selectable[$i].Id -Table $script:ExakitAddonTable)
+        [void]$addonIds.Add($selectable[$i].Id)
     }
-    foreach ($row in $disabled) {
-        $child += 1
-        $conn = if ($child -eq $children) { $corner } else { $tee }
-        # "!" first: the checkbox menu tests the label's first character.
-        [void]$menuLabels.Add("!$conn $($row.Label)")
-        [void]$menuIds.Add("__disabled__")
-    }
-    [void]$menuLabels.Add("Skip")
-    [void]$menuIds.Add("__cancel__")
-    $cancelIdx = $menuLabels.Count
+    [void](Add-ExakitTableRow -Kind "plain" -Label "Skip" -Table $script:ExakitAddonTable)
+    [void]$addonIds.Add("")
+    $rowSkip = $addonCount + 2
+    $script:ExakitAddonTableIds = $addonIds.ToArray()
     # Default: the group AND every available add-on pre-selected - the same
-    # posture as the data-load menu, where Enter alone acts on what is on
-    # offer and Cancel is the explicit opt-out.
-    $defaults = @(1..($selectable.Count + 1))
-    $selection = Read-ExakitCheckboxMenu -Title "Select add-ons to install" `
-        -Options $menuLabels.ToArray() -Defaults $defaults -ExclusiveIndex $cancelIdx `
-        -GroupParent 1 -GroupFirst 2 -GroupLast ($selectable.Count + 1) -GroupMode "all"
-    if ($selection -contains $cancelIdx) {
+    # posture as the data-load menu, where Enter alone acts on what is on offer
+    # and Skip is the explicit opt-out.
+    #
+    # "all" makes the parent a MASTER toggle, checked only while EVERY child is.
+    # Under the default "any" it stayed checked with one child ticked, so the
+    # summary row read "everything is selected" when it was not - on the row a
+    # user glances at to confirm what is about to be installed.
+    $defaults = @(1..($addonCount + 1))
+    $selection = @(Invoke-ExakitTableMenu -Table $script:ExakitAddonTable -Defaults $defaults `
+        -ExclusiveIndex $rowSkip -GroupParent 1 `
+        -GroupFirst 2 -GroupLast ($addonCount + 1) -GroupMode "all")
+    if ($selection -contains $rowSkip) {
+        Reset-ExakitAddonTable
         Info "Marketplace closed - nothing was installed."
         return
     }
     $picked = @()
     foreach ($idx in $selection) {
-        if ($idx -ge 1 -and $idx -lt $cancelIdx -and -not $menuIds[$idx - 1].StartsWith("__")) { $picked += $menuIds[$idx - 1] }
+        if ($idx -lt 1 -or $idx -gt $script:ExakitAddonTableIds.Count) { continue }
+        $id = $script:ExakitAddonTableIds[$idx - 1]
+        # The group row and the opt-out carry no id: they are answers about the
+        # other rows, not add-ons of their own.
+        if ($id -and ($picked -notcontains $id)) { $picked += $id }
     }
-    if ($picked.Count -eq 0) { Info "Nothing selected - nothing was installed."; return }
+    if ($picked.Count -eq 0) {
+        Reset-ExakitAddonTable
+        Info "Nothing selected - nothing was installed."
+        return
+    }
     Invoke-ExakitMarketplaceApply -Ids $picked
+}
+
+# The add-ons table: the rows a reader ticks in the selection are the rows the
+# install then fills in. $null means this run has no table - a scripted
+# EXAKIT_MARKETPLACE_ADDONS answer, or no console to draw one on.
+# Twin of EXAKIT_ADDON_TABLE_STATE / _LIVE / _ROW in common.sh.
+$script:ExakitAddonTable = $null
+$script:ExakitAddonTableIds = @()   # the add-on id per row ("" where the row is not an add-on)
+$script:ExakitAddonTableRow = 0     # the row the add-on being installed owns, or 0
+$script:ExakitAddonTableLive = $false
+$script:ExakitAddonNotes = @()      # lines held back while the table is on screen
+
+# Reset-ExakitAddonTable - the table and its row bookkeeping go together. Called
+# on every path out of the selection, so a cancelled marketplace leaves nothing
+# behind for the next one to inherit.
+# Twin of _exakit_addon_table_cleanup in common.sh.
+function Reset-ExakitAddonTable {
+    $script:ExakitAddonTable = $null
+    $script:ExakitAddonTableIds = @()
+    $script:ExakitAddonTableRow = 0
+    $script:ExakitAddonTableLive = $false
+}
+
+# Get-ExakitAddonTableRow <id> - which row that add-on is on, or 0.
+# Twin of _exakit_addon_table_row in common.sh.
+function Get-ExakitAddonTableRow {
+    param([Parameter(Mandatory)][string]$Id)
+    for ($i = 0; $i -lt @($script:ExakitAddonTableIds).Count; $i++) {
+        if ($script:ExakitAddonTableIds[$i] -eq $Id) { return ($i + 1) }
+    }
+    return 0
+}
+
+# Get-ExakitAddonTableCell <summary> <seconds> - the Status column for a finished
+# add-on. The tick in front of it already says "installed", so the cell carries
+# the add-on's own one fact instead ("dashboards at http://127.0.0.1:8000"), with
+# the elapsed time padded to a fixed width so the times line up down the table
+# rather than wandering with the length of the text in front of them.
+#
+# Truncated to the column rather than allowed to widen it: Get-ExakitTableWidths
+# sizes the Status column from the widest FINISHED status and only ever gives
+# ground from the name column, so a sixty-character summary pushes the table past
+# an 80-column console - and a row that wraps is two console lines the frame
+# counted as one, which is how a table starts stacking on every redraw. The full
+# text is in the logfile either way.
+# Twin of _exakit_addon_table_cell in common.sh.
+function Get-ExakitAddonTableCell {
+    param([string]$Summary = "", [int]$Seconds = 0)
+    $el = ("(" + $Seconds + "s)").PadLeft(5)
+    $text = $Summary
+    if (-not $text) { $text = "installed" }
+    # The room is what is left of the column's FLOOR (the 44 Get-ExakitTableWidths
+    # starts from) after the tick glyph and its space, the space before the
+    # elapsed time, and the time itself: the cell Get-ExakitTableCell builds is
+    # "<tick> <final>", and a final that overruns the column makes the frame's
+    # padding arithmetic go negative.
+    $room = 44 - $script:UiTick.Length - $el.Length - 2
+    if ($room -lt 1) { $room = 1 }
+    if ($text.Length -gt $room) {
+        $cut = $room - $script:UiEllipsis.Length
+        if ($cut -lt 1) { $cut = 1 }
+        $text = $text.Substring(0, $cut) + $script:UiEllipsis
+    }
+    # Padded to the room, not merely fitted into it: the summaries are all
+    # different lengths, so an unpadded cell puts each row's elapsed time at a
+    # different column and the eye has nothing to run down.
+    return ($text.PadRight($room) + " " + $el)
+}
+
+# Write-ExakitAddonNote <info|warn> <text> - something the reader must see, said
+# AFTER the table has stopped. A line printed into a frame that is still being
+# repainted lands INSIDE the box, so while the table is live nothing speaks
+# except the table. With no table it is said where it stands, exactly as before.
+# Twin of _exakit_addon_note in common.sh.
+function Write-ExakitAddonNote {
+    param([string]$Kind = "info", [string]$Text = "")
+    if (-not $Text) { return }
+    if ($script:ExakitAddonTableLive) {
+        $script:ExakitAddonNotes += @{ Kind = $Kind; Text = $Text }
+        return
+    }
+    if ($Kind -eq "warn") { Warn2 $Text } else { Info $Text }
+}
+
+# Show-ExakitAddonNotes - drain the collected notes, now that the table is off
+# the screen and a line can be read where it is printed.
+# Twin of _exakit_addon_notes_say in common.sh.
+function Show-ExakitAddonNotes {
+    foreach ($note in @($script:ExakitAddonNotes)) {
+        if ($note.Kind -eq "warn") { Warn2 $note.Text } else { Info $note.Text }
+    }
+    $script:ExakitAddonNotes = @()
 }
 
 # Set-ExakitAddonProgress <id> <pct> <ceiling> <secs> <phase> - the add-on
@@ -3566,6 +3673,14 @@ function Set-ExakitAddonProgress {
         [Parameter(Mandatory)][int]$Ceiling, [Parameter(Mandatory)][int]$Secs,
         [Parameter(Mandatory)][string]$Phase
     )
+    # An add-on being installed from the TABLE reports into its ROW; the row
+    # already names it, so the "<id> - " prefix the one-line bar needs would be
+    # the same fact twice, in a cell that has to spell a phase in a fixed width.
+    if ($script:ExakitAddonTableRow -gt 0 -and $null -ne $script:ExakitAddonTable) {
+        Set-ExakitTableRow -Row $script:ExakitAddonTableRow -State "running" `
+            -Pct $Pct -Ceiling $Ceiling -Secs $Secs -Phase $Phase -Table $script:ExakitAddonTable
+        return
+    }
     Set-ExakitProgress -Pct $Pct -Ceiling $Ceiling -Secs $Secs -Phase "$Id - $Phase"
 }
 
@@ -3573,10 +3688,33 @@ function Set-ExakitAddonProgress {
 function Invoke-ExakitMarketplaceApply {
     param([Parameter(Mandatory)][string[]]$Ids)
     $failed = 0
+    # The SAME table the selection was just made in becomes the progress display:
+    # the rows do not move, so nobody has to map one screen onto another. It
+    # animates only where there is a console to animate on, and a scripted answer
+    # (EXAKIT_MARKETPLACE_ADDONS) never built a table at all - every add-on then
+    # narrates in plain lines exactly as it did before.
+    # Twin of the same block in _exakit_marketplace_apply (common.sh).
+    $script:ExakitAddonTableLive = $false
+    if ($null -ne $script:ExakitAddonTable) {
+        $script:ExakitAddonTableLive = [bool](Start-ExakitTable -Table $script:ExakitAddonTable)
+    }
+    # With the table narrating, the per-add-on lines underneath it are the same
+    # facts twice - and printing one scrolls the frame the animator is redrawing.
+    # ExakitQuietDetail routes them to the logfile instead, which is what it is
+    # for; the per-add-on save/restore below nests inside this one.
+    $prevQuietAll = $script:ExakitQuietDetail
+    if ($script:ExakitAddonTableLive) { $script:ExakitQuietDetail = $true }
     foreach ($id in $Ids) {
         $addon = Get-ExakitMarketplaceAddon $id
         if (-not $addon) { continue }
+        # Which row this add-on owns, if a table is on screen. 0 means there is
+        # none and the single-line bar takes over, unchanged.
+        $script:ExakitAddonTableRow = 0
+        if ($script:ExakitAddonTableLive) {
+            $script:ExakitAddonTableRow = [int](Get-ExakitAddonTableRow -Id $id)
+        }
         Info "Installing add-on: $id"
+        $t0 = Get-Date
         $installed = $false
         # Every silent stretch of an add-on install already animates, because
         # Invoke-ExakitLogged starts the spinner. What it did NOT have was a
@@ -3598,10 +3736,15 @@ function Invoke-ExakitMarketplaceApply {
         $prevQuiet = $script:ExakitQuietDetail
         try {
             $script:ExakitQuietDetail = $true
+            Set-ExakitAddonProgress -Id $id -Pct 0 -Ceiling 65 -Secs 40 -Phase "installing"
+            # The TABLE, when there is one, already holds the UI layer's single
+            # animation slot, so this takes a reference and draws nothing (see the
+            # guard in Start-ExakitProgress) - and the Stop-ExakitProgress below
+            # gives that reference back rather than tearing the table down.
             [void](Start-ExakitProgress -Pct 0 -Ceiling 65 -Secs 40 -Phase "$id - installing")
             $installed = & $addon.InstallFn
         } catch {
-            Warn2 "$id installer reported: $_"
+            Write-ExakitAddonNote "warn" "$id installer reported: $_"
             $installed = $false
         }
         if ($installed) {
@@ -3609,7 +3752,7 @@ function Invoke-ExakitMarketplaceApply {
                 try {
                     Set-ExakitAddonProgress -Id $id -Pct 65 -Ceiling 90 -Secs 8 -Phase "validating"
                     & $addon.ValidateFn
-                } catch { Warn2 "$id validation reported: $_" }
+                } catch { Write-ExakitAddonNote "warn" "$id validation reported: $_" }
             }
             # A service add-on joins the boot set the moment it is installed, so
             # nobody has to remember a second command. This used to be skipped
@@ -3629,7 +3772,7 @@ function Invoke-ExakitMarketplaceApply {
                 (Get-Command $addon.StartFn -ErrorAction SilentlyContinue)) {
                 Set-ExakitAddonProgress -Id $id -Pct 90 -Ceiling 100 -Secs 3 -Phase "starting"
                 try { [void](& $addon.StartFn) }
-                catch { Warn2 "$id installed but did not start - start it with: exakit start" }
+                catch { Write-ExakitAddonNote "warn" "$id installed but did not start - start it with: exakit start" }
             }
             # The add-on's own panel already carries an "Update  exakit update
             # <id>" row, so the result line does not repeat it twice.
@@ -3644,15 +3787,39 @@ function Invoke-ExakitMarketplaceApply {
                 (Get-Command $addon.SummaryFn -ErrorAction SilentlyContinue)) {
                 try { $note = "$(& $addon.SummaryFn)" } catch { $note = "" }
             }
+            # Ok() is the record either way: it writes the FULL summary to the
+            # logfile whether or not the screen is showing it, which is what keeps
+            # a summary too long for the column from being lost.
             if ($note) { Ok "$id installed - $note" } else { Ok "$id installed" }
+            if ($script:ExakitAddonTableRow -gt 0) {
+                $elapsed = [int]((Get-Date) - $t0).TotalSeconds
+                if ($elapsed -lt 0) { $elapsed = 0 }
+                Set-ExakitTableRow -Row $script:ExakitAddonTableRow -State "done" `
+                    -Final (Get-ExakitAddonTableCell -Summary $note -Seconds $elapsed) `
+                    -Table $script:ExakitAddonTable
+            }
         } else {
             Stop-ExakitProgress
             $script:ExakitQuietDetail = $prevQuiet
             $script:ExakitActiveLabel = $prevLabel
-            Warn2 "$id did not finish installing - retry with: exakit marketplace (or exakit update $id)"
+            if ($script:ExakitAddonTableRow -gt 0) {
+                Set-ExakitTableRow -Row $script:ExakitAddonTableRow -State "failed" `
+                    -Final "did not finish - see the log" -Table $script:ExakitAddonTable
+            }
+            Write-ExakitAddonNote "warn" "$id did not finish installing - retry with: exakit marketplace (or exakit update $id)"
             $failed += 1
         }
+        $script:ExakitAddonTableRow = 0
     }
+    # The table stops redrawing BEFORE anything is said over it, and only then is
+    # what was collected on the way said.
+    if ($script:ExakitAddonTableLive) {
+        Stop-ExakitTable -Table $script:ExakitAddonTable
+        $script:ExakitAddonTableLive = $false
+    }
+    $script:ExakitQuietDetail = $prevQuietAll
+    Show-ExakitAddonNotes
+    Reset-ExakitAddonTable
     if ($failed -gt 0) { Fail "$failed add-on(s) did not finish installing." }
 }
 
