@@ -628,6 +628,324 @@ ui_bar() {
         "${UI_RESET:-}"
 }
 
+# --- the live table ----------------------------------------------------------
+# One table that is both the menu and the progress display: you tick rows in it,
+# it fills its Status column in place as the work runs, and what is left on
+# screen at the end is the record of what happened. Nothing scrolls past.
+#
+# Every row's state lives in ONE FILE, one line per row, because the thing doing
+# the work usually cannot reach the drawing code's variables — a pipeline's
+# right-hand side, a subshell, a background animator. The line is:
+#
+#   <kind>|<label>|<tick>|<state>|<pct>|<ceiling>|<secs>|<segment-start>|<phase>|<final>
+#
+#   kind    group | tee | corner | plain   — the tree connector to draw
+#   tick    1 while the row is selected
+#   state   idle | waiting | running | done | failed
+#   final   what the Status column says once the row is finished
+#
+# The redraw is the same one ui_checkbox_menu has always used: count the lines
+# the last frame REALLY occupied (a wrapped row is two), go up by that many, and
+# clear from there. Anything else stacks stale rows with every keypress.
+
+UI_TABLE_LINES=0
+UI_TABLE_NAME_W=0
+UI_TABLE_STAT_W=0
+
+# ui_table_widths <state-file> — how wide the two columns want to be, capped to
+# what the terminal has. The name column is the widest label, the status column
+# is the widest finished status, and neither is allowed to push the table past
+# the screen: the name gives way first, because a truncated label is still
+# recognisable while a truncated row count is a lie.
+ui_table_widths() {
+    _utw_cols="$(_ui_term_cols 2>/dev/null || echo 80)"
+    UI_TABLE_NAME_W=10
+    # A FLOOR, not a starting guess. The status column is measured from the
+    # finished statuses, and while the work is still running there are none — so
+    # a column sized to what it holds today would be twenty wide during the load
+    # and forty when it finished, and the whole table would change width as the
+    # last row completed. Wide enough for a bar worth looking at, and for
+    # "completed · 8 tables, 173,745 rows (23s)".
+    UI_TABLE_STAT_W="${UI_TABLE_STAT_MIN:-44}"
+    while IFS='|' read -r _utw_kind _utw_label _utw_rest; do
+        [ -n "$_utw_kind" ] || continue
+        case "$_utw_kind" in tee|corner) _utw_len=$(( ${#_utw_label} + 3 )) ;; *) _utw_len="${#_utw_label}" ;; esac
+        [ "$_utw_len" -gt "$UI_TABLE_NAME_W" ] && UI_TABLE_NAME_W="$_utw_len"
+        _utw_final="${_utw_rest##*|}"
+        [ "${#_utw_final}" -gt "$UI_TABLE_STAT_W" ] && UI_TABLE_STAT_W="${#_utw_final}"
+    done < "$1"
+    # 2 border + 1 space + 4 checkbox + name + 2 gap + status + 1 space + 1 border
+    _utw_over=$(( 11 + UI_TABLE_NAME_W + UI_TABLE_STAT_W - _utw_cols + 1 ))
+    if [ "$_utw_over" -gt 0 ]; then
+        UI_TABLE_NAME_W=$(( UI_TABLE_NAME_W - _utw_over ))
+        [ "$UI_TABLE_NAME_W" -ge 12 ] || UI_TABLE_NAME_W=12
+    fi
+    return 0
+}
+
+# ui_table_status_cell <state> <pct> <ceiling> <secs> <segt0> <phase> <final>
+#   -> prints the Status cell, and the second line under it when one is wanted.
+# The bar and the percentage share line one; the phase and the elapsed share
+# line two, with the two numbers ending in the SAME column so the eye can run
+# straight down them.
+_ui_table_cell() {
+    _utc_num=7
+    _utc_barw=$(( UI_TABLE_STAT_W - _utc_num ))
+    [ "$_utc_barw" -ge 8 ] || _utc_barw=8
+    UI_TABLE_CELL=""
+    UI_TABLE_CELL2=""
+    case "$1" in
+        running)
+            _utc_at="$(ui_progress_creep "$2" "$3" "$4" "$(( $(date +%s 2>/dev/null || echo 0) - $5 ))")"
+            _utc_units=$(( _utc_at * _utc_barw * 8 / 100 ))
+            _utc_full=$(( _utc_units / 8 ))
+            _utc_rem=$(( _utc_units % 8 ))
+            [ "$_utc_full" -gt "$_utc_barw" ] && { _utc_full="$_utc_barw"; _utc_rem=0; }
+            _utc_head=""
+            if [ "${UI_FANCY:-0}" = 1 ] && [ "$_utc_full" -lt "$_utc_barw" ] && [ "$_utc_rem" -gt 0 ]; then
+                _utc_head="$(printf '%s' "$UI_PROGRESS_EIGHTHS" | cut -c $((_utc_rem + 1)))"
+            fi
+            _utc_empty=$(( _utc_barw - _utc_full ))
+            [ -n "$_utc_head" ] && _utc_empty=$(( _utc_empty - 1 ))
+            [ "$_utc_empty" -ge 0 ] || _utc_empty=0
+            UI_TABLE_CELL="${UI_ACCENT:-}$(ui_repeat "${UI_BAR_FULL:-#}" "$_utc_full")${UI_DIM:-}${_utc_head}$(ui_repeat "${UI_BAR_EMPTY:-.}" "$_utc_empty")${UI_RESET:-}$(printf '%*s' "$_utc_num" "${_utc_at}%")"
+            UI_TABLE_CELL2="${UI_DIM:-}$(printf '%-*.*s%*s' "$_utc_barw" "$_utc_barw" "$6" "$_utc_num" "($(( $(date +%s 2>/dev/null || echo 0) - $5 ))s)")${UI_RESET:-}"
+            ;;
+        waiting) UI_TABLE_CELL="${UI_DIM:-}waiting${UI_RESET:-}" ;;
+        done)    UI_TABLE_CELL="${UI_OK:-}${UI_TICK:-[ok]}${UI_RESET:-} $7" ;;
+        failed)  UI_TABLE_CELL="${UI_ERR:-}${UI_CROSS:-[x]}${UI_RESET:-} $7" ;;
+        *)       UI_TABLE_CELL="" ;;
+    esac
+    return 0
+}
+
+# ui_table_render <state-file> <cursor> — draw the whole table. Sets
+# UI_TABLE_LINES to what it really occupied, which is what the next frame goes
+# up by. A cursor of 0 draws no pointer, which is the progress phase.
+#
+# Every width here is measured with _ui_visible_len and padded with ui_repeat,
+# never with printf's own %-*s: the tree connectors and the tick are multi-byte,
+# so printf pads them by BYTE count and the right border lands in a different
+# column on every row.
+_ui_table_pad() {   # <text> <target-columns> -> the text, padded to that width
+    _utp_n=$(( $2 - $(_ui_visible_len "$1") ))
+    [ "$_utp_n" -ge 0 ] || _utp_n=0
+    printf '%s%s' "$1" "$(ui_repeat ' ' "$_utp_n")"
+}
+
+ui_table_render() {
+    ui_table_widths "$1"
+    _utr_inner=$(( 5 + UI_TABLE_NAME_W + 2 + UI_TABLE_STAT_W + 1 ))
+    _utr_lines=0
+    _utr_title=" ${UI_TABLE_TITLE:-Progress} "
+    _utr_fill=$(( _utr_inner - ${#_utr_title} - 1 ))
+    [ "$_utr_fill" -ge 0 ] || _utr_fill=0
+    printf '  %s%s%s%s%s%s%s%s\n' "${UI_ACCENT:-}" "${UI_TL:-+}${UI_HR:--}" \
+        "${UI_RESET:-}${UI_BOLD:-}" "$_utr_title" "${UI_RESET:-}${UI_ACCENT:-}" \
+        "$(ui_repeat "${UI_HR:--}" "$_utr_fill")" "${UI_TR:-+}" "${UI_RESET:-}"
+    _utr_lines=$(( _utr_lines + 1 ))
+    _utr_head="$(_ui_table_pad "     $(_ui_table_pad "Dataset" "$UI_TABLE_NAME_W")  $(_ui_table_pad "Status" "$UI_TABLE_STAT_W")" "$_utr_inner")"
+    printf '  %s%s%s%s%s%s%s\n' "${UI_ACCENT:-}" "${UI_VB:-|}" "${UI_RESET:-}" \
+        "$_utr_head" "${UI_ACCENT:-}" "${UI_VB:-|}" "${UI_RESET:-}"
+    _utr_lines=$(( _utr_lines + 1 ))
+    _utr_i=0
+    while IFS='|' read -r _utr_kind _utr_label _utr_tick _utr_state _utr_pct \
+                          _utr_ceil _utr_secs _utr_t0 _utr_phase _utr_final; do
+        [ -n "$_utr_kind" ] || continue
+        _utr_i=$(( _utr_i + 1 ))
+        case "$_utr_kind" in
+            tee)    _utr_conn="${UI_TEE:-|-} " ;;
+            corner) _utr_conn="${UI_CORNER:-\`-} " ;;
+            *)      _utr_conn="" ;;
+        esac
+        if [ "$_utr_tick" = "1" ]; then
+            _utr_box="${UI_OK:-}[${UI_TICK:-x}]${UI_RESET:-}"
+        else
+            _utr_box="[ ]"
+        fi
+        if [ "$_utr_i" = "$2" ]; then
+            if [ "${UI_FANCY:-0}" = 1 ]; then _utr_ptr="${UI_ACCENT:-}❯${UI_RESET:-}"; else _utr_ptr=">"; fi
+        else
+            _utr_ptr=" "
+        fi
+        _ui_table_cell "$_utr_state" "${_utr_pct:-0}" "${_utr_ceil:-0}" \
+            "${_utr_secs:-0}" "${_utr_t0:-0}" "$_utr_phase" "$_utr_final"
+        _utr_name="$(_ui_fit_row "$_utr_conn$_utr_label" 0 "$UI_TABLE_NAME_W")"
+        _utr_body="$_utr_ptr$_utr_box $(_ui_table_pad "$_utr_name" "$UI_TABLE_NAME_W")  $(_ui_table_pad "$UI_TABLE_CELL" "$UI_TABLE_STAT_W")"
+        printf '  %s%s%s%s%s%s%s\n' "${UI_ACCENT:-}" "${UI_VB:-|}" "${UI_RESET:-}" \
+            "$(_ui_table_pad "$_utr_body" "$_utr_inner")" \
+            "${UI_ACCENT:-}" "${UI_VB:-|}" "${UI_RESET:-}"
+        _utr_lines=$(( _utr_lines + 1 ))
+        if [ -n "$UI_TABLE_CELL2" ]; then
+            # Five, not four: the row above spends one column on the pointer,
+            # three on the checkbox and one on the space after it.
+            _utr_body2="     $(ui_repeat ' ' "$UI_TABLE_NAME_W")  $(_ui_table_pad "$UI_TABLE_CELL2" "$UI_TABLE_STAT_W")"
+            printf '  %s%s%s%s%s%s%s\n' "${UI_ACCENT:-}" "${UI_VB:-|}" "${UI_RESET:-}" \
+                "$(_ui_table_pad "$_utr_body2" "$_utr_inner")" \
+                "${UI_ACCENT:-}" "${UI_VB:-|}" "${UI_RESET:-}"
+            _utr_lines=$(( _utr_lines + 1 ))
+        fi
+    done < "$1"
+    printf '  %s%s%s%s%s\n' "${UI_ACCENT:-}" "${UI_BL:-+}" \
+        "$(ui_repeat "${UI_HR:--}" "$_utr_inner")" "${UI_BR:-+}" "${UI_RESET:-}"
+    UI_TABLE_LINES=$(( _utr_lines + 1 ))
+    return 0
+}
+
+
+# ui_table_set <state-file> <row> <state> [pct] [ceiling] [secs] [phase] [final]
+# — one row has changed. Rewrites the whole file because a row is a line and
+# there is no seeking in a text file; it is six lines, once per stage.
+ui_table_set() {
+    _uts_f="$1"; _uts_row="$2"; _uts_state="$3"
+    _uts_pct="${4:-}"; _uts_ceil="${5:-}"; _uts_secs="${6:-}"
+    _uts_phase="${7:-}"; _uts_final="${8:-}"
+    _uts_t0=""
+    [ "$_uts_state" = "running" ] && _uts_t0="$(date +%s 2>/dev/null || echo 0)"
+    _uts_tmp="$_uts_f.new"
+    _uts_i=0
+    while IFS='|' read -r _u1 _u2 _u3 _u4 _u5 _u6 _u7 _u8 _u9 _u10; do
+        [ -n "$_u1" ] || continue
+        _uts_i=$(( _uts_i + 1 ))
+        if [ "$_uts_i" = "$_uts_row" ]; then
+            # A row that was already running keeps its clock: a new PHASE inside
+            # the same job must not restart the elapsed count the reader is
+            # watching. Only entering "running" starts one.
+            [ "$_u4" = "running" ] && [ "$_uts_state" = "running" ] && _uts_t0="$_u8"
+            printf '%s|%s|%s|%s|%s|%s|%s|%s|%s|%s\n' "$_u1" "$_u2" "$_u3" \
+                "$_uts_state" "$_uts_pct" "$_uts_ceil" "$_uts_secs" "$_uts_t0" \
+                "$_uts_phase" "$_uts_final"
+        else
+            printf '%s|%s|%s|%s|%s|%s|%s|%s|%s|%s\n' "$_u1" "$_u2" "$_u3" "$_u4" \
+                "$_u5" "$_u6" "$_u7" "$_u8" "$_u9" "$_u10"
+        fi
+    done < "$_uts_f" > "$_uts_tmp"
+    mv -f "$_uts_tmp" "$_uts_f"
+}
+
+# ui_table_tick <state-file> <csv-of-selected-rows> — mark which rows are ticked.
+ui_table_tick() {
+    _utt_tmp="$1.new"
+    _utt_i=0
+    while IFS='|' read -r _u1 _u2 _u3 _u4 _u5 _u6 _u7 _u8 _u9 _u10; do
+        [ -n "$_u1" ] || continue
+        _utt_i=$(( _utt_i + 1 ))
+        case ",$2," in *",$_utt_i,"*) _u3=1 ;; *) _u3=0 ;; esac
+        printf '%s|%s|%s|%s|%s|%s|%s|%s|%s|%s\n' "$_u1" "$_u2" "$_u3" "$_u4" \
+            "$_u5" "$_u6" "$_u7" "$_u8" "$_u9" "$_u10"
+    done < "$1" > "$_utt_tmp"
+    mv -f "$_utt_tmp" "$1"
+}
+
+# ui_table_begin <state-file> — animate the table in place. Returns 1 when it
+# did not start (no terminal, no colour), which is the caller's cue to narrate
+# in plain lines instead. Runs in the UI layer's single animation slot, so the
+# installer's EXIT trap stops it and restores the cursor.
+ui_table_begin() {
+    [ "${UI_FANCY:-0}" = 1 ] || return 1
+    [ -t 1 ] || return 1
+    printf '\033[?25l'
+    (
+        _utb_first=1
+        while :; do
+            if [ "$_utb_first" != 1 ]; then
+                printf '\033[%dA\033[0J' "$UI_TABLE_LINES"
+            fi
+            _utb_first=0
+            ui_table_render "$1" 0
+            # The parent cannot see a variable set in here, and it needs the
+            # height to redraw the finished table over this one.
+            printf '%s\n' "$UI_TABLE_LINES" > "$1.lines"
+            sleep 0.2
+        done
+    ) &
+    _UI_SPIN_PID=$!
+    return 0
+}
+
+# ui_table_end <state-file> — stop animating and leave the FINAL table on
+# screen. The animator can be killed part-way through a frame, so the last thing
+# drawn is redrawn deliberately rather than trusted.
+ui_table_end() {
+    [ -n "${_UI_SPIN_PID:-}" ] || return 0
+    ui_spin_end
+    _ute_lines="$(cat "$1.lines" 2>/dev/null || echo 0)"
+    case "$_ute_lines" in ''|*[!0-9]*) _ute_lines=0 ;; esac
+    [ "$_ute_lines" -gt 0 ] && printf '\033[%dA\033[0J' "$_ute_lines"
+    ui_table_render "$1" 0
+    rm -f "$1.lines"
+    return 0
+}
+
+# ui_table_menu <state-file> — the SELECTION phase of the same table: ticks are
+# toggled in the rows the progress will later fill in, so the reader never has
+# to map one screen onto another. Sets EXAKIT_TABLE_SELECTION to a csv of row
+# numbers, or "none".
+#
+# The key handling is ui_checkbox_menu's, deliberately: same keys, same hint,
+# same group and exclusive semantics, so there is one thing to learn.
+ui_table_menu() {
+    _utm_f="$1"
+    _utm_n=0
+    while IFS='|' read -r _u1 _u2 _urest; do
+        [ -n "$_u1" ] || continue
+        _utm_n=$(( _utm_n + 1 ))
+    done < "$_utm_f"
+    _utm_cur=2
+    [ "$_utm_n" -ge 2 ] || _utm_cur=1
+    _utm_sel="$EXAKIT_TABLE_DEFAULTS"
+    _utm_tty="$(_exakit_prompt_tty)"
+    if [ -z "$_utm_tty" ] || [ "${UI_FANCY:-0}" != 1 ]; then
+        # No terminal: the defaults stand, and the table is printed once so a
+        # log still shows what was chosen.
+        ui_table_tick "$_utm_f" "$_utm_sel"
+        ui_table_render "$_utm_f" 0
+        EXAKIT_TABLE_SELECTION="${_utm_sel:-none}"
+        return 0
+    fi
+    _utm_first=1
+    while :; do
+        [ "$_utm_first" = 1 ] || printf '\033[%dA\033[0J' "$(( UI_TABLE_LINES + 1 ))"
+        _utm_first=0
+        ui_table_tick "$_utm_f" "$_utm_sel"
+        ui_table_render "$_utm_f" "$_utm_cur"
+        ui_menu_hint "↑/↓ to move · Space to toggle · Enter to confirm"
+        if [ "$_utm_tty" = "/dev/tty" ]; then
+            IFS= read -rsn1 _utm_key < /dev/tty || break
+        else
+            IFS= read -rsn1 _utm_key || break
+        fi
+        case "$_utm_key" in
+            "") [ -n "$_utm_sel" ] && break ;;
+            " ")
+                _utm_sel="$(_ui_checkbox_toggle "$_utm_sel" "$_utm_n" "$_utm_cur")"
+                _utm_sel="$(_ui_checkbox_apply_group "$_utm_sel" "$_utm_cur" "$EXAKIT_TABLE_GROUP")"
+                _utm_sel="$(_ui_checkbox_apply_exclusive "$_utm_sel" "$_utm_cur" "$EXAKIT_TABLE_EXCLUSIVE")"
+                ;;
+            "$(printf '\033')")
+                if [ "$_utm_tty" = "/dev/tty" ]; then
+                    IFS= read -rsn2 -t 1 _utm_seq < /dev/tty || _utm_seq=""
+                else
+                    IFS= read -rsn2 -t 1 _utm_seq || _utm_seq=""
+                fi
+                case "$_utm_seq" in
+                    '[A') _utm_cur=$(( _utm_cur - 1 )); [ "$_utm_cur" -ge 1 ] || _utm_cur="$_utm_n" ;;
+                    '[B') _utm_cur=$(( _utm_cur + 1 )); [ "$_utm_cur" -le "$_utm_n" ] || _utm_cur=1 ;;
+                esac
+                ;;
+            k|K) _utm_cur=$(( _utm_cur - 1 )); [ "$_utm_cur" -ge 1 ] || _utm_cur="$_utm_n" ;;
+            j|J) _utm_cur=$(( _utm_cur + 1 )); [ "$_utm_cur" -le "$_utm_n" ] || _utm_cur=1 ;;
+        esac
+    done
+    # Redraw once without the pointer or the hint: the selection is made, and
+    # the same table is about to become the progress display.
+    printf '\033[%dA\033[0J' "$(( UI_TABLE_LINES + 1 ))"
+    ui_table_tick "$_utm_f" "$_utm_sel"
+    ui_table_render "$_utm_f" 0
+    EXAKIT_TABLE_SELECTION="${_utm_sel:-none}"
+    return 0
+}
+
 # --- direct-invocation render entry points ----------------------------------
 # When this file is EXECUTED (not sourced), it exposes render helpers so a
 # POSIX-sh caller (install.sh, which can't source a bash lib) can reuse this

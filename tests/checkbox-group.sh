@@ -97,7 +97,10 @@ fi
 #    sites are checked by name rather than only the behaviour above.
 while IFS='|' read -r _f _what; do
     [ -n "$_f" ] || continue
-    _spec="$(grep -o 'EXAKIT_CHECKBOX_GROUP="[^"]*"' "$ROOT/$_f" | grep -v '=""' | head -1)"
+    # Two spellings, one invariant: the marketplace still drives ui_checkbox_menu,
+    # while the data-load screen drives the live TABLE — whose group spec has the
+    # same four fields under the name EXAKIT_TABLE_GROUP.
+    _spec="$(grep -oE 'EXAKIT_(CHECKBOX|TABLE)_GROUP="[^"]*"' "$ROOT/$_f" | grep -v '=""' | head -1)"
     case "$_spec" in
         *':all"') pass "$_what uses the all-or-none parent" ;;
         '')       fail "$_what no longer sets a group spec at all - check $_f" ;;

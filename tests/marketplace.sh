@@ -1352,10 +1352,12 @@ _dl_probe="$WORK/dl-default-label"
 (
     exakit_pending_datasets() { :; }          # everything already loaded
     info() { :; }
-    ui_checkbox_menu() {                      # $1 title, $2 defaults, $3.. labels
-        _dlp_defaults="$2"; shift 2
-        eval "printf '%s' \"\${$_dlp_defaults}\"" > "$_dl_probe"
-        EXAKIT_CHECKBOX_SELECTION="$_dlp_defaults"
+    # The screen is a live TABLE now: the defaults are row numbers into its
+    # state file, so the probe reads the label of whichever row is pre-ticked.
+    ui_table_menu() {
+        _dlp_row="${EXAKIT_TABLE_DEFAULTS%%,*}"
+        sed -n "${_dlp_row}p" "$1" | cut -d'|' -f2 > "$_dl_probe"
+        EXAKIT_TABLE_SELECTION="$EXAKIT_TABLE_DEFAULTS"
     }
     exakit_data_load_select "Skip" >/dev/null 2>&1
 )
@@ -1368,6 +1370,8 @@ check "the local-file row is pre-selected" "A local CSV / Parquet / JSON file, o
 lacks "and Skip is not what Enter would take" "Skip" "$(cat "$_dl_probe" 2>/dev/null)"
 # The Windows twin builds the same menu; assert it defaults one row above the
 # final label too, rather than to the final label itself.
+# The Windows twin still builds a checkbox menu (the live table is macOS/WSL for
+# now); assert it defaults one row above the final label rather than to it.
 has "the PowerShell twin defaults off the final row" 'Defaults @($finalIdx - 1)' \
     "$(cat "$ROOT/setup/lib/exapump.ps1")"
 
