@@ -89,7 +89,7 @@ LAUNCHER_LINES="$(wc -l < "$WORK/launcher.txt" | tr -d ' ')"
 printf '\n== the launcher stream is consumed, not printed ==\n'
 
 STATE="$WORK/state"; TAIL="$WORK/tail"; NOTICE="$WORK/notice"
-printf '0|Preparing the deployment\n' > "$STATE"
+printf '0|5|3|0|Preparing the deployment\n' > "$STATE"
 : > "$TAIL"; : > "$NOTICE"
 # EXAKIT_DEPLOY_LIVE=1 is the animated case: the collector must print NOTHING,
 # because the animator owns the screen.
@@ -108,11 +108,14 @@ check "tail file mirrors the stream" "$LAUNCHER_LINES" "$(wc -l < "$TAIL" | tr -
 
 printf '\n== the bar reaches the end, and only ever moves forward ==\n'
 
-check "final state is 100%% Deployed" "100|Deployed" "$(cat "$STATE")"
+# pct|ceiling|seconds|segment-start|phase — the segment's own clock is written
+# with it, which is what lets the bar move while the launcher is silent.
+check "the bar ends at 100" "100" "$(cut -d'|' -f1 "$STATE")"
+check "with the final phase"  "Deployed" "$(cut -d'|' -f5 "$STATE")"
 
 # Out-of-order and repeated milestones must not rewind the bar: a launcher that
 # retries a stage would otherwise walk the percentage backwards on screen.
-printf '0|Preparing the deployment\n' > "$STATE"
+printf '0|5|3|0|Preparing the deployment\n' > "$STATE"
 : > "$TAIL"; : > "$NOTICE"
 printf '%s\n' \
     '{"msg":"validating presets"}' \
@@ -120,20 +123,21 @@ printf '%s\n' \
     '{"msg":"found resource in cache"}' \
     '{"msg":"extracting preset files"}' \
     | _personal_deploy_collect "$STATE" "$TAIL" "$NOTICE" >/dev/null
-check "a lower milestone never rewinds" "35|Fetching the Exasol runtime" "$(cat "$STATE")"
+check "a lower milestone never rewinds" "35" "$(cut -d'|' -f1 "$STATE")"
+check "...keeping its phase"          "Fetching the Exasol runtime" "$(cut -d'|' -f5 "$STATE")"
 
 printf '\n== unknown output is harmless ==\n'
 
-printf '10|Preparing the deployment\n' > "$STATE"
+printf '10|20|2|0|Preparing the deployment\n' > "$STATE"
 : > "$TAIL"; : > "$NOTICE"
 NOISE="$(printf '%s\n' 'a line no launcher release ever wrote' '{"msg":"brand new message"}' \
     | _personal_deploy_collect "$STATE" "$TAIL" "$NOTICE")"
 check "unknown lines print nothing" "" "$NOISE"
-check "unknown lines do not move the bar" "10|Preparing the deployment" "$(cat "$STATE")"
+check "unknown lines do not move the bar" "10" "$(cut -d'|' -f1 "$STATE")"
 
 printf '\n== without an animation, each phase gets one plain line ==\n'
 
-printf '0|Preparing the deployment\n' > "$STATE"
+printf '0|5|3|0|Preparing the deployment\n' > "$STATE"
 : > "$TAIL"; : > "$NOTICE"
 EXAKIT_DEPLOY_LIVE=0
 PLAIN="$(_personal_deploy_collect "$STATE" "$TAIL" "$NOTICE" < "$WORK/launcher.txt")"
@@ -160,6 +164,27 @@ has "tail is announced" "last lines from the exasol launcher" "$TAIL_OUT"
 has "tail has the launcher's end" "https://docs.exasol.com/" "$TAIL_OUT"
 check "tail is bounded (1 note + 12 lines)" "13" "$(printf '%s\n' "$TAIL_OUT" | wc -l | tr -d ' ')"
 check "an empty tail prints nothing" "" "$(_personal_deploy_print_tail "$WORK/absent")"
+
+printf '\n== the bar keeps moving while the launcher says nothing ==\n'
+
+# The launcher is silent for about twenty-five seconds between "found resource
+# in cache" and "waiting for database to start", which is the longest stretch of
+# the deploy. Milestones stay the truth; the time between them is filled in.
+SEG="$(_personal_deploy_milestone '{"msg":"found resource in cache"}')"
+check "the segment knows where it ends" "35|65|25" "${SEG%|*}"
+check "at the start it is the milestone" "35" "$(_personal_deploy_creep 35 65 25 0)"
+check "a third of the way in"            "44" "$(_personal_deploy_creep 35 65 25 8)"
+check "two thirds"                       "54" "$(_personal_deploy_creep 35 65 25 16)"
+# Capped one point BELOW the next milestone: arriving at it must still be
+# something the reader sees happen...
+check "just before the next stage"       "64" "$(_personal_deploy_creep 35 65 25 25)"
+# ...and a stage that runs long waits there rather than walking into the next
+# one's territory.
+check "a stage that overruns waits"      "64" "$(_personal_deploy_creep 35 65 25 300)"
+check "never before its own milestone"   "35" "$(_personal_deploy_creep 35 65 25 0)"
+# A milestone with nowhere to creep to just sits on its number.
+check "the final milestone does not creep" "100" "$(_personal_deploy_creep 100 100 0 9)"
+check "nor does a zero-length segment"     "65"  "$(_personal_deploy_creep 65 65 10 5)"
 
 printf '\n== the progress line carries a bar, a percentage and a clock ==\n'
 

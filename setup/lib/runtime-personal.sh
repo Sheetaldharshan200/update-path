@@ -370,17 +370,45 @@ personal_reap_orphan_daemon() {
 # launcher is doing -- is what says "still alive" in between.
 _personal_deploy_milestone() {
     case "$1" in
-        *"validating presets"*)                    printf '5|Preparing the deployment' ;;
-        *"extracting preset files"*)               printf '10|Preparing the deployment' ;;
-        *"successfully initialized deployment"*)   printf '20|Preparing the deployment' ;;
+        *"validating presets"*)                    printf '5|10|2|Preparing the deployment' ;;
+        *"extracting preset files"*)               printf '10|20|2|Preparing the deployment' ;;
+        *"successfully initialized deployment"*)   printf '20|35|5|Preparing the deployment' ;;
+        # The long one. On a warm cache the launcher says nothing at all between
+        # here and "waiting for database to start" -- about twenty-five seconds
+        # of VM boot -- so the ceiling is that next milestone rather than the
+        # "starting deployment" one, which a warm run never emits. If it DOES
+        # emit it, the line below picks the segment up mid-flight.
         *"fetching resource"*|*"found resource in cache"*)
-                                                   printf '35|Fetching the Exasol runtime' ;;
-        *"starting deployment"*)                   printf '45|Starting the database' ;;
-        *"waiting for database to start"*)         printf '65|Waiting for the database to start' ;;
-        *"installing script language container"*)  printf '80|Installing the script language container' ;;
-        *"no installation steps defined"*)         printf '90|Finishing up' ;;
-        *"Completed deploying"*)                   printf '100|Deployed' ;;
+                                                   printf '35|65|25|Fetching the Exasol runtime' ;;
+        *"starting deployment"*)                   printf '45|65|15|Starting the database' ;;
+        *"waiting for database to start"*)         printf '65|90|10|Waiting for the database to start' ;;
+        *"installing script language container"*)  printf '80|90|15|Installing the script language container' ;;
+        *"no installation steps defined"*)         printf '90|100|4|Finishing up' ;;
+        *"Completed deploying"*)                   printf '100|100|0|Deployed' ;;
     esac
+}
+
+# _personal_deploy_creep <pct> <ceiling> <seconds> <elapsed-in-segment> — where
+# the bar should sit RIGHT NOW, between the stage the launcher last reported and
+# the one it will report next.
+#
+# A milestone-only bar stands still for as long as the launcher is quiet, and the
+# launcher is quiet for the longest part of the deploy. So the milestones stay
+# the truth -- the bar never claims a stage that has not been reached -- and the
+# time between them is filled in at the pace a typical deploy takes. The creep is
+# capped one point BELOW the next milestone, so arriving at it is still something
+# you see happen, and a stage that runs long simply waits there instead of
+# walking into the next one's territory.
+_personal_deploy_creep() {
+    _pdc_span=$(( $2 - $1 ))
+    if [ "$_pdc_span" -le 0 ] || [ "$3" -le 0 ]; then
+        printf '%s\n' "$1"
+        return 0
+    fi
+    _pdc_step=$(( _pdc_span * $4 / $3 ))
+    [ "$_pdc_step" -gt $(( _pdc_span - 1 )) ] && _pdc_step=$(( _pdc_span - 1 ))
+    [ "$_pdc_step" -lt 0 ] && _pdc_step=0
+    printf '%s\n' "$(( $1 + _pdc_step ))"
 }
 
 # _personal_deploy_paint <pct> <phase> <elapsed-seconds> — the progress line, in
@@ -409,15 +437,32 @@ _personal_deploy_paint() {
 # interrupted or dies mid-deploy. Only one animation is ever on screen, so the
 # slot is free while this runs.
 _personal_deploy_animate() {
+    _pda_shown=0
     while :; do
         _pda_state=""
         read -r _pda_state < "$1" 2>/dev/null || true
         # A read that caught the file mid-write has no phase yet: skip the frame
         # rather than paint a half-written one.
         case "$_pda_state" in
-            *"|"*)
+            *"|"*"|"*"|"*"|"*)
                 _pda_now="$(date +%s 2>/dev/null || echo 0)"
-                _personal_deploy_paint "${_pda_state%%|*}" "${_pda_state#*|}" \
+                # pct|ceiling|seconds|segment-start|label
+                _pda_rest="${_pda_state#*|}"
+                _pda_pct="${_pda_state%%|*}"
+                _pda_ceil="${_pda_rest%%|*}"; _pda_rest="${_pda_rest#*|}"
+                _pda_secs="${_pda_rest%%|*}"; _pda_rest="${_pda_rest#*|}"
+                _pda_t0="${_pda_rest%%|*}"
+                _pda_label="${_pda_rest#*|}"
+                _pda_at="$(_personal_deploy_creep "$_pda_pct" "$_pda_ceil" \
+                    "$_pda_secs" "$(( _pda_now - _pda_t0 ))")"
+                # The bar never walks backwards. A milestone can arrive BELOW
+                # where the creep has already reached (the launcher emits
+                # "starting deployment" twenty seconds into a segment whose
+                # ceiling is higher); the new segment is adopted, the position is
+                # not given up.
+                [ "$_pda_at" -lt "$_pda_shown" ] && _pda_at="$_pda_shown"
+                _pda_shown="$_pda_at"
+                _personal_deploy_paint "$_pda_at" "$_pda_label" \
                     "$(( _pda_now - $2 ))"
                 ;;
         esac
@@ -446,8 +491,14 @@ _personal_deploy_collect() {
         # the bar, and a repeated one never redraws it.
         [ "${_pdc_hit%%|*}" -gt "$_pdc_pct" ] 2>/dev/null || continue
         _pdc_pct="${_pdc_hit%%|*}"
-        _pdc_phase="${_pdc_hit#*|}"
-        printf '%s|%s\n' "$_pdc_pct" "$_pdc_phase" > "$1"
+        _pdc_rest="${_pdc_hit#*|}"
+        _pdc_ceil="${_pdc_rest%%|*}"; _pdc_rest="${_pdc_rest#*|}"
+        _pdc_secs="${_pdc_rest%%|*}"
+        _pdc_phase="${_pdc_rest#*|}"
+        # The segment's own clock starts now: the animator fills the gap to the
+        # ceiling at the pace this stage usually takes.
+        printf '%s|%s|%s|%s|%s\n' "$_pdc_pct" "$_pdc_ceil" "$_pdc_secs" \
+            "$(date +%s 2>/dev/null || echo 0)" "$_pdc_phase" > "$1"
         # Nothing is animating (piped, CI, NO_COLOR, a dumb terminal): one plain
         # logged line per phase, rather than a line that redraws nothing.
         if [ "${EXAKIT_DEPLOY_LIVE:-0}" != 1 ] && [ "$_pdc_phase" != "$_pdc_shown" ]; then
@@ -556,10 +607,10 @@ personal_deploy_local() {
     _deploy_state="$_deploy_tmp/state"
     _deploy_tail="$_deploy_tmp/tail"
     _deploy_notice="$_deploy_tmp/notice"
-    printf '0|Preparing the deployment\n' > "$_deploy_state"
+    _deploy_t0="$(date +%s 2>/dev/null || echo 0)"
+    printf '0|5|3|%s|Preparing the deployment\n' "$_deploy_t0" > "$_deploy_state"
     : > "$_deploy_tail"
     : > "$_deploy_notice"
-    _deploy_t0="$(date +%s 2>/dev/null || echo 0)"
 
     # Live only on an interactive fancy terminal, checked here rather than at
     # load time so a redrawing line can never leak into a capture or a log.
