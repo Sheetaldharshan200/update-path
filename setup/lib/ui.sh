@@ -658,7 +658,12 @@ UI_TABLE_STAT_W=0
 # the screen: the name gives way first, because a truncated label is still
 # recognisable while a truncated row count is a lie.
 ui_table_widths() {
-    _utw_cols="$(_ui_term_cols 2>/dev/null || echo 80)"
+    # Measured once per frame, not per row: _ui_term_cols forks stty or tput.
+    _utw_cols="${_UI_TABLE_COLS:-}"
+    if [ -z "$_utw_cols" ]; then
+        _utw_cols="$(_ui_term_cols 2>/dev/null || echo 80)"
+        _UI_TABLE_COLS="$_utw_cols"
+    fi
     UI_TABLE_NAME_W=10
     # A FLOOR, not a starting guess. The status column is measured from the
     # finished statuses, and while the work is still running there are none — so
@@ -683,71 +688,104 @@ ui_table_widths() {
     return 0
 }
 
-# ui_table_status_cell <state> <pct> <ceiling> <secs> <segt0> <phase> <final>
-#   -> prints the Status cell, and the second line under it when one is wanted.
-# The bar and the percentage share line one; the phase and the elapsed share
-# line two, with the two numbers ending in the SAME column so the eye can run
-# straight down them.
+# --- building a frame without forking ----------------------------------------
+# Every string here is one the table itself assembled, so its width is KNOWN and
+# never has to be measured. That matters more than it sounds: _ui_visible_len
+# runs a sed, and measuring three cells a row cost 223 ms a frame — the screen
+# was cleared and then sat blank for a quarter of a second before anything
+# appeared, which is exactly what flickering is. Assembled arithmetically it is
+# a couple of milliseconds, and the whole frame goes out in one write.
+#
+# bash counts CHARACTERS in ${#s} under a UTF-8 locale, not bytes ("├─ x" is 4,
+# not 8), so plain text can be measured with the shell alone. Colour is the only
+# thing ${#} would get wrong, and the table is the one adding it.
+_UI_TABLE_SP=""
+_ui_table_prep() {
+    [ -n "$_UI_TABLE_SP" ] && return 0
+    _utp_i=0
+    while [ "$_utp_i" -lt 240 ]; do
+        _UI_TABLE_SP="$_UI_TABLE_SP "
+        _UI_TABLE_FULL="${_UI_TABLE_FULL:-}${UI_BAR_FULL:-#}"
+        _UI_TABLE_EMPTY="${_UI_TABLE_EMPTY:-}${UI_BAR_EMPTY:-.}"
+        _UI_TABLE_HR="${_UI_TABLE_HR:-}${UI_HR:--}"
+        _utp_i=$(( _utp_i + 1 ))
+    done
+    return 0
+}
+
+# _ui_table_cell <state> <pct> <ceiling> <secs> <segt0> <phase> <final> <now>
+# Sets UI_TABLE_CELL / _LEN and UI_TABLE_CELL2 / _LEN2 — the text and how wide it
+# reads, because only the builder can tell them apart once colour is in.
 _ui_table_cell() {
     _utc_num=7
     _utc_barw=$(( UI_TABLE_STAT_W - _utc_num ))
     [ "$_utc_barw" -ge 8 ] || _utc_barw=8
-    UI_TABLE_CELL=""
-    UI_TABLE_CELL2=""
+    UI_TABLE_CELL=""; UI_TABLE_CELL_LEN=0
+    UI_TABLE_CELL2=""; UI_TABLE_CELL2_LEN=0
     case "$1" in
         running)
-            _utc_at="$(ui_progress_creep "$2" "$3" "$4" "$(( $(date +%s 2>/dev/null || echo 0) - $5 ))")"
+            # The creep, inline: where the bar sits between the stage the job
+            # last reported and the one it will report next.
+            _utc_at="$2"
+            _utc_span=$(( $3 - $2 ))
+            if [ "$_utc_span" -gt 0 ] && [ "$4" -gt 0 ]; then
+                _utc_step=$(( _utc_span * ($8 - $5) / $4 ))
+                [ "$_utc_step" -gt $(( _utc_span - 1 )) ] && _utc_step=$(( _utc_span - 1 ))
+                [ "$_utc_step" -lt 0 ] && _utc_step=0
+                _utc_at=$(( $2 + _utc_step ))
+            fi
+            [ "$_utc_at" -gt 100 ] && _utc_at=100
             _utc_units=$(( _utc_at * _utc_barw * 8 / 100 ))
             _utc_full=$(( _utc_units / 8 ))
             _utc_rem=$(( _utc_units % 8 ))
             [ "$_utc_full" -gt "$_utc_barw" ] && { _utc_full="$_utc_barw"; _utc_rem=0; }
             _utc_head=""
             if [ "${UI_FANCY:-0}" = 1 ] && [ "$_utc_full" -lt "$_utc_barw" ] && [ "$_utc_rem" -gt 0 ]; then
-                _utc_head="$(printf '%s' "$UI_PROGRESS_EIGHTHS" | cut -c $((_utc_rem + 1)))"
+                _utc_head="${UI_PROGRESS_EIGHTHS:$_utc_rem:1}"
+                _utc_empty=$(( _utc_barw - _utc_full - 1 ))
+            else
+                _utc_empty=$(( _utc_barw - _utc_full ))
             fi
-            _utc_empty=$(( _utc_barw - _utc_full ))
-            [ -n "$_utc_head" ] && _utc_empty=$(( _utc_empty - 1 ))
             [ "$_utc_empty" -ge 0 ] || _utc_empty=0
-            UI_TABLE_CELL="${UI_ACCENT:-}$(ui_repeat "${UI_BAR_FULL:-#}" "$_utc_full")${UI_DIM:-}${_utc_head}$(ui_repeat "${UI_BAR_EMPTY:-.}" "$_utc_empty")${UI_RESET:-}$(printf '%*s' "$_utc_num" "${_utc_at}%")"
-            UI_TABLE_CELL2="${UI_DIM:-}$(printf '%-*.*s%*s' "$_utc_barw" "$_utc_barw" "$6" "$_utc_num" "($(( $(date +%s 2>/dev/null || echo 0) - $5 ))s)")${UI_RESET:-}"
+            _utc_pct="${_utc_at}%"
+            UI_TABLE_CELL="${UI_ACCENT:-}${_UI_TABLE_FULL:0:$_utc_full}${UI_DIM:-}${_utc_head}${_UI_TABLE_EMPTY:0:$_utc_empty}${UI_RESET:-}${_UI_TABLE_SP:0:$(( _utc_num - ${#_utc_pct} ))}${_utc_pct}"
+            UI_TABLE_CELL_LEN=$(( _utc_barw + _utc_num ))
+            _utc_el="($(( $8 - $5 ))s)"
+            _utc_ph="$6"
+            [ "${#_utc_ph}" -le "$_utc_barw" ] || _utc_ph="${_utc_ph:0:$(( _utc_barw - 1 ))}…"
+            UI_TABLE_CELL2="${UI_DIM:-}${_utc_ph}${_UI_TABLE_SP:0:$(( _utc_barw - ${#_utc_ph} + _utc_num - ${#_utc_el} ))}${_utc_el}${UI_RESET:-}"
+            UI_TABLE_CELL2_LEN=$(( _utc_barw + _utc_num ))
             ;;
-        waiting) UI_TABLE_CELL="${UI_DIM:-}waiting${UI_RESET:-}" ;;
-        done)    UI_TABLE_CELL="${UI_OK:-}${UI_TICK:-[ok]}${UI_RESET:-} $7" ;;
-        failed)  UI_TABLE_CELL="${UI_ERR:-}${UI_CROSS:-[x]}${UI_RESET:-} $7" ;;
-        *)       UI_TABLE_CELL="" ;;
+        waiting)
+            UI_TABLE_CELL="${UI_DIM:-}waiting${UI_RESET:-}"; UI_TABLE_CELL_LEN=7 ;;
+        done)
+            UI_TABLE_CELL="${UI_OK:-}${UI_TICK:-[ok]}${UI_RESET:-} $7"
+            UI_TABLE_CELL_LEN=$(( ${#UI_TICK} + 1 + ${#7} )) ;;
+        failed)
+            UI_TABLE_CELL="${UI_ERR:-}${UI_CROSS:-[x]}${UI_RESET:-} $7"
+            UI_TABLE_CELL_LEN=$(( ${#UI_CROSS} + 1 + ${#7} )) ;;
     esac
     return 0
 }
 
-# ui_table_render <state-file> <cursor> — draw the whole table. Sets
-# UI_TABLE_LINES to what it really occupied, which is what the next frame goes
-# up by. A cursor of 0 draws no pointer, which is the progress phase.
-#
-# Every width here is measured with _ui_visible_len and padded with ui_repeat,
-# never with printf's own %-*s: the tree connectors and the tick are multi-byte,
-# so printf pads them by BYTE count and the right border lands in a different
-# column on every row.
-_ui_table_pad() {   # <text> <target-columns> -> the text, padded to that width
-    _utp_n=$(( $2 - $(_ui_visible_len "$1") ))
-    [ "$_utp_n" -ge 0 ] || _utp_n=0
-    printf '%s%s' "$1" "$(ui_repeat ' ' "$_utp_n")"
-}
-
-ui_table_render() {
+# ui_table_frame <state-file> <cursor> — the whole table, as a STRING in
+# UI_TABLE_FRAME, with its height in UI_TABLE_LINES. One write is what keeps a
+# redraw from flickering, and a string is what lets the caller do the clear and
+# the draw in that one write.
+ui_table_frame() {
+    _ui_table_prep
     ui_table_widths "$1"
     _utr_inner=$(( 5 + UI_TABLE_NAME_W + 2 + UI_TABLE_STAT_W + 1 ))
-    _utr_lines=0
     _utr_title=" ${UI_TABLE_TITLE:-Progress} "
     _utr_fill=$(( _utr_inner - ${#_utr_title} - 1 ))
     [ "$_utr_fill" -ge 0 ] || _utr_fill=0
-    printf '  %s%s%s%s%s%s%s%s\n' "${UI_ACCENT:-}" "${UI_TL:-+}${UI_HR:--}" \
-        "${UI_RESET:-}${UI_BOLD:-}" "$_utr_title" "${UI_RESET:-}${UI_ACCENT:-}" \
-        "$(ui_repeat "${UI_HR:--}" "$_utr_fill")" "${UI_TR:-+}" "${UI_RESET:-}"
-    _utr_lines=$(( _utr_lines + 1 ))
-    _utr_head="$(_ui_table_pad "     $(_ui_table_pad "Dataset" "$UI_TABLE_NAME_W")  $(_ui_table_pad "Status" "$UI_TABLE_STAT_W")" "$_utr_inner")"
-    printf '  %s%s%s%s%s%s%s\n' "${UI_ACCENT:-}" "${UI_VB:-|}" "${UI_RESET:-}" \
-        "$_utr_head" "${UI_ACCENT:-}" "${UI_VB:-|}" "${UI_RESET:-}"
-    _utr_lines=$(( _utr_lines + 1 ))
+    _utr_f="  ${UI_ACCENT:-}${UI_TL:-+}${UI_HR:--}${UI_RESET:-}${UI_BOLD:-}${_utr_title}${UI_RESET:-}${UI_ACCENT:-}${_UI_TABLE_HR:0:$_utr_fill}${UI_TR:-+}${UI_RESET:-}
+"
+    _utr_head="     Dataset${_UI_TABLE_SP:0:$(( UI_TABLE_NAME_W - 7 ))}  Status"
+    _utr_f="$_utr_f  ${UI_ACCENT:-}${UI_VB:-|}${UI_RESET:-}${_utr_head}${_UI_TABLE_SP:0:$(( _utr_inner - ${#_utr_head} ))}${UI_ACCENT:-}${UI_VB:-|}${UI_RESET:-}
+"
+    _utr_lines=2
+    _utr_now="$(date +%s 2>/dev/null || echo 0)"
     _utr_i=0
     while IFS='|' read -r _utr_kind _utr_label _utr_tick _utr_state _utr_pct \
                           _utr_ceil _utr_secs _utr_t0 _utr_phase _utr_final; do
@@ -760,35 +798,56 @@ ui_table_render() {
         esac
         if [ "$_utr_tick" = "1" ]; then
             _utr_box="${UI_OK:-}[${UI_TICK:-x}]${UI_RESET:-}"
+            _utr_boxlen=$(( 2 + ${#UI_TICK} ))
         else
-            _utr_box="[ ]"
+            _utr_box="[ ]"; _utr_boxlen=3
         fi
         if [ "$_utr_i" = "$2" ]; then
             if [ "${UI_FANCY:-0}" = 1 ]; then _utr_ptr="${UI_ACCENT:-}❯${UI_RESET:-}"; else _utr_ptr=">"; fi
         else
             _utr_ptr=" "
         fi
+        _utr_name="$_utr_conn$_utr_label"
+        [ "${#_utr_name}" -le "$UI_TABLE_NAME_W" ] || \
+            _utr_name="${_utr_name:0:$(( UI_TABLE_NAME_W - 1 ))}…"
         _ui_table_cell "$_utr_state" "${_utr_pct:-0}" "${_utr_ceil:-0}" \
-            "${_utr_secs:-0}" "${_utr_t0:-0}" "$_utr_phase" "$_utr_final"
-        _utr_name="$(_ui_fit_row "$_utr_conn$_utr_label" 0 "$UI_TABLE_NAME_W")"
-        _utr_body="$_utr_ptr$_utr_box $(_ui_table_pad "$_utr_name" "$UI_TABLE_NAME_W")  $(_ui_table_pad "$UI_TABLE_CELL" "$UI_TABLE_STAT_W")"
-        printf '  %s%s%s%s%s%s%s\n' "${UI_ACCENT:-}" "${UI_VB:-|}" "${UI_RESET:-}" \
-            "$(_ui_table_pad "$_utr_body" "$_utr_inner")" \
-            "${UI_ACCENT:-}" "${UI_VB:-|}" "${UI_RESET:-}"
+            "${_utr_secs:-0}" "${_utr_t0:-0}" "$_utr_phase" "$_utr_final" "$_utr_now"
+        _utr_used=$(( 1 + _utr_boxlen + 1 + UI_TABLE_NAME_W + 2 + UI_TABLE_CELL_LEN ))
+        _utr_f="$_utr_f  ${UI_ACCENT:-}${UI_VB:-|}${UI_RESET:-}${_utr_ptr}${_utr_box} ${_utr_name}${_UI_TABLE_SP:0:$(( UI_TABLE_NAME_W - ${#_utr_name} ))}  ${UI_TABLE_CELL}${_UI_TABLE_SP:0:$(( _utr_inner - _utr_used ))}${UI_ACCENT:-}${UI_VB:-|}${UI_RESET:-}
+"
         _utr_lines=$(( _utr_lines + 1 ))
         if [ -n "$UI_TABLE_CELL2" ]; then
-            # Five, not four: the row above spends one column on the pointer,
-            # three on the checkbox and one on the space after it.
-            _utr_body2="     $(ui_repeat ' ' "$UI_TABLE_NAME_W")  $(_ui_table_pad "$UI_TABLE_CELL2" "$UI_TABLE_STAT_W")"
-            printf '  %s%s%s%s%s%s%s\n' "${UI_ACCENT:-}" "${UI_VB:-|}" "${UI_RESET:-}" \
-                "$(_ui_table_pad "$_utr_body2" "$_utr_inner")" \
-                "${UI_ACCENT:-}" "${UI_VB:-|}" "${UI_RESET:-}"
+            _utr_used2=$(( 5 + UI_TABLE_NAME_W + 2 + UI_TABLE_CELL2_LEN ))
+            _utr_f="$_utr_f  ${UI_ACCENT:-}${UI_VB:-|}${UI_RESET:-}     ${_UI_TABLE_SP:0:$UI_TABLE_NAME_W}  ${UI_TABLE_CELL2}${_UI_TABLE_SP:0:$(( _utr_inner - _utr_used2 ))}${UI_ACCENT:-}${UI_VB:-|}${UI_RESET:-}
+"
             _utr_lines=$(( _utr_lines + 1 ))
         fi
     done < "$1"
-    printf '  %s%s%s%s%s\n' "${UI_ACCENT:-}" "${UI_BL:-+}" \
-        "$(ui_repeat "${UI_HR:--}" "$_utr_inner")" "${UI_BR:-+}" "${UI_RESET:-}"
+    _utr_f="$_utr_f  ${UI_ACCENT:-}${UI_BL:-+}${_UI_TABLE_HR:0:$_utr_inner}${UI_BR:-+}${UI_RESET:-}"
+    UI_TABLE_FRAME="$_utr_f"
     UI_TABLE_LINES=$(( _utr_lines + 1 ))
+    return 0
+}
+
+# ui_table_render <state-file> <cursor> — the frame, printed.
+ui_table_render() {
+    ui_table_frame "$1" "$2"
+    printf '%s\n' "$UI_TABLE_FRAME"
+    return 0
+}
+
+# ui_table_redraw <state-file> <cursor> — replace the frame already on screen
+# with a new one, in ONE write. Clearing first and drawing after is what a
+# reader sees as a flicker.
+ui_table_redraw() {
+    _utd_prev="${UI_TABLE_LINES:-0}"
+    case "$_utd_prev" in ''|*[!0-9]*) _utd_prev=0 ;; esac
+    ui_table_frame "$1" "$2"
+    if [ "$_utd_prev" -gt 0 ]; then
+        printf '\033[%dA\033[0J%s\n' "$_utd_prev" "$UI_TABLE_FRAME"
+    else
+        printf '%s\n' "$UI_TABLE_FRAME"
+    fi
     return 0
 }
 
@@ -861,14 +920,7 @@ ui_table_begin() {
             # it and cleared from there — which left the top of a table stranded
             # on screen with the final one printed under it. Built as a string
             # first, the cursor is only ever at a frame boundary.
-            _utb_frame="$(ui_table_render "$1" 0)"
-            _utb_h="$(printf '%s\n' "$_utb_frame" | grep -c '')"
-            if [ "$UI_TABLE_LINES" -gt 0 ]; then
-                printf '\033[%dA\033[0J%s\n' "$UI_TABLE_LINES" "$_utb_frame"
-            else
-                printf '%s\n' "$_utb_frame"
-            fi
-            UI_TABLE_LINES="$_utb_h"
+            ui_table_redraw "$1" 0
             # The parent cannot see a variable set in here, and it needs the
             # height to redraw the finished table over this one.
             printf '%s\n' "$UI_TABLE_LINES" > "$1.lines"
@@ -905,13 +957,8 @@ ui_table_end() {
     _ute_lines="$(cat "$1.lines" 2>/dev/null || echo '')"
     case "$_ute_lines" in ''|*[!0-9]*) _ute_lines="${UI_TABLE_LINES:-0}" ;; esac
     case "$_ute_lines" in ''|*[!0-9]*) _ute_lines=0 ;; esac
-    _ute_frame="$(ui_table_render "$1" 0)"
-    if [ "$_ute_lines" -gt 0 ]; then
-        printf '\033[%dA\033[0J%s\n' "$_ute_lines" "$_ute_frame"
-    else
-        printf '%s\n' "$_ute_frame"
-    fi
-    UI_TABLE_LINES="$(printf '%s\n' "$_ute_frame" | grep -c '')"
+    UI_TABLE_LINES="$_ute_lines"
+    ui_table_redraw "$1" 0
     rm -f "$1.lines" "$1.stop"
     return 0
 }
@@ -943,12 +990,21 @@ ui_table_menu() {
         return 0
     fi
     _utm_first=1
+    _utm_drawn=0
     while :; do
-        [ "$_utm_first" = 1 ] || printf '\033[%dA\033[0J' "$(( UI_TABLE_LINES + 1 ))"
-        _utm_first=0
         ui_table_tick "$_utm_f" "$_utm_sel"
-        ui_table_render "$_utm_f" "$_utm_cur"
-        ui_menu_hint "↑/↓ to move · Space to toggle · Enter to confirm"
+        # Built first, then clear and draw in ONE write. The old order — clear,
+        # then spend a fifth of a second assembling — is what flickered: the
+        # region was genuinely empty for that whole time.
+        ui_table_frame "$_utm_f" "$_utm_cur"
+        _utm_hint="      ${UI_DIM:-}↑/↓ to move · Space to toggle · Enter to confirm${UI_RESET:-}"
+        if [ "$_utm_drawn" -gt 0 ]; then
+            printf '\033[%dA\033[0J%s\n%s\n' "$_utm_drawn" "$UI_TABLE_FRAME" "$_utm_hint"
+        else
+            printf '%s\n%s\n' "$UI_TABLE_FRAME" "$_utm_hint"
+        fi
+        _utm_drawn=$(( UI_TABLE_LINES + 1 ))
+        _utm_first=0
         if [ "$_utm_tty" = "/dev/tty" ]; then
             IFS= read -rsn1 _utm_key < /dev/tty || break
         else
@@ -978,9 +1034,9 @@ ui_table_menu() {
     done
     # Redraw once without the pointer or the hint: the selection is made, and
     # the same table is about to become the progress display.
-    printf '\033[%dA\033[0J' "$(( UI_TABLE_LINES + 1 ))"
     ui_table_tick "$_utm_f" "$_utm_sel"
-    ui_table_render "$_utm_f" 0
+    UI_TABLE_LINES="$_utm_drawn"
+    ui_table_redraw "$_utm_f" 0
     EXAKIT_TABLE_SELECTION="${_utm_sel:-none}"
     return 0
 }
