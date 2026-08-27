@@ -265,6 +265,13 @@ _UI_STEP_LABEL=''
 # kill the bar after the first file. Counted rather than flagged, because the
 # nesting can be more than one deep.
 _UI_SPIN_NESTED=0
+# WHICH SHELL started the animation. A subshell inherits _UI_SPIN_PID but not
+# the right to end it: the installer runs each dataset load inside ( ), that
+# subshell called ui_progress_end for a bar it had never started, and the kill
+# landed on the PARENT's table animator -- mid-frame, leaving a half-drawn table
+# on screen with the finished one printed under it. A subshell's nesting counter
+# starts at zero, so counting alone cannot tell the two apart; ownership can.
+_UI_SPIN_OWNER=''
 
 # ui_spin_begin <label> — start ONLY the animated spinner (prints no line of
 # its own). No-op unless we are on an interactive fancy terminal *right now*:
@@ -278,6 +285,7 @@ ui_spin_begin() {
     fi
     [ "$UI_FANCY" = 1 ] || return 0
     [ -t 1 ] || return 0
+    _UI_SPIN_OWNER="$$"
     _UI_STEP_LABEL="$1"
     _UI_STEP_T0="$(date +%s 2>/dev/null || echo 0)"
     printf '\033[?25l'                          # hide cursor
@@ -295,6 +303,10 @@ ui_spin_begin() {
         done
     ) &
     _UI_SPIN_PID=$!
+    # Disowned for the same reason as the two animators below: a component that
+    # runs in a subshell inherits this pid, and the kill that ends the spinner is
+    # then announced by the shell over whatever is on screen.
+    disown 2>/dev/null || true
 }
 
 # ui_spin_end — stop the spinner and clear its line, printing no status line
@@ -323,9 +335,15 @@ ui_step_start() {
 
 _ui_step_stop_spinner() {
     [ -n "$_UI_SPIN_PID" ] || return 0
+    # Started by another shell: this one is a subshell that inherited the pid,
+    # and ending someone else's animation is never what it meant to do.
+    if [ -n "${_UI_SPIN_OWNER:-}" ] && [ "$_UI_SPIN_OWNER" != "$$" ]; then
+        return 0
+    fi
     kill "$_UI_SPIN_PID" 2>/dev/null
     wait "$_UI_SPIN_PID" 2>/dev/null
     _UI_SPIN_PID=''
+    _UI_SPIN_OWNER=''
     printf '\r\033[K\033[?25h'                   # clear spinner line, restore cursor
 }
 
@@ -566,6 +584,15 @@ ui_progress_begin() {
     printf '\033[?25l'
     ui_progress_animate "$1" "$2" &
     _UI_SPIN_PID=$!
+    _UI_SPIN_OWNER="$$"
+    # Out of the job table right away, or bash ANNOUNCES the kill: killing a
+    # tracked background job prints "line N: 12345 Terminated: 15 ( ... )" —
+    # several lines of the loop's own source — straight into the middle of the
+    # frame it was drawing. Every redraw here was already correct; that message
+    # was the thing wrecking the screen, and it comes from the shell, not from
+    # anything this file printed. dash_server_validate disowns its probe server
+    # for exactly the same reason.
+    disown 2>/dev/null || true
     return 0
 }
 
@@ -963,6 +990,15 @@ ui_table_begin() {
         done
     ) &
     _UI_SPIN_PID=$!
+    _UI_SPIN_OWNER="$$"
+    # Out of the job table right away, or bash ANNOUNCES the kill: killing a
+    # tracked background job prints "line N: 12345 Terminated: 15 ( ... )" —
+    # several lines of the loop's own source — straight into the middle of the
+    # frame it was drawing. Every redraw here was already correct; that message
+    # was the thing wrecking the screen, and it comes from the shell, not from
+    # anything this file printed. dash_server_validate disowns its probe server
+    # for exactly the same reason.
+    disown 2>/dev/null || true
     return 0
 }
 
@@ -984,6 +1020,7 @@ ui_table_end() {
     kill "$_UI_SPIN_PID" 2>/dev/null
     wait "$_UI_SPIN_PID" 2>/dev/null
     _UI_SPIN_PID=''
+    _UI_SPIN_OWNER=''
     _UI_SPIN_NESTED=0
     printf '\033[?25h'
     _ute_lines="$(cat "$1.lines" 2>/dev/null || echo '')"

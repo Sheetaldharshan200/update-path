@@ -416,6 +416,21 @@ if command -v python3 >/dev/null 2>&1; then
     has "and it is the finished one"  "173,745 rows" "$SCREEN"
     has "with every row accounted for" "10,970 rows" "$SCREEN"
     lacks "no half-drawn bar left behind" "loading 8 data files" "$SCREEN"
+
+    # And the same table again in the shape an INSTALL gives it: every load in a
+    # subshell. That is the difference `exakit data-load` does not have, and it
+    # was enough to stack the table a third time -- not through a bad redraw, but
+    # because killing the animator made bash print the job's own source into the
+    # frame. installer-scenario.sh fails with two top borders without the disown.
+    if python3 "$ROOT/tests/lib/tty-replay.py" \
+            "$ROOT/tests/lib/installer-scenario.sh" "$ROOT" > "$WORK/tty2.out" 2>&1; then
+        check "one table when the loads run in subshells" "yes" "yes"
+    else
+        check "one table when the loads run in subshells" "yes" \
+            "no: $(grep 'tables on screen' "$WORK/tty2.out" || echo 'replay failed')"
+    fi
+    has "and the shell announced no dying job" "job announcements: 0" \
+        "$(cat "$WORK/tty2.out")"
 else
     check "exactly one table survives" "skipped" "skipped"
 fi
