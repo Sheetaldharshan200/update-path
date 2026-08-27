@@ -435,5 +435,137 @@ else
     check "exactly one table survives" "skipped" "skipped"
 fi
 
+printf '\n== the SAME table, driven by the MCP client menu ==\n'
+
+# The live table is a shared component and this suite is where its guards live,
+# so its second caller is checked here too. The MCP step's own new thing is the
+# DISABLED row: an AI client this machine does not have is still drawn, with the
+# reason, and can never be picked. A list that quietly omitted those clients
+# would read as "the kit supports four clients", and a reader has no way to tell
+# a short list from a filtered one.
+
+MTBL="$WORK/mcp-table"
+UI_TABLE_TITLE="AI clients to connect"
+UI_TABLE_COL1="Client"
+cat > "$MTBL" <<'MROWS'
+group|Select All|1|idle||||||
+tee|Claude|1|idle||||||
+tee|Cursor|0|idle||||||
+corner|Continue|0|idle||||||
+plain|Skip|0|idle||||||
+MROWS
+ui_table_disable "$MTBL" 3 "not installed"
+ui_table_disable "$MTBL" 4 "already connected"
+ui_table_frame "$MTBL" 0
+MFRAME="$UI_TABLE_FRAME"
+has "the first column is named by its caller" "Client" "$MFRAME"
+has "a client this machine lacks says so"     "Cursor · not installed"      "$MFRAME"
+has "and one already connected too"           "Continue · already connected" "$MFRAME"
+# The checkbox is what invites a keypress, so a row that cannot take one must
+# not draw an empty box for the reader to aim at.
+lacks "no checkbox on a row nobody can pick" "[ ]" \
+    "$(printf '%s\n' "$MFRAME" | grep 'Cursor')"
+# The mark inside the box follows the palette (a plain run has no glyphs), so
+# this asks for the box, not for what is in it.
+has "the rows beside it still have theirs" "] ├─ Claude" "$MFRAME"
+
+# Select All spans the client rows, and the defaults are built by the caller:
+# the tick has to be refused at the row, which is the one place both pass
+# through. "1,2,3,4,5" is the worst either can ask for.
+ui_table_tick "$MTBL" "1,2,3,4,5"
+check "a disabled row refuses a tick"        "0" "$(sed -n 3p "$MTBL" | cut -d'|' -f3)"
+check "...and so does the second one"        "0" "$(sed -n 4p "$MTBL" | cut -d'|' -f3)"
+check "the row above it still takes one"     "1" "$(sed -n 2p "$MTBL" | cut -d'|' -f3)"
+# ...and the group helper never asks in the first place, because ui_table_menu
+# publishes the pickable rows the same way ui_checkbox_menu does.
+_UI_CHECKBOX_SELECTABLE="2 5"
+check "Select All expands to the pickable rows only" "2" \
+    "$(_ui_checkbox_group_children 2 4)"
+_UI_CHECKBOX_SELECTABLE=""
+
+if command -v python3 >/dev/null 2>&1; then
+    # The selection AND the progress in one table, under a real terminal, with
+    # the keystrokes typed in: 'jj' walks two rows down from Claude, which is
+    # Gemini CLI only because the cursor steps over the two rows this machine
+    # cannot offer. Space unticks it, Enter confirms. A build that lets the
+    # cursor rest on a disabled row unticks something else, and the finished
+    # table says so — three clients configured, not four.
+    if python3 "$ROOT/tests/lib/tty-replay.py" \
+            "$ROOT/tests/lib/mcp-table-scenario.sh" "$ROOT" \
+            "AI clients to connect" 'jj \r' > "$WORK/tty3.out" 2>&1; then
+        check "exactly one client table survives" "yes" "yes"
+    else
+        check "exactly one client table survives" "yes" \
+            "no: $(grep 'tables on screen' "$WORK/tty3.out" || echo 'replay failed')"
+    fi
+    MSCREEN="$(sed -n '/=== FINAL SCREEN ===/,/=== tables/p' "$WORK/tty3.out")"
+    has "the cursor stepped over the rows nobody can pick" \
+        "configured · 3 clients" "$MSCREEN"
+    check "so the row two down is the one left out" "no status" \
+        "$(printf '%s\n' "$MSCREEN" | grep 'Gemini CLI' | grep -q 'configured' \
+            && echo "configured" || echo "no status")"
+    check "each client row says what happened to it" "yes" \
+        "$(printf '%s\n' "$MSCREEN" | grep '├─ Claude' | grep -q '✓ configured' \
+            && echo yes || echo no)"
+    has "the rows that cannot be picked keep their reason" "Cursor · not installed" "$MSCREEN"
+    lacks "and no bar is left half-drawn" "writing client configs" "$MSCREEN"
+    has "the shell announced no dying job" "job announcements: 0" "$(cat "$WORK/tty3.out")"
+
+    # And the way back: 'jjjj ' ticks Skip, Enter confirms it, 'n' declines the
+    # "are you sure" — which must return the reader to the SAME table. The
+    # warning and the question are printed under the frame, so the menu has to
+    # reclaim those lines too; drawing a fresh table under them leaves two on
+    # screen, which is what this run would catch.
+    if python3 "$ROOT/tests/lib/tty-replay.py" \
+            "$ROOT/tests/lib/mcp-table-scenario.sh" "$ROOT" \
+            "AI clients to connect" 'jjjj \rn\r\r' > "$WORK/tty4.out" 2>&1; then
+        check "one table after a skip is taken back" "yes" "yes"
+    else
+        check "one table after a skip is taken back" "yes" \
+            "no: $(grep 'tables on screen' "$WORK/tty4.out" || echo 'replay failed')"
+    fi
+    MSCREEN2="$(sed -n '/=== FINAL SCREEN ===/,/=== tables/p' "$WORK/tty4.out")"
+    lacks "the question it answered is gone from the screen" \
+        "No AI client will be connected" "$MSCREEN2"
+    has "every client is back to pre-selected"  "3 of 4 clients configured" "$MSCREEN2"
+    has "and a client the run did not write says so" "not configured" "$MSCREEN2"
+else
+    check "exactly one client table survives" "skipped" "skipped"
+fi
+
+printf '\n== what the table says is not said again underneath it ==\n'
+
+# Python for the two readers below. The suite has no kit installed, so the real
+# resolver would try to bootstrap uv; python3 is already required by the replay
+# above.
+if command -v python3 >/dev/null 2>&1; then
+    require_python3() { return 0; }
+    exakit_can_run_python() { return 0; }
+    run_python() { python3 "$@"; }
+
+    cat > "$WORK/mcp-result.json" <<'MJSON'
+{"status":"success",
+ "selected_clients":["claude_code","cursor"],
+ "details":{"configured_clients":["claude_code"],
+            "skipped_clients":[{"client":"cursor","reason":"its config file could not be parsed"}]},
+ "next_actions":[{"message":"Start a new Claude Code session to load the updated MCP configuration."}]}
+MJSON
+    # Where each row's final cell comes from: the run's own record of what it
+    # wrote, not the exit status — which cannot tell one client's unusable
+    # config file from nothing having been configured at all.
+    check "the result file names each client's outcome" \
+        "claude_code configured cursor skipped" \
+        "$(_exakit_mcp_result_states "$WORK/mcp-result.json" | tr '\n' ' ' | sed 's/ $//')"
+
+    MSUM_TABLE="$(exakit_print_mcp_setup_summary "$WORK/mcp-result.json" 1 2>&1)"
+    MSUM_PLAIN="$(exakit_print_mcp_setup_summary "$WORK/mcp-result.json" 2>&1)"
+    lacks "the table's rows are not repeated as a line" "MCP configured for" "$MSUM_TABLE"
+    has "the skipped client is still named"   "Skipped Cursor"      "$MSUM_TABLE"
+    has "and its next step still stands"      "new Claude Code session" "$MSUM_TABLE"
+    has "with no table, the headline stays"   "MCP configured for"  "$MSUM_PLAIN"
+else
+    check "the result file names each client's outcome" "skipped" "skipped"
+fi
+
 printf '\n%s: %d passed, %d failed\n' "$(basename "$0")" "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
