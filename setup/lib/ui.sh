@@ -785,6 +785,7 @@ ui_table_frame() {
     _utr_f="$_utr_f  ${UI_ACCENT:-}${UI_VB:-|}${UI_RESET:-}${_utr_head}${_UI_TABLE_SP:0:$(( _utr_inner - ${#_utr_head} ))}${UI_ACCENT:-}${UI_VB:-|}${UI_RESET:-}
 "
     _utr_lines=2
+    _utr_sub=0
     _utr_now="$(date +%s 2>/dev/null || echo 0)"
     _utr_i=0
     while IFS='|' read -r _utr_kind _utr_label _utr_tick _utr_state _utr_pct \
@@ -821,13 +822,39 @@ ui_table_frame() {
         _utr_f="$_utr_f  ${UI_ACCENT:-}${UI_VB:-|}${UI_RESET:-}${_utr_ptr}${_utr_box} ${_utr_name}${_UI_TABLE_SP:0:$(( UI_TABLE_NAME_W - ${#_utr_name} ))}  ${UI_TABLE_CELL}${_UI_TABLE_SP:0:$(( _utr_inner - _utr_used ))}${UI_ACCENT:-}${UI_VB:-|}${UI_RESET:-}
 "
         _utr_lines=$(( _utr_lines + 1 ))
+        # A row that CAN run always gets its second line, blank while it is not
+        # running. The height of the frame is then the same in every state, which
+        # is the whole reason: a frame that grows by a line pushes the terminal
+        # to scroll, and once the screen has scrolled a cursor-up by the frame
+        # height no longer lands at the frame's top. Every redraw after that is
+        # off by one and the error accumulates -- which is what left four lines
+        # of an old frame stranded above the new one, near the bottom of a
+        # screen. Nothing here can prevent the FIRST draw from scrolling; what it
+        # can do is never scroll again.
         if [ -n "$UI_TABLE_CELL2" ]; then
             _utr_used2=$(( 5 + UI_TABLE_NAME_W + 2 + UI_TABLE_CELL2_LEN ))
             _utr_f="$_utr_f  ${UI_ACCENT:-}${UI_VB:-|}${UI_RESET:-}     ${_UI_TABLE_SP:0:$UI_TABLE_NAME_W}  ${UI_TABLE_CELL2}${_UI_TABLE_SP:0:$(( _utr_inner - _utr_used2 ))}${UI_ACCENT:-}${UI_VB:-|}${UI_RESET:-}
 "
             _utr_lines=$(( _utr_lines + 1 ))
+            _utr_sub=$(( _utr_sub + 1 ))
         fi
     done < "$1"
+    # The frame is ONE height in every state. A frame that grows by a line pushes
+    # the terminal to scroll, and once the screen has scrolled a cursor-up by the
+    # frame height no longer lands at the frame's top -- every redraw after that
+    # is off by one and the error accumulates, which is what left four lines of an
+    # old frame stranded above the new one near the bottom of a screen.
+    #
+    # So the phase lines are RESERVED rather than grown into: one line, because
+    # one dataset runs at a time. Should they ever run concurrently, this is the
+    # number to raise, and nothing else changes.
+    _utr_want="${UI_TABLE_RESERVE:-1}"
+    while [ "$_utr_sub" -lt "$_utr_want" ]; do
+        _utr_f="$_utr_f  ${UI_ACCENT:-}${UI_VB:-|}${UI_RESET:-}${_UI_TABLE_SP:0:$_utr_inner}${UI_ACCENT:-}${UI_VB:-|}${UI_RESET:-}
+"
+        _utr_lines=$(( _utr_lines + 1 ))
+        _utr_sub=$(( _utr_sub + 1 ))
+    done
     _utr_f="$_utr_f  ${UI_ACCENT:-}${UI_BL:-+}${_UI_TABLE_HR:0:$_utr_inner}${UI_BR:-+}${UI_RESET:-}"
     UI_TABLE_FRAME="$_utr_f"
     UI_TABLE_LINES=$(( _utr_lines + 1 ))
