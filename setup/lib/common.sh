@@ -707,11 +707,21 @@ reject() {
 # Fatal error, rendered as a small "card": a prominent ✗ header, then a dim
 # gutter line pointing at the log — consistent shape for every failure.
 die() {
-    # First, not last: an animator that is still running moves the cursor up and
-    # clears on its very next frame, which wipes the message below off the screen
-    # before anyone can read it.
-    command -v ui_animation_stop >/dev/null 2>&1 && ui_animation_stop
     exakit_sweep_sensitive_tmp
+    # A table is animating and this is the inside of one of its subshells:
+    # printing here would land in a frame that is still being repainted, and the
+    # animator's next cursor-up would clear the message away with it. Leave the
+    # reason in a file and let the shell that owns the table say it once the
+    # table has stopped -- the same reason row state lives in a file.
+    if [ -n "${EXAKIT_DEFER_ERRORS:-}" ]; then
+        exakit_note_failure "$*"
+        printf 'fatal|%s\n' "$*" >> "$EXAKIT_DEFER_ERRORS" 2>/dev/null
+        _exakit_log_file "FATAL $*"
+        exit 1
+    fi
+    # Nothing is deferring: stop any animation first, or the message below is
+    # wiped off the screen by the next frame before anyone can read it.
+    command -v ui_animation_stop >/dev/null 2>&1 && ui_animation_stop
     exakit_note_failure "$*"
     printf '\n  %s%s %s%s%s\n' "${UI_ERR:-}" "${UI_CROSS:-[x]}" "${UI_BOLD:-}" "$*" "${UI_RESET:-}" >&2
     if [ -n "${EXAKIT_LOG_FILE:-}" ]; then
@@ -6951,10 +6961,17 @@ exakit_maybe_offer_data_load() {
         ui_table_begin "$EXAKIT_TABLE_STATE" && EXAKIT_TABLE_LIVE=1
     fi
     _data_notes=""
+    # Anything fatal inside the loads below is written here instead of onto the
+    # animating table; it is read out after ui_table_end.
+    EXAKIT_DEFER_ERRORS=""
+    if [ "$EXAKIT_TABLE_LIVE" = 1 ]; then
+        EXAKIT_DEFER_ERRORS="$EXAKIT_TABLE_STATE.fatal"
+        : > "$EXAKIT_DEFER_ERRORS"
+    fi
     for _data_id in $(printf '%s' "$EXAKIT_DATA_LOAD_SELECTION" | tr ',' ' '); do
         case "$_data_id" in
             local)
-                ( exakit_load_local_file )
+                ( ui_table_detach; exakit_load_local_file )
                 _local_status=$?
                 if [ "$_local_status" -eq 2 ]; then
                     _data_notes="${_data_notes}info|Local file load skipped.
@@ -6967,7 +6984,7 @@ exakit_maybe_offer_data_load() {
                 fi
                 ;;
             *)
-                if ! ( exakit_load_dataset "$_kit_root" "$_data_id" ); then
+                if ! ( ui_table_detach; exakit_load_dataset "$_kit_root" "$_data_id" ); then
                     _data_notes="${_data_notes}warn|Data loading did not finish cleanly. Retry any time with: exakit data-load
 "
                     exakit_note_failure "loading dataset '$_data_id' did not finish (see the log)"
@@ -6980,6 +6997,14 @@ exakit_maybe_offer_data_load() {
     # into a frame that is still being repainted lands inside the box.
     [ "$EXAKIT_TABLE_LIVE" = 1 ] && ui_table_end "$EXAKIT_TABLE_STATE"
     EXAKIT_TABLE_LIVE=0
+    if [ -n "$EXAKIT_DEFER_ERRORS" ] && [ -s "$EXAKIT_DEFER_ERRORS" ]; then
+        while IFS='|' read -r _df_kind _df_text; do
+            [ -n "$_df_text" ] || continue
+            error "$_df_text"
+        done < "$EXAKIT_DEFER_ERRORS"
+        rm -f "$EXAKIT_DEFER_ERRORS"
+    fi
+    EXAKIT_DEFER_ERRORS=""
     while IFS='|' read -r _dn_kind _dn_text; do
         [ -n "$_dn_text" ] || continue
         case "$_dn_kind" in

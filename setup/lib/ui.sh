@@ -1055,6 +1055,22 @@ ui_table_abort() {
     return 0
 }
 
+# ui_table_detach — call this FIRST inside a subshell that does work while a
+# table is animating. A subshell inherits both the animator's pid and the
+# active-table handle, and bash never changes $$ in a subshell, so no guard can
+# tell parent from child by pid. Without this, a die() inside the subshell would
+# stop the PARENT's animation on its way out and every remaining row would load
+# with a frozen table. Dropping the handles makes ui_animation_stop and
+# ui_spin_end no-ops in here; row updates are unaffected because they travel
+# through the state FILE, which is shared on purpose.
+ui_table_detach() {
+    _UI_TABLE_ACTIVE=''
+    _UI_SPIN_PID=''
+    _UI_SPIN_NESTED=0
+    _UI_SPIN_OWNER=''
+    return 0
+}
+
 # ui_animation_stop — stop whatever this shell is animating, table or spinner,
 # before printing something the reader must not lose. die() calls this first for
 # exactly that reason.

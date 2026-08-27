@@ -431,6 +431,24 @@ if command -v python3 >/dev/null 2>&1; then
     fi
     has "and the shell announced no dying job" "job announcements: 0" \
         "$(cat "$WORK/tty2.out")"
+
+    # And the standalone `exakit data-load` shape, where a load die()s. die()
+    # exits, so called straight from the menu it ended the command with the table
+    # still animating: the orphan's next frame wiped the error message and left a
+    # table frozen at 99% with no explanation, which is precisely what a user
+    # reported. What has to be true afterwards: one table, the row told the
+    # truth, the NEXT dataset still animated, and the reason is on screen.
+    if python3 "$ROOT/tests/lib/tty-replay.py" \
+            "$ROOT/tests/lib/dying-load-scenario.sh" "$ROOT" > "$WORK/tty3.out" 2>&1; then
+        check "one table when a load dies" "yes" "yes"
+    else
+        check "one table when a load dies" "yes" \
+            "no: $(grep 'tables on screen' "$WORK/tty3.out" || echo 'replay failed')"
+    fi
+    SCREEN3="$(sed -n '/=== FINAL SCREEN ===/,/=== tables/p' "$WORK/tty3.out")"
+    has "the dead row says so"            "did not finish" "$SCREEN3"
+    has "the reason survives on screen"   "Row count mismatch" "$SCREEN3"
+    has "and the next dataset still ran"  "108,050 rows" "$SCREEN3"
 else
     check "exactly one table survives" "skipped" "skipped"
 fi
