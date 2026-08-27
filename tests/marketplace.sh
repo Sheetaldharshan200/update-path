@@ -1681,7 +1681,7 @@ printf '\n== under a REAL terminal, one add-ons table is left, not four ==\n'
 if command -v python3 >/dev/null 2>&1; then
     if python3 "$ROOT/tests/lib/tty-replay.py" \
             "$ROOT/tests/lib/addon-table-scenario.sh" "$ROOT" \
-            "Add-ons to install" 2 > "$WORK/addon-tty.out" 2>&1; then
+            "Add-ons to install" '' 2 > "$WORK/addon-tty.out" 2>&1; then
         check "exactly one add-ons table survives" "yes" "yes"
     else
         check "exactly one add-ons table survives" "yes" \
