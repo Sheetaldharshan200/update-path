@@ -847,20 +847,34 @@ ui_table_begin() {
     printf '\033[?25l'
     # How many lines are ALREADY on screen. The selection phase leaves its table
     # drawn, and the first frame has to overwrite it rather than print a second
-    # one underneath — which is what stacked three tables down the terminal.
-    # Every frame, the first included, goes up by whatever the previous draw
-    # occupied; the only frame that goes up by nothing is one with nothing above
-    # it to replace.
+    # one underneath.
     _utb_prev="${UI_TABLE_LINES:-0}"
     case "$_utb_prev" in ''|*[!0-9]*) _utb_prev=0 ;; esac
+    rm -f "$1.stop"
     (
         UI_TABLE_LINES="$_utb_prev"
         while :; do
-            [ "$UI_TABLE_LINES" -gt 0 ] && printf '\033[%dA\033[0J' "$UI_TABLE_LINES"
-            ui_table_render "$1" 0
+            # ONE frame, ONE write. Rendering straight to the terminal meant a
+            # kill could land between two of a frame's rows: the cursor was then
+            # part-way through a table nobody had finished, and the next thing to
+            # move the cursor up by a frame height landed INSIDE the frame before
+            # it and cleared from there — which left the top of a table stranded
+            # on screen with the final one printed under it. Built as a string
+            # first, the cursor is only ever at a frame boundary.
+            _utb_frame="$(ui_table_render "$1" 0)"
+            _utb_h="$(printf '%s\n' "$_utb_frame" | grep -c '')"
+            if [ "$UI_TABLE_LINES" -gt 0 ]; then
+                printf '\033[%dA\033[0J%s\n' "$UI_TABLE_LINES" "$_utb_frame"
+            else
+                printf '%s\n' "$_utb_frame"
+            fi
+            UI_TABLE_LINES="$_utb_h"
             # The parent cannot see a variable set in here, and it needs the
             # height to redraw the finished table over this one.
             printf '%s\n' "$UI_TABLE_LINES" > "$1.lines"
+            # Asked to stop: finish the frame that is on screen and go, so the
+            # parent inherits a cursor sitting at a frame boundary.
+            [ -f "$1.stop" ] && exit 0
             sleep 0.2
         done
     ) &
@@ -873,13 +887,32 @@ ui_table_begin() {
 # drawn is redrawn deliberately rather than trusted.
 ui_table_end() {
     [ -n "${_UI_SPIN_PID:-}" ] || return 0
-    ui_spin_end
+    # ASKED to stop, not shot. The animator finishes the frame it is drawing and
+    # exits, which is the only way the cursor is guaranteed to be at a frame
+    # boundary when this function starts counting lines. A kill is still the
+    # backstop for an animator that has somehow wedged.
+    : > "$1.stop"
+    _ute_wait=0
+    while [ "$_ute_wait" -lt 15 ] && kill -0 "$_UI_SPIN_PID" 2>/dev/null; do
+        sleep 0.1
+        _ute_wait=$(( _ute_wait + 1 ))
+    done
+    kill "$_UI_SPIN_PID" 2>/dev/null
+    wait "$_UI_SPIN_PID" 2>/dev/null
+    _UI_SPIN_PID=''
+    _UI_SPIN_NESTED=0
+    printf '\033[?25h'
     _ute_lines="$(cat "$1.lines" 2>/dev/null || echo '')"
     case "$_ute_lines" in ''|*[!0-9]*) _ute_lines="${UI_TABLE_LINES:-0}" ;; esac
     case "$_ute_lines" in ''|*[!0-9]*) _ute_lines=0 ;; esac
-    [ "$_ute_lines" -gt 0 ] && printf '\033[%dA\033[0J' "$_ute_lines"
-    ui_table_render "$1" 0
-    rm -f "$1.lines"
+    _ute_frame="$(ui_table_render "$1" 0)"
+    if [ "$_ute_lines" -gt 0 ]; then
+        printf '\033[%dA\033[0J%s\n' "$_ute_lines" "$_ute_frame"
+    else
+        printf '%s\n' "$_ute_frame"
+    fi
+    UI_TABLE_LINES="$(printf '%s\n' "$_ute_frame" | grep -c '')"
+    rm -f "$1.lines" "$1.stop"
     return 0
 }
 
