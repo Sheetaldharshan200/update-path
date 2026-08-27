@@ -845,13 +845,18 @@ ui_table_begin() {
     [ "${UI_FANCY:-0}" = 1 ] || return 1
     [ -t 1 ] || return 1
     printf '\033[?25l'
+    # How many lines are ALREADY on screen. The selection phase leaves its table
+    # drawn, and the first frame has to overwrite it rather than print a second
+    # one underneath — which is what stacked three tables down the terminal.
+    # Every frame, the first included, goes up by whatever the previous draw
+    # occupied; the only frame that goes up by nothing is one with nothing above
+    # it to replace.
+    _utb_prev="${UI_TABLE_LINES:-0}"
+    case "$_utb_prev" in ''|*[!0-9]*) _utb_prev=0 ;; esac
     (
-        _utb_first=1
+        UI_TABLE_LINES="$_utb_prev"
         while :; do
-            if [ "$_utb_first" != 1 ]; then
-                printf '\033[%dA\033[0J' "$UI_TABLE_LINES"
-            fi
-            _utb_first=0
+            [ "$UI_TABLE_LINES" -gt 0 ] && printf '\033[%dA\033[0J' "$UI_TABLE_LINES"
             ui_table_render "$1" 0
             # The parent cannot see a variable set in here, and it needs the
             # height to redraw the finished table over this one.
@@ -869,7 +874,8 @@ ui_table_begin() {
 ui_table_end() {
     [ -n "${_UI_SPIN_PID:-}" ] || return 0
     ui_spin_end
-    _ute_lines="$(cat "$1.lines" 2>/dev/null || echo 0)"
+    _ute_lines="$(cat "$1.lines" 2>/dev/null || echo '')"
+    case "$_ute_lines" in ''|*[!0-9]*) _ute_lines="${UI_TABLE_LINES:-0}" ;; esac
     case "$_ute_lines" in ''|*[!0-9]*) _ute_lines=0 ;; esac
     [ "$_ute_lines" -gt 0 ] && printf '\033[%dA\033[0J' "$_ute_lines"
     ui_table_render "$1" 0
