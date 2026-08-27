@@ -279,7 +279,11 @@ _UI_SPIN_OWNER=''
 # $(command substitution) capture, even when UI_FANCY was 1 at load time.
 ui_spin_begin() {
     # Something is already animating this line: take a reference, draw nothing.
-    if [ -n "${_UI_SPIN_PID:-}" ]; then
+    # _UI_LINE_BUSY is checked as well as the pid because the loads run in
+    # subshells that had to drop the pid, and run_logged starts one of these for
+    # every silent stretch of every dataset load -- a second animator writing its
+    # own line, with no newline, into the row the table owns.
+    if [ -n "${_UI_SPIN_PID:-}" ] || [ -n "${_UI_LINE_BUSY:-}" ]; then
         _UI_SPIN_NESTED=$(( _UI_SPIN_NESTED + 1 ))
         return 0
     fi
@@ -581,6 +585,11 @@ ui_progress_state() {
 ui_progress_begin() {
     [ "${UI_FANCY:-0}" = 1 ] || return 1
     [ -t 1 ] || return 1
+    # A table owns the line: this bar would be a SECOND animator painting up to
+    # 121 columns over the table's own rows. Refuse, and let the caller narrate
+    # through its table row (or in plain lines) instead. Checked before the pid,
+    # because a detached subshell has no pid to look at.
+    [ -n "${_UI_LINE_BUSY:-}" ] && return 1
     # Same single-animation rule as ui_table_begin: whatever is animating now is
     # about to have its pid overwritten, and would print over this bar forever.
     if [ -n "${_UI_SPIN_PID:-}" ]; then
@@ -1140,6 +1149,7 @@ ui_table_begin() {
     # the half-finished table over it. That is what "data-load has issues, with
     # no error shown" looks like from the outside.
     _UI_TABLE_ACTIVE="$1"
+    _UI_LINE_BUSY=1
     trap 'ui_table_abort; exit 130' INT TERM
     [ -n "$(trap -p EXIT)" ] || trap 'ui_table_abort' EXIT
     # Out of the job table right away, or bash ANNOUNCES the kill: killing a
@@ -1158,6 +1168,12 @@ ui_table_begin() {
 # drawn is redrawn deliberately rather than trusted.
 ui_table_end() {
     _UI_TABLE_ACTIVE=''
+    _UI_LINE_BUSY=''
+# Set while a table owns the terminal, and DELIBERATELY survives ui_table_detach:
+# it is the one signal a subshell can still read to know it must not start an
+# animation of its own. _UI_SPIN_PID cannot serve that purpose, because detach
+# has to clear it (see ui_table_detach).
+_UI_LINE_BUSY=''
     [ -n "${_UI_SPIN_PID:-}" ] || return 0
     # ASKED to stop, not shot. The animator finishes the frame it is drawing and
     # exits, which is the only way the cursor is guaranteed to be at a frame
@@ -1210,6 +1226,11 @@ ui_table_detach() {
     _UI_SPIN_PID=''
     _UI_SPIN_NESTED=0
     _UI_SPIN_OWNER=''
+    # _UI_LINE_BUSY is NOT cleared. Dropping the pid is what stops this subshell
+    # from ending the parent's animation -- but the pid is also the only thing
+    # ui_spin_begin and ui_progress_begin looked at, so clearing it used to let
+    # this subshell START one instead. The table is still on screen and still
+    # being repainted by the parent; this flag is what says so.
     return 0
 }
 

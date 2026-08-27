@@ -469,6 +469,13 @@ if command -v python3 >/dev/null 2>&1; then
     fi
     has "and the shell announced no dying job" "job announcements: 0" \
         "$(cat "$WORK/tty2.out")"
+    # And NOTHING else animates while the table owns the line. Each load runs in
+    # a subshell that calls ui_table_detach, which drops _UI_SPIN_PID -- and that
+    # pid was the only thing ui_spin_begin looked at, so run_logged's spinner
+    # started a real second animator in there and painted its own line, without a
+    # newline, into the row the table owns. Six frames of it on the old code.
+    has "no second animator writes into the table" "spinner frames in stream: 0" \
+        "$(cat "$WORK/tty2.out")"
 
     # And the standalone `exakit data-load` shape, where a load die()s. die()
     # exits, so called straight from the menu it ended the command with the table
