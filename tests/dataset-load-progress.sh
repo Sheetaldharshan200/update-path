@@ -449,6 +449,20 @@ if command -v python3 >/dev/null 2>&1; then
     has "the dead row says so"            "did not finish" "$SCREEN3"
     has "the reason survives on screen"   "Row count mismatch" "$SCREEN3"
     has "and the next dataset still ran"  "108,050 rows" "$SCREEN3"
+
+    # A SECOND width, because the bug that made this table flicker into two was
+    # invisible at one: the box is sized to the terminal, so whether its last row
+    # fills the final column depends on how wide that terminal is. 110 is a
+    # normal window, and the width the flicker was first reported at.
+    if TTY_REPLAY_COLS=110 python3 "$ROOT/tests/lib/tty-replay.py" \
+            "$ROOT/tests/lib/installer-scenario.sh" "$ROOT" > "$WORK/tty5.out" 2>&1; then
+        check "one table in a 110-column window too" "yes" "yes"
+    else
+        check "one table in a 110-column window too" "yes" \
+            "no: $(grep 'tables on screen' "$WORK/tty5.out" || echo 'replay failed')"
+    fi
+    lacks "and no arithmetic error reaches the screen" "substring expression" \
+        "$(cat "$WORK/tty5.out")"
 else
     check "exactly one table survives" "skipped" "skipped"
 fi

@@ -710,13 +710,37 @@ ui_table_widths() {
         case "$_utw_kind" in tee|corner) _utw_len=$(( ${#_utw_label} + 3 )) ;; *) _utw_len="${#_utw_label}" ;; esac
         [ "$_utw_len" -gt "$UI_TABLE_NAME_W" ] && UI_TABLE_NAME_W="$_utw_len"
         _utw_final="${_utw_rest##*|}"
-        [ "${#_utw_final}" -gt "$UI_TABLE_STAT_W" ] && UI_TABLE_STAT_W="${#_utw_final}"
+        # Measured the way _ui_table_cell RENDERS it, not as stored: a finished
+        # cell is "<tick> <final>", so a column sized to the bare string is short
+        # by the glyph and its space -- and the plain palette's tick is "[ok]",
+        # four columns, not one. Short here means a row wider than the box, which
+        # wraps, which makes the frame one line taller than the cursor
+        # arithmetic believes.
+        _utw_flen=$(( ${#_utw_final} + ${#UI_TICK} + 1 ))
+        [ "$_utw_flen" -gt "$UI_TABLE_STAT_W" ] && UI_TABLE_STAT_W="$_utw_flen"
     done < "$1"
     # 2 border + 1 space + 4 checkbox + name + 2 gap + status + 1 space + 1 border
-    _utw_over=$(( 11 + UI_TABLE_NAME_W + UI_TABLE_STAT_W - _utw_cols + 1 ))
+    # = 11, PLUS the two-column left margin ui_table_frame prints every row with
+    # and one column left unwritten at the right. The margin was missing here,
+    # so a table sized to fit "exactly" printed two columns wider than the
+    # terminal: the last column got written, which sets the pending-wrap flag,
+    # and the next newline landed a row lower. The frame was then one line taller
+    # than the height the animator moves the cursor up by, which strands the
+    # previous frame's top border on screen until a later frame re-syncs -- a
+    # table that flickers into two and heals itself a second later. The one-line
+    # progress bar reserves its last column for the same reason.
+    _utw_over=$(( 11 + UI_TABLE_NAME_W + UI_TABLE_STAT_W + 3 - _utw_cols ))
     if [ "$_utw_over" -gt 0 ]; then
         UI_TABLE_NAME_W=$(( UI_TABLE_NAME_W - _utw_over ))
-        [ "$UI_TABLE_NAME_W" -ge 12 ] || UI_TABLE_NAME_W=12
+        if [ "$UI_TABLE_NAME_W" -lt 12 ]; then
+            # The name column has given all it can. Take the rest off the status
+            # column rather than overflow: a narrow bar still reads, a wrapped
+            # row does not.
+            _utw_over=$(( 12 - UI_TABLE_NAME_W ))
+            UI_TABLE_NAME_W=12
+            UI_TABLE_STAT_W=$(( UI_TABLE_STAT_W - _utw_over ))
+            [ "$UI_TABLE_STAT_W" -ge 12 ] || UI_TABLE_STAT_W=12
+        fi
     fi
     return 0
 }
@@ -781,12 +805,18 @@ _ui_table_cell() {
             fi
             [ "$_utc_empty" -ge 0 ] || _utc_empty=0
             _utc_pct="${_utc_at}%"
-            UI_TABLE_CELL="${UI_ACCENT:-}${_UI_TABLE_FULL:0:$_utc_full}${UI_DIM:-}${_utc_head}${_UI_TABLE_EMPTY:0:$_utc_empty}${UI_RESET:-}${_UI_TABLE_SP:0:$(( _utc_num - ${#_utc_pct} ))}${_utc_pct}"
+            _utc_npad=$(( _utc_num - ${#_utc_pct} )); [ "$_utc_npad" -ge 0 ] || _utc_npad=0
+            UI_TABLE_CELL="${UI_ACCENT:-}${_UI_TABLE_FULL:0:$_utc_full}${UI_DIM:-}${_utc_head}${_UI_TABLE_EMPTY:0:$_utc_empty}${UI_RESET:-}${_UI_TABLE_SP:0:$_utc_npad}${_utc_pct}"
             UI_TABLE_CELL_LEN=$(( _utc_barw + _utc_num ))
             _utc_el="($(( $8 - $5 ))s)"
             _utc_ph="$6"
             [ "${#_utc_ph}" -le "$_utc_barw" ] || _utc_ph="${_utc_ph:0:$(( _utc_barw - 1 ))}…"
-            UI_TABLE_CELL2="${UI_DIM:-}${_utc_ph}${_UI_TABLE_SP:0:$(( _utc_barw - ${#_utc_ph} + _utc_num - ${#_utc_el} ))}${_utc_el}${UI_RESET:-}"
+            # A phase longer than the bar is a real possibility (a long
+            # dataset id and a long verb), and unclamped it errored and then
+            # printed a line wider than the box.
+            _utc_ppad=$(( _utc_barw - ${#_utc_ph} + _utc_num - ${#_utc_el} ))
+            [ "$_utc_ppad" -ge 0 ] || _utc_ppad=0
+            UI_TABLE_CELL2="${UI_DIM:-}${_utc_ph}${_UI_TABLE_SP:0:$_utc_ppad}${_utc_el}${UI_RESET:-}"
             UI_TABLE_CELL2_LEN=$(( _utc_barw + _utc_num ))
             ;;
         waiting)
@@ -874,7 +904,13 @@ ui_table_frame() {
         _ui_table_cell "$_utr_state" "${_utr_pct:-0}" "${_utr_ceil:-0}" \
             "${_utr_secs:-0}" "${_utr_t0:-0}" "$_utr_phase" "$_utr_final" "$_utr_now"
         _utr_used=$(( 1 + _utr_boxlen + 1 + UI_TABLE_NAME_W + 2 + UI_TABLE_CELL_LEN ))
-        _utr_f="$_utr_f  ${UI_ACCENT:-}${UI_VB:-|}${UI_RESET:-}${_utr_ptr}${_utr_box} ${_utr_name}${_UI_TABLE_SP:0:$(( UI_TABLE_NAME_W - ${#_utr_name} ))}  ${UI_TABLE_CELL}${_UI_TABLE_SP:0:$(( _utr_inner - _utr_used ))}${UI_ACCENT:-}${UI_VB:-|}${UI_RESET:-}
+        # Clamped, never trusted. A negative length is a bash ERROR ("substring
+        # expression < 0") printed straight into the frame, and the row then goes
+        # out unpadded -- so a width miscalculation would show up as garbage on
+        # screen instead of a border a column out of line.
+        _utr_npad=$(( UI_TABLE_NAME_W - ${#_utr_name} )); [ "$_utr_npad" -ge 0 ] || _utr_npad=0
+        _utr_rpad=$(( _utr_inner - _utr_used )); [ "$_utr_rpad" -ge 0 ] || _utr_rpad=0
+        _utr_f="$_utr_f  ${UI_ACCENT:-}${UI_VB:-|}${UI_RESET:-}${_utr_ptr}${_utr_box} ${_utr_name}${_UI_TABLE_SP:0:$_utr_npad}  ${UI_TABLE_CELL}${_UI_TABLE_SP:0:$_utr_rpad}${UI_ACCENT:-}${UI_VB:-|}${UI_RESET:-}
 "
         _utr_lines=$(( _utr_lines + 1 ))
         # A row that CAN run always gets its second line, blank while it is not
@@ -888,7 +924,8 @@ ui_table_frame() {
         # can do is never scroll again.
         if [ -n "$UI_TABLE_CELL2" ]; then
             _utr_used2=$(( 5 + UI_TABLE_NAME_W + 2 + UI_TABLE_CELL2_LEN ))
-            _utr_f="$_utr_f  ${UI_ACCENT:-}${UI_VB:-|}${UI_RESET:-}     ${_UI_TABLE_SP:0:$UI_TABLE_NAME_W}  ${UI_TABLE_CELL2}${_UI_TABLE_SP:0:$(( _utr_inner - _utr_used2 ))}${UI_ACCENT:-}${UI_VB:-|}${UI_RESET:-}
+            _utr_rpad2=$(( _utr_inner - _utr_used2 )); [ "$_utr_rpad2" -ge 0 ] || _utr_rpad2=0
+            _utr_f="$_utr_f  ${UI_ACCENT:-}${UI_VB:-|}${UI_RESET:-}     ${_UI_TABLE_SP:0:$UI_TABLE_NAME_W}  ${UI_TABLE_CELL2}${_UI_TABLE_SP:0:$_utr_rpad2}${UI_ACCENT:-}${UI_VB:-|}${UI_RESET:-}
 "
             _utr_lines=$(( _utr_lines + 1 ))
             _utr_sub=$(( _utr_sub + 1 ))
