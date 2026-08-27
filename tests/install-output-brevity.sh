@@ -61,6 +61,14 @@ manifest_get() {
     return 0
 }
 manifest_set() { return 0; }
+# connection_panel batches its six reads through manifest_get_many (one python
+# process instead of six), so stubbing manifest_get alone leaves it empty.
+# One line PER KEY, empty ones included: the panel reads the answers
+# positionally, so a missing key that emits nothing would shift every row after
+# it onto the wrong variable.
+manifest_get_many() {
+    for _k in "$@"; do printf '%s\n' "$(manifest_get "$_k")"; done
+}
 exakit_marketplace_addon_installed() { return 1; }
 
 printf '\n== MCP setup: what to do, not what was written where ==\n'
@@ -397,6 +405,57 @@ has "exasol-vscode has a summary"   'function Get-ExasolVscodeSummary'   "$VS_PS
 check "all three are registered" "3" "$(printf '%s\n' "$COMMON_PS1" | grep -cE 'SummaryFn *= *"')"
 has "the apply loop reads the hook" '$addon.PSObject.Properties["SummaryFn"]' "$COMMON_PS1"
 has "and only when it resolves"     'Get-Command $addon.SummaryFn -ErrorAction SilentlyContinue' "$COMMON_PS1"
+
+printf '\n== a folded description lines up under the one above it ==\n'
+
+# The marketplace table prints its rows with '%-14s %-14s %s' — thirty columns
+# of prefix — and folded description lines have to start at that same column.
+# They were indented by a hand-counted 32, so every continuation sat two columns
+# to the right of the line above it.
+ROW_INDENT="$(printf '%-14s %-14s ' '' '')"
+check "the prefix is thirty columns" "30" "$(printf '%s' "$ROW_INDENT" | wc -c | tr -d ' ')"
+
+LONG="A Visual Studio Code extension for working with Exasol databases. Provides comprehensive database management, intelligent SQL editing, and powerful query execution capabilities."
+ROW="$(printf '%-14s %-14s %s' "exasol-vscode" "1.7.0" \
+    "$(exakit_about_wrap "$LONG" "$EXAKIT_ABOUT_WIDTH" "$ROW_INDENT")")"
+# Every line of the cell must begin its text at the same column: the first
+# because the printf put it there, the rest because the indent matches it.
+COLUMNS_USED="$(printf '%s\n' "$ROW" | awk '{ match($0, /[^ ]/); print RSTART - 1 }' | sort -u | tr '\n' ' ' | sed 's/ $//')"
+check "the first line starts at column 0" "0 30" "$COLUMNS_USED"
+check "it really did fold" "yes" \
+    "$([ "$(printf '%s\n' "$ROW" | grep -c .)" -gt 1 ] && echo yes || echo no)"
+# Nothing is dropped by the fold: the panel carries the About in full.
+check "the last word survives" "capabilities." \
+    "$(printf '%s\n' "$ROW" | tail -1 | awk '{print $NF}')"
+
+# The indent is MEASURED from the row format on both sides, so widening a column
+# cannot leave the fold behind again.
+has "the shell measures it"      "exakit_about_wrap \\" "$COMMON"
+has "...from the row format"     '"$(printf '"'"'%-14s %-14s '"'"' '"'"''"'"' '"'"''"'"')"' "$COMMON"
+lacks "and never counts by hand" "ui_repeat ' ' 32"  "$COMMON"
+has "the twin measures it too"   '$indent = "{0,-14} {1,-14} " -f "", ""' "$COMMON_PS1"
+lacks "no hand-counted twin"     '(" " * 32)'        "$COMMON_PS1"
+
+printf '\n== every version is spelled the same way ==\n'
+
+# json-tables takes its version from a git tag and reported "v0.2" — one row in
+# two tables wearing a prefix none of its neighbours wore.
+check "a tag prefix is dropped"        "0.2"   "$(exakit_version_plain v0.2)"
+check "so is a longer one"             "1.7.0" "$(exakit_version_plain v1.7.0)"
+check "a bare version is untouched"    "0.1.0" "$(exakit_version_plain 0.1.0)"
+# Only a "v" followed by a DIGIT is a tag prefix. A version that legitimately
+# starts with a letter keeps it.
+check "a codename keeps its letter"    "vNext" "$(exakit_version_plain vNext)"
+check "and so does a word"             "unknown" "$(exakit_version_plain unknown)"
+check "nothing in, nothing out"        ""      "$(exakit_version_plain '')"
+
+# Applied where versions are DISPLAYED, never where they are compared or stored.
+has "the version table spells it"   'exakit_version_plain "$(exakit_version_installed_cell' "$COMMON"
+has "...both columns"               'exakit_version_plain "$(exakit_component_available' "$COMMON"
+has "the marketplace table too"     'exakit_version_plain "${_mm_adv:-unknown}"' "$COMMON"
+has "...for installed rows"         'exakit_version_plain "${_mm_ver:-?}"'       "$COMMON"
+has "the twin has the helper"       'function Get-ExakitVersionPlain'           "$COMMON_PS1"
+has "...and uses it in its table"   'Get-ExakitVersionPlain $advertised'        "$COMMON_PS1"
 
 printf '\n%s: %d passed, %d failed\n' "$(basename "$0")" "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
