@@ -15,6 +15,56 @@
 
 $script:McpHttpPort = if ($env:EXAKIT_MCP_HTTP_PORT) { $env:EXAKIT_MCP_HTTP_PORT } else { "8123" }
 
+# The AI-client table: the rows a reader ticks in the selection phase are the
+# rows the progress phase fills in. $null means this run has no table - a
+# scripted EXAKIT_MCP_CLIENTS answer, or no console to draw one on.
+# Twin of EXAKIT_MCP_TABLE_STATE in common.sh.
+$script:McpTable = $null
+$script:McpTableRows = @()      # the table rows the progress phase fills in
+$script:McpTableIds = @()       # the client ids per client row, in row order
+$script:McpTableRowFirst = 2    # the row the first client sits on
+# The read-only user's "already done" flag, which only ever covers the one CLI
+# call the table was drawn for. Twin of EXAKIT_MCP_READONLY_READY.
+$script:McpReadonlyReady = $false
+
+# Reset-McpClientTable - the table is finished with: drop it and the row
+# bookkeeping, so nothing of this screen is left for the next one to inherit.
+# There is no title or column heading to clear the way the shell twin has to:
+# those travel on the table object here, so the dataset table that follows
+# cannot end up wearing this one's.
+# Twin of _exakit_mcp_table_release in common.sh.
+function Reset-McpClientTable {
+    $script:McpTable = $null
+    $script:McpTableRows = @()
+    $script:McpTableIds = @()
+    $script:McpTableRowFirst = 2
+    # And the read-only user's flag: a later run in the same process (the refresh
+    # after a redeploy) must prepare the user again.
+    $script:McpReadonlyReady = $false
+}
+
+# Get-McpConfiguredClients <result-json> - the client ids the run actually wrote
+# a config for, straight from the CLI's own record. The table's final cells are
+# built from this rather than from the exit status, which cannot tell "one
+# client's config file was unusable" from "nothing was configured".
+# Twin of _exakit_mcp_result_states in common.sh.
+function Get-McpConfiguredClients {
+    param([string]$ResultJson = "")
+    if (-not $ResultJson) { return @() }
+    try {
+        $doc = $ResultJson | ConvertFrom-Json
+        $out = @()
+        if ($doc.details) {
+            foreach ($client in @($doc.details.configured_clients)) {
+                if ($client) { $out += ("" + $client) }
+            }
+        }
+        return $out
+    } catch {
+        return @()
+    }
+}
+
 # Get-UvxPath - resolve the uvx launcher to a full path. uv installs uvx into
 # ~/.local/bin (or $BinDir), which is NOT on the current process's PATH right
 # after install, so a bare "uvx" invocation fails during setup even though uv
@@ -608,10 +658,23 @@ function Invoke-McpSetupCli {
     param([Parameter(Mandatory)][string[]]$Clients)
     $repoRoot = Get-ExakitRepoRoot
     if (-not $repoRoot) { Warn2 "Could not find the MCP package source to configure MCP clients."; return $null }
-    try { Set-McpReadonlyAccess } catch { return $null }
+    # The caller may have prepared the read-only user already: it narrates as it
+    # goes, and the client table is animating by the time this runs, so nothing
+    # may print. ONE call only - the flag is cleared here, so a later run in the
+    # same process (the refresh after a redeploy) prepares the user again.
+    if ($script:McpReadonlyReady) {
+        $script:McpReadonlyReady = $false
+    } else {
+        try { Set-McpReadonlyAccess } catch { return $null }
+    }
     $result = Invoke-McpModule (@("setup-runtime-clients", "--runtime-root", $script:ExakitHome, "--clients") + $Clients)
     if ($result.ExitCode -ne 0) {
         if ($script:LogFile) { $result.Output | Add-Content -Path $script:LogFile }
+        # First, not last: the client table may be animating, and its next frame
+        # moves the cursor up and clears - which would wipe this warning off the
+        # screen before anyone could read it. Fail() stops the animation for the
+        # same reason.
+        Stop-ExakitAnimation
         Warn2 "MCP client setup failed (see log)."
         return $null
     }
@@ -673,12 +736,14 @@ $script:McpClientLabels = @{ claude_desktop = "Claude"; claude_code = "Claude Co
 # "restart it like this" lines, which differ per client - stays, as plain lines
 # rather than boxed rows. Twin of exakit_print_mcp_setup_summary in common.sh.
 function Show-McpSetupSummary {
-    param([Parameter(Mandatory)][string]$ResultJson)
+    param([Parameter(Mandatory)][string]$ResultJson, [bool]$TableShown = $false)
     $doc = $ResultJson | ConvertFrom-Json
     $clients = @($doc.selected_clients) | ForEach-Object { if ($script:McpClientLabels.ContainsKey($_)) { $script:McpClientLabels[$_] } else { $_ } }
     if ($clients) { $clientList = ($clients -join ', ') } else { $clientList = "no clients" }
     if ("$($doc.status)".StartsWith("success")) {
-        Ok "MCP configured for $clientList"
+        # The table already named every client and what happened to it, so this
+        # line would be the same fact twice, the second time less precisely.
+        if (-not $TableShown) { Ok "MCP configured for $clientList" }
     } else {
         Warn2 "MCP setup finished as '$($doc.status)' for $clientList"
     }
@@ -945,82 +1010,211 @@ function Invoke-McpSetup {
         Info "Configuring MCP clients from EXAKIT_MCP_CLIENTS: $($clients -join ',')"
     }
 
+    Reset-McpClientTable
     if (-not $clients) {
-    Write-Host ""
-    # Show the FULL list of supported clients so the user sees everything the
-    # kit can connect: pending clients (installed, not connected yet) are
-    # selectable and pre-selected; clients that are already connected or not
-    # installed on this machine appear greyed out with the reason and cannot
-    # be checked. One "Claude" row covers both Claude surfaces (desktop app +
-    # Claude Code CLI) while their states match; when they differ, each
-    # surface gets its own row. Falls back to everything selectable when
-    # discovery is unavailable.
-    $states = Get-McpClientStates
-    if ($null -eq $states) {
-        $states = @{}
-        foreach ($id in @("claude_desktop", "claude_code", "codex", "cursor", "vscode_copilot", "gemini_cli", "opencode", "continue")) { $states[$id] = "pending" }
-    }
-    $menuLabels = New-Object 'System.Collections.Generic.List[string]'
-    $menuIds = New-Object 'System.Collections.Generic.List[object]'
-    $dot = [char]0xB7
-    # One client row: pending rows carry their ids and count as selectable;
-    # connected and missing rows are disabled ("!" prefix) with no ids.
-    $addRow = {
-        param($label, $state, $ids)
-        switch ($state) {
-            "pending"   { [void]$menuLabels.Add($label); [void]$menuIds.Add($ids) }
-            "connected" { [void]$menuLabels.Add(("!{0} {1} already connected" -f $label, $dot)); [void]$menuIds.Add(@()) }
-            default     { [void]$menuLabels.Add(("!{0} {1} not installed" -f $label, $dot)); [void]$menuIds.Add(@()) }
+        # Show the FULL list of supported clients so the user sees everything the
+        # kit can connect: pending clients (installed, not connected yet) are
+        # selectable and pre-selected; clients that are already connected or not
+        # installed on this machine appear as DISABLED rows with the reason and
+        # cannot be checked. One "Claude" row covers both Claude surfaces
+        # (desktop app + Claude Code CLI) while their states match; when they
+        # differ, each surface gets its own row. Falls back to everything
+        # selectable when discovery is unavailable.
+        $states = Get-McpClientStates
+        if ($null -eq $states) {
+            $states = @{}
+            foreach ($id in @("claude_desktop", "claude_code", "codex", "cursor", "vscode_copilot", "gemini_cli", "opencode", "continue")) { $states[$id] = "pending" }
         }
-    }
-    $stateOf = {
-        param($id)
-        if ($states.ContainsKey($id)) { $states[$id] } else { "missing" }
-    }
-    $cdState = & $stateOf "claude_desktop"
-    $ccState = & $stateOf "claude_code"
-    if ($cdState -eq $ccState) { & $addRow "Claude" $cdState @("claude_desktop", "claude_code") }
-    else {
-        & $addRow "Claude (desktop app)" $cdState @("claude_desktop")
-        & $addRow "Claude Code (CLI)" $ccState @("claude_code")
-    }
-    & $addRow "Codex" (& $stateOf "codex") @("codex")
-    & $addRow "Cursor" (& $stateOf "cursor") @("cursor")
-    & $addRow "GitHub Copilot" (& $stateOf "vscode_copilot") @("vscode_copilot")
-    & $addRow "Gemini CLI" (& $stateOf "gemini_cli") @("gemini_cli")
-    & $addRow "OpenCode" (& $stateOf "opencode") @("opencode")
-    & $addRow "Continue" (& $stateOf "continue") @("continue")
-    $pendingCount = 0
-    foreach ($ids in $menuIds) { if (@($ids).Count -gt 0) { $pendingCount++ } }
-    if ($pendingCount -eq 0) {
-        Ok "All AI clients found on this machine are already connected over MCP."
-        Info "Check them with 'exakit mcp-status'; new clients appear here once installed."
-        return $true
-    }
-    [void]$menuLabels.Add("Skip")
-    $skipIdx = $menuLabels.Count
-    # Pre-select every pending client - never a disabled row, never Skip.
-    $defaults = @()
-    for ($i = 1; $i -lt $skipIdx; $i++) {
-        if (@($menuIds[$i - 1]).Count -gt 0) { $defaults += $i }
-    }
-    $selection = Read-ExakitCheckboxMenu -Title "Select the AI clients to connect (MCP)" `
-        -Options $menuLabels.ToArray() -Defaults $defaults -ExclusiveIndex $skipIdx
-    if ($selection -contains $skipIdx) {
-        Warn2 "No AI client will be connected to your database."
-        if (-not (Confirm-ExakitPrompt "Are you sure you want to continue without an AI client?" $true)) {
-            return (Invoke-McpSetup)   # back to the menu
+        $menuLabels = New-Object 'System.Collections.Generic.List[string]'
+        $menuIds = New-Object 'System.Collections.Generic.List[object]'
+        $menuNotes = New-Object 'System.Collections.Generic.List[string]'
+        # One client row: pending rows carry their ids and are selectable;
+        # connected and missing rows carry no id and a note saying why, which is
+        # what makes them a disabled row in the table.
+        $addRow = {
+            param($label, $state, $ids)
+            [void]$menuLabels.Add($label)
+            switch ($state) {
+                "pending"   { [void]$menuIds.Add($ids); [void]$menuNotes.Add("") }
+                "connected" { [void]$menuIds.Add(@()); [void]$menuNotes.Add("already connected") }
+                default     { [void]$menuIds.Add(@()); [void]$menuNotes.Add("not installed") }
+            }
         }
-        Info "Okay - skipping AI client setup. Connect one any time with: exakit mcp-setup."
-        Show-ExakitNoAiPanel
-        return $true
-    }
-    $clients = @($selection | Where-Object { $_ -lt $skipIdx } | ForEach-Object { $menuIds[$_ - 1] } | ForEach-Object { $_ })
+        $stateOf = {
+            param($id)
+            if ($states.ContainsKey($id)) { $states[$id] } else { "missing" }
+        }
+        $cdState = & $stateOf "claude_desktop"
+        $ccState = & $stateOf "claude_code"
+        if ($cdState -eq $ccState) { & $addRow "Claude" $cdState @("claude_desktop", "claude_code") }
+        else {
+            & $addRow "Claude (desktop app)" $cdState @("claude_desktop")
+            & $addRow "Claude Code (CLI)" $ccState @("claude_code")
+        }
+        & $addRow "Codex" (& $stateOf "codex") @("codex")
+        & $addRow "Cursor" (& $stateOf "cursor") @("cursor")
+        & $addRow "GitHub Copilot" (& $stateOf "vscode_copilot") @("vscode_copilot")
+        & $addRow "Gemini CLI" (& $stateOf "gemini_cli") @("gemini_cli")
+        & $addRow "OpenCode" (& $stateOf "opencode") @("opencode")
+        & $addRow "Continue" (& $stateOf "continue") @("continue")
+        $pendingCount = 0
+        foreach ($ids in $menuIds) { if (@($ids).Count -gt 0) { $pendingCount++ } }
+        if ($pendingCount -eq 0) {
+            Ok "All AI clients found on this machine are already connected over MCP."
+            Info "Check them with 'exakit mcp-status'; new clients appear here once installed."
+            return $true
+        }
+        # The read-only database user is prepared BEFORE the table is drawn.
+        # Everything it does narrates itself, and from the moment the table is on
+        # screen a line printed under it shifts the frame out from under the
+        # cursor arithmetic that redraws it: the animator's first frame would then
+        # repaint over its own table instead of the menu's, and the top of a stale
+        # table is left stranded above it. It is the kit's own database user, not
+        # any client's, so preparing it before the choice costs a skipped run
+        # nothing but an idle user - and it is what the next 'exakit mcp-setup'
+        # needs anyway.
+        # A failure in here has already said what went wrong - Fail() prints its
+        # own card - so this only has to stop the step, not restate it. Twin of
+        # the shell's `exakit_configure_mcp_readonly_access || return 1`.
+        try { Set-McpReadonlyAccess } catch { return $false }
+        $script:McpReadonlyReady = $true
+
+        # ONE table for the whole step, the same component the dataset load uses
+        # (the Get/Set-ExakitTable* family in ui.ps1): the rows a reader ticks are
+        # the rows that then fill in, so nobody has to map one screen onto
+        # another. Twin of the same table in exakit_mcp_setup (common.sh).
+        $clientCount = $menuLabels.Count
+        $rowFirst = 2
+        $rowLast = $rowFirst + $clientCount - 1
+        $rowSkip = $rowLast + 1
+        $script:McpTableRowFirst = $rowFirst
+        $script:McpTableIds = $menuIds.ToArray()
+        $script:McpTable = New-ExakitTable -Title "AI clients to connect" -Col1 "Client" -Reserve 1
+        [void](Add-ExakitTableRow -Kind "group" -Label "Select All" -Table $script:McpTable)
+        for ($i = 0; $i -lt $clientCount; $i++) {
+            if ($i -eq ($clientCount - 1)) { $kind = "corner" } else { $kind = "tee" }
+            [void](Add-ExakitTableRow -Kind $kind -Label $menuLabels[$i] -Table $script:McpTable)
+        }
+        [void](Add-ExakitTableRow -Kind "plain" -Label "Skip" -Table $script:McpTable)
+        # Pre-select every pending client, and the group row with them: under the
+        # all-or-none parent it is ticked exactly while every pickable child is.
+        # A client with no id is one this machine cannot offer - it becomes a
+        # disabled row carrying the reason, so the list is the whole answer rather
+        # than a list that quietly omits things.
+        $defaults = @(1)
+        for ($i = 0; $i -lt $clientCount; $i++) {
+            $rowAt = $rowFirst + $i
+            if (@($menuIds[$i]).Count -gt 0) { $defaults += $rowAt }
+            else { Disable-ExakitTableRow -Row $rowAt -Note $menuNotes[$i] -Table $script:McpTable }
+        }
+        Write-Host ""
+        # Loop so a not-confirmed skip returns the user to the menu.
+        $onScreen = 0
+        $selection = @()
+        while ($true) {
+            $selection = @(Invoke-ExakitTableMenu -Table $script:McpTable -Defaults $defaults `
+                -ExclusiveIndex $rowSkip -GroupParent 1 -GroupFirst $rowFirst `
+                -GroupLast $rowLast -GroupMode "all" -OnScreen $onScreen)
+            if ($selection -contains $rowSkip) {
+                Warn2 "No AI client will be connected to your database."
+                if (Confirm-ExakitPrompt "Are you sure you want to continue without an AI client?" $true) {
+                    Info "Okay - you can connect one any time with: exakit mcp-setup"
+                    Show-ExakitNoAiPanel
+                    Reset-McpClientTable
+                    return $true
+                }
+                # Back into the SAME table, not a second one under it: the frame is
+                # still on screen with the warning and the question below it (one
+                # line each), so the menu is told how far up its own top border is.
+                $onScreen = [int]$script:McpTable.Lines + 2
+                continue
+            }
+            break
+        }
+        $clients = @()
+        $pickedRows = @()
+        foreach ($row in $selection) {
+            if ($row -lt $rowFirst -or $row -gt $rowLast) { continue }
+            $ids = @($menuIds[$row - $rowFirst])
+            if ($ids.Count -eq 0) { continue }        # disabled rows carry no id
+            foreach ($id in $ids) { if ($clients -notcontains $id) { $clients += $id } }
+            $pickedRows += $row
+        }
+        $script:McpTableRows = $pickedRows
+        if ($clients.Count -eq 0) {
+            # Enter needs a selection and the group row can never be the only one
+            # ticked, so this is the impossible answer rather than a real one.
+            # Still: never call the setup CLI with an empty client list.
+            Info "No AI client selected - connect one any time with: exakit mcp-setup"
+            Reset-McpClientTable
+            return $true
+        }
     }
 
-    Info "Applying MCP setup"
+    $tableShown = $false
+    if ($null -ne $script:McpTable -and @($script:McpTableRows).Count -gt 0) {
+        foreach ($row in $script:McpTableRows) {
+            Set-ExakitTableRow -Row $row -State "waiting" -Table $script:McpTable
+        }
+        if (Start-ExakitTable -Table $script:McpTable) {
+            $tableShown = $true
+            # The bar sits on the GROUP row, not on a client row: ONE python
+            # process configures every selected client, so there is no per-client
+            # checkpoint a per-client bar could be honest about. The client rows
+            # wait, and each one's final cell is read out of the result
+            # afterwards - nothing on screen calls a client done before the run
+            # says it is.
+            Set-ExakitTableRow -Row 1 -State "running" -Pct 5 -Ceiling 90 -Secs 20 `
+                -Phase "writing client configs" -Table $script:McpTable
+        }
+    }
+    # No live table to say what is happening: say it in a line, as before. With
+    # the table there is nothing to add - and a line printed here would land
+    # between the menu's frame and the animator's first frame, which is the one
+    # place on this screen where nothing may be printed.
+    if (-not $tableShown) { Info "Applying MCP setup" }
     $resultJson = Invoke-McpSetupCli -Clients $clients
-    if ($resultJson) { Show-McpSetupSummary $resultJson }
+    if ($tableShown) {
+        # What each row ends up saying comes from the result, client by client:
+        # one client can be skipped on its own (an unparseable config file of its
+        # own) while every other client is configured, and the exit status cannot
+        # tell those two apart.
+        $configured = Get-McpConfiguredClients -ResultJson $resultJson
+        $okRows = 0
+        $selRows = 0
+        foreach ($row in $script:McpTableRows) {
+            $selRows++
+            $ids = @($script:McpTableIds[$row - $script:McpTableRowFirst])
+            $idOk = 0
+            foreach ($id in $ids) { if ($configured -contains $id) { $idOk++ } }
+            if ($idOk -eq 0) {
+                Set-ExakitTableRow -Row $row -State "failed" -Final "not configured" -Table $script:McpTable
+            } elseif ($idOk -eq $ids.Count) {
+                Set-ExakitTableRow -Row $row -State "done" -Final "configured" -Table $script:McpTable
+                $okRows++
+            } else {
+                # The Claude row is two surfaces behind one label; say which
+                # rather than call a half-written row configured.
+                Set-ExakitTableRow -Row $row -State "done" -Table $script:McpTable `
+                    -Final ("configured " + $script:UiMidDot + " $idOk of $($ids.Count)")
+                $okRows++
+            }
+        }
+        if ($selRows -eq 1) { $unit = "client" } else { $unit = "clients" }
+        if ($okRows -eq $selRows) {
+            Set-ExakitTableRow -Row 1 -State "done" -Table $script:McpTable `
+                -Final ("configured " + $script:UiMidDot + " $selRows $unit")
+        } else {
+            Set-ExakitTableRow -Row 1 -State "failed" -Table $script:McpTable `
+                -Final "$okRows of $selRows $unit configured"
+        }
+        # Normally still animating. A failed CLI stops the animation itself before
+        # it warns, so that its warning is not painted into the frame - and then
+        # the frame on screen is already the last one.
+        if ($script:UiTableLive) { Stop-ExakitTable -Table $script:McpTable }
+    }
+    if ($resultJson) { Show-McpSetupSummary -ResultJson $resultJson -TableShown $tableShown }
+    Reset-McpClientTable
     if (-not $resultJson) { return $false }
     Show-McpReadyPanel "permanent"
     Ok "MCP setup guidance is ready."
@@ -1150,9 +1344,9 @@ function Update-McpClientPins {
 }
 
 # Request-ExakitMcpSetupOffer - connect the user's AI client(s) during
-# install. A required step: the client checkbox menu handles the choice
-# (Claude + Codex preselected), and non-interactive installs keep those
-# defaults inside Read-ExakitCheckboxMenu.
+# install. A required step: the client TABLE handles the choice (every client
+# this machine can still connect is preselected), and non-interactive installs
+# keep those defaults inside Invoke-ExakitTableMenu.
 function Request-ExakitMcpSetupOffer {
     if ((Get-ExakitManifestValue "components.mcp_server.client_setup.completed") -eq $true) { return }
     # EXAKIT_SKIP_MCP=1 lets a scripted/agent install skip client wiring
