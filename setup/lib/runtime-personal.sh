@@ -411,19 +411,87 @@ _personal_deploy_creep() {
     printf '%s\n' "$(( $1 + _pdc_step ))"
 }
 
-# _personal_deploy_paint <pct> <phase> <elapsed-seconds> — the progress line, in
-# the same bar/percentage shape as ui_progress but indented to sit under the
-# step's own lines. Local to this file on purpose: Exasol Personal is macOS-only,
-# so this is not part of the shared visual layer ui.ps1 mirrors.
+# Eighths of a block. A twenty-cell bar advancing in whole cells steps 5% at a
+# time, which at five frames a second reads as a bar that is stuck and then
+# jumps. The partial-block glyphs give the same bar eight times the resolution,
+# so it creeps. Index 0 is a space: the frontier cell is EMPTY when there is no
+# fraction to draw, which is what keeps the dim remainder unbroken.
+UI_DEPLOY_EIGHTHS=' ▏▎▍▌▋▊▉'
+
+# _personal_deploy_paint <pct> <phase> <elapsed-seconds> <frame> <columns> — the
+# progress line.
+#
+# Laid out in four cells across the terminal's own width, so the bar starts at
+# the same column whatever the phase is called and nothing shuffles sideways as
+# the text changes underneath it:
+#
+#   45% phase text · 40% bar · 7% percentage · 8% elapsed
+#
+# The phase leads because it is the part a reader is actually reading; the
+# numbers trail because they are the part they glance at. A braille head sits in
+# front of the whole thing: the bar can legitimately sit still (a cold cache
+# downloading for four minutes holds its position on purpose), and the head is
+# what says the run is alive while it does.
+#
+# Local to this file on purpose: Exasol Personal is macOS-only, so this is not
+# part of the shared visual layer ui.ps1 mirrors.
 _personal_deploy_paint() {
-    _pdp_w=20
-    _pdp_filled=$(( $1 * _pdp_w / 100 ))
-    [ "$_pdp_filled" -gt "$_pdp_w" ] && _pdp_filled="$_pdp_w"
-    printf '\r      %s%s%s%s%s %s%3s%%%s %s %s(%ss)%s\033[K' \
-        "${UI_ACCENT:-}" "$(ui_repeat "${UI_BAR_FULL:-#}" "$_pdp_filled")" \
-        "${UI_DIM:-}" "$(ui_repeat "${UI_BAR_EMPTY:-.}" $((_pdp_w - _pdp_filled)))" "${UI_RESET:-}" \
-        "${UI_BOLD:-}" "$1" "${UI_RESET:-}" "$2" \
-        "${UI_DIM:-}" "$3" "${UI_RESET:-}"
+    _pdp_pct="$1"; _pdp_phase="$2"; _pdp_el="$3"; _pdp_frame="${4:-0}"; _pdp_cols="${5:-80}"
+
+    # The gutter the rest of the step's lines use, plus the head and its space.
+    _pdp_avail=$(( _pdp_cols - 6 - 2 ))
+    [ "$_pdp_avail" -ge 24 ] || _pdp_avail=24
+    _pdp_tw=$(( _pdp_avail * 45 / 100 ))
+    _pdp_bw=$(( _pdp_avail * 40 / 100 ))
+    _pdp_nw=$(( _pdp_avail * 7 / 100 ))
+    _pdp_ew=$(( _pdp_avail - _pdp_tw - _pdp_bw - _pdp_nw ))
+    # Floors, because a cell that cannot hold its content is worse than a
+    # narrower neighbour: "100%" needs four columns and "(120s)" needs six. The
+    # text cell pays for them, since it is the only one that can be shortened
+    # without losing information the others carry exactly.
+    [ "$_pdp_nw" -ge 5 ] || { _pdp_tw=$(( _pdp_tw - (5 - _pdp_nw) )); _pdp_nw=5; }
+    [ "$_pdp_ew" -ge 7 ] || { _pdp_tw=$(( _pdp_tw - (7 - _pdp_ew) )); _pdp_ew=7; }
+    [ "$_pdp_bw" -ge 8 ] || _pdp_bw=8
+    [ "$_pdp_tw" -ge 8 ] || _pdp_tw=8
+
+    # The phase, truncated to its cell MINUS ONE: a phase long enough to fill
+    # the cell would otherwise run straight into the bar with no gap between
+    # them, which is what a narrow terminal does to every long phase there is.
+    # _ui_fit_row measures what the reader SEES, so a phase carrying an escape
+    # sequence is not cut by byte count.
+    _pdp_text="$(_ui_fit_row "$_pdp_phase" 0 $(( _pdp_tw - 1 )))"
+    _pdp_pad=$(( _pdp_tw - $(_ui_visible_len "$_pdp_text") ))
+    [ "$_pdp_pad" -ge 0 ] || _pdp_pad=0
+
+    # Eighths across the whole bar, from integer percent: at forty cells one
+    # percent is three eighths, so every step of the creep moves something.
+    if [ "${UI_FANCY:-0}" = 1 ]; then
+        _pdp_units=$(( _pdp_pct * _pdp_bw * 8 / 100 ))
+        _pdp_full=$(( _pdp_units / 8 ))
+        _pdp_rem=$(( _pdp_units % 8 ))
+        [ "$_pdp_full" -gt "$_pdp_bw" ] && { _pdp_full="$_pdp_bw"; _pdp_rem=0; }
+        _pdp_head=""
+        if [ "$_pdp_full" -lt "$_pdp_bw" ] && [ "$_pdp_rem" -gt 0 ]; then
+            _pdp_head="$(printf '%s' "$UI_DEPLOY_EIGHTHS" | cut -c $((_pdp_rem + 1)))"
+        fi
+        _pdp_empty=$(( _pdp_bw - _pdp_full ))
+        [ -n "$_pdp_head" ] && _pdp_empty=$(( _pdp_empty - 1 ))
+        [ "$_pdp_empty" -ge 0 ] || _pdp_empty=0
+        _pdp_bar="${UI_ACCENT:-}$(ui_repeat "${UI_BAR_FULL:-#}" "$_pdp_full")${UI_DIM:-}${_pdp_head}$(ui_repeat "${UI_BAR_EMPTY:-.}" "$_pdp_empty")${UI_RESET:-}"
+        _pdp_spin="${UI_SPIN_FRAMES[$(( _pdp_frame % 10 ))]}"
+    else
+        _pdp_full=$(( _pdp_pct * _pdp_bw / 100 ))
+        [ "$_pdp_full" -gt "$_pdp_bw" ] && _pdp_full="$_pdp_bw"
+        _pdp_bar="$(ui_repeat "${UI_BAR_FULL:-#}" "$_pdp_full")$(ui_repeat "${UI_BAR_EMPTY:-.}" $(( _pdp_bw - _pdp_full )))"
+        _pdp_spin='>'
+    fi
+
+    printf '\r      %s%s%s %s%s%s%s%s%*s%%%s%s%*s%s\033[K' \
+        "${UI_ACCENT:-}" "$_pdp_spin" "${UI_RESET:-}" \
+        "$_pdp_text" "$(ui_repeat ' ' "$_pdp_pad")" \
+        "$_pdp_bar" \
+        "${UI_BOLD:-}" "" $(( _pdp_nw - 1 )) "$_pdp_pct" "${UI_RESET:-}" \
+        "${UI_DIM:-}" "$_pdp_ew" "($_pdp_el""s)" "${UI_RESET:-}"
 }
 
 # _personal_deploy_animate <state-file> <t0> — redraw the progress line five
@@ -438,6 +506,12 @@ _personal_deploy_paint() {
 # slot is free while this runs.
 _personal_deploy_animate() {
     _pda_shown=0
+    _pda_frame=0
+    # Measured ONCE. _ui_term_cols forks stty or tput, and this loop runs five
+    # times a second for as long as the deploy takes; a terminal resized mid
+    # deploy keeps the width it started with, which is a fair trade for not
+    # forking a process per frame.
+    _pda_cols="$(_ui_term_cols 2>/dev/null || echo 80)"
     while :; do
         _pda_state=""
         read -r _pda_state < "$1" 2>/dev/null || true
@@ -463,7 +537,8 @@ _personal_deploy_animate() {
                 [ "$_pda_at" -lt "$_pda_shown" ] && _pda_at="$_pda_shown"
                 _pda_shown="$_pda_at"
                 _personal_deploy_paint "$_pda_at" "$_pda_label" \
-                    "$(( _pda_now - $2 ))"
+                    "$(( _pda_now - $2 ))" "$_pda_frame" "$_pda_cols"
+                _pda_frame=$(( _pda_frame + 1 ))
                 ;;
         esac
         sleep 0.2

@@ -188,14 +188,15 @@ check "nor does a zero-length segment"     "65"  "$(_personal_deploy_creep 65 65
 
 printf '\n== the progress line carries a bar, a percentage and a clock ==\n'
 
-BAR="$(_personal_deploy_paint 65 "Waiting for the database to start" 42)"
+UI_SPIN_FRAMES=(a b c d e f g h i j)
+BAR="$(_personal_deploy_paint 65 "Waiting for the database to start" 42 0 100)"
 has "percentage rendered" "65%" "$BAR"
 has "phase rendered" "Waiting for the database to start" "$BAR"
 has "elapsed rendered" "(42s)" "$BAR"
 has "bar is filled" "$UI_BAR_FULL" "$BAR"
 has "bar has a remainder" "$UI_BAR_EMPTY" "$BAR"
 # 100% must fill the bar exactly, not overflow it.
-FULL="$(_personal_deploy_paint 100 Deployed 9)"
+FULL="$(_personal_deploy_paint 100 Deployed 9 0 100)"
 lacks "a full bar has no remainder" "$UI_BAR_EMPTY" "$FULL"
 
 printf '\n== a download animates instead of going silent ==\n'
@@ -266,6 +267,79 @@ check "the previous label is restored" "Step 6/6  exakit helper" "$EXAKIT_ACTIVE
 dash_server_install() { return 1; }
 _exakit_marketplace_install_one dash-server >/dev/null 2>&1
 check "a failed install still restores it" "Step 6/6  exakit helper" "$EXAKIT_ACTIVE_LABEL"
+
+printf '\n== the line is laid out in cells, so nothing shuffles sideways ==\n'
+
+# A test run is never a terminal, so ui.sh loaded the ASCII palette — which has
+# no partial blocks and a fixed head, i.e. exactly the branch these sections are
+# NOT about. Force the fancy table for the rest of the file.
+UI_FANCY=1
+UI_BAR_FULL="$(printf '\xe2\x96\x88')"
+UI_BAR_EMPTY="$(printf '\xe2\x96\x91')"
+UI_SPIN_FRAMES=(a b c d e f g h i j)
+
+# 45% phase · 40% bar · 7% percentage · 8% elapsed, measured off the terminal.
+# The point of the cells is that the bar starts at the SAME column whatever the
+# phase is called — the old bar-first line moved the text every time the phase
+# changed length.
+col_of_bar() { # col_of_bar <phase> <cols>
+    _personal_deploy_paint 50 "$1" 9 0 "$2" \
+        | sed 's/\r//; s/'"$(printf '\033')"'\[[0-9;]*[A-Za-z]//g' \
+        | awk '{ print index($0, "'"${UI_BAR_FULL}"'") }'
+}
+SHORT="$(col_of_bar "Deployed" 100)"
+LONG="$(col_of_bar "Installing the script language container" 100)"
+check "a short phase and a long one start the bar together" "$SHORT" "$LONG"
+check "and the column is where 45% puts it" "50" "$SHORT"
+
+# Every width keeps the four cells in proportion and the line within the
+# terminal. A line one column too long wraps, and a wrapped line makes every
+# redraw climb up the screen.
+for _w in 60 80 100 120 200; do
+    _len="$(_personal_deploy_paint 70 "Waiting for the database to start" 37 0 "$_w" \
+        | sed 's/\r//; s/'"$(printf '\033')"'\[[0-9;]*[A-Za-z]//g')"
+    check "at $_w columns the line fits" "yes" \
+        "$([ "$(_ui_visible_len "$_len")" -le "$_w" ] && echo yes || echo "no: $(_ui_visible_len "$_len")")"
+done
+
+# A phase too long for its cell is cut and gets an ellipsis — and keeps a gap
+# before the bar, which is the part a naive truncation loses.
+NARROW="$(_personal_deploy_paint 70 "Installing the script language container" 37 0 80 \
+    | sed 's/\r//; s/'"$(printf '\033')"'\[[0-9;]*[A-Za-z]//g')"
+has "a long phase is truncated" "…" "$NARROW"
+lacks "and never touches the bar" "…$UI_BAR_FULL" "$NARROW"
+
+printf '\n== the bar moves in eighths, not whole cells ==\n'
+
+# A forty-cell bar stepping whole cells jumps 2.5% at a time and reads as stuck.
+# The partial-block glyphs give it eight times the resolution, so consecutive
+# percentages differ ON SCREEN.
+frame_at() { _personal_deploy_paint "$1" "Waiting" 9 0 100 \
+    | sed 's/\r//; s/'"$(printf '\033')"'\[[0-9;]*[A-Za-z]//g'; }
+check "68 and 69 percent look different" "different" \
+    "$([ "$(frame_at 68)" != "$(frame_at 69)" ] && echo different || echo same)"
+check "69 and 70 too" "different" \
+    "$([ "$(frame_at 69)" != "$(frame_at 70)" ] && echo different || echo same)"
+check "a partial block is drawn" "yes" \
+    "$(printf '%s' "$(frame_at 71)" | grep -q '[▏▎▍▌▋▊▉]' && echo yes || echo no)"
+# The frontier cell is empty when there is no fraction, so the dim remainder
+# stays unbroken rather than carrying a stray glyph.
+check "0%% draws no fill" "0" \
+    "$(frame_at 0 | awk '{ n = gsub(/'"$UI_BAR_FULL"'/, ""); print n }')"
+lacks "and no partial either" "▏" "$(frame_at 0)"
+
+printf '\n== the head says the run is alive even when the bar is parked ==\n'
+
+# The bar can legitimately hold its position for minutes (a cold cache). The
+# braille head is what moves in that case, so it has to change per frame.
+A="$(_personal_deploy_paint 64 "Fetching the Exasol runtime" 90 0 100)"
+B="$(_personal_deploy_paint 64 "Fetching the Exasol runtime" 90 1 100)"
+check "the same percentage, two frames, different lines" "different" \
+    "$([ "$A" != "$B" ] && echo different || echo same)"
+has "the animator counts frames" "_pda_frame=\$(( _pda_frame + 1 ))" \
+    "$(cat "$ROOT/setup/lib/runtime-personal.sh")"
+has "and measures the width once" "_pda_cols=\"\$(_ui_term_cols" \
+    "$(cat "$ROOT/setup/lib/runtime-personal.sh")"
 
 printf '\n%s: %d passed, %d failed\n' "$(basename "$0")" "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
