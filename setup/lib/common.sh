@@ -707,6 +707,10 @@ reject() {
 # Fatal error, rendered as a small "card": a prominent ✗ header, then a dim
 # gutter line pointing at the log — consistent shape for every failure.
 die() {
+    # First, not last: an animator that is still running moves the cursor up and
+    # clears on its very next frame, which wipes the message below off the screen
+    # before anyone can read it.
+    command -v ui_animation_stop >/dev/null 2>&1 && ui_animation_stop
     exakit_sweep_sensitive_tmp
     exakit_note_failure "$*"
     printf '\n  %s%s %s%s%s\n' "${UI_ERR:-}" "${UI_CROSS:-[x]}" "${UI_BOLD:-}" "$*" "${UI_RESET:-}" >&2
