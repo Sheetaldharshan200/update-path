@@ -1,4 +1,6 @@
 # usage: tty-replay.py <scenario.sh> <repo-root> [table-title] [keystrokes] [boxes]
+# TTY_REPLAY_COLS sets the emulated terminal width (default 80); the scenario is
+# told the same width, so the table sizes itself to the screen it is replayed on.
 #
 # <table-title> is the title in the table's top border, so a scenario for
 # another caller of the same component can be asserted the same way.
@@ -26,8 +28,14 @@ if len(sys.argv) > 4 and sys.argv[4]:
 master, slave = pty.openpty()
 # A definite window size: the table sizes its columns from the terminal, so
 # every assertion below is about a screen 80 columns wide.
-fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 24, 80, 0, 0))
-proc = subprocess.Popen(['/bin/bash', sys.argv[1], sys.argv[2]],
+COLS = int(os.environ.get('TTY_REPLAY_COLS', '80'))
+fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 24, COLS, 0, 0))
+# _ui_term_cols reads COLUMNS first and falls back to `stty size < /dev/tty` --
+# which is the REAL terminal running the suite, not the pty above. Without this
+# the table sized itself to one width and was replayed at another, and the
+# mismatch that matters here (a row that fills the last column) could not happen.
+env = dict(os.environ); env['COLUMNS'] = str(COLS)
+proc = subprocess.Popen(['/bin/bash', sys.argv[1], sys.argv[2]], env=env,
                         stdin=slave, stdout=slave, stderr=slave, close_fds=True)
 os.close(slave)
 out = []
@@ -65,6 +73,14 @@ def put(ch):
     if col > len(line): line = line + ' ' * (col - len(line))
     scr[cur] = line[:col] + ch + line[col+1:]
     col += 1
+    # A terminal wraps when the last column is written, and the row the frame
+    # then occupies is one taller than the height the animator moves the cursor
+    # up by -- which strands the top of the previous frame on screen. Modelling
+    # it is the difference between catching that and asserting a clean screen
+    # while the user watches the table flicker into two.
+    if col >= COLS:
+        cur += 1
+        col = 0
 i = 0
 while i < len(raw):
     c = raw[i]
