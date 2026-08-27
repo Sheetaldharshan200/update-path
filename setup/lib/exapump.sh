@@ -655,7 +655,21 @@ exakit_group_digits() {
 # verification, the row counts) are worth a nominal share each, measured against
 # the same scale, so they neither vanish nor dominate.
 EXAKIT_LOAD_STEP_SHARE="${EXAKIT_LOAD_STEP_SHARE:-5}"     # percent of the byte total, per byteless step
+# ...but never less than this. A share of the bytes alone is right only for a
+# dataset whose cost IS its files, and energy is the counter-example: 1,882 bytes
+# of CSV and an 02_load_data.sql that GENERATES 108,000 readings. Five percent of
+# 1,882 is 94, so the step that was the whole job got four percent of the bar,
+# the upload segment capped at 86% and sat there for a minute. A script is worth
+# about a quarter-megabyte of loading, which for a generator is if anything shy.
+EXAKIT_LOAD_STEP_FLOOR="${EXAKIT_LOAD_STEP_FLOOR:-262144}"
 EXAKIT_LOAD_BYTES_PER_SEC="${EXAKIT_LOAD_BYTES_PER_SEC:-1048576}"
+
+# exakit_load_nominal <total-bytes> — what one byteless step is worth.
+exakit_load_nominal() {
+    _lno=$(( ${1:-0} * EXAKIT_LOAD_STEP_SHARE / 100 ))
+    [ "$_lno" -ge "$EXAKIT_LOAD_STEP_FLOOR" ] || _lno="$EXAKIT_LOAD_STEP_FLOOR"
+    printf '%s\n' "$_lno"
+}
 
 # exakit_load_weight_of <file> — a file's weight, which is its size.
 exakit_load_weight_of() {
@@ -1861,8 +1875,7 @@ exakit_load_dataset_dir() {
     # A byteless step is worth a nominal share of the same scale, so the schema
     # script and the verification neither vanish next to fifteen megabytes of
     # lineitem nor pretend to be a twelfth of the job.
-    _ld_nominal=$(( _ld_bytes * EXAKIT_LOAD_STEP_SHARE / 100 ))
-    [ "$_ld_nominal" -ge 1 ] || _ld_nominal=1
+    _ld_nominal="$(exakit_load_nominal "$_ld_bytes")"
     _ld_total_w=$(( _ld_bytes + _ld_nominal + _ld_nominal ))   # + schema + row counts
     [ -s "$_ld_dir/02_load_data.sql" ]    && _ld_total_w=$(( _ld_total_w + _ld_nominal ))
     [ -s "$_ld_dir/03_verify_setup.sql" ] && _ld_total_w=$(( _ld_total_w + _ld_nominal ))
@@ -1938,14 +1951,18 @@ exakit_load_dataset_dir() {
     fi
 
     if [ -s "$_ld_dir/02_load_data.sql" ]; then
-        exakit_load_step "$_ld_state" "$_ld_done_w" "$_ld_nominal" "$_ld_total_w" 3 \
+        # Thirty, not three. 02_load_data.sql is where a dataset GENERATES rows
+        # (energy makes 108,000 of them), so it is the slowest thing here as
+        # often as it is the fastest. Guessing long makes the bar creep slowly
+        # across its share; guessing short makes it cap and wait.
+        exakit_load_step "$_ld_state" "$_ld_done_w" "$_ld_nominal" "$_ld_total_w" 30 \
             "$_ld_id · running load statements"
         exapump_run_sql_file "$_ld_dir/02_load_data.sql" "$_ld_id load statements (02_load_data.sql)"
         _ld_done_w=$(( _ld_done_w + _ld_nominal ))
     fi
 
     if [ -s "$_ld_dir/03_verify_setup.sql" ]; then
-        exakit_load_step "$_ld_state" "$_ld_done_w" "$_ld_nominal" "$_ld_total_w" 3 \
+        exakit_load_step "$_ld_state" "$_ld_done_w" "$_ld_nominal" "$_ld_total_w" 10 \
             "$_ld_id · verifying"
         _ld_verify="$(mktemp "${TMPDIR:-/tmp}/exakit-verify.XXXXXX")" || \
             die "Could not create a temporary file for verification output."
@@ -2001,7 +2018,7 @@ exakit_load_dataset_dir() {
     # dataset. Their totals land in the result line instead, which is the part
     # a reader actually checks against what they expected.
     _ld_done_w=$(( _ld_done_w + _ld_nominal ))
-    exakit_load_step "$_ld_state" "$_ld_done_w" "$_ld_nominal" "$_ld_total_w" 2 \
+    exakit_load_step "$_ld_state" "$_ld_done_w" "$_ld_nominal" "$_ld_total_w" 5 \
         "$_ld_id · counting rows"
     _ld_tables_n=0
     _ld_rows_total=0
@@ -2050,10 +2067,20 @@ exakit_load_dataset_dir() {
             _ld_result="$_ld_result, $(exakit_group_digits "$_ld_rows_total") rows"
     fi
     if [ -n "$EXAKIT_TABLE_ROW" ]; then
-        # Strip the "Dataset 'x' " prefix: the row already says which dataset it
-        # is, and the Status column is narrow.
+        # Built for the COLUMN, not for a sentence: the row already says which
+        # dataset it is, so the prefix goes, and the two numbers are padded to a
+        # fixed width so they line up down the table instead of wandering with
+        # the length of the text in front of them.
+        #
+        #   completed · 8 tables, 173,745 rows  (23s)
+        #   completed · 2 tables, 108,050 rows   (4s)
+        #   completed · 2 tables,  10,970 rows   (2s)
+        _ld_cell="completed · $_ld_tables_n table$([ "$_ld_tables_n" = 1 ] || printf 's')"
+        if [ "$_ld_rows_known" = 1 ]; then
+            _ld_cell="$_ld_cell, $(printf '%7s' "$(exakit_group_digits "$_ld_rows_total")") rows"
+        fi
         ui_table_set "$EXAKIT_TABLE_STATE" "$EXAKIT_TABLE_ROW" done "" "" "" "" \
-            "completed · ${_ld_result#Dataset \'$_ld_id\' loaded and verified — } (${_ld_elapsed}s)"
+            "$_ld_cell $(printf '%5s' "(${_ld_elapsed}s)")"
         _exakit_log_file "OK    $_ld_result (${_ld_elapsed}s)"
         EXAKIT_TABLE_ROW=""
     else
@@ -2163,7 +2190,11 @@ exakit_data_table_build() {
             [ -n "$_dtb_id" ] || continue
             _dtb_i=$(( _dtb_i + 1 ))
             if [ "$_dtb_i" -eq "$_dtb_count" ]; then _dtb_kind=corner; else _dtb_kind=tee; fi
-            printf '%s|%s|1|idle|||||| \n' "$_dtb_kind" "$_dtb_label" >> "$_dtb_f"
+            # The label loses its trailing "(~175k rows)": the Status column
+            # carries the real count when the row finishes, and an estimate
+            # beside a measurement is the same fact twice, worse.
+            printf '%s|%s|1|idle|||||| \n' "$_dtb_kind" \
+                "$(printf '%s' "$_dtb_label" | sed 's/ *([^()]*)$//')" >> "$_dtb_f"
             EXAKIT_TABLE_IDS="$EXAKIT_TABLE_IDS$_dtb_id
 "
             _dtb_n=$(( _dtb_n + 1 ))
