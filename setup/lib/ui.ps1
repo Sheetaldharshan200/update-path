@@ -91,12 +91,18 @@ function Set-ExakitPalette {
         # UI_PROGRESS_EIGHTHS in ui.sh; the glyphs live HERE because this is the
         # one .ps1 with a BOM (see ps-encoding-guard).
         $script:UiProgressEighths = @(' ','▏','▎','▍','▌','▋','▊','▉')
+        # The separator ui.sh types inline, as in "completed · 8 tables, 173,745
+        # rows". It lives in the palette because every other .ps1 has to stay pure
+        # ASCII (see tests/ps-encoding-guard.sh), so a caller that wants the same
+        # glyph has to be handed it rather than type it.
+        $script:UiMidDot = "·"
     } else {
         $script:UiTick="+"; $script:UiCross="x"; $script:UiBullet="-"; $script:UiArrow=">"
         $script:UiHr="-"; $script:UiTL="+"; $script:UiTR="+"; $script:UiBL="+"; $script:UiBR="+"; $script:UiVB="|"
         $script:UiTee="|-"; $script:UiCorner='`-'
         $script:UiBarFull="#"; $script:UiBarEmpty="."
         $script:UiProgressEighths = @(' ',' ',' ',' ',' ',' ',' ',' ')
+        $script:UiMidDot = "-"
     }
 }
 
@@ -246,9 +252,17 @@ function Write-ExakitRule {
 # its own; without the counter that call's Stop would kill the bar after the
 # first file. Twin of _UI_SPIN_NESTED in ui.sh.
 $script:UiSpinNested = 0
+# Declared HERE, next to the counter it participates in, and again with the rest
+# of the table state further down: the two Start- functions below read it, so it
+# has to exist before the table section is reached.
+$script:UiTableLive = $false
 
 function Start-ExakitSpinner([string]$Label) {
-    if ($null -ne $script:UiSpinFlag) { $script:UiSpinNested++; return }
+    # A live table is the same single slot: it is already redrawing these rows, so
+    # a spinner underneath it takes a reference and draws nothing. Without this a
+    # dataset load's first Invoke-ExakitLogged would paint a spinner over the
+    # table, and its Stop would then tear the table down.
+    if ($null -ne $script:UiSpinFlag -or $script:UiTableLive) { $script:UiSpinNested++; return }
     if (-not $script:UiFancy) { return }
     try {
         $script:UiSpinFlag = [hashtable]::Synchronized(@{ Run = $true; Label = $Label; T0 = (Get-Date) })
@@ -320,7 +334,11 @@ function Write-ExakitProgress([int]$Current, [int]$Total, [string]$Label = "") {
 # ui_progress_end in ui.sh.
 function Start-ExakitProgress {
     param([int]$Pct = 0, [int]$Ceiling = 1, [int]$Secs = 2, [string]$Phase = "")
-    if ($null -ne $script:UiSpinFlag) { $script:UiSpinNested++; return $false }
+    # Same single slot as the spinner, and a live table holds it: a bar drawn
+    # under a repainting frame lands inside the box. The caller reads $false as
+    # "narrate in plain lines" - or, for a dataset with a row of its own, reports
+    # into that row instead (see Set-ExakitLoadStep).
+    if ($null -ne $script:UiSpinFlag -or $script:UiTableLive) { $script:UiSpinNested++; return $false }
     if (-not $script:UiFancy) { return $false }
     try {
         $now = Get-Date
@@ -505,6 +523,628 @@ function Get-ExakitBar {
     if ($filled -lt 0) { $filled = 0 }
     return ("{0}{1}{2}{3}{4}" -f $script:UiAccent, ($script:UiBarFull * $filled),
         $script:UiDim, ($script:UiBarEmpty * ($Width - $filled)), $script:UiReset)
+}
+
+# --- the live table ----------------------------------------------------------
+# One table that is both the menu and the progress display: you tick rows in it,
+# it fills its Status column in place as the work runs, and what is left on
+# screen at the end is the record of what happened. Nothing scrolls past.
+# Twin of the ui_table_* family in ui.sh.
+#
+# The state is ONE synchronized hashtable, not a file: the bash side needs a file
+# because the thing doing the work is usually in a subshell that cannot reach the
+# animator's variables, and PowerShell has no such split - the animator reads the
+# very object the foreground mutates. The shape is otherwise the bash one:
+#
+#   Title    what the top border says
+#   Reserve  how many phase sub-lines the frame ALWAYS has (see below)
+#   Cols     the console width, measured once
+#   Lines    how many lines the last frame really occupied
+#   Rows     one hashtable per row:
+#              Kind    group | tee | corner | plain   - the tree connector
+#              Tick    $true while the row is selected
+#              State   idle | waiting | running | done | failed
+#              Final   what the Status column says once the row is finished
+#
+# The redraw is Read-ExakitCheckboxMenu's: count the lines the last frame REALLY
+# occupied (a wrapped row is two), go up by that many, and clear from there.
+# Anything else stacks stale rows with every keypress.
+$script:UiTable = $null
+$script:UiTableLive = $false
+$script:UiTablePs = $null
+$script:UiTableRs = $null
+$script:UiTableHandle = $null
+
+# The animator runs in a runspace, and a runspace inherits no functions - so it
+# needs this file's own frame builder, which means this file's own SOURCE. Read
+# as text and re-created as a scriptblock rather than dot-sourced by path: a
+# script FILE is subject to the execution policy, a scriptblock built from a
+# string is not, and the alternative - a second copy of the frame builder inlined
+# into the animator - is the drift this file exists to prevent.
+$script:UiTableSrc = ""
+if ($PSCommandPath) { $script:UiTableSrc = $PSCommandPath }
+elseif ($PSScriptRoot) { $script:UiTableSrc = Join-Path $PSScriptRoot "ui.ps1" }
+
+# New-ExakitTable [-Title] [-Reserve] - a fresh, empty table. Returns it, and
+# also parks it as the module's current one so every other call can default to it.
+function New-ExakitTable {
+    param([string]$Title = "Progress", [int]$Reserve = 1)
+    $t = [hashtable]::Synchronized(@{
+        Title   = $Title
+        Reserve = $Reserve
+        Cols    = 80
+        Lines   = 0
+        Rows    = [System.Collections.ArrayList]::Synchronized((New-Object System.Collections.ArrayList))
+        Run     = $false
+        Stop    = $false
+        Alive   = $false
+    })
+    try { $t.Cols = [Console]::WindowWidth } catch { }
+    $script:UiTable = $t
+    return $t
+}
+
+# Add-ExakitTableRow -Kind <group|tee|corner|plain> -Label <text> [-Ticked]
+# One row, appended in the order it will be drawn. Returns its 1-based number,
+# which is how every later call names it.
+function Add-ExakitTableRow {
+    param(
+        [ValidateSet("group", "tee", "corner", "plain")][string]$Kind = "plain",
+        [Parameter(Mandatory)][string]$Label,
+        [switch]$Ticked,
+        [hashtable]$Table = $null
+    )
+    if ($null -eq $Table) { $Table = $script:UiTable }
+    if ($null -eq $Table) { return 0 }
+    $row = [hashtable]::Synchronized(@{
+        Kind = $Kind; Label = $Label; Tick = [bool]$Ticked
+        State = "idle"; Pct = 0; Ceiling = 0; Secs = 0
+        SegT0 = $null; Phase = ""; Final = ""
+    })
+    [void]$Table.Rows.Add($row)
+    return $Table.Rows.Count
+}
+
+# Get-ExakitTableWidths <table> - how wide the two columns want to be, capped to
+# what the console has. The name column is the widest label, the status column is
+# the widest finished status, and neither is allowed to push the table past the
+# screen: the name gives way first, because a truncated label is still
+# recognisable while a truncated row count is a lie.
+# Twin of ui_table_widths in ui.sh.
+function Get-ExakitTableWidths {
+    param([Parameter(Mandatory)][hashtable]$Table)
+    $nameW = 10
+    # A FLOOR, not a starting guess. The status column is measured from the
+    # finished statuses, and while the work is still running there are none - so a
+    # column sized to what it holds today would be twenty wide during the load and
+    # forty when it finished, and the whole table would change width as the last
+    # row completed. Wide enough for a bar worth looking at, and for
+    # "completed - 8 tables, 173,745 rows (23s)".
+    $statW = 44
+    foreach ($row in $Table.Rows.ToArray()) {
+        $len = $row.Label.Length
+        # The tree connector plus its space is 3 columns of the name cell.
+        if ($row.Kind -eq "tee" -or $row.Kind -eq "corner") { $len += 3 }
+        if ($len -gt $nameW) { $nameW = $len }
+        if ($row.Final -and $row.Final.Length -gt $statW) { $statW = $row.Final.Length }
+    }
+    $cols = 80
+    if ([int]$Table.Cols -gt 0) { $cols = [int]$Table.Cols }
+    # 2 border + 1 space + 4 checkbox + name + 2 gap + status + 1 space + 1 border
+    $over = 11 + $nameW + $statW - $cols + 1
+    if ($over -gt 0) {
+        $nameW -= $over
+        if ($nameW -lt 12) { $nameW = 12 }
+    }
+    return @{ Name = $nameW; Status = $statW }
+}
+
+# Get-ExakitTableCell <row> <status-width> <now> - the Status column for one row,
+# as up to TWO lines: the bar and its percentage, then the phase and its elapsed
+# count directly underneath, so the percentage sits above the seconds. Returns
+# the text AND how wide it reads, because only the builder can tell those apart
+# once colour is in the string. Twin of _ui_table_cell in ui.sh.
+function Get-ExakitTableCell {
+    param(
+        [Parameter(Mandatory)][hashtable]$Row,
+        [int]$StatusWidth = 44,
+        [datetime]$Now = (Get-Date)
+    )
+    $num = 7
+    $barw = $StatusWidth - $num
+    if ($barw -lt 8) { $barw = 8 }
+    $cell = @{ Text = ""; Len = 0; Text2 = ""; Len2 = 0 }
+    switch ($Row.State) {
+        "running" {
+            # The creep, inline: where the bar sits between the stage the job last
+            # reported and the one it will report next, capped one point below the
+            # next milestone so arriving at it is still something you see happen.
+            $at = [int]$Row.Pct
+            $inSeg = 0
+            if ($null -ne $Row.SegT0) { $inSeg = [int]($Now - $Row.SegT0).TotalSeconds }
+            if ($inSeg -lt 0) { $inSeg = 0 }
+            $span = [int]$Row.Ceiling - $at
+            if ($span -gt 0 -and [int]$Row.Secs -gt 0) {
+                $stepped = [int][Math]::Floor($span * $inSeg / [int]$Row.Secs)
+                if ($stepped -gt ($span - 1)) { $stepped = $span - 1 }
+                if ($stepped -lt 0) { $stepped = 0 }
+                $at = $at + $stepped
+            }
+            if ($at -gt 100) { $at = 100 }
+            if ($at -lt 0) { $at = 0 }
+            # Eighths across the whole bar, from integer percent: at forty cells
+            # one percent is three eighths, so every step of the creep moves
+            # something on screen.
+            #
+            # Floor, not [int]: a PowerShell cast ROUNDS (and rounds .5 to even),
+            # so 12 eighths became 2 whole cells plus a 4/8 frontier - a bar one
+            # cell ahead of the number beside it. The shell twin divides in
+            # integers, and this has to agree with it cell for cell.
+            $units = [int][Math]::Floor($at * $barw * 8 / 100)
+            $full = [int][Math]::Floor($units / 8)
+            $rem = $units % 8
+            if ($full -gt $barw) { $full = $barw; $rem = 0 }
+            $head = ""
+            if ($script:UiFancy -and $full -lt $barw -and $rem -gt 0) { $head = $script:UiProgressEighths[$rem] }
+            $empty = $barw - $full - $head.Length
+            if ($empty -lt 0) { $empty = 0 }
+            $pctText = "$at%"
+            $cell.Text = $script:UiAccent + ($script:UiBarFull * $full) + $script:UiDim + $head +
+                ($script:UiBarEmpty * $empty) + $script:UiReset + $pctText.PadLeft($num)
+            $cell.Len = $barw + $num
+            $el = "(" + $inSeg + "s)"
+            $phase = "" + $Row.Phase
+            if ($phase.Length -gt $barw) { $phase = $phase.Substring(0, $barw - 1) + "…" }
+            $pad2 = $barw - $phase.Length + $num - $el.Length
+            if ($pad2 -lt 0) { $pad2 = 0 }
+            $cell.Text2 = $script:UiDim + $phase + (" " * $pad2) + $el + $script:UiReset
+            $cell.Len2 = $phase.Length + $pad2 + $el.Length
+        }
+        "waiting" {
+            $cell.Text = $script:UiDim + "waiting" + $script:UiReset
+            $cell.Len = 7
+        }
+        "done" {
+            $cell.Text = $script:UiOk + $script:UiTick + $script:UiReset + " " + $Row.Final
+            $cell.Len = $script:UiTick.Length + 1 + ("" + $Row.Final).Length
+        }
+        "failed" {
+            $cell.Text = $script:UiErr + $script:UiCross + $script:UiReset + " " + $Row.Final
+            $cell.Len = $script:UiCross.Length + 1 + ("" + $Row.Final).Length
+        }
+    }
+    return $cell
+}
+
+# Get-ExakitTableFrame <table> [cursor] - the whole table as ONE string, with its
+# height left in $Table.Lines. One write is what keeps a redraw from flickering,
+# and a string is what lets the caller do the clear and the draw in that one
+# write. Twin of ui_table_frame in ui.sh.
+function Get-ExakitTableFrame {
+    param([Parameter(Mandatory)][hashtable]$Table, [int]$Cursor = 0)
+    $w = Get-ExakitTableWidths -Table $Table
+    $nameW = [int]$w.Name
+    $statW = [int]$w.Status
+    $inner = 5 + $nameW + 2 + $statW + 1
+    $lines = New-Object 'System.Collections.Generic.List[string]'
+
+    $title = " " + $Table.Title + " "
+    $fill = $inner - $title.Length - 1
+    if ($fill -lt 0) { $fill = 0 }
+    [void]$lines.Add("  " + $script:UiAccent + $script:UiTL + $script:UiHr + $script:UiReset +
+        $script:UiBold + $title + $script:UiReset + $script:UiAccent + ($script:UiHr * $fill) +
+        $script:UiTR + $script:UiReset)
+
+    $headPad = $nameW - 7
+    if ($headPad -lt 0) { $headPad = 0 }
+    $head = "     Dataset" + (" " * $headPad) + "  Status"
+    $headTail = $inner - $head.Length
+    if ($headTail -lt 0) { $headTail = 0 }
+    [void]$lines.Add("  " + $script:UiAccent + $script:UiVB + $script:UiReset + $head +
+        (" " * $headTail) + $script:UiAccent + $script:UiVB + $script:UiReset)
+
+    $now = Get-Date
+    $sub = 0
+    $i = 0
+    foreach ($row in $Table.Rows.ToArray()) {
+        $i++
+        $conn = ""
+        if ($row.Kind -eq "tee") { $conn = $script:UiTee + " " }
+        elseif ($row.Kind -eq "corner") { $conn = $script:UiCorner + " " }
+        if ($row.Tick) {
+            # A plain "x", not the palette tick, when there is no colour: the
+            # plain-palette tick is itself a marker and a checkbox is already
+            # brackets. Read-ExakitCheckboxMenu makes the same substitution.
+            if ($script:UiFancy) { $mark = $script:UiTick } else { $mark = "x" }
+            $box = $script:UiOk + "[" + $mark + "]" + $script:UiReset
+            $boxLen = 2 + $mark.Length
+        } else {
+            $box = "[ ]"
+            $boxLen = 3
+        }
+        if ($i -eq $Cursor) {
+            if ($script:UiFancy) { $ptr = $script:UiAccent + "❯" + $script:UiReset } else { $ptr = ">" }
+        } else {
+            $ptr = " "
+        }
+        $name = $conn + $row.Label
+        if ($name.Length -gt $nameW) { $name = $name.Substring(0, $nameW - 1) + "…" }
+        $namePad = $nameW - $name.Length
+        if ($namePad -lt 0) { $namePad = 0 }
+        $cell = Get-ExakitTableCell -Row $row -StatusWidth $statW -Now $now
+        $tail = $inner - (1 + $boxLen + 1 + $nameW + 2 + [int]$cell.Len)
+        if ($tail -lt 0) { $tail = 0 }
+        [void]$lines.Add("  " + $script:UiAccent + $script:UiVB + $script:UiReset + $ptr + $box + " " +
+            $name + (" " * $namePad) + "  " + $cell.Text + (" " * $tail) +
+            $script:UiAccent + $script:UiVB + $script:UiReset)
+        if ($cell.Text2) {
+            $tail2 = $inner - (5 + $nameW + 2 + [int]$cell.Len2)
+            if ($tail2 -lt 0) { $tail2 = 0 }
+            [void]$lines.Add("  " + $script:UiAccent + $script:UiVB + $script:UiReset + "     " +
+                (" " * $nameW) + "  " + $cell.Text2 + (" " * $tail2) +
+                $script:UiAccent + $script:UiVB + $script:UiReset)
+            $sub++
+        }
+    }
+
+    # The frame is ONE height in every state. A frame that grows by a line pushes
+    # the console to scroll, and once the screen has scrolled a cursor-up by the
+    # frame height no longer lands at the frame's top - every redraw after that is
+    # off by one and the error accumulates, which is what strands the top of an old
+    # frame above the new one near the bottom of a screen.
+    #
+    # So the phase lines are RESERVED rather than grown into: one line, because one
+    # dataset runs at a time. Should they ever run concurrently, this is the number
+    # to raise, and nothing else changes.
+    $want = [int]$Table.Reserve
+    while ($sub -lt $want) {
+        [void]$lines.Add("  " + $script:UiAccent + $script:UiVB + $script:UiReset + (" " * $inner) +
+            $script:UiAccent + $script:UiVB + $script:UiReset)
+        $sub++
+    }
+    [void]$lines.Add("  " + $script:UiAccent + $script:UiBL + ($script:UiHr * $inner) +
+        $script:UiBR + $script:UiReset)
+
+    $Table.Lines = $lines.Count
+    return ($lines -join "`r`n")
+}
+
+# Show-ExakitTable [-Table] [-Cursor] - the frame, printed. CRLF between rows on
+# purpose: with VT processing on, a bare LF is a strict line feed that keeps the
+# column, so a frame joined with "`n" would draw itself down a staircase.
+# Twin of ui_table_render in ui.sh.
+function Show-ExakitTable {
+    param([hashtable]$Table = $null, [int]$Cursor = 0)
+    if ($null -eq $Table) { $Table = $script:UiTable }
+    if ($null -eq $Table) { return }
+    $frame = Get-ExakitTableFrame -Table $Table -Cursor $Cursor
+    try { [Console]::Write($frame + "`r`n") } catch { }
+}
+
+# Update-ExakitTable [-Table] [-Cursor] - replace the frame already on screen
+# with a new one, in ONE write. Clearing first and drawing after is what a reader
+# sees as a flicker. Twin of ui_table_redraw in ui.sh.
+function Update-ExakitTable {
+    param([hashtable]$Table = $null, [int]$Cursor = 0)
+    if ($null -eq $Table) { $Table = $script:UiTable }
+    if ($null -eq $Table) { return }
+    $prev = [int]$Table.Lines
+    if ($prev -lt 0) { $prev = 0 }
+    $frame = Get-ExakitTableFrame -Table $Table -Cursor $Cursor
+    try {
+        if ($prev -gt 0) {
+            [Console]::Write("$($script:UiEsc)[${prev}A$($script:UiEsc)[0J" + $frame + "`r`n")
+        } else {
+            [Console]::Write($frame + "`r`n")
+        }
+    } catch { }
+}
+
+# Set-ExakitTableRow -Row <n> -State <state> [-Pct] [-Ceiling] [-Secs] [-Phase]
+# [-Final] - one row has changed. Twin of ui_table_set in ui.sh.
+function Set-ExakitTableRow {
+    param(
+        [Parameter(Mandatory)][int]$Row,
+        [Parameter(Mandatory)][ValidateSet("idle", "waiting", "running", "done", "failed")][string]$State,
+        [int]$Pct = 0, [int]$Ceiling = 0, [int]$Secs = 0,
+        [string]$Phase = "", [string]$Final = "",
+        [hashtable]$Table = $null
+    )
+    if ($null -eq $Table) { $Table = $script:UiTable }
+    if ($null -eq $Table) { return }
+    if ($Row -lt 1 -or $Row -gt $Table.Rows.Count) { return }
+    $r = $Table.Rows[$Row - 1]
+    # A row that was already running keeps its clock: a new PHASE inside the same
+    # job must not restart the elapsed count the reader is watching. Only entering
+    # "running" starts one.
+    if ($State -eq "running") {
+        if ($r.State -ne "running" -or $null -eq $r.SegT0) { $r.SegT0 = Get-Date }
+    } else {
+        $r.SegT0 = $null
+    }
+    $r.State = $State
+    $r.Pct = $Pct
+    $r.Ceiling = $Ceiling
+    $r.Secs = $Secs
+    $r.Phase = $Phase
+    $r.Final = $Final
+}
+
+# Set-ExakitTableTicks -Rows <n[]> - mark which rows are ticked, and only those.
+# Twin of ui_table_tick in ui.sh.
+function Set-ExakitTableTicks {
+    param([int[]]$Rows = @(), [hashtable]$Table = $null)
+    if ($null -eq $Table) { $Table = $script:UiTable }
+    if ($null -eq $Table) { return }
+    for ($i = 1; $i -le $Table.Rows.Count; $i++) {
+        $Table.Rows[$i - 1].Tick = [bool]($Rows -contains $i)
+    }
+}
+
+# Start-ExakitTable [-Table] - animate the table in place. Returns $false when it
+# did not start (no console, no colour, something already animating), which is the
+# caller's cue to narrate in plain lines instead. Twin of ui_table_begin in ui.sh.
+function Start-ExakitTable {
+    param([hashtable]$Table = $null)
+    if ($null -eq $Table) { $Table = $script:UiTable }
+    if ($null -eq $Table) { return $false }
+    if (-not $script:UiFancy) { return $false }
+    if ($script:UiTableLive) { return $false }
+    # ONE animation at a time: a spinner and a table redrawing the same rows
+    # produce a flicker, and the loser's handle is lost the moment the winner
+    # overwrites it.
+    if ($null -ne $script:UiSpinFlag) { return $false }
+    if (-not $script:UiTableSrc) { return $false }
+    try {
+        $src = [System.IO.File]::ReadAllText($script:UiTableSrc)
+        if (-not $src) { return $false }
+        $Table.Run = $true
+        $Table.Stop = $false
+        $Table.Alive = $false
+        # Measured ONCE. A console resized mid-load keeps the width it started
+        # with, which is a fair trade for not measuring five times a second.
+        try { $Table.Cols = [Console]::WindowWidth } catch { }
+        $rs = [runspacefactory]::CreateRunspace()
+        $rs.Open()
+        $rs.SessionStateProxy.SetVariable('tbl', $Table)
+        $rs.SessionStateProxy.SetVariable('uiSrc', $src)
+        $ps = [powershell]::Create()
+        $ps.Runspace = $rs
+        [void]$ps.AddScript({
+            # This file's own frame builder and palette, so there is exactly one
+            # of each. Forced fancy: the only way to reach here is for the parent
+            # to have been fancy, and the runspace's own detection has no console
+            # of its own to ask.
+            . ([scriptblock]::Create($uiSrc))
+            $script:UiFancy = $true
+            Set-ExakitPalette
+            while ($tbl.Run) {
+                # ONE frame, ONE write. Rendered straight to the console, a stop
+                # could land between two of a frame's rows: the cursor would then
+                # be part-way through a table nobody had finished, and the next
+                # cursor-up by a frame height would land INSIDE it and clear from
+                # there - which strands the top of a table on screen with the
+                # final one printed under it.
+                Update-ExakitTable -Table $tbl -Cursor 0
+                $tbl.Alive = $true
+                # Asked to stop: finish the frame that is on screen and go, so the
+                # parent inherits a cursor sitting at a frame boundary.
+                if ($tbl.Stop) { break }
+                Start-Sleep -Milliseconds 200
+            }
+        })
+        try { [Console]::Write("$($script:UiEsc)[?25l") } catch { }
+        $handle = $ps.BeginInvoke()
+        # Wait for the FIRST FRAME before claiming the screen. An animator that
+        # never painted would leave the loaders silent underneath it (they stop
+        # narrating precisely because the table is supposed to be narrating), and
+        # that reads from the outside as a data load that hung.
+        $waited = 0
+        while (-not $Table.Alive -and $waited -lt 80) {
+            Start-Sleep -Milliseconds 25
+            $waited++
+        }
+        if (-not $Table.Alive) {
+            $Table.Run = $false
+            try { $ps.Stop(); $ps.Dispose() } catch { }
+            try { $rs.Close(); $rs.Dispose() } catch { }
+            try { [Console]::Write("$($script:UiEsc)[?25h") } catch { }
+            return $false
+        }
+        $script:UiTablePs = $ps
+        $script:UiTableRs = $rs
+        $script:UiTableHandle = $handle
+        $script:UiTableLive = $true
+        # The table now owns the animation slot, so every Start-ExakitSpinner and
+        # Start-ExakitProgress underneath it takes a reference instead of painting
+        # (see their guards) and gives it back on its own Stop.
+        $script:UiSpinNested = 0
+        return $true
+    } catch {
+        $script:UiTableLive = $false
+        $script:UiTablePs = $null
+        $script:UiTableRs = $null
+        $script:UiTableHandle = $null
+        return $false
+    }
+}
+
+# Stop-ExakitTable [-Table] - stop animating and leave the FINAL table on screen.
+# Safe to call when nothing is animating. Twin of ui_table_end in ui.sh.
+function Stop-ExakitTable {
+    param([hashtable]$Table = $null)
+    if ($null -eq $Table) { $Table = $script:UiTable }
+    if (-not $script:UiTableLive) { return }
+    $script:UiTableLive = $false
+    # ASKED to stop, not shot. The animator finishes the frame it is drawing and
+    # exits, which is the only way the cursor is guaranteed to be at a frame
+    # boundary when this function starts counting lines. A Stop() is still the
+    # backstop for an animator that has somehow wedged.
+    if ($null -ne $Table) { $Table.Stop = $true }
+    $waited = 0
+    while ($waited -lt 30) {
+        $busy = $false
+        try { if ($null -ne $script:UiTableHandle -and -not $script:UiTableHandle.IsCompleted) { $busy = $true } } catch { }
+        if (-not $busy) { break }
+        Start-Sleep -Milliseconds 50
+        $waited++
+    }
+    if ($null -ne $Table) { $Table.Run = $false }
+    try { if ($null -ne $script:UiTablePs) { $script:UiTablePs.Stop(); $script:UiTablePs.Dispose() } } catch { }
+    try { if ($null -ne $script:UiTableRs) { $script:UiTableRs.Close(); $script:UiTableRs.Dispose() } } catch { }
+    $script:UiTablePs = $null
+    $script:UiTableRs = $null
+    $script:UiTableHandle = $null
+    $script:UiSpinNested = 0
+    try { [Console]::Write("$($script:UiEsc)[?25h") } catch { }
+    # The animator can be stopped part-way through a frame, so the last thing
+    # drawn is redrawn deliberately rather than trusted.
+    if ($null -ne $Table) { Update-ExakitTable -Table $Table -Cursor 0 }
+}
+
+# Stop-ExakitAnimation - stop whatever this session is animating, table or
+# spinner, before printing something the reader must not lose. Fail() calls this
+# first for exactly that reason.
+#
+# Twin of ui_animation_stop in ui.sh, and it does ui_table_abort's job too: bash
+# needs a separate abort because a trap can only name a function and cannot be
+# handed the state file, while here the live table is module state that one entry
+# point can always find.
+function Stop-ExakitAnimation {
+    if ($script:UiTableLive) { Stop-ExakitTable }
+    else { try { Stop-ExakitSpinner } catch { } }
+    Restore-ExakitCursor
+}
+
+# Invoke-ExakitTableMenu - the SELECTION phase of the same table: ticks are
+# toggled in the rows the progress will later fill in, so the reader never has to
+# map one screen onto another. Returns the selected 1-based row numbers, ascending.
+#
+# The key handling is Read-ExakitCheckboxMenu's, deliberately: same keys, same
+# hint, same group and exclusive semantics, so there is one thing to learn.
+# Twin of ui_table_menu in ui.sh.
+function Invoke-ExakitTableMenu {
+    param(
+        [hashtable]$Table = $null,
+        [int[]]$Defaults = @(),
+        [int]$ExclusiveIndex = 0,
+        [int]$GroupParent = 0, [int]$GroupFirst = 0, [int]$GroupLast = 0,
+        [string]$GroupMode = "any"
+    )
+    if ($null -eq $Table) { $Table = $script:UiTable }
+    if ($null -eq $Table) { return @() }
+    $n = $Table.Rows.Count
+    if ($n -lt 1) { return @() }
+    $sel = New-Object 'System.Collections.Generic.List[int]'
+    foreach ($d in $Defaults) {
+        if ($d -ge 1 -and $d -le $n -and -not $sel.Contains($d)) { [void]$sel.Add($d) }
+    }
+
+    # Interactivity is decided the way Test-ExakitInteractive decides it, inlined:
+    # this file is also dot-sourced on its own by install.ps1, where the shared
+    # library does not exist yet.
+    $interactive = $true
+    try {
+        if (-not [Environment]::UserInteractive -or [Console]::IsInputRedirected) { $interactive = $false }
+    } catch { $interactive = $false }
+    if (-not $interactive -or -not $script:UiFancy) {
+        # No console to answer with: the defaults stand, and the table is printed
+        # once so a log still shows what was chosen.
+        Set-ExakitTableTicks -Rows @($sel) -Table $Table
+        Show-ExakitTable -Table $Table -Cursor 0
+        return @($sel | Sort-Object)
+    }
+
+    # Toggling the group parent ON selects every child, OFF clears them all;
+    # toggling a child re-derives the parent per $GroupMode - "all" makes it a
+    # MASTER toggle (checked only while EVERY child is), "any" a group header.
+    $applyGroup = {
+        param($toggled)
+        if ($GroupParent -lt 1 -or $GroupFirst -lt 1 -or $GroupLast -lt $GroupFirst) { return }
+        if ($toggled -eq $GroupParent) {
+            $parentOn = $sel.Contains($GroupParent)
+            for ($c = $GroupFirst; $c -le $GroupLast; $c++) {
+                if ($c -lt 1 -or $c -gt $n) { continue }
+                if ($parentOn) { if (-not $sel.Contains($c)) { [void]$sel.Add($c) } }
+                else { [void]$sel.Remove($c) }
+            }
+        } elseif ($toggled -ge $GroupFirst -and $toggled -le $GroupLast) {
+            $on = $false
+            if ($GroupMode -eq "all") {
+                $on = $true
+                for ($c = $GroupFirst; $c -le $GroupLast; $c++) {
+                    if ($c -lt 1 -or $c -gt $n) { continue }
+                    if (-not $sel.Contains($c)) { $on = $false; break }
+                }
+            } else {
+                for ($c = $GroupFirst; $c -le $GroupLast; $c++) {
+                    if ($c -lt 1 -or $c -gt $n) { continue }
+                    if ($sel.Contains($c)) { $on = $true; break }
+                }
+            }
+            if ($on) { if (-not $sel.Contains($GroupParent)) { [void]$sel.Add($GroupParent) } }
+            else { [void]$sel.Remove($GroupParent) }
+        }
+    }
+    # An option that cannot be combined with the others - think "Skip". Selecting
+    # it clears every other choice; selecting any other choice clears it.
+    $applyExclusive = {
+        param($toggled)
+        if ($ExclusiveIndex -lt 1) { return }
+        if ($toggled -eq $ExclusiveIndex) {
+            if ($sel.Contains($ExclusiveIndex)) { $sel.Clear(); [void]$sel.Add($ExclusiveIndex) }
+        } elseif ($sel.Contains($ExclusiveIndex)) {
+            [void]$sel.Remove($ExclusiveIndex)
+        }
+    }
+
+    # The cursor starts on the FIRST DATASET, not on the "Select All" row above
+    # it: the group row is the one answer nobody has to move to.
+    $cur = 2
+    if ($n -lt 2) { $cur = 1 }
+    $drawn = 0
+    while ($true) {
+        Set-ExakitTableTicks -Rows @($sel) -Table $Table
+        # Built first, then clear and draw in ONE write. The other order - clear,
+        # then spend time assembling - is what flickered: the region was genuinely
+        # empty for that whole time.
+        $frame = Get-ExakitTableFrame -Table $Table -Cursor $cur
+        $hint = "      " + $script:UiDim + "↑/↓ to move · Space to toggle · Enter to confirm" + $script:UiReset
+        if ($drawn -gt 0) {
+            [Console]::Write("$($script:UiEsc)[${drawn}A$($script:UiEsc)[0J" + $frame + "`r`n" + $hint + "`r`n")
+        } else {
+            [Console]::Write($frame + "`r`n" + $hint + "`r`n")
+        }
+        $drawn = [int]$Table.Lines + 1
+        $key = [Console]::ReadKey($true)
+        $confirmed = $false
+        $handled = $true
+        switch ($key.Key) {
+            "Enter"     { if ($sel.Count -gt 0) { $confirmed = $true } }
+            "Spacebar"  {
+                if ($sel.Contains($cur)) { [void]$sel.Remove($cur) } else { [void]$sel.Add($cur) }
+                & $applyGroup $cur
+                & $applyExclusive $cur
+            }
+            "UpArrow"   { $cur--; if ($cur -lt 1) { $cur = $n } }
+            "DownArrow" { $cur++; if ($cur -gt $n) { $cur = 1 } }
+            default     { $handled = $false }
+        }
+        if (-not $handled) {
+            switch -Regex ([string]$key.KeyChar) {
+                '^[kK]$' { $cur--; if ($cur -lt 1) { $cur = $n } }
+                '^[jJ]$' { $cur++; if ($cur -gt $n) { $cur = 1 } }
+            }
+        }
+        if ($confirmed) { break }
+    }
+    # Redraw once without the pointer or the hint: the selection is made, and the
+    # same table is about to become the progress display. $drawn counts the hint
+    # line too, so this erases it.
+    Set-ExakitTableTicks -Rows @($sel) -Table $Table
+    $Table.Lines = $drawn
+    Update-ExakitTable -Table $Table -Cursor 0
+    return @($sel | Sort-Object)
 }
 
 # Render the install banner + plan (used by install.ps1 after download).
