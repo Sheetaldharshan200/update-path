@@ -40,7 +40,8 @@ printf '\n'
 EXAKIT_ADDON_TABLE_STATE="$W/addons"
 _exakit_addon_table_build "$EXAKIT_ADDON_TABLE_STATE" demo-alpha demo-beta demo-gamma
 UI_TABLE_TITLE="Add-ons to install"
-UI_TABLE_NAME_LABEL="Add-on"
+UI_TABLE_COL1="Add-on"          # what exakit_marketplace_menu sets, so the
+                                # scenario shows the heading a user gets
 ui_table_tick "$EXAKIT_ADDON_TABLE_STATE" "$EXAKIT_TABLE_DEFAULTS"
 # The selection phase leaves its table drawn, exactly as ui_table_menu does --
 # and the first progress frame has to overwrite THAT, not print a second one
