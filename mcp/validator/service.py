@@ -242,6 +242,28 @@ class ValidatorService:
         # can quote its own configuration) into a finding or into evidence.
         child_env = dict(os.environ)
         child_env.update(definition.env)
+        # DO NOT LET THE KIT'S OWN IMPORT PATH REACH THE SERVER.
+        #
+        # This subsystem is a package called `mcp`, and it is reached by putting
+        # the kit root on PYTHONPATH (Invoke-McpModule does exactly that so
+        # `python -m mcp` resolves). The MCP server is a separate program that
+        # imports the official `mcp` SDK - so if it inherits that PYTHONPATH,
+        # `import mcp` finds OUR package instead and the server dies on import
+        # with "FastMCP server support is not installed", exits 1, and doctor
+        # reports server_launch_failed against a server that is in fact fine.
+        #
+        # Measured, same command and credentials, only the environment differing:
+        #   clean                      -> tools/list answered
+        #   PYTHONPATH=<kit root>      -> exited (code 1)
+        #   PYTHONPATH dropped         -> tools/list answered
+        # The working directory was tested separately and is harmless, which is
+        # why only the variables are removed and cwd is left alone.
+        #
+        # PYTHONPATH is the one proven to bite; PYTHONHOME goes with it because
+        # it would poison the same import in the same way and nothing here needs
+        # to pass either to a child that brings its own interpreter.
+        child_env.pop("PYTHONPATH", None)
+        child_env.pop("PYTHONHOME", None)
         printable = " ".join([Path(command[0]).name, *command[1:]])
 
         try:
