@@ -434,7 +434,7 @@ function Set-McpReadonlyAccess {
         }
 
         # Test basic connectivity before attempting user creation
-        Info "Testing database connectivity with admin user"
+        Info "Testing database connectivity"
         $connTestResult = Invoke-ExapumpAdminSql -ConfigPath $tempConfig -Profile "admin" -Sql "SELECT 1 AS connection_test"
         Assert-ExapumpResult -Result $connTestResult -Label "Database connection test" -FailMessage "Cannot connect to database with admin credentials. Check database status and credentials."
         Ok "Database connection successful"
