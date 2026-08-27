@@ -392,5 +392,33 @@ has "...and stops it"                  'ui_table_end "$EXAKIT_TABLE_STATE"'   "$
 has "warnings wait for the table"      '_data_notes="${_data_notes}warn|'      "$COMMON_SH"
 has "...and are said afterwards"       'EXAKIT_DATA_NOTES_EOF'                "$COMMON_SH"
 
+printf '\n== under a REAL terminal, one table is left, not three ==\n'
+
+# Everything above reads the state file or a captured string, and neither can see
+# the bug that shipped twice: the table STACKED. The first stack was an animator
+# whose opening frame printed instead of overwriting; the second was an animator
+# killed part-way through a frame, after which every cursor-up landed inside the
+# frame before it.
+#
+# Both are invisible without a terminal to be wrong in. tests/lib/tty-replay.py
+# runs the scenario under a pty and replays the escape codes the way a terminal
+# would — cursor-up, clear-to-end, carriage return — then asserts what is left on
+# screen. It is the only test here that could have caught either.
+if command -v python3 >/dev/null 2>&1; then
+    if python3 "$ROOT/tests/lib/tty-replay.py" \
+            "$ROOT/tests/lib/table-scenario.sh" "$ROOT" > "$WORK/tty.out" 2>&1; then
+        check "exactly one table survives" "yes" "yes"
+    else
+        check "exactly one table survives" "yes" \
+            "no: $(grep 'tables on screen' "$WORK/tty.out" || echo 'replay failed')"
+    fi
+    SCREEN="$(sed -n '/=== FINAL SCREEN ===/,/=== tables/p' "$WORK/tty.out")"
+    has "and it is the finished one"  "173,745 rows" "$SCREEN"
+    has "with every row accounted for" "10,970 rows" "$SCREEN"
+    lacks "no half-drawn bar left behind" "loading 8 data files" "$SCREEN"
+else
+    check "exactly one table survives" "skipped" "skipped"
+fi
+
 printf '\n%s: %d passed, %d failed\n' "$(basename "$0")" "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
