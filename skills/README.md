@@ -35,6 +35,12 @@ user's request actually needs, not a manual for the whole kit.
 | [`exasol-mcp`](exasol-mcp/SKILL.md) | Connecting AI clients over MCP, diagnosing `mcp-doctor`, repairing config drift, proving the read-only user really is read-only. |
 | [`exasol-pyexasol`](exasol-pyexasol/SKILL.md) | Querying the database from Python — the right interpreter, the TLS setting the self-signed certificate needs, reading credentials safely. |
 
+**The wider ecosystem** — not part of this kit
+
+| Skill | Use it when… |
+|---|---|
+| [`exasol-ecosystem`](exasol-ecosystem/SKILL.md) | Answering "is there an Exasol connector/driver/adapter for X" — which repo, which org, what support level, and which well-known projects are archived. |
+
 **The marketplace** — opt-in add-ons
 
 | Skill | Use it when… |
