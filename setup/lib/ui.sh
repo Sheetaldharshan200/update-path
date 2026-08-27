@@ -688,6 +688,8 @@ ui_bar() {
 # clear from there. Anything else stacks stale rows with every keypress.
 
 UI_TABLE_LINES=0
+UI_TABLE_INNER=0
+_UI_TABLE_PREV_INNER=''
 UI_TABLE_NAME_W=0
 UI_TABLE_STAT_W=0
 
@@ -956,6 +958,10 @@ ui_table_frame() {
     _utr_f="$_utr_f  ${UI_ACCENT:-}${UI_BL:-+}${_UI_TABLE_HR:0:$_utr_inner}${UI_BR:-+}${UI_RESET:-}"
     UI_TABLE_FRAME="$_utr_f"
     UI_TABLE_LINES=$(( _utr_lines + 1 ))
+    # Reported so a redraw can tell whether the geometry moved. Same height and
+    # same width means the frame can be overwritten in place; anything else has
+    # old content to erase first.
+    UI_TABLE_INNER="$_utr_inner"
     return 0
 }
 
@@ -980,10 +986,25 @@ ui_table_redraw() {
     # columns of the old frame with a new one starting inside it: several top
     # borders side by side on one line, at different widths.
     if [ "$_utd_prev" -gt 0 ]; then
-        printf '\r\033[%dA\033[0J%s\n' "$_utd_prev" "$UI_TABLE_FRAME"
+        # Overwritten in place, NOT cleared and redrawn. \033[0J erases from the
+        # cursor to the end of the screen, and it lands before the new frame
+        # does -- so there is a real instant with nothing there, which is the
+        # flicker a reader sees as "something, empty, something". Every line is
+        # already padded to the full box width, so when the geometry has not
+        # moved an overwrite cannot leave anything stale behind. Redrawing FASTER
+        # would only show that gap more often; not clearing removes it.
+        if [ "$_utd_prev" = "$UI_TABLE_LINES" ] && \
+           [ "${_UI_TABLE_PREV_INNER:-}" = "$UI_TABLE_INNER" ]; then
+            printf '\r\033[%dA%s\n' "$_utd_prev" "$UI_TABLE_FRAME"
+        else
+            # The geometry moved -- a resize, or the first frame after the
+            # selection menu. Now there IS old content to erase.
+            printf '\r\033[%dA\033[0J%s\n' "$_utd_prev" "$UI_TABLE_FRAME"
+        fi
     else
         printf '\r%s\n' "$UI_TABLE_FRAME"
     fi
+    _UI_TABLE_PREV_INNER="$UI_TABLE_INNER"
     return 0
 }
 

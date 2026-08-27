@@ -406,6 +406,22 @@ printf 'group|Select All|1|idle|0|0|0|0||\n' > "$CR_STATE"
 UI_TABLE_LINES=5
 CR_FIRST="$(ui_table_redraw "$CR_STATE" 0 2>/dev/null | head -c 1 | od -An -c | tr -d ' \n')"
 check "every frame starts at column 0" '\r' "$CR_FIRST"
+
+# And the frame is OVERWRITTEN, not cleared and redrawn. \033[0J erases from the
+# cursor to the end of the screen and lands before the new frame does, so every
+# redraw had a real instant with nothing on it -- "something, empty, something",
+# five times a second. Redrawing faster would only show that gap more often.
+# Every line is padded to the full box width, so when the geometry has not moved
+# an overwrite cannot leave anything stale. Written to files, not $( ), because a
+# subshell would not carry the previous geometry between the two draws.
+UI_TABLE_LINES=5
+_UI_TABLE_PREV_INNER=''
+ui_table_redraw "$CR_STATE" 0 > "$WORK/draw1" 2>/dev/null
+ui_table_redraw "$CR_STATE" 0 > "$WORK/draw2" 2>/dev/null
+has   "a frame whose geometry moved still erases the old one" '[0J' \
+    "$(cat -v "$WORK/draw1")"
+lacks "a steady frame is overwritten, never cleared"          '[0J' \
+    "$(cat -v "$WORK/draw2")"
 UI_TABLE_LINES=0
 
 # And only ONE animation at a time: ui_spin_begin takes a nesting reference when
