@@ -1579,5 +1579,129 @@ check "the version table lists exactly the add-ons still pending" "$( (
 ) )"
 has "connection panel advertises the marketplace" "exakit marketplace" "$(connection_panel 2>/dev/null)"
 
+echo "the selection and the install progress are ONE table:"
+# The add-on selection is made in the live table (ui_table_* in ui.sh), the same
+# component the dataset load uses, and the Status column of those very rows is
+# what the install then fills in. Before this the two were separate screens: a
+# checkbox menu that scrolled away, then one progress line per add-on printed
+# underneath it, so the reader had to map one onto the other.
+COMMON_SH_ADDONS="$(cat "$ROOT/setup/lib/common.sh")"
+has "the selection IS the table"        'ui_table_menu "$EXAKIT_ADDON_TABLE_STATE"' "$COMMON_SH_ADDONS"
+has "...titled for add-ons"            'UI_TABLE_TITLE="Add-ons to install"'       "$COMMON_SH_ADDONS"
+lacks "and not a checkbox any more"    'ui_checkbox_menu "Select add-ons to install"' "$COMMON_SH_ADDONS"
+has "the install starts the same table" 'ui_table_begin "$EXAKIT_ADDON_TABLE_STATE"' "$COMMON_SH_ADDONS"
+has "...and stops it"                   'ui_table_end "$EXAKIT_ADDON_TABLE_STATE"'   "$COMMON_SH_ADDONS"
+# The STATE table above the selection is a different, deliberate thing and stays.
+has "the state table is still printed"  'ui_panel_begin "Marketplace add-ons"'       "$COMMON_SH_ADDONS"
+
+# The rows: a group, one per installable add-on on a tree connector, then Skip.
+ADDON_STATE_FILE="$WORK/addon-table"
+_exakit_addon_table_build "$ADDON_STATE_FILE" demo-alpha demo-beta demo-gamma
+check "row kinds are group, tree, tree, corner, plain" "group tee tee corner plain" \
+    "$(cut -d'|' -f1 "$ADDON_STATE_FILE" | paste -sd' ' - | sed 's/ *$//')"
+check "row labels name the add-ons between the group and Skip" \
+    "Select All demo-alpha demo-beta demo-gamma Skip" \
+    "$(cut -d'|' -f2 "$ADDON_STATE_FILE" | paste -sd' ' - | sed 's/ *$//')"
+check "the group and every add-on are pre-ticked" "1,2,3,4" "$EXAKIT_TABLE_DEFAULTS"
+check "the group is a MASTER toggle over its children" "1:2:4:all" "$EXAKIT_TABLE_GROUP"
+check "Skip is the exclusive opt-out, and it is the last row" "5 5" \
+    "$EXAKIT_TABLE_EXCLUSIVE $EXAKIT_ADDON_TABLE_ROW_SKIP"
+check "an add-on finds its own row again" "2 3 4" \
+    "$(_exakit_addon_table_row demo-alpha) $(_exakit_addon_table_row demo-beta) $(_exakit_addon_table_row demo-gamma)"
+check "and a row that is not an add-on is nobody's" "0" "$(_exakit_addon_table_row Skip)"
+# THE BUG this guards: _UI_CHECKBOX_SELECTABLE is published by ui_checkbox_menu
+# and never cleared, and ui_table_menu does not publish it. The closing offer
+# asks its two-row "Explore ?" question first, so "1 2" was still standing when
+# the table's group helpers ran -- and Select All then toggled row 2 and nothing
+# else, on the row a user glances at to confirm what is about to be installed.
+check "the build clears the checkbox layer's stale selectable rows" "" \
+    "$( _UI_CHECKBOX_SELECTABLE="1 2"
+        _exakit_addon_table_build "$WORK/addon-table2" demo-alpha demo-beta >/dev/null
+        printf '%s' "$_UI_CHECKBOX_SELECTABLE" )"
+
+# The Status column of a finished row: the add-on's own one-line summary, sized
+# to the column. A final wider than the column makes ui_table_frame's padding
+# arithmetic go negative -- a bash substring error printed over the table, not a
+# wider column -- so the cell gives way, and the full text stays in the logfile.
+# Measured against the FANCY tick, because that is the only tick this cell is
+# ever drawn with: a finished cell exists only while the table is live, and the
+# table animates only on a fancy terminal. A redirected test run is plain, where
+# UI_TICK is the four-character "[ok]" and the room is three characters tighter.
+ADDON_CELL_SHORT="$( UI_TICK="✓"; _exakit_addon_table_cell 'dashboards at http://127.0.0.1:8000' 4 )"
+ADDON_CELL_LONG="$( UI_TICK="✓"; _exakit_addon_table_cell 'load JSON with: exasol-json-tables ingest --input <file.json>' 12 )"
+has "a summary that fits is carried whole" "dashboards at http://127.0.0.1:8000" "$ADDON_CELL_SHORT"
+has "...with its elapsed time" "(4s)" "$ADDON_CELL_SHORT"
+has "one too long for the column is cut, not left to overflow" "…" "$ADDON_CELL_LONG"
+check "every finished cell is the same width, so the times line up" "same" \
+    "$([ "${#ADDON_CELL_SHORT}" = "${#ADDON_CELL_LONG}" ] && echo same || \
+       echo "${#ADDON_CELL_SHORT} vs ${#ADDON_CELL_LONG}")"
+check "and it never widens the column past its floor" "fits" \
+    "$([ "$(( ${#ADDON_CELL_LONG} + 2 ))" -le "${UI_TABLE_STAT_MIN:-44}" ] && echo fits || \
+       echo "${#ADDON_CELL_LONG} > $(( ${UI_TABLE_STAT_MIN:-44} - 2 ))")"
+check "a summary-less add-on still says what happened" "installed" \
+    "$(_exakit_addon_table_cell '' 2 | sed 's/ *(.*//')"
+check "and it fits the plain palette's wider tick too" "fits" \
+    "$( UI_TICK="[ok]"
+        _cell="$(_exakit_addon_table_cell 'load JSON with: exasol-json-tables ingest --input <file.json>' 12)"
+        [ "$(( ${#_cell} + 5 ))" -le "${UI_TABLE_STAT_MIN:-44}" ] && echo fits || echo "${#_cell}" )"
+
+# The non-interactive contract is untouched: a scripted answer builds no table
+# at all, so every add-on narrates in the plain lines it always did.
+_addon_scripted="$( (
+    EXAKIT_ADDON_TABLE_STATE=""
+    # Nothing about THIS machine may decide the answer: the sections above leave
+    # records behind, and an add-on that reads as already installed makes the env
+    # path return before it ever installs anything.
+    exakit_marketplace_addon_installed() { return 1; }
+    _exakit_addon_system_present() { return 1; }
+    _exakit_addon_applicable() { return 0; }
+    _exakit_marketplace_install_one() { return 0; }
+    dash_server_summary() { printf 'dashboards at http://127.0.0.1:8000\n'; }
+    EXAKIT_MARKETPLACE_ADDONS="dash-server" exakit_marketplace_menu 2>&1
+    printf 'table=[%s]' "$EXAKIT_ADDON_TABLE_STATE"
+) )"
+has "a scripted answer still announces each install" "Installing add-on: dash-server" "$_addon_scripted"
+has "...and still says what it got" "dash-server installed — dashboards at" "$_addon_scripted"
+check "and builds no table to do it" "table=[]" \
+    "$(printf '%s' "$_addon_scripted" | grep -o 'table=\[[^]]*\]')"
+
+printf '\n== under a REAL terminal, one add-ons table is left, not four ==\n'
+
+# Everything above reads a state file or a captured string, and neither can see
+# the bug this component has shipped twice: the table STACKED. tty-replay.py runs
+# the scenario under a pty and replays the escape codes the way a terminal would
+# -- cursor-up, clear-to-end, carriage return -- then asserts what is left on
+# screen. The static state panel is printed above the live table on purpose: a
+# frame that miscounts its own height eats the panel instead of its own last
+# frame, which is why the replay is told to expect TWO boxes and exactly one of
+# them titled for the selection.
+if command -v python3 >/dev/null 2>&1; then
+    if python3 "$ROOT/tests/lib/tty-replay.py" \
+            "$ROOT/tests/lib/addon-table-scenario.sh" "$ROOT" \
+            "Add-ons to install" 2 > "$WORK/addon-tty.out" 2>&1; then
+        check "exactly one add-ons table survives" "yes" "yes"
+    else
+        check "exactly one add-ons table survives" "yes" \
+            "no: $(grep 'tables on screen' "$WORK/addon-tty.out" || echo 'replay failed')"
+    fi
+    ADDON_SCREEN="$(sed -n '/=== FINAL SCREEN ===/,/=== tables/p' "$WORK/addon-tty.out")"
+    has "and the shell announced no dying job" "job announcements: 0" \
+        "$(cat "$WORK/addon-tty.out")"
+    has "the state table is still above it" "Marketplace add-ons" "$ADDON_SCREEN"
+    has "the finished row carries the add-on's own summary" \
+        "dashboards at http://127.0.0.1:8000" "$ADDON_SCREEN"
+    has "a failed row says so in the same column" "did not finish" "$ADDON_SCREEN"
+    # The bar's own empty-track glyph: no row is still mid-install.
+    lacks "no half-drawn bar left behind" "░" "$ADDON_SCREEN"
+    # The per-add-on lines are what the table replaced; they went to the logfile.
+    lacks "no per-add-on progress line under the table" "Installing add-on" "$ADDON_SCREEN"
+    # A warn printed into a frame that is still being repainted lands INSIDE the
+    # box, so the failure waits for the table to stop and is said below it.
+    lacks "the failure is said below the table, not inside the frame" "│" \
+        "$(printf '%s\n' "$ADDON_SCREEN" | grep 'did not finish installing' | head -1)"
+else
+    check "exactly one add-ons table survives" "skipped" "skipped"
+fi
+
 echo "passed: $PASS, failed: $FAIL"
 [ "$FAIL" -eq 0 ]

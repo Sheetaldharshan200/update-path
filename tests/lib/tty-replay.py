@@ -39,11 +39,19 @@ while i < len(raw):
     else: put(c)
     i += 1
 screen = '\n'.join(scr).rstrip('\n')
-tops = screen.count('╭─ Datasets to load')
+# argv[3] names the LIVE table (its title is the only thing that tells one box
+# from another); argv[4] is how many boxes the screen should end up holding in
+# total, because a scenario may deliberately print a static panel above the live
+# one -- and a live table that miscounts its own height eats that panel, which is
+# a bottom-border short rather than a top-border extra.
+title = sys.argv[3] if len(sys.argv) > 3 else 'Datasets to load'
+want_bots = int(sys.argv[4]) if len(sys.argv) > 4 else 1
+tops = screen.count('╭─ ' + title)
 bots = screen.count('╰')
 print("=== FINAL SCREEN ===")
 print(screen)
-print("=== tables on screen: %d top borders, %d bottom borders ===" % (tops, bots))
+print("=== tables on screen: %d top borders, %d bottom borders (wanted 1 and %d) ==="
+      % (tops, bots, want_bots))
 
 # The screen is not the whole story. When bash reaps a background job that was
 # killed, it prints the job's own source at the terminal -- and a later redraw
@@ -51,4 +59,4 @@ print("=== tables on screen: %d top borders, %d bottom borders ===" % (tops, bot
 # already done. So count it in the RAW stream, where nothing can overwrite it.
 noise = len(re.findall(r'Terminated:? *\d*|Killed:? *\d*', raw))
 print("=== shell job announcements: %d ===" % noise)
-sys.exit(0 if (tops == 1 and bots == 1 and noise == 0) else 1)
+sys.exit(0 if (tops == 1 and bots == want_bots and noise == 0) else 1)
