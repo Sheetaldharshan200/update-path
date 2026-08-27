@@ -44,4 +44,11 @@ bots = screen.count('╰')
 print("=== FINAL SCREEN ===")
 print(screen)
 print("=== tables on screen: %d top borders, %d bottom borders ===" % (tops, bots))
-sys.exit(0 if (tops == 1 and bots == 1) else 1)
+
+# The screen is not the whole story. When bash reaps a background job that was
+# killed, it prints the job's own source at the terminal -- and a later redraw
+# can paint over the evidence while the damage to the cursor arithmetic is
+# already done. So count it in the RAW stream, where nothing can overwrite it.
+noise = len(re.findall(r'Terminated:? *\d*|Killed:? *\d*', raw))
+print("=== shell job announcements: %d ===" % noise)
+sys.exit(0 if (tops == 1 and bots == 1 and noise == 0) else 1)
