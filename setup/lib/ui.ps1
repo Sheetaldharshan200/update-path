@@ -412,6 +412,16 @@ function Set-ExakitProgress {
     } catch { }
 }
 
+# Set-ExakitProgressPhase - change the words without touching the position or
+# restarting the segment's clock. For a stage that reports what it has finished
+# while the bar keeps creeping on its own (concurrent uploads landing one by
+# one). Twin of ui_progress_phase in ui.sh.
+function Set-ExakitProgressPhase {
+    param([string]$Phase)
+    if ($null -eq $script:UiSpinFlag) { return }
+    try { $script:UiSpinFlag.Label = $Phase } catch { }
+}
+
 function Stop-ExakitProgress { Stop-ExakitSpinner }
 
 # Write-ExakitProgressLine <pct> <phase> <elapsed> <frame> <cols> - the progress

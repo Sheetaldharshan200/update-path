@@ -584,9 +584,152 @@ function Invoke-ExapumpUpload {
     return $true
 }
 
-# Get-ExapumpRowCount <schema.table> - row count, or $null if it could not be
-# read. Best-effort only: the row-count summary it feeds is cosmetic (shows
-# "?" on failure) and the real load validation is 03_verify_setup.sql.
+# Get-ExakitUploadParallel - how many uploads may run at once.
+#
+# WHY UPLOADS RUN CONCURRENTLY AT ALL: an exapump call is a process launch, and
+# on a fresh Windows install each one measured ~4.4s against 185ms once warm.
+# A dataset load is dominated by that, not by row throughput - weather (10,970
+# rows) took as long as energy (108,050) because both made the same number of
+# launches. The uploads cannot be merged into one call: exapump upload takes
+# many FILES but only one --table, and IMPORT ... FROM LOCAL CSV FILE is
+# refused by the server over this protocol ("only supported via JDBC or
+# EXAplus"). So the launches have to overlap instead.
+#
+# Verified against the nano container before building this: four concurrent
+# exapump sessions all succeeded, 302ms against 723ms for the same four run
+# one after another.
+#
+# EXAKIT_UPLOAD_PARALLEL=1 restores exactly the old serial behaviour, and is
+# the escape hatch if a database ever objects to the concurrency.
+function Get-ExakitUploadParallel {
+    $n = 4
+    if ($env:EXAKIT_UPLOAD_PARALLEL) {
+        $parsed = 0
+        if ([int]::TryParse($env:EXAKIT_UPLOAD_PARALLEL, [ref]$parsed)) { $n = $parsed }
+    }
+    if ($n -lt 1) { $n = 1 }
+    if ($n -gt 8) { $n = 8 }
+    return $n
+}
+
+# ConvertTo-ExapumpArgumentLine - quote an argument vector into the single
+# string ProcessStartInfo.Arguments expects.
+#
+# ProcessStartInfo.ArgumentList, which would do this properly, is .NET Core
+# only - PowerShell 5.1 runs on .NET Framework, where Arguments is one string.
+# Every argument is quoted unconditionally rather than only those containing a
+# space, so there is no rule to get wrong; backslashes immediately before the
+# closing quote are doubled, or they would escape it.
+function ConvertTo-ExapumpArgumentLine {
+    param([Parameter(Mandatory)][string[]]$Argv)
+    $quoted = @()
+    foreach ($a in $Argv) {
+        $v = "$a"
+        $v = [regex]::Replace($v, '(\\+)$', '$1$1')
+        $v = $v.Replace('"', '\"')
+        $quoted += ('"' + $v + '"')
+    }
+    return ($quoted -join " ")
+}
+
+# Collected by Invoke-ExapumpUploadMany. A script-scoped list rather than a
+# return value on purpose: PowerShell unrolls collections into the pipeline,
+# and this function is called inside a spinner body whose output the caller
+# discards, so a returned list would be lost or flattened without warning.
+$script:ExakitUploadFailures = @()
+
+# Invoke-ExapumpUploadMany - upload several files CONCURRENTLY, one exapump
+# process each, at most Get-ExakitUploadParallel at a time.
+#
+# Every file still gets its own launch, its own log lines and its own entry in
+# the progress bar; what changes is that up to four of them are in flight at
+# once. The bar advances as each finishes, so it names the file that JUST
+# COMPLETED rather than the one being started - with several running there is
+# no single "current" file to name.
+#
+# Failures are collected, not thrown: with several processes in flight, dying
+# on the first would leave the others running and unreaped. The caller decides
+# what to do once every process has been waited for.
+function Invoke-ExapumpUploadMany {
+    param(
+        [Parameter(Mandatory)][object[]]$Files,
+        [Parameter(Mandatory)][string]$Id
+    )
+    $script:ExakitUploadFailures = @()
+    $cli = Get-ExapumpCli
+    $cap = Get-ExakitUploadParallel
+    $queue = New-Object System.Collections.Queue
+    foreach ($f in $Files) { [void]$queue.Enqueue($f) }
+    $running = New-Object 'System.Collections.Generic.List[object]'
+    $done = 0
+    while ($queue.Count -gt 0 -or $running.Count -gt 0) {
+        while ($queue.Count -gt 0 -and $running.Count -lt $cap) {
+            $f = $queue.Dequeue()
+            if (-not (Test-Path $f.Path) -or (Get-Item $f.Path).Length -eq 0) {
+                Warn2 "Data file missing or empty: $($f.Path)"
+                $script:ExakitUploadFailures += "$($f.Path) (missing or empty)"
+                $done++
+                continue
+            }
+            # NOT Start-Process: it does not retain the process handle, so
+            # .ExitCode comes back EMPTY even after HasExited and WaitForExit().
+            # Measured here - a deliberately failing exapump call reported an
+            # empty exit code, which Test-ExapumpSucceeded would then have had
+            # to judge on output alone. System.Diagnostics.Process reports it
+            # properly (the same failing call gives 2).
+            #
+            # Both streams are drained with ReadToEndAsync BEFORE waiting: a
+            # redirected pipe that nobody reads fills up and blocks the child
+            # forever, and with several uploads in flight that would hang the
+            # install rather than slow it.
+            $psi = New-Object System.Diagnostics.ProcessStartInfo
+            $psi.FileName = $cli
+            $psi.Arguments = ConvertTo-ExapumpArgumentLine @("upload", $f.Path, "--table", $f.Target, "-p", $script:ExapumpProfile)
+            $psi.UseShellExecute = $false
+            $psi.RedirectStandardOutput = $true
+            $psi.RedirectStandardError = $true
+            $psi.CreateNoWindow = $true
+            $proc = [System.Diagnostics.Process]::Start($psi)
+            [void]$running.Add(@{
+                File = $f; Proc = $proc
+                Out  = $proc.StandardOutput.ReadToEndAsync()
+                Err  = $proc.StandardError.ReadToEndAsync()
+            })
+        }
+        if ($running.Count -eq 0) { continue }
+        Start-Sleep -Milliseconds 100
+        $still = New-Object 'System.Collections.Generic.List[object]'
+        foreach ($r in $running) {
+            if (-not $r.Proc.HasExited) { [void]$still.Add($r); continue }
+            $done++
+            # Settles the exit code and guarantees both async reads completed.
+            $r.Proc.WaitForExit()
+            $out = ""
+            try { $out = "$($r.Out.Result)$($r.Err.Result)" } catch { }
+            # Logged per file, after that file finishes, so the log still reads
+            # as one block per upload instead of interleaved fragments.
+            if ($script:LogFile) {
+                "exapump upload $($r.File.Path) --table $($r.File.Target) -p $($script:ExapumpProfile)" |
+                    Add-Content -Path $script:LogFile
+                $out | Add-Content -Path $script:LogFile
+            }
+            if (Test-ExapumpSucceeded -ExitCode $r.Proc.ExitCode -Output $out) {
+                if (-not $script:ExakitUploadQuiet) { Ok "$($r.File.Name) loaded" }
+            } else {
+                Write-ExapumpOutput -Output $out
+                Show-ExakitDbErrorRemedy $out
+                $script:ExakitUploadFailures += "$($r.File.Path) -> $($r.File.Target)"
+            }
+            # No position to report: the whole upload is ONE segment of the
+            # caller's bar, precisely because concurrent waves have no "current"
+            # file. What each landing DOES refine is the phase text, so the
+            # reader can see the batch draining.
+            Set-ExakitProgressPhase "$Id - loaded $done of $($Files.Count) data files"
+        }
+        $running = $still
+    }
+}
+
 # Get-ExapumpProfilePassword <profile> - the password stored in an exapump
 # profile ($script:ExapumpConfigPath), or $null. Symmetric with the writer in
 # Set-ExapumpTomlSection. Lets the MCP step recover the admin password when the
@@ -602,6 +745,9 @@ function Get-ExapumpProfilePassword {
     return $pw.Groups[1].Value
 }
 
+# Get-ExapumpRowCount <schema.table> - row count, or $null if it could not be
+# read. Best-effort only: the row-count summary it feeds is cosmetic (shows
+# "?" on failure) and the real load validation is 03_verify_setup.sql.
 function Get-ExapumpRowCount {
     param([Parameter(Mandatory)][string]$Target)
     # Wrap the count in a unique delimited token (EXAKIT_RC[<n>]) so it can be
@@ -619,6 +765,48 @@ function Get-ExapumpRowCount {
     $m = [regex]::Match("$($result.Output)", 'EXAKIT_RC\[(\d+)\]')
     if ($m.Success) { return $m.Groups[1].Value }
     return $null
+}
+
+# Get-ExapumpRowCountMany <schema> <tables> - count EVERY table in ONE exapump
+# invocation instead of one per table. Returns a hashtable of table -> count,
+# or $null if any table did not come back.
+#
+# WHY THIS EXISTS: every exapump call is a separate PROCESS LAUNCH, and on
+# Windows a freshly downloaded, unsigned exapump.exe is re-scanned by Defender
+# on each one - measured at ~4.4s per launch during an install, against 88ms
+# once the scan is cached. A tpch load made 20 launches, 8 of them nothing but
+# one COUNT(*) per table. That is why loading weather (10,970 rows) took as
+# long as energy (108,050 rows): both made 7 launches. The row counts never
+# mattered; the launch count did.
+#
+# $null is deliberately all-or-nothing: a UNION ALL fails as a whole, so a
+# partial read must send the caller back to counting one at a time rather than
+# let it report a total that is quietly short.
+#
+# The token carries the table name (EXAKIT_RC[CUSTOMER=1500]) because one
+# result set now holds every count and they have to be told apart. As with
+# Get-ExapumpRowCount the echoed query literal cannot match: after "=" it has
+# a quote, not a digit.
+function Get-ExapumpRowCountMany {
+    param(
+        [Parameter(Mandatory)][string]$Schema,
+        [Parameter(Mandatory)][AllowEmptyCollection()][string[]]$Tables
+    )
+    if ($Tables.Count -eq 0) { return @{} }
+    $parts = @()
+    foreach ($t in $Tables) {
+        $parts += "SELECT 'EXAKIT_RC[$t=' || CAST(COUNT(*) AS VARCHAR(40)) || ']' AS EXAKIT_RC FROM $Schema.$t"
+    }
+    $result = Invoke-Exapump @("sql", "-p", $script:ExapumpProfile, ($parts -join " UNION ALL "))
+    if (-not $result.Success) { return $null }
+    $counts = @{}
+    foreach ($m in [regex]::Matches("$($result.Output)", 'EXAKIT_RC\[([A-Za-z0-9_]+)=(\d+)\]')) {
+        $counts[$m.Groups[1].Value] = $m.Groups[2].Value
+    }
+    foreach ($t in $Tables) {
+        if (-not $counts.ContainsKey($t)) { return $null }
+    }
+    return $counts
 }
 
 function Get-ExakitTableName {
@@ -1545,13 +1733,37 @@ function Invoke-ExakitDatasetDirLoad {
     }
 
     $doneWeight += $nominal
-    foreach ($csv in $csvFiles) {
-        $table = [System.IO.Path]::GetFileNameWithoutExtension($csv.Name).ToUpper()
-        $w = [long]$csv.Length
-        Set-ExakitLoadStep -DoneWeight $doneWeight -StepWeight $w -TotalWeight $totalWeight `
-            -Seconds (Get-ExakitLoadSeconds $w) -Phase "$Id - $($csv.Name)"
-        Invoke-ExapumpUpload $csv.FullName "$schema.$table" | Out-Null
-        $doneWeight += $w
+    # Uploads run CONCURRENTLY (see Invoke-ExapumpUploadMany). One launch per
+    # file either way - what changes is how many are in flight at once, which is
+    # the only lever left: exapump upload cannot target more than one table per
+    # call, and the server refuses IMPORT of local files over this protocol.
+    if ($csvFiles.Count -gt 0) {
+        $uploadFiles = @()
+        foreach ($csv in $csvFiles) {
+            $uploadFiles += @{
+                Path   = $csv.FullName
+                Target = "$schema." + [System.IO.Path]::GetFileNameWithoutExtension($csv.Name).ToUpper()
+                Name   = $csv.Name
+            }
+        }
+        # ONE segment for the whole upload. The files go up concurrently, so
+        # there is no per-file position to report any more - which is fine,
+        # because the bytes were never the interesting part of the position. They
+        # still set the PACE: the segment spans every byte of the dataset and is
+        # expected to take as long as those bytes usually take, so the bar moves
+        # across it instead of parking until the last wave lands. The ceiling is
+        # where the upload ends, so it cannot overrun into the load statements
+        # however long the waves take.
+        if ($csvFiles.Count -eq 1) { $unit = "file" } else { $unit = "files" }
+        Set-ExakitLoadStep -DoneWeight $doneWeight -StepWeight $bytes -TotalWeight $totalWeight `
+            -Seconds (Get-ExakitLoadSeconds $bytes) `
+            -Phase "$Id - loading $($csvFiles.Count) data $unit"
+        Invoke-ExapumpUploadMany -Files $uploadFiles -Id $Id | Out-Null
+        if ($script:ExakitUploadFailures.Count -gt 0) {
+            Fail "Upload failed: $($script:ExakitUploadFailures -join '; ') (see log)"
+        }
+        $doneWeight += $bytes
+    }
     }
 
     if ((Test-Path $loadSql) -and (Get-Item $loadSql).Length -gt 0) {
@@ -1613,8 +1825,14 @@ function Invoke-ExakitDatasetDirLoad {
             -Seconds 2 -Phase "$Id - counting rows"
         $counted = & {
             $acc = New-Object 'System.Collections.Generic.List[string]'
+            # ONE invocation for every table. $batch is $null unless all of
+            # them came back, and that sends the loop to the per-table call -
+            # so a batch that cannot run costs correctness nothing, only the
+            # speed it was meant to buy.
+            $batch = Get-ExapumpRowCountMany -Schema $schemaName -Tables $tableList
             foreach ($t in $tableList) {
-                $rows = Get-ExapumpRowCount "$schemaName.$t"
+                if ($null -ne $batch) { $rows = $batch[$t] }
+                else { $rows = Get-ExapumpRowCount "$schemaName.$t" }
                 if ($rows) { $shown = $rows } else { $shown = "?" }
                 $line = "{0,-30} {1} rows" -f "$schemaName.$t", $shown
                 if ($script:LogFile) { "DATA  $line" | Add-Content -Path $script:LogFile }

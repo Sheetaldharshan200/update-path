@@ -569,6 +569,20 @@ ui_progress_begin() {
     return 0
 }
 
+# ui_progress_phase <file> <phase> — change the words without touching the
+# position or restarting the segment's clock. For a stage that reports what it
+# has finished while the bar keeps creeping on its own (concurrent uploads
+# landing one by one). ⇄ twin: Set-ExakitProgressPhase in ui.ps1.
+ui_progress_phase() {
+    _upp_state=""
+    read -r _upp_state < "$1" 2>/dev/null || return 0
+    case "$_upp_state" in
+        *"|"*"|"*"|"*"|"*)
+            printf '%s|%s\n' "$(printf '%s' "$_upp_state" | cut -d'|' -f1-4)" "$2" > "$1"
+            ;;
+    esac
+}
+
 # ui_progress_end — stop it and clear the line. Same call as ui_spin_end; named
 # for symmetry so a caller never has to know which of the two it started.
 ui_progress_end() { ui_spin_end; }

@@ -492,6 +492,94 @@ exapump_upload() {
     [ "${EXAKIT_UPLOAD_QUIET:-0}" = 1 ] || ok "$(basename "$1") loaded"
 }
 
+# exakit_upload_parallel — how many uploads may run at once.
+#
+# WHY UPLOADS OVERLAP AT ALL: an exapump call is a process launch, and on a
+# fresh Windows install each one measured ~4.4s against 185ms once warm. A
+# dataset load is dominated by that, not by row throughput — weather (10,970
+# rows) took as long as energy (108,050) because both made the same number of
+# launches. The launches cannot be merged: exapump upload takes many FILES but
+# only one --table, and IMPORT ... FROM LOCAL CSV FILE is refused by the server
+# over this protocol ("only supported via JDBC or EXAplus"). Overlapping them
+# is what is left.
+#
+# EXAKIT_UPLOAD_PARALLEL=1 restores exactly the old serial behaviour.
+exakit_upload_parallel() {
+    _up_n="${EXAKIT_UPLOAD_PARALLEL:-4}"
+    case "$_up_n" in
+        ''|*[!0-9]*) _up_n=4 ;;
+    esac
+    [ "$_up_n" -ge 1 ] 2>/dev/null || _up_n=1
+    [ "$_up_n" -le 8 ] 2>/dev/null || _up_n=8
+    printf '%s' "$_up_n"
+}
+
+# exapump_upload_many <schema> <file>... — upload every file CONCURRENTLY, one
+# exapump process each, in waves of exakit_upload_parallel.
+#
+# Waves rather than a rolling window because bash 3.2 has no `wait -n`: it can
+# only wait for ALL background jobs, so a wave pays for its slowest member.
+# That is still far better than one-at-a-time and it keeps the control flow
+# simple enough to be obviously correct.
+#
+# Sets EXAKIT_UPLOAD_FAILED to the failing "file -> table" pairs (empty when
+# all succeeded). Failures are COLLECTED, not fatal on the spot: die() inside a
+# background job cannot stop the parent, and abandoning the wave would leave
+# the other uploads running unreaped.
+exapump_upload_many() {
+    _um_schema="$1"; shift
+    EXAKIT_UPLOAD_FAILED=""
+    [ $# -gt 0 ] || return 0
+    _um_cap="$(exakit_upload_parallel)"
+    _um_dir="$(mktemp -d "${TMPDIR:-/tmp}/exakit-upload.XXXXXX")" || \
+        die "Could not create a temporary directory for the upload batch."
+    _um_i=0
+    for _um_file in "$@"; do
+        _um_i=$((_um_i + 1))
+        _um_table="$(basename "$_um_file" .csv | tr '[:lower:]' '[:upper:]')"
+        printf '%s\n' "$_um_file" > "$_um_dir/$_um_i.file"
+        printf '%s\n' "$_um_schema.$_um_table" > "$_um_dir/$_um_i.table"
+        (
+            "$(exapump_cli)" upload "$_um_file" --table "$_um_schema.$_um_table" \
+                -p "$EXAKIT_EXAPUMP_PROFILE" > "$_um_dir/$_um_i.out" 2>&1
+            printf '%s' "$?" > "$_um_dir/$_um_i.rc"
+        ) &
+        if [ $((_um_i % _um_cap)) -eq 0 ]; then
+            wait
+            # A wave landed. bash 3.2 has no `wait -n`, so a wave is the finest
+            # grain there is — and it is enough to say the batch is draining
+            # while the caller's bar creeps across the segment on its own clock.
+            [ -n "${EXAKIT_PROGRESS_STATE:-}" ] && \
+                ui_progress_phase "$EXAKIT_PROGRESS_STATE" \
+                    "$EXAKIT_PROGRESS_LABEL loaded $_um_i of $# data files"
+        fi
+    done
+    wait
+    # Logged in FILE ORDER once every process has finished, so the logfile still
+    # reads as one block per upload rather than interleaved fragments.
+    _um_j=0
+    while [ "$_um_j" -lt "$_um_i" ]; do
+        _um_j=$((_um_j + 1))
+        _um_f="$(cat "$_um_dir/$_um_j.file" 2>/dev/null)"
+        _um_t="$(cat "$_um_dir/$_um_j.table" 2>/dev/null)"
+        _um_rc="$(cat "$_um_dir/$_um_j.rc" 2>/dev/null)"
+        if [ -n "${EXAKIT_LOG_FILE:-}" ]; then
+            printf 'exapump upload %s --table %s -p %s\n' "$_um_f" "$_um_t" \
+                "$EXAKIT_EXAPUMP_PROFILE" >> "$EXAKIT_LOG_FILE"
+            cat "$_um_dir/$_um_j.out" >> "$EXAKIT_LOG_FILE" 2>/dev/null
+        fi
+        if [ "$_um_rc" = "0" ]; then
+            [ "${EXAKIT_UPLOAD_QUIET:-0}" = 1 ] || ok "$(basename "$_um_f") loaded"
+        else
+            [ -n "${EXAKIT_LOG_FILE:-}" ] && \
+                exakit_explain_db_error "$(tail -8 "$_um_dir/$_um_j.out" 2>/dev/null)"
+            EXAKIT_UPLOAD_FAILED="${EXAKIT_UPLOAD_FAILED:+$EXAKIT_UPLOAD_FAILED; }$_um_f -> $_um_t"
+        fi
+    done
+    rm -rf "$_um_dir"
+    [ -z "$EXAKIT_UPLOAD_FAILED" ]
+}
+
 # exapump_count <schema.table> — row count (prints the number, empty on failure).
 # Wrap the count in a unique delimited token (EXAKIT_RC[<n>]) and recover it with
 # a regex instead of scraping the last line for digits. The old "tail -1 |
@@ -503,6 +591,50 @@ exapump_count() {
     _sql="SELECT 'EXAKIT_RC[' || CAST(COUNT(*) AS VARCHAR(40)) || ']' AS EXAKIT_RC FROM $1"
     "$(exapump_cli)" sql -p "$EXAKIT_EXAPUMP_PROFILE" "$_sql" 2>/dev/null | \
         grep -oE 'EXAKIT_RC\[[0-9]+\]' | head -1 | tr -dc '0-9'
+}
+
+# exapump_count_many <schema> <table>... - count EVERY table in ONE exapump
+# invocation instead of one per table.
+#
+# WHY THIS EXISTS: every exapump call is a separate PROCESS LAUNCH, and on
+# Windows a freshly downloaded, unsigned exapump.exe is re-scanned by Defender
+# on each one - measured at ~4.4s per launch during an install, against 88ms
+# once the scan is cached. A tpch load made 20 launches, 8 of them nothing but
+# one COUNT(*) per table. That is why loading weather (10,970 rows) took as
+# long as energy (108,050 rows): both made 7 launches. The row counts never
+# mattered; the launch count did.
+#
+# Prints one "<table> <count>" line per table asked for, in query order.
+# Returns NON-ZERO and prints nothing unless every table came back: a UNION ALL
+# fails as a whole, so a partial result must send the caller back to counting
+# one at a time rather than let it report a total that is quietly short.
+#
+# The token carries the table name (EXAKIT_RC[CUSTOMER=1500]) because one
+# result set now holds every count and they have to be told apart. As with
+# exapump_count, the echoed query literal cannot match: after "=" it has a
+# quote, not a digit.
+exapump_count_many() {
+    _ecm_schema="$1"; shift
+    [ $# -gt 0 ] || return 0
+    _ecm_want=$#
+    _ecm_sql=""
+    for _ecm_t in "$@"; do
+        [ -n "$_ecm_sql" ] && _ecm_sql="$_ecm_sql UNION ALL "
+        _ecm_sql="${_ecm_sql}SELECT 'EXAKIT_RC[$_ecm_t=' || CAST(COUNT(*) AS VARCHAR(40)) || ']' AS EXAKIT_RC FROM $_ecm_schema.$_ecm_t"
+    done
+    _ecm_out="$("$(exapump_cli)" sql -p "$EXAKIT_EXAPUMP_PROFILE" "$_ecm_sql" 2>/dev/null | \
+        grep -oE 'EXAKIT_RC\[[A-Za-z0-9_]+=[0-9]+\]' | \
+        sed -e 's/^EXAKIT_RC\[//' -e 's/\]$//' -e 's/=/ /')"
+    # Deliberately not "grep -c . || printf 0": on empty input grep PRINTS 0
+    # and EXITS 1, so the fallback fires too and the count reads "00". It would
+    # still be caught by the comparison below, but only by accident.
+    _ecm_got=0
+    if [ -n "$_ecm_out" ]; then
+        _ecm_got="$(printf '%s
+' "$_ecm_out" | grep -c .)"
+    fi
+    [ "$_ecm_got" = "$_ecm_want" ] || return 1
+    printf '%s\n' "$_ecm_out"
 }
 
 # exakit_group_digits <n> — 173745 -> 173,745. Worth the sed: the row total is
@@ -1675,6 +1807,7 @@ exakit_load_dataset_dir() {
     # every suppressed line still goes to the logfile, including the per-table
     # row counts, and a FAILED verification still prints in full.
     _ld_bytes=0
+    _ld_files=0
     for _ld_csv in "$_ld_dir"/data/*.csv; do
         [ -s "$_ld_csv" ] || continue
         _ld_bytes=$(( _ld_bytes + $(exakit_load_weight_of "$_ld_csv") ))
@@ -1717,16 +1850,39 @@ exakit_load_dataset_dir() {
     _ld_done_w=$(( _ld_done_w + _ld_nominal ))
 
     _ld_tables=""
+    # Uploads run CONCURRENTLY (see exapump_upload_many). Still one launch per
+    # file - what changes is how many are in flight at once, which is the only
+    # lever left: exapump upload cannot target more than one table per call,
+    # and the server refuses IMPORT of local files over this protocol.
+    _ld_csvs=""
     for _ld_csv in "$_ld_dir"/data/*.csv; do
         [ -s "$_ld_csv" ] || continue
         _ld_table="$(basename "$_ld_csv" .csv | tr '[:lower:]' '[:upper:]')"
-        _ld_w="$(exakit_load_weight_of "$_ld_csv")"
-        exakit_load_step "$_ld_state" "$_ld_done_w" "$_ld_w" "$_ld_total_w" \
-            "$(exakit_load_secs_for "$_ld_w")" "$_ld_id · $(basename "$_ld_csv")"
-        exapump_upload "$_ld_csv" "$_ld_schema.$_ld_table"
-        _ld_done_w=$(( _ld_done_w + _ld_w ))
         _ld_tables="$_ld_tables $_ld_table"
+        _ld_csvs="${_ld_csvs:+$_ld_csvs }$_ld_csv"
+        _ld_files=$(( _ld_files + 1 ))
     done
+    if [ -n "$_ld_csvs" ]; then
+        # ONE segment for the whole upload. The files go up concurrently, so
+        # there is no per-file position to report any more -- which is fine,
+        # because the bytes were never the interesting part of the position.
+        # They still set the PACE: the segment spans every byte of the dataset
+        # and is expected to take as long as those bytes usually take, so the
+        # creep moves across it instead of parking at 6% until the last wave
+        # lands. The ceiling is where the upload ends, so it cannot overrun into
+        # the load statements however long the waves take.
+        exakit_load_step "$_ld_state" "$_ld_done_w" "$_ld_bytes" "$_ld_total_w" \
+            "$(exakit_load_secs_for "$_ld_bytes")" \
+            "$_ld_id · loading $_ld_files data file$([ "$_ld_files" = 1 ] || printf 's')"
+        EXAKIT_PROGRESS_STATE="$_ld_state"
+        EXAKIT_PROGRESS_LABEL="$_ld_id ·"
+        export EXAKIT_PROGRESS_STATE EXAKIT_PROGRESS_LABEL
+        exapump_upload_many "$_ld_schema" $_ld_csvs
+        EXAKIT_PROGRESS_STATE=""
+        [ -z "$EXAKIT_UPLOAD_FAILED" ] || \
+            die "Upload failed: $EXAKIT_UPLOAD_FAILED (see log)"
+        _ld_done_w=$(( _ld_done_w + _ld_bytes ))
+    fi
 
     if [ -s "$_ld_dir/02_load_data.sql" ]; then
         exakit_load_step "$_ld_state" "$_ld_done_w" "$_ld_nominal" "$_ld_total_w" 3 \
@@ -1789,8 +1945,17 @@ exakit_load_dataset_dir() {
     _ld_rows_total=0
     _ld_rows_known=1
     if [ -n "$_ld_tables" ]; then
+        # ONE invocation for every table. exapump_count_many returns non-zero
+        # unless it read them all, and an empty _ld_counts sends the loop back
+        # to the per-table call - so a batch that cannot run costs correctness
+        # nothing, only the speed it was meant to buy.
+        _ld_counts="$(exapump_count_many "$_ld_schema" $_ld_tables 2>/dev/null)" || _ld_counts=""
         for _ld_table in $_ld_tables; do
-            _ld_rows="$(exapump_count "$_ld_schema.$_ld_table")"
+            if [ -n "$_ld_counts" ]; then
+                _ld_rows="$(printf '%s\n' "$_ld_counts" | awk -v t="$_ld_table" '$1 == t { print $2; exit }')"
+            else
+                _ld_rows="$(exapump_count "$_ld_schema.$_ld_table")"
+            fi
             _ld_tables_n=$((_ld_tables_n + 1))
             if [ -n "$_ld_rows" ]; then
                 _ld_rows_total=$((_ld_rows_total + _ld_rows))
