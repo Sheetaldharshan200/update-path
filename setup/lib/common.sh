@@ -7317,7 +7317,7 @@ kit_shared_steps() {
     fi
 
     if command -v mcp_install >/dev/null 2>&1; then
-        if begin_step mcp "Step ${_step_no}/${_total}  MCP server (AI agent bridge)"; then
+        if begin_step mcp "Step ${_step_no}/${_total}  AI bridge (MCP server, clients and skills)"; then
             if exakit_soft_step mcp "exakit update mcp" _exakit_install_mcp; then
                 mark_step mcp
             fi
@@ -7325,6 +7325,35 @@ kit_shared_steps() {
     else
         info "Step ${_step_no}/${_total}  MCP server — not part of this installation, skipping"
     fi
+
+    # The AI bridge is finished HERE, in the step that says it is being built:
+    # the server, the clients that talk to it, the skills those clients load, and
+    # the "restart your client" line that makes all three take effect. These two
+    # offers used to run at the very end of the run instead — so a reader watched
+    # step 4 announce the AI bridge, sat through pyexasol and the exakit helper,
+    # and was then asked which AI clients to connect, under no step at all. The
+    # step numbering said one thing and the screen did another.
+    #
+    # Nothing here needs a later step. The client configs point at `uvx
+    # <mcp-server>`, never at the exakit command, and exakit_repo_root falls back
+    # to the checkout for skills/ when the helper step has not staged its copy
+    # yet. What they DO need is the database and exapump, which are two steps
+    # back.
+    #
+    # Both offers are best-effort and neither may end the run — but "best-effort"
+    # used to mean "vanishes without trace". Each books itself in the closing
+    # summary with the command that retries it.
+    exakit_clear_failure_note
+    if ! ( exakit_maybe_offer_mcp_setup ); then
+        exakit_record_soft_failure mcp_clients "exakit mcp-setup" \
+            "$(exakit_take_failure_note)" "AI client (MCP) setup"
+    fi
+    exakit_clear_failure_note
+    if ! ( exakit_maybe_offer_skills_install ); then
+        exakit_record_soft_failure skills "exakit skills-install" \
+            "$(exakit_take_failure_note)" "AI skills"
+    fi
+    exakit_clear_failure_note
     _step_no=$((_step_no + 1))
 
     if command -v pyexasol_install >/dev/null 2>&1; then
@@ -7410,20 +7439,6 @@ kit_shared_steps() {
         ok "exakit installed ($EXAKIT_BIN_DIR/exakit)"
     fi
 
-    # Both offers are best-effort and neither may end the run — but "best-effort"
-    # used to mean "vanishes without trace". Each now books itself in the closing
-    # summary with the command that retries it.
-    exakit_clear_failure_note
-    if ! ( exakit_maybe_offer_mcp_setup ); then
-        exakit_record_soft_failure mcp_clients "exakit mcp-setup" \
-            "$(exakit_take_failure_note)" "AI client (MCP) setup"
-    fi
-    exakit_clear_failure_note
-    if ! ( exakit_maybe_offer_skills_install ); then
-        exakit_record_soft_failure skills "exakit skills-install" \
-            "$(exakit_take_failure_note)" "AI skills"
-    fi
-    exakit_clear_failure_note
     # The database should be there after a reboot without anyone thinking about
     # it, the way a system service is. Best-effort and announced: a platform
     # with no supervisor says so, and `exakit autostart off` reverses it.

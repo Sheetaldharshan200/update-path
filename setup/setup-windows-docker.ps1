@@ -94,8 +94,8 @@ try {
             -Body { Request-ExakitDataLoadOffer -KitRoot $KitRoot })
     }
 
-    # --- step 4: MCP server (AI agent bridge) ----------------------------------
-    if ($exapumpSupported -and (Begin-ExakitStep "mcp" "Step 3/5  MCP server (AI agent bridge)")) {
+    # --- step 3: AI bridge (server, clients, skills) ----------------------------
+    if ($exapumpSupported -and (Begin-ExakitStep "mcp" "Step 3/5  AI bridge (MCP server, clients and skills)")) {
         if (Invoke-ExakitSoftStep -Component "mcp" -Repair "exakit update mcp" -Body {
                 Install-Mcp
                 Test-McpServer
@@ -103,6 +103,29 @@ try {
             Set-ExakitStepDone "mcp"
         }
     }
+
+    # The AI bridge is finished HERE, in the step that says it is being built:
+    # the server, the clients that talk to it, the skills those clients load, and
+    # the "restart your client" line that makes all three take effect. These two
+    # offers used to run at the very end of the run instead - so a reader watched
+    # this step announce the AI bridge, sat through pyexasol and the exakit
+    # helper, and was then asked which AI clients to connect, under no step at
+    # all. The step numbering said one thing and the screen did another.
+    #
+    # Nothing here needs a later step. The client configs point at `uvx
+    # <mcp-server>`, never at the exakit command, and the repo-root lookup falls
+    # back to the checkout for skills\ when the helper step has not staged its
+    # copy yet. What they DO need is the database and exapump, two steps back.
+    # Twin of the same block in kit_shared_steps (common.sh).
+    [void](Invoke-ExakitBestEffort -Component "mcp_clients" -Repair "exakit mcp-setup" `
+        -Label "AI client (MCP) setup" `
+        -Warning "Your local runtime is installed, but MCP client setup did not finish cleanly." `
+        -Body { Request-ExakitMcpSetupOffer })
+
+    [void](Invoke-ExakitBestEffort -Component "skills" -Repair "exakit skills-install" `
+        -Label "AI skills" `
+        -Warning "Skills install did not finish cleanly." `
+        -Body { Request-ExakitSkillsInstallOffer })
 
     # --- step 5: pyexasol (Exasol Python driver) --------------------------------
     # Not gated on $exapumpSupported: pyexasol is pure Python via uv, so it
@@ -186,16 +209,6 @@ try {
     # (Write-ExakitSoftFailures) are printed after the connection panel at the
     # very end of the run - not here, in the middle of the step output where
     # the connection details would push them off the screen.
-
-    [void](Invoke-ExakitBestEffort -Component "mcp_clients" -Repair "exakit mcp-setup" `
-        -Label "AI client (MCP) setup" `
-        -Warning "Your local runtime is installed, but MCP client setup did not finish cleanly." `
-        -Body { Request-ExakitMcpSetupOffer })
-
-    [void](Invoke-ExakitBestEffort -Component "skills" -Repair "exakit skills-install" `
-        -Label "AI skills" `
-        -Warning "Skills install did not finish cleanly." `
-        -Body { Request-ExakitSkillsInstallOffer })
 
     Ok "Setup complete"
     Show-ExakitConnectionSummary
