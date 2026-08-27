@@ -578,25 +578,31 @@ function Install-Nano {
             $image "init" "sys_password_file=/run/secrets/sys_password"
         if ($code -ne 0) { Fail "Container failed to start (see log)" }
 
-        # Verify the secret actually landed in the container instead of
-        # silently trusting the bind mount. If it didn't, the database ends
-        # up with a different (or no) password than the one written to
-        # ~\.exasol-starter-kit\credentials\nano_sys_password, and every
-        # later SQL connection attempt fails with no obvious cause - this
-        # catches that here, immediately, with a specific fix.
-        try {
-            Start-Sleep -Seconds 2
-            $mountedSize = & $engine exec $script:NanoContainer sh -c "wc -c < /run/secrets/sys_password 2>/dev/null || echo 0" 2>$null
-            $expectedSize = (Get-Item $pwFile).Length
-            if (($mountedSize | Select-Object -Last 1).Trim() -ne "$expectedSize") {
-                Warn2 "The generated password file did not mount into the container as expected (this is a known Docker Desktop on Windows bind-mount issue). The database may be using a different password than the one recorded locally."
-                Warn2 "If the connection check below fails, try: Settings > Resources > File sharing in Docker Desktop, ensure your user profile drive is shared, then run 'exakit uninstall' and re-install."
-            }
-        } catch {
-            # Diagnostic-only: if we can't even check (container not exec-able
-            # yet, no `sh`, etc.), don't let that abort the install.
-            Write-ExakitLog "WARN" "Could not verify the secret mount: $_"
-        }
+        # THE SECRET-MOUNT CHECK THAT USED TO LIVE HERE IS GONE, because it
+        # could never pass. It ran
+        #
+        #     docker exec <container> sh -c "wc -c < /run/secrets/sys_password"
+        #
+        # and the nano image HAS NO SHELL. That exec fails outright with
+        # `exec: "sh": executable file not found in $PATH`, so the size never
+        # came back and the comparison never matched. Every Windows install
+        # therefore printed two alarming warnings about a Docker Desktop
+        # bind-mount problem it did not have.
+        #
+        # Measured on an affected install: `docker inspect` shows the bind in
+        # place (nano_sys_password -> /run/secrets/sys_password), and the
+        # connection check moments later reports success. The password was
+        # always fine; only the verification was broken.
+        #
+        # A check that cannot succeed but always warns is worse than no check:
+        # it teaches people to read past warnings, and this one made a healthy
+        # install look broken.
+        #
+        # The intent behind it is still covered, and covered better, one step
+        # later: "Validating the database connection (SELECT 1)" tries the
+        # recorded password against the running database. A password that did
+        # not reach the container fails THERE, with a real error rather than a
+        # guess, and Show-ExakitDbErrorRemedy already turns it into a remedy.
     }
 
     Wait-NanoReady
