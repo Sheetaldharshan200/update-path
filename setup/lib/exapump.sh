@@ -2258,25 +2258,77 @@ exakit_data_load_menu() {
         ui_table_begin "$EXAKIT_TABLE_STATE" && EXAKIT_TABLE_LIVE=1
     fi
     _menu_status=0
+    # Every load runs in a SUBSHELL, the way the installer has always run them.
+    # The loading flow is full of die() calls and die() exits: called straight
+    # from here, one of them ended `exakit data-load` mid-table, with no
+    # ui_table_end and the animator still running. The orphan's next frame moved
+    # the cursor up and cleared, which wiped the error message off the screen and
+    # repainted the half-finished table over it -- a truncated table at 99% and
+    # no explanation. ui_table_detach is what keeps the subshell's exit from
+    # taking this shell's animation with it.
+    _menu_notes=""
+    EXAKIT_DEFER_ERRORS=""
+    if [ "$EXAKIT_TABLE_LIVE" = 1 ]; then
+        EXAKIT_DEFER_ERRORS="$EXAKIT_TABLE_STATE.fatal"
+        : > "$EXAKIT_DEFER_ERRORS"
+    fi
     for _menu_id in $(printf '%s' "$EXAKIT_DATA_LOAD_SELECTION" | tr ',' ' '); do
         case "$_menu_id" in
             local)
-                exakit_load_local_file
+                ( ui_table_detach; exakit_load_local_file )
                 _local_status=$?
                 if [ "$_local_status" -eq 2 ]; then
-                    info "Local file load skipped. Run it any time with: exakit data-load"
+                    _menu_notes="${_menu_notes}info|Local file load skipped. Run it any time with: exakit data-load
+"
                 elif [ "$_local_status" -ne 0 ]; then
                     _menu_status="$_local_status"
                 fi
                 ;;
             *)
-                _kit_root="$(exakit_repo_root)" || die "Could not find the kit's sql/ and data/ files to load."
-                exakit_load_dataset "$_kit_root" "$_menu_id"
+                _kit_root="$(exakit_repo_root)" || _kit_root=""
+                if [ -z "$_kit_root" ]; then
+                    _menu_notes="${_menu_notes}warn|Could not find the kit's sql/ and data/ files to load.
+"
+                    _menu_status=1
+                    continue
+                fi
+                if ! ( ui_table_detach; exakit_load_dataset "$_kit_root" "$_menu_id" ); then
+                    # The row is the only place a reader looks for this, and the
+                    # loader died before it could say so itself.
+                    _menu_row="$(exakit_data_table_row "$_menu_id")"
+                    if [ -n "$_menu_row" ] && [ "$EXAKIT_TABLE_LIVE" = 1 ]; then
+                        ui_table_set "$EXAKIT_TABLE_STATE" "$_menu_row" failed \
+                            "" "" "" "" "did not finish - see the log"
+                    fi
+                    _menu_notes="${_menu_notes}warn|Loading '$_menu_id' did not finish. Retry any time with: exakit data-load
+"
+                    _menu_status=1
+                fi
                 ;;
         esac
     done
+    # The table stops animating BEFORE anything is said, or the words land inside
+    # a frame that is still being repainted.
     [ "$EXAKIT_TABLE_LIVE" = 1 ] && ui_table_end "$EXAKIT_TABLE_STATE"
     EXAKIT_TABLE_LIVE=0
+    # The reason a load died, said once, below the finished table.
+    if [ -n "$EXAKIT_DEFER_ERRORS" ] && [ -s "$EXAKIT_DEFER_ERRORS" ]; then
+        while IFS='|' read -r _mf_kind _mf_text; do
+            [ -n "$_mf_text" ] || continue
+            error "$_mf_text"
+        done < "$EXAKIT_DEFER_ERRORS"
+        rm -f "$EXAKIT_DEFER_ERRORS"
+    fi
+    EXAKIT_DEFER_ERRORS=""
+    while IFS='|' read -r _mn_kind _mn_text; do
+        [ -n "$_mn_text" ] || continue
+        case "$_mn_kind" in
+            warn) warn "$_mn_text" ;;
+            *)    info "$_mn_text" ;;
+        esac
+    done <<EXAKIT_MENU_NOTES_EOF
+$_menu_notes
+EXAKIT_MENU_NOTES_EOF
     return "$_menu_status"
 }
 

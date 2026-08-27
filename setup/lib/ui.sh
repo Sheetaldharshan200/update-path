@@ -991,6 +991,15 @@ ui_table_begin() {
     ) &
     _UI_SPIN_PID=$!
     _UI_SPIN_OWNER="$$"
+    # Who to stop if this shell goes down without calling ui_table_end. The CLI
+    # sets no EXIT trap and die() exits where it stands, so without this the
+    # animator outlives the command: an orphan whose next frame moves the cursor
+    # up and clears, which ERASES the message that was just printed and repaints
+    # the half-finished table over it. That is what "data-load has issues, with
+    # no error shown" looks like from the outside.
+    _UI_TABLE_ACTIVE="$1"
+    trap 'ui_table_abort; exit 130' INT TERM
+    [ -n "$(trap -p EXIT)" ] || trap 'ui_table_abort' EXIT
     # Out of the job table right away, or bash ANNOUNCES the kill: killing a
     # tracked background job prints "line N: 12345 Terminated: 15 ( ... )" —
     # several lines of the loop's own source — straight into the middle of the
@@ -1006,6 +1015,7 @@ ui_table_begin() {
 # screen. The animator can be killed part-way through a frame, so the last thing
 # drawn is redrawn deliberately rather than trusted.
 ui_table_end() {
+    _UI_TABLE_ACTIVE=''
     [ -n "${_UI_SPIN_PID:-}" ] || return 0
     # ASKED to stop, not shot. The animator finishes the frame it is drawing and
     # exits, which is the only way the cursor is guaranteed to be at a frame
@@ -1029,6 +1039,48 @@ ui_table_end() {
     UI_TABLE_LINES="$_ute_lines"
     ui_table_redraw "$1" 0
     rm -f "$1.lines" "$1.stop"
+    return 0
+}
+
+# ui_table_abort — stop a live table from anywhere that is not ui_table_end: a
+# die(), a trap, a Ctrl-C. Leaves the FINAL frame on screen, so whatever is said
+# next is said below a table instead of on top of one, and gives the cursor back.
+# Safe to call when nothing is animating.
+ui_table_abort() {
+    [ -n "${_UI_TABLE_ACTIVE:-}" ] || return 0
+    _uta_state="$_UI_TABLE_ACTIVE"
+    _UI_TABLE_ACTIVE=''
+    ui_table_end "$_uta_state"
+    ui_restore_cursor
+    return 0
+}
+
+# ui_table_detach — call this FIRST inside a subshell that does work while a
+# table is animating. A subshell inherits both the animator's pid and the
+# active-table handle, and bash never changes $$ in a subshell, so no guard can
+# tell parent from child by pid. Without this, a die() inside the subshell would
+# stop the PARENT's animation on its way out and every remaining row would load
+# with a frozen table. Dropping the handles makes ui_animation_stop and
+# ui_spin_end no-ops in here; row updates are unaffected because they travel
+# through the state FILE, which is shared on purpose.
+ui_table_detach() {
+    _UI_TABLE_ACTIVE=''
+    _UI_SPIN_PID=''
+    _UI_SPIN_NESTED=0
+    _UI_SPIN_OWNER=''
+    return 0
+}
+
+# ui_animation_stop — stop whatever this shell is animating, table or spinner,
+# before printing something the reader must not lose. die() calls this first for
+# exactly that reason.
+ui_animation_stop() {
+    if [ -n "${_UI_TABLE_ACTIVE:-}" ]; then
+        ui_table_abort
+    else
+        ui_spin_end 2>/dev/null || true
+    fi
+    ui_restore_cursor
     return 0
 }
 
