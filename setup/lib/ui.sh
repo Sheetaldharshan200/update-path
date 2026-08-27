@@ -581,6 +581,12 @@ ui_progress_state() {
 ui_progress_begin() {
     [ "${UI_FANCY:-0}" = 1 ] || return 1
     [ -t 1 ] || return 1
+    # Same single-animation rule as ui_table_begin: whatever is animating now is
+    # about to have its pid overwritten, and would print over this bar forever.
+    if [ -n "${_UI_SPIN_PID:-}" ]; then
+        _UI_SPIN_NESTED=0
+        _ui_step_stop_spinner
+    fi
     printf '\033[?25l'
     ui_progress_animate "$1" "$2" &
     _UI_SPIN_PID=$!
@@ -967,10 +973,16 @@ ui_table_redraw() {
     _utd_prev="${UI_TABLE_LINES:-0}"
     case "$_utd_prev" in ''|*[!0-9]*) _utd_prev=0 ;; esac
     ui_table_frame "$1" "$2"
+    # The \r is not decoration. Cursor-up PRESERVES the column, so a cursor left
+    # mid-row by anything that printed without a newline -- a spinner frame, a
+    # progress line -- makes the whole frame draw from that column, and \033[0J
+    # clears only from there rightwards. What is left on screen is the first N
+    # columns of the old frame with a new one starting inside it: several top
+    # borders side by side on one line, at different widths.
     if [ "$_utd_prev" -gt 0 ]; then
-        printf '\033[%dA\033[0J%s\n' "$_utd_prev" "$UI_TABLE_FRAME"
+        printf '\r\033[%dA\033[0J%s\n' "$_utd_prev" "$UI_TABLE_FRAME"
     else
-        printf '%s\n' "$UI_TABLE_FRAME"
+        printf '\r%s\n' "$UI_TABLE_FRAME"
     fi
     return 0
 }
@@ -1060,6 +1072,17 @@ ui_table_disable() {
 ui_table_begin() {
     [ "${UI_FANCY:-0}" = 1 ] || return 1
     [ -t 1 ] || return 1
+    # ONE animation at a time. ui_spin_begin takes a nesting reference when
+    # something is already animating; this did not, so a step spinner that was
+    # still running had its pid overwritten here and became an orphan -- and an
+    # orphaned spinner keeps printing "\r  <glyph> <label> (Ns)\033[K" forever,
+    # leaving the cursor mid-row for the frame that follows. The table REPLACES
+    # the step's narration, so the spinner is stopped rather than refused.
+    # Set-ExakitTable's twin has always guarded this.
+    if [ -n "${_UI_SPIN_PID:-}" ]; then
+        _UI_SPIN_NESTED=0
+        _ui_step_stop_spinner
+    fi
     printf '\033[?25l'
     # How many lines are ALREADY on screen. The selection phase leaves its table
     # drawn, and the first frame has to overwrite it rather than print a second
