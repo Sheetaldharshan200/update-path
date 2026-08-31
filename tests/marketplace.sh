@@ -1605,6 +1605,18 @@ has "...and stops it"                   'ui_table_end "$EXAKIT_ADDON_TABLE_STATE
 lacks "the state panel is gone"         'ui_panel_begin "Marketplace add-ons"'       "$COMMON_SH_ADDONS"
 has "...its columns moved into the table" 'UI_TABLE_COL3="Description"'              "$COMMON_SH_ADDONS"
 has "...and its other rows became disabled ones" 'disabled|||||| %s||' "$COMMON_SH_ADDONS"
+# The row builder must do NO lookups of its own. Resolving the version and the
+# About inside it put a version probe and a network fetch behind every caller --
+# including the pty scenario that drives this table with three ids that are not
+# add-ons at all. The caller iterating the add-ons already has both values and
+# hands them over in EXAKIT_ADDON_TABLE_META.
+BUILDER_SRC="$(sed -n '/^_exakit_addon_table_build()/,/^}/p' "$ROOT/setup/lib/common.sh")"
+lacks "the row builder fetches no About"     "exakit_marketplace_addon_description" "$BUILDER_SRC"
+lacks "...and probes no version"             "exakit_component_available"           "$BUILDER_SRC"
+has   "it is handed them instead"            'EXAKIT_ADDON_TABLE_META'              "$BUILDER_SRC"
+# ...and the caller resolves them only when a table will actually draw them.
+has "the caller skips the lookup for a scripted answer" \
+    'if [ -z "${EXAKIT_MARKETPLACE_ADDONS:-}" ]; then' "$COMMON_SH_ADDONS"
 
 # The rows: a group, one per installable add-on on a tree connector, then Skip.
 ADDON_STATE_FILE="$WORK/addon-table"

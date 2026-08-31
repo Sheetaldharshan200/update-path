@@ -3225,16 +3225,22 @@ EXAKIT_ATB_COUNT
         else
             _atb_kind=tee
         fi
-        # Fields 11 and 12: the Version and Description columns. Looked up here
-        # rather than passed in because only this interactive path draws them --
-        # a scripted EXAKIT_MARKETPLACE_ADDONS answer never builds a table, so
-        # it still never pays for the description lookup.
-        _atb_ver="$(exakit_version_plain "$(exakit_component_available "$_atb_id" 2>/dev/null || printf 'unknown')")"
-        _atb_desc="$(exakit_marketplace_addon_description "$_atb_id" 2>/dev/null || true)"
-        # Flattened to ONE line for the RECORD, not for the screen: a newline
-        # here would end the row's line in the state file. The table re-flows it
-        # across as many lines as it needs at draw time, in full -- see _ui_wrap.
-        _atb_desc="$(printf '%s' "$_atb_desc" | tr '\n' ' ')"
+        # Fields 11 and 12: the Version and Description columns, PASSED IN
+        # through EXAKIT_ADDON_TABLE_META rather than looked up here.
+        #
+        # Resolving them inside this function put a version probe and a GitHub
+        # About fetch behind every caller of it -- including the pty scenario
+        # that drives this table with three ids that are not add-ons at all, and
+        # which is not a place for network I/O. The caller iterating the add-ons
+        # already has both values; it hands them over. Missing metadata leaves
+        # the cells empty, which is what a table with no such columns wants.
+        _atb_ver=""; _atb_desc=""
+        while IFS='|' read -r _atb_mid _atb_mver _atb_mdesc; do
+            [ "$_atb_mid" = "$_atb_id" ] || continue
+            _atb_ver="$_atb_mver"; _atb_desc="$_atb_mdesc"; break
+        done <<EXAKIT_ATB_META
+${EXAKIT_ADDON_TABLE_META:-}
+EXAKIT_ATB_META
         printf '%s|%s|1|idle|||||| |%s|%s\n' "$_atb_kind" "$_atb_id" \
             "$_atb_ver" "$_atb_desc" >> "$_atb_f"
         EXAKIT_ADDON_TABLE_IDS="$EXAKIT_ADDON_TABLE_IDS$_atb_id
@@ -3461,6 +3467,9 @@ exakit_marketplace_menu() {
     # table -- the way the MCP client list shows "Cursor · not installed" --
     # and as plain lines when there is no table to put them in.
     _mm_covered=""
+    # "<id>|<version>|<description>" for each installable add-on, handed to the
+    # row builder so it never has to look either up itself.
+    _mm_meta=""
     while IFS='|' read -r _mm_id _mm_label <&3; do
         [ -n "$_mm_id" ] || continue
         # Not applicable here and not installed: it is not an option on this
@@ -3490,10 +3499,21 @@ exakit_marketplace_menu() {
 "
             _mm_ids+=("__disabled__")
         else
-            # The version and the description are resolved by
-            # _exakit_addon_table_build, which is the only path that draws them.
-            # Resolving them here as well meant every installable add-on paid
-            # for its About lookup twice.
+            # The version and the description travel to the table from here,
+            # where the loop is already visiting every add-on. Resolved ONLY on
+            # the path that draws them: a scripted EXAKIT_MARKETPLACE_ADDONS
+            # answer never builds a table, so it still never pays for the About
+            # lookup -- and neither does anything else that builds a table
+            # without asking for these columns.
+            if [ -z "${EXAKIT_MARKETPLACE_ADDONS:-}" ]; then
+                _mm_mdesc="$(exakit_marketplace_addon_description "$_mm_id" 2>/dev/null || true)"
+                # One line for the RECORD, not for the screen: a newline here
+                # would end the row's line in the state file. The table re-flows
+                # it across as many lines as it needs at draw time -- see
+                # _ui_wrap -- in full and without an ellipsis.
+                _mm_meta="$_mm_meta$_mm_id|$(exakit_version_plain "${_mm_adv:-unknown}")|$(printf '%s' "$_mm_mdesc" | tr '\n' ' ')
+"
+            fi
             _mm_ids+=("$_mm_id")
             _mm_selectable=$((_mm_selectable + 1))
         fi
@@ -3603,6 +3623,7 @@ EXAKIT_MM_COVERED
         _mm_i=$((_mm_i + 1))
     done
     EXAKIT_ADDON_TABLE_DISABLED="$_mm_covered"
+    EXAKIT_ADDON_TABLE_META="$_mm_meta"
     _exakit_addon_table_build "$EXAKIT_ADDON_TABLE_STATE" "${_mm_pick_ids[@]}"
     UI_TABLE_TITLE="Marketplace add-ons"
     # The first column's heading, or the add-ons would sit under "Dataset".
