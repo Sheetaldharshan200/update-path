@@ -8106,6 +8106,23 @@ kit_shared_steps() {
             # checkout — it shadows it, so every one of those commands reports
             # "no skills/ directory in this kit build" on a working install.
             [ -d "$_kit_root/skills" ] && cp -R "$_kit_root/skills" "$EXAKIT_HOME/kit/"
+            # setup/help/ is the WHOLE help corpus -- one JSON per topic, and
+            # `exakit help <topic>` resolves through exakit_repo_root, which
+            # PREFERS this staged copy once kit/mcp exists. Omitting it did not
+            # fall back to the checkout, it shadowed it: on every installed kit
+            # `exakit help mcp`, `exapump`, `personal`, `nano`, `pyexasol`,
+            # `exakit` and all three add-ons answered "No help entry for ...".
+            #
+            # It also took the marketplace descriptions with it, ALL THREE
+            # TIERS of them, because every tier reads this same document:
+            # _exakit_addon_repo takes the `repo` field, so with nothing staged
+            # the GitHub About could not even be requested; the cache it fills
+            # therefore stayed empty; and the `tagline` fallback -- the offline
+            # answer AGENTS/CLAUDE describe -- was in the same missing file. So
+            # every add-on in the table read "Details: exakit help <id>", the
+            # last resort of the chain, pointing at the very command this
+            # omission had disabled. Same shape as the skills note below.
+            [ -d "$_kit_root/setup/help" ] && cp -R "$_kit_root/setup/help" "$EXAKIT_HOME/kit/setup/"
             [ -f "$_script_dir/load-data.sh" ] && cp "$_script_dir/load-data.sh" "$EXAKIT_HOME/kit/setup/"
         fi
         ensure_path_hint "$EXAKIT_BIN_DIR"
