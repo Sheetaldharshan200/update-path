@@ -5656,7 +5656,10 @@ exakit_report_readonly_allowlist() {
     # their settings formats differ and hand-editing them would be presumptuous.
     _skills_applied="$(exakit_apply_readonly_allowlist 2>/dev/null || true)"
     case "$_skills_applied" in
-        ADDED\ 0) info "Read-only command allowlist already present in ~/.claude/settings.json." ;;
+        # ADDED 0 is the nothing-changed branch, so it fired on every re-run to
+        # report that nothing happened. The branch below, where commands really
+        # are allowlisted, still says so.
+        ADDED\ 0) _exakit_log_file "INFO  Read-only command allowlist already present in ~/.claude/settings.json." ;;
         ADDED\ *) ok "Read-only exakit commands allowlisted in ~/.claude/settings.json (status, info, version, mcp-doctor, logs, catalog, preflight, guide, mcp-status, mcp-validate, skills; uninstall stays gated)." ;;
         SKIP*)    warn "~/.claude/settings.json could not be merged safely ($_skills_applied) — the allowlist in skills/reducing-agent-prompts.md shows what to add by hand." ;;
     esac
@@ -6113,7 +6116,14 @@ sys.stdout.write(pw.group(1))
 PY
 }
 
+# Four lines became one. Creating the user, creating the schema and validating
+# the login are phases of a single outcome -- the read-only access exists and
+# works -- and the tick at the end already said all three happened. They become
+# spinner phases; the tick goes through ok_step so it survives the quieting.
 exakit_configure_mcp_readonly_access() {
+    _cmra_prev_quiet="${EXAKIT_QUIET_DETAIL:-0}"
+    _cmra_t0="$(date +%s 2>/dev/null || echo 0)"
+    [ -t 1 ] && EXAKIT_QUIET_DETAIL=1
     require_python3
     # Ensure exapump is on PATH (both current session and permanently)
     _exapump_bin="$(exakit_exapump_bin)" || die "exapump is required for MCP read-only setup but was not found."
@@ -6180,6 +6190,7 @@ exakit_configure_mcp_readonly_access() {
         "$_temp_config" "admin" \
         "SELECT CASE WHEN EXISTS (SELECT 1 FROM EXA_DBA_USERS WHERE USER_NAME = '$(_exakit_sql_literal "$_identifier_user")') THEN 'EXAKIT_MCP_USER_PRESENT' ELSE 'EXAKIT_MCP_USER_MISSING' END AS STATUS" \
         "EXAKIT_MCP_USER_PRESENT"; then
+        EXAKIT_ACTIVE_LABEL="Creating the dedicated MCP read-only database user"
         info "Creating the dedicated MCP read-only database user ($_readonly_user)"
         _create_user_output="$(_exakit_run_exapump_sql \
             "$_temp_config" "admin" \
@@ -6217,6 +6228,7 @@ exakit_configure_mcp_readonly_access() {
         "$_temp_config" "admin" \
         "SELECT CASE WHEN EXISTS (SELECT 1 FROM EXA_ALL_SCHEMAS WHERE SCHEMA_NAME = '$(_exakit_sql_literal "$_default_schema_uc")') THEN 'EXAKIT_SCHEMA_PRESENT' ELSE 'EXAKIT_SCHEMA_MISSING' END AS STATUS" \
         "EXAKIT_SCHEMA_PRESENT"; then
+        EXAKIT_ACTIVE_LABEL="Creating the default schema for MCP-safe querying"
         info "Creating default schema $_default_schema_uc for MCP-safe querying"
         _exakit_run_exapump_sql "$_temp_config" "admin" "CREATE SCHEMA ${_default_schema_uc}" \
             >> "${EXAKIT_LOG_FILE:-/dev/null}" 2>&1 || die "Could not create schema $_default_schema_uc for MCP access."
@@ -6236,6 +6248,7 @@ exakit_configure_mcp_readonly_access() {
     _exakit_run_exapump_sql "$_temp_config" "admin" "GRANT SELECT ANY TABLE TO ${_identifier_user}" \
         >> "${EXAKIT_LOG_FILE:-/dev/null}" 2>&1 || die "Could not grant SELECT ANY TABLE to the MCP read-only database user."
 
+    EXAKIT_ACTIVE_LABEL="Validating the dedicated MCP read-only login"
     info "Validating dedicated MCP read-only login"
     _exakit_exapump_sql_has_token \
         "$_temp_config" "mcp_readonly" \
@@ -6263,7 +6276,8 @@ exakit_configure_mcp_readonly_access() {
         "every schema (USE ANY SCHEMA + SELECT ANY TABLE); 'schemas' is the connection default, not a limit"
     manifest_set components.mcp_server.connection.validated "true"
     rm -f "$_temp_config"
-    ok "Dedicated MCP read-only access is configured and validated"
+    EXAKIT_QUIET_DETAIL="$_cmra_prev_quiet"
+    ok_step "Dedicated MCP read-only access is configured and validated ($(( $(date +%s 2>/dev/null || echo 0) - _cmra_t0 ))s)"
     return 0
 }
 
@@ -6507,7 +6521,10 @@ PY
     done <<EOF
 $_summary_lines
 EOF
-    info "Config file paths and per-client state: exakit mcp-status"
+    # Already in the closing panel, verbatim in effect:
+    #   MCP configs:  in each AI client's config (list: exakit mcp-status)
+    # so the pointer survives without being given twice.
+    _exakit_log_file "INFO  Config file paths and per-client state: exakit mcp-status"
 }
 
 exakit_print_mcp_ready_panel() {
@@ -7185,7 +7202,8 @@ EOF
         return "$_setup_status"
     fi
     exakit_print_mcp_ready_panel "permanent"
-    ok "MCP setup guidance is ready."
+    # The panel above IS the guidance; announcing that it exists, directly
+    # under it, told the reader nothing they had not just read.
     return 0
 }
 
@@ -7307,7 +7325,8 @@ exakit_maybe_offer_mcp_setup() {
     # runs (EXAKIT_SKIP_MCP=1 above is the scripted escape hatch). The client
     # selection pre-selects every detected-but-unconnected client;
     # non-interactive runs keep that default.
-    info "The Exasol runtime and MCP server are ready."
+    # No lead-in: the ticks directly above already said the runtime and the
+    # server are ready, and this restated them in a sentence.
     if ! exakit_mcp_setup; then
         warn "Your local runtime is installed, but MCP client setup did not finish cleanly."
         warn "Retry any time with: exakit mcp-setup"
@@ -7588,9 +7607,19 @@ _exakit_install_exapump() {
     return $_eie_rc
 }
 
+# One line for this step's server work: the spinner narrates the prime and the
+# handshake, so the info/ok pairs beneath were the second telling.
 _exakit_install_mcp() {
-    mcp_install || return 1
+    _eim_prev_quiet="${EXAKIT_QUIET_DETAIL:-0}"
+    [ -t 1 ] && EXAKIT_QUIET_DETAIL=1
+    if ! mcp_install; then
+        EXAKIT_QUIET_DETAIL="$_eim_prev_quiet"
+        return 1
+    fi
     mcp_validate
+    _eim_rc=$?
+    EXAKIT_QUIET_DETAIL="$_eim_prev_quiet"
+    return $_eim_rc
 }
 
 # pyexasol_validate used to run OUTSIDE the soft step, which defeated the whole
