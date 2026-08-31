@@ -206,6 +206,19 @@ info_step() {
     info "$@"
     EXAKIT_QUIET_DETAIL="$_ifs_prev"
 }
+# heading <text> — a green ▸ at the action indent.
+#
+# Not an action and not an outcome, so neither the dim bullet nor the tick fits:
+# this marks a heading the reader is meant to stop at — the add-on offer after
+# the closing rule, the support line at the very end. The bullet made both read
+# as one more thing the installer was doing. The glyph is the step header's, in
+# the tick's green, and degrades to ">" in plain mode like every other arrow.
+# Never gated by EXAKIT_QUIET_DETAIL: nothing that uses it runs inside a
+# one-line step. ⇄ twin: Write-ExakitHeading in exakit-common.ps1.
+heading() {
+    printf '    %s%s%s %s\n' "${UI_OK:-}" "${UI_ARROW:->}" "${UI_RESET:-}" "$*"
+    _exakit_log_file "INFO  $*"
+}
 warn() { printf '      %s!%s %s\n'  "${UI_WARN:-}" "${UI_RESET:-}" "$*" >&2;        _exakit_log_file "WARN  $*"; }
 error(){ printf '      %s%s%s %s\n' "${UI_ERR:-}"  "${UI_CROSS:-[x]}" "${UI_RESET:-}" "$*" >&2; _exakit_log_file "ERROR $*"; }
 
@@ -3634,14 +3647,9 @@ exakit_marketplace_offer() {
     # The install is over; what follows is a different question. A rule with air
     # around it is the seam, so the offer does not read as one more install step.
     ui_rule
-    # A green ▸ rather than the dim action bullet: what follows the rule is not
-    # one more step of the install, it is the heading of a separate offer, and
-    # the bullet marked it as another thing being done TO the machine. The glyph
-    # is the step header's, in the tick's green; plain mode degrades it to ">"
-    # exactly as every other arrow does. Logged as an info line either way.
-    printf '    %s%s%s %s\n' "${UI_OK:-}" "${UI_ARROW:->}" "${UI_RESET:-}" \
-        "Supercharge Exasol with add-ons"
-    _exakit_log_file "INFO  Supercharge Exasol with add-ons"
+    # A heading, not an action: what follows the rule is a separate offer, and
+    # the dim bullet marked it as one more thing being done TO the machine.
+    heading "Supercharge Exasol with add-ons"
     EXAKIT_CHECKBOX_EXCLUSIVE=2
     ui_checkbox_menu "Explore ?" "1" \
         "Yes" \
@@ -3649,7 +3657,11 @@ exakit_marketplace_offer() {
     case ",$EXAKIT_CHECKBOX_SELECTION," in
         *",1,"*)
             exakit_marketplace_menu || true
-            info "Browse again: exakit marketplace  ·  how to use one: exakit help <add-on>"
+            # "Browse again: exakit marketplace · how to use one: exakit
+            # help <add-on>" stood here. The table above has just said what was
+            # installed and what each one gives you; the reader has not asked
+            # to browse again, and the closing support line already names
+            # `exakit help`.
             ;;
         *)
             info "Maybe later — browse any time with: exakit marketplace"

@@ -272,7 +272,12 @@ try {
         -Label "marketplace add-ons" `
         -Warning "The marketplace offer did not finish cleanly." `
         -Body { Request-ExakitMarketplaceOffer })
-    Info "Run ""exakit help"" for support"
+    # A rule, then a heading: the last line on screen is where the reader is
+    # left, and run together with whatever the marketplace printed it read as
+    # one more of its bullets. The rule gives it air; the green arrow says it
+    # is not a step.
+    Write-ExakitRule
+    Write-ExakitHeading "Run ""exakit help"" for support"
 } catch [ExakitFailException] {
     # A hard stop (no container runtime, no database) still owes the user the
     # account of what had already been skipped before it.

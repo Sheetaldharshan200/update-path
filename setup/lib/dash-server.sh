@@ -597,7 +597,10 @@ _dash_server_print_usage() {
 # hook, resolved generically by _exakit_addon_fn like install/validate/start.
 dash_server_summary() {
     _dash_server_resolve_port 2>/dev/null || true
-    printf 'dashboards at http://127.0.0.1:%s\n' "$EXAKIT_DASH_SERVER_PORT"
+    # 33 characters at a four-digit port. The cell truncates anything
+    # longer, and its room is 33 in the PLAIN palette, whose tick is the
+    # four-character "[ok]" rather than a one-character glyph.
+    printf 'dashboards: http://127.0.0.1:%s\n' "$EXAKIT_DASH_SERVER_PORT"
 }
 
 # ---------------------------------------------------------------------------

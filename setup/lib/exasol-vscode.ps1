@@ -256,7 +256,8 @@ function Test-ExasolVscode {
 # Get-ExasolVscodeSummary - the one fact worth a place on the result line.
 # Optional registry hook (SummaryFn); twin of exasol_vscode_summary.
 function Get-ExasolVscodeSummary {
-    return "the Exasol view appears in VS Code's activity bar"
+    # 32 characters: the finished cell truncates at 33 in the plain palette.
+    return "Exasol view in VS Code's sidebar"
 }
 
 # Remove the KIT-MANAGED extension from VS Code through VS Code's own CLI,
