@@ -240,20 +240,25 @@ function InfoStep([string]$Msg) {
     Info $Msg
     $script:ExakitQuietDetail = $prev
 }
-# Write-ExakitHeading <text> - a green arrow at the action indent.
+# Write-ExakitHeading <text> - a green arrow at the STEP indent (two spaces).
 #
 # Not an action and not an outcome, so neither the dim bullet nor the tick fits:
 # this marks a heading the reader is meant to stop at - the add-on offer after
 # the closing rule, the support line at the very end. The bullet made both read
 # as one more thing the installer was doing. The glyph is the step header's, in
 # the tick's green, and degrades to ">" in plain mode like every other arrow.
+#
+# Two spaces, the same column as Begin-ExakitStep's own arrow, because that is
+# what it IS: a top-level heading with its own children under it. At four it sat
+# in the action gutter, level with the "Explore marketplace ?" question it
+# introduces, and the two read as siblings when one contains the other.
 # Never gated by ExakitQuietDetail: nothing that uses it runs inside a one-line
 # step. Twin of heading in common.sh.
 function Write-ExakitHeading([string]$Msg) {
     if ($script:UiFancy) {
-        Write-Host ("    {0}{1}{2} {3}" -f $script:UiOk, $script:UiArrow, $script:UiReset, $Msg)
+        Write-Host ("  {0}{1}{2} {3}" -f $script:UiOk, $script:UiArrow, $script:UiReset, $Msg)
     } else {
-        Write-Host ("    {0} {1}" -f $script:UiArrow, $Msg)
+        Write-Host ("  {0} {1}" -f $script:UiArrow, $Msg)
     }
     Write-ExakitLog "INFO" $Msg
 }
@@ -3923,7 +3928,7 @@ function Request-ExakitMarketplaceOffer {
     # A heading, not an action: what follows the rule is a separate offer, and
     # the dim bullet marked it as one more thing being done TO the machine.
     Write-ExakitHeading "Supercharge Exasol with add-ons"
-    $gate = Read-ExakitCheckboxMenu -Title "Explore ?" `
+    $gate = Read-ExakitCheckboxMenu -Title "Explore marketplace ?" `
         -Options @("Yes", "No") `
         -Defaults @(1) -ExclusiveIndex 2
     if ($gate -contains 1) {

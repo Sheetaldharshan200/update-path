@@ -206,17 +206,23 @@ info_step() {
     info "$@"
     EXAKIT_QUIET_DETAIL="$_ifs_prev"
 }
-# heading <text> — a green ▸ at the action indent.
+# heading <text> — a green ▸ at the STEP indent (two spaces).
 #
 # Not an action and not an outcome, so neither the dim bullet nor the tick fits:
 # this marks a heading the reader is meant to stop at — the add-on offer after
 # the closing rule, the support line at the very end. The bullet made both read
-# as one more thing the installer was doing. The glyph is the step header's, in
-# the tick's green, and degrades to ">" in plain mode like every other arrow.
-# Never gated by EXAKIT_QUIET_DETAIL: nothing that uses it runs inside a
-# one-line step. ⇄ twin: Write-ExakitHeading in exakit-common.ps1.
+# as one more thing the installer was doing.
+#
+# Two spaces, the same column as begin_step's own arrow, because that is what it
+# IS: a top-level heading with its own children under it. At four it sat in the
+# action gutter, level with the "Explore marketplace ?" question it introduces,
+# and the two read as siblings when one contains the other. The glyph is the
+# step header's, in the tick's green rather than the accent, and degrades to ">"
+# in plain mode like every other arrow. Never gated by EXAKIT_QUIET_DETAIL:
+# nothing that uses it runs inside a one-line step.
+# ⇄ twin: Write-ExakitHeading in exakit-common.ps1.
 heading() {
-    printf '    %s%s%s %s\n' "${UI_OK:-}" "${UI_ARROW:->}" "${UI_RESET:-}" "$*"
+    printf '  %s%s%s %s\n' "${UI_OK:-}" "${UI_ARROW:->}" "${UI_RESET:-}" "$*"
     _exakit_log_file "INFO  $*"
 }
 warn() { printf '      %s!%s %s\n'  "${UI_WARN:-}" "${UI_RESET:-}" "$*" >&2;        _exakit_log_file "WARN  $*"; }
@@ -3651,7 +3657,7 @@ exakit_marketplace_offer() {
     # the dim bullet marked it as one more thing being done TO the machine.
     heading "Supercharge Exasol with add-ons"
     EXAKIT_CHECKBOX_EXCLUSIVE=2
-    ui_checkbox_menu "Explore ?" "1" \
+    ui_checkbox_menu "Explore marketplace ?" "1" \
         "Yes" \
         "No"
     case ",$EXAKIT_CHECKBOX_SELECTION," in
