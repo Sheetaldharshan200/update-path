@@ -227,6 +227,19 @@ try {
         # version resolution and the record of which kit version this is.
         Copy-ExakitAsset -Source (Join-Path $KitRoot "versions.json") -Destination (Join-Path $script:ExakitHome "kit\versions.json")
         Copy-ExakitAsset -Source (Join-Path $KitRoot "setup\whats-new.json") -Destination (Join-Path $script:ExakitHome "kit\setup\whats-new.json")
+        # setup\help\ is the WHOLE help corpus - one JSON per topic, and
+        # `exakit help <topic>` resolves through the repo-root lookup, which
+        # PREFERS this staged copy. Omitting it did not fall back to the
+        # checkout, it shadowed it: on every installed kit `exakit help mcp`,
+        # `exapump`, `nano`, `pyexasol`, `exakit` and all three add-ons answered
+        # "No help entry for ...".
+        #
+        # It also silently broke the marketplace. An add-on's description falls
+        # back to the `tagline` in its help document when the GitHub About
+        # cannot be fetched, so with no documents staged every add-on in the
+        # table read "Details: exakit help <id>" - pointing at the very command
+        # this omission had disabled. Same shape as the skills note above.
+        Copy-ExakitAsset -Source (Join-Path $KitRoot "setup\help") -Destination (Join-Path $script:ExakitHome "kit\setup\help")
 
         # Set-ExakitCmdShim owns the shim's content (the kit self-update writes the
         # same file, so it must not drift): the bare `exakit` command is ONLY the
