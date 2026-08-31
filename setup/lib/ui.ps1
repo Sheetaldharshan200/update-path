@@ -544,6 +544,8 @@ function Get-ExakitBar {
 #
 #   Title    what the top border says
 #   Col1     what the first column is called (datasets, clients, add-ons)
+#   Col2     heading for an optional second column, "" when there is none
+#   Col3     heading for an optional third column, "" when there is none
 #   Cols     the console width, measured once
 #   Lines    how many lines the last frame really occupied
 #   Width    how wide the last frame's box was - see Update-ExakitTable, which
@@ -579,7 +581,7 @@ $script:UiTableSrc = ""
 if ($PSCommandPath) { $script:UiTableSrc = $PSCommandPath }
 elseif ($PSScriptRoot) { $script:UiTableSrc = Join-Path $PSScriptRoot "ui.ps1" }
 
-# New-ExakitTable [-Title] [-Col1] - a fresh, empty table. Returns it,
+# New-ExakitTable [-Title] [-Col1] [-Col2] [-Col3] - a fresh, empty table. Returns it,
 # and also parks it as the module's current one so every other call can default
 # to it.
 #
@@ -588,10 +590,13 @@ elseif ($PSScriptRoot) { $script:UiTableSrc = Join-Path $PSScriptRoot "ui.ps1" }
 # datasets, add-ons), and a heading left behind in module state is how the second
 # one ends up wearing the first one's column name.
 function New-ExakitTable {
-    param([string]$Title = "Progress", [string]$Col1 = "Dataset")
+    param([string]$Title = "Progress", [string]$Col1 = "Dataset",
+          [string]$Col2 = "", [string]$Col3 = "")
     $t = [hashtable]::Synchronized(@{
         Title   = $Title
         Col1    = $Col1
+        Col2    = $Col2
+        Col3    = $Col3
         Cols    = 80
         Lines   = 0
         Width   = 0
@@ -612,6 +617,8 @@ function Add-ExakitTableRow {
     param(
         [ValidateSet("group", "tee", "corner", "plain")][string]$Kind = "plain",
         [Parameter(Mandatory)][string]$Label,
+        [string]$Col2 = "",
+        [string]$Col3 = "",
         [switch]$Ticked,
         [hashtable]$Table = $null
     )
@@ -621,6 +628,7 @@ function Add-ExakitTableRow {
         Kind = $Kind; Label = $Label; Tick = [bool]$Ticked
         State = "idle"; Pct = 0; Ceiling = 0; Secs = 0
         SegT0 = $null; Phase = ""; Final = ""
+        Col2 = $Col2; Col3 = $Col3
     })
     [void]$Table.Rows.Add($row)
     return $Table.Rows.Count
@@ -642,8 +650,15 @@ function Get-ExakitTableWidths {
     # row completed. Wide enough for a bar worth looking at, and for
     # "completed - 8 tables, 173,745 rows (23s)".
     $statW = 44
+    # Zero unless a heading names the column, so a table that asks for neither
+    # is measured, and drawn, exactly as it was before they existed.
+    $col2W = 0; $col3W = 0
+    if ($Table.Col2) { $col2W = ([string]$Table.Col2).Length }
+    if ($Table.Col3) { $col3W = ([string]$Table.Col3).Length }
     foreach ($row in $Table.Rows.ToArray()) {
         $len = $row.Label.Length
+        if ($col2W -gt 0 -and ("" + $row.Col2).Length -gt $col2W) { $col2W = ("" + $row.Col2).Length }
+        if ($col3W -gt 0 -and ("" + $row.Col3).Length -gt $col3W) { $col3W = ("" + $row.Col3).Length }
         # The tree connector plus its space is 3 columns of the name cell.
         if ($row.Kind -eq "tee" -or $row.Kind -eq "corner") { $len += 3 }
         if ($len -gt $nameW) { $nameW = $len }
@@ -666,7 +681,27 @@ function Get-ExakitTableWidths {
     # a wrapped row is two lines where the frame counted one, so the next
     # cursor-up lands inside the frame before it and strands its top border on
     # screen. The one-line progress bar reserves its last column for this reason.
-    $over = 11 + $nameW + $statW + 3 - $cols
+    # Each optional column costs its width plus the two-space gap before it.
+    $extra = 0
+    if ($col2W -gt 0) { $extra += $col2W + 2 }
+    if ($col3W -gt 0) { $extra += $col3W + 2 }
+    $over = 11 + $nameW + $extra + $statW + 3 - $cols
+    # The description gives way FIRST, and can give way entirely. It is the one
+    # cell whose absence costs nothing that is not recoverable - `exakit help
+    # <add-on>` is one command away - while a truncated add-on id is a name the
+    # reader cannot match to anything and a squeezed bar stops reading as
+    # progress. On an 80-column console this column is the first thing to go,
+    # which is the intended outcome, not a failure of the layout.
+    if ($over -gt 0 -and $col3W -gt 0) {
+        if ($over -ge ($col3W + 2)) {
+            $over -= ($col3W + 2)
+            $col3W = 0
+        } else {
+            $col3W -= $over
+            $over = 0
+            if ($col3W -lt 8) { $over = 8 - $col3W; $col3W = 8 }
+        }
+    }
     if ($over -gt 0) {
         $nameW -= $over
         if ($nameW -lt 12) {
@@ -679,7 +714,7 @@ function Get-ExakitTableWidths {
             if ($statW -lt 12) { $statW = 12 }
         }
     }
-    return @{ Name = $nameW; Status = $statW }
+    return @{ Name = $nameW; Status = $statW; Col2 = $col2W; Col3 = $col3W }
 }
 
 # Get-ExakitTableCell <row> <status-width> <now> - the Status column for one row,
@@ -765,7 +800,13 @@ function Get-ExakitTableFrame {
     $w = Get-ExakitTableWidths -Table $Table
     $nameW = [int]$w.Name
     $statW = [int]$w.Status
-    $inner = 5 + $nameW + 2 + $statW + 1
+    $col2W = [int]$w.Col2
+    $col3W = [int]$w.Col3
+    # Each optional column adds its width and the two-space gap before it.
+    $extra = 0
+    if ($col2W -gt 0) { $extra += $col2W + 2 }
+    if ($col3W -gt 0) { $extra += $col3W + 2 }
+    $inner = 5 + $nameW + 2 + $extra + $statW + 1
     $lines = New-Object 'System.Collections.Generic.List[string]'
 
     $title = " " + $Table.Title + " "
@@ -783,7 +824,20 @@ function Get-ExakitTableFrame {
     if (-not $col1) { $col1 = "Dataset" }
     $headPad = $nameW - $col1.Length
     if ($headPad -lt 0) { $headPad = 0 }
-    $head = "     " + $col1 + (" " * $headPad) + "  Status"
+    $head = "     " + $col1 + (" " * $headPad)
+    # Headings are clamped the same way their cells are, so a column squeezed by
+    # a narrow console never prints a heading wider than the column under it.
+    if ($col2W -gt 0) {
+        $h2 = "" + $Table.Col2
+        if ($h2.Length -gt $col2W) { $h2 = $h2.Substring(0, $col2W) }
+        $head += "  " + $h2 + (" " * ($col2W - $h2.Length))
+    }
+    if ($col3W -gt 0) {
+        $h3 = "" + $Table.Col3
+        if ($h3.Length -gt $col3W) { $h3 = $h3.Substring(0, $col3W) }
+        $head += "  " + $h3 + (" " * ($col3W - $h3.Length))
+    }
+    $head += "  Status"
     $headTail = $inner - $head.Length
     if ($headTail -lt 0) { $headTail = 0 }
     [void]$lines.Add("  " + $script:UiAccent + $script:UiVB + $script:UiReset + $head +
@@ -844,10 +898,27 @@ function Get-ExakitTableFrame {
         $namePad = $nameW - $name.Length
         if ($namePad -lt 0) { $namePad = 0 }
         $cell = Get-ExakitTableCell -Row $row -StatusWidth $statW -Now $now
-        $tail = $inner - (1 + $boxLen + 1 + $nameW + 2 + [int]$cell.Len)
+        # The optional cells, dim so the eye still lands on the name and the
+        # status. Truncated to their own column; every string here is one this
+        # file assembled, so its width is arithmetic, never measured.
+        $mid = ""
+        $used = 1 + $boxLen + 1 + $nameW + 2 + [int]$cell.Len
+        if ($col2W -gt 0) {
+            $v2 = "" + $row.Col2
+            if ($v2.Length -gt $col2W) { $v2 = $v2.Substring(0, $col2W - 1) + "…" }
+            $mid += "  " + $script:UiDim + $v2 + $script:UiReset + (" " * ($col2W - $v2.Length))
+            $used += $col2W + 2
+        }
+        if ($col3W -gt 0) {
+            $v3 = "" + $row.Col3
+            if ($v3.Length -gt $col3W) { $v3 = $v3.Substring(0, $col3W - 1) + "…" }
+            $mid += "  " + $script:UiDim + $v3 + $script:UiReset + (" " * ($col3W - $v3.Length))
+            $used += $col3W + 2
+        }
+        $tail = $inner - $used
         if ($tail -lt 0) { $tail = 0 }
         [void]$lines.Add("  " + $script:UiAccent + $script:UiVB + $script:UiReset + $ptr + $box + " " +
-            $name + (" " * $namePad) + "  " + $cell.Text + (" " * $tail) +
+            $name + (" " * $namePad) + $mid + "  " + $cell.Text + (" " * $tail) +
             $script:UiAccent + $script:UiVB + $script:UiReset)
     }
 

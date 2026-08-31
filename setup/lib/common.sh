@@ -3191,7 +3191,18 @@ _exakit_addon_table_build() {
     for _atb_id in "$@"; do
         _atb_i=$(( _atb_i + 1 ))
         if [ "$_atb_i" -eq "$_atb_n" ]; then _atb_kind=corner; else _atb_kind=tee; fi
-        printf '%s|%s|1|idle|||||| \n' "$_atb_kind" "$_atb_id" >> "$_atb_f"
+        # Fields 11 and 12: the Version and Description columns. Looked up here
+        # rather than passed in because only this interactive path draws them --
+        # a scripted EXAKIT_MARKETPLACE_ADDONS answer never builds a table, so
+        # it still never pays for the description lookup.
+        _atb_ver="$(exakit_version_plain "$(exakit_component_available "$_atb_id" 2>/dev/null || printf 'unknown')")"
+        _atb_desc="$(exakit_marketplace_addon_description "$_atb_id" 2>/dev/null || true)"
+        # One line, whatever the About says: the column truncates, and a folded
+        # cell would make the row two lines tall -- which is the frame-height
+        # invariant the redraw depends on.
+        _atb_desc="$(printf '%s' "$_atb_desc" | tr '\n' ' ')"
+        printf '%s|%s|1|idle|||||| |%s|%s\n' "$_atb_kind" "$_atb_id" \
+            "$_atb_ver" "$_atb_desc" >> "$_atb_f"
         EXAKIT_ADDON_TABLE_IDS="$EXAKIT_ADDON_TABLE_IDS$_atb_id
 "
     done
@@ -3393,7 +3404,6 @@ _exakit_addon_progress() {
 # ids, "all", or "none" — same contract as EXAKIT_MCP_CLIENTS / EXAKIT_DATASETS.
 exakit_marketplace_menu() {
     _mm_ids=()
-    _mm_rows=()
     _mm_selectable=0
     while IFS='|' read -r _mm_id _mm_label <&3; do
         [ -n "$_mm_id" ] || continue
@@ -3402,45 +3412,25 @@ exakit_marketplace_menu() {
         _exakit_addon_offerable "$_mm_id" || continue
         # Every add-on gets a STATE row; only an installable one also gets a
         # selection row. A state that cannot be installed is answered by the
-        # state table — its own version, and a last column that says why it is
-        # not on offer — which is more room than a dimmed one-line menu label
-        # had, and it is the only output on the all-covered path, where the
-        # selection is never drawn at all. "__disabled__" keeps the row in
-        # _mm_ids so the env answer can still tell a real add-on it names from
-        # an unknown one.
+        # "__disabled__" keeps the row in _mm_ids so the env answer can still
+        # tell a real add-on it names from an unknown one, and so the row
+        # numbering the selection is built from stays intact. It carries no
+        # text of its own any more: the reference panel that used to print a
+        # version and a reason for each of these is gone (see below), and the
+        # selection only ever listed installable add-ons.
         if exakit_marketplace_addon_installed "$_mm_id"; then
-            _mm_ver="$(exakit_component_current "$_mm_id" 2>/dev/null || true)"
-            _mm_rows+=("$(printf '%-14s %-14s %s' "$_mm_id" "$(exakit_version_plain "${_mm_ver:-?}")" "Installed")")
             _mm_ids+=("__disabled__")
         elif _exakit_addon_system_present "$_mm_id"; then
             # The user already has the tool from somewhere else: covered, and
             # the kit does not manage it.
-            _mm_rows+=("$(printf '%-14s %-14s %s' "$_mm_id" "-" "Already on this system, managed outside the kit")")
             _mm_ids+=("__disabled__")
         elif ! exakit_marketplace_addon_available "$_mm_id"; then
-            _mm_rows+=("$(printf '%-14s %-14s %s' "$_mm_id" "-" "Not in this kit copy. Run: exakit update exakit")")
             _mm_ids+=("__disabled__")
         else
-            _mm_adv="$(exakit_component_available "$_mm_id" 2>/dev/null || true)"
-            # Only an installable row shows a description, and only a run that
-            # will actually DRAW one needs to resolve it: a scripted answer
-            # (EXAKIT_MARKETPLACE_ADDONS) installs without a table, so an agent
-            # or a CI job never pays for the lookup.
-            _mm_cell=""
-            if [ -z "${EXAKIT_MARKETPLACE_ADDONS:-}" ]; then
-                # The table carries the About IN FULL, folded onto as many lines
-                # as it needs. Nothing truncates it.
-                # The continuation indent is the width of the two leading
-                # cells, MEASURED from the very format string the rows are
-                # printed with rather than counted by hand. Counted by hand it
-                # was 32 against a 30-column prefix, so every folded line of a
-                # description sat two columns to the right of the line above it.
-                # Written this way the two cannot drift apart again.
-                _mm_cell="$(exakit_about_wrap \
-                    "$(exakit_marketplace_addon_description "$_mm_id")" \
-                    "$EXAKIT_ABOUT_WIDTH" "$(printf '%-14s %-14s ' '' '')")"
-            fi
-            _mm_rows+=("$(printf '%-14s %-14s %s' "$_mm_id" "$(exakit_version_plain "${_mm_adv:-unknown}")" "$_mm_cell")")
+            # The version and the description are resolved by
+            # _exakit_addon_table_build, which is the only path that draws them.
+            # Resolving them here as well meant every installable add-on paid
+            # for its About lookup twice.
             _mm_ids+=("$_mm_id")
             _mm_selectable=$((_mm_selectable + 1))
         fi
@@ -3494,30 +3484,20 @@ EXAKIT_MM_EOF
         return $?
     fi
 
-    # The state table, drawn with the SAME panel `exakit version` uses so every
-    # table in the kit reads as one family. The glyphs come from the ui palette
-    # (rounded where the terminal supports it, ASCII where it does not), so
-    # nothing here spells a box character itself.
+    # There is ONE table. The reference panel that used to stand above the
+    # selection carried an Add-on / Version / Description row per add-on, and
+    # then the selection below it repeated every installable add-on by name --
+    # the same list twice, a box apart. The version and the description now sit
+    # in the selection itself as columns, so the reader picks from the thing
+    # that describes them.
     #
-    # The last column is named for what it actually carries: with nothing left
-    # to install every row is a state, so it is a Status column; while anything
-    # is still installable the column carries the add-on's description.
-    if [ "$_mm_selectable" -eq 0 ]; then
-        _mm_lastcol="Status"
-    else
-        _mm_lastcol="Description"
-    fi
-    printf '\n'
-    ui_panel_begin "Marketplace add-ons"
-    ui_panel_line "$(printf '%-14s %-14s %s' "Add-on" "Version" "$_mm_lastcol")"
-    _mm_i=0
-    while [ "$_mm_i" -lt "${#_mm_rows[@]}" ]; do
-        # A description cell is already folded onto continuation lines; the
-        # panel splits the buffer on newlines, so it lands correctly as-is.
-        ui_panel_line "${_mm_rows[$_mm_i]}"
-        _mm_i=$((_mm_i + 1))
-    done
-    ui_panel_end
+    # What that costs, on the all-covered path only: the rows for add-ons that
+    # are NOT installable (already installed, already on this system, missing
+    # from this kit copy) had nowhere else to go, and the panel was the only
+    # output that path produced. They are represented by the count below
+    # instead. ui_table_disable is how they would come back -- as dim,
+    # unpickable rows inside the one table, the way the MCP client list shows
+    # "Cursor · not installed".
     printf '\n'
 
     if [ "$_mm_selectable" -eq 0 ]; then
@@ -3552,10 +3532,17 @@ EXAKIT_MM_EOF
         _mm_i=$((_mm_i + 1))
     done
     _exakit_addon_table_build "$EXAKIT_ADDON_TABLE_STATE" "${_mm_pick_ids[@]}"
-    UI_TABLE_TITLE="Add-ons to install"
+    UI_TABLE_TITLE="Marketplace add-ons"
     # The first column's heading, or the add-ons would sit under "Dataset".
     UI_TABLE_COL1="Add-on"
+    # The two the reference panel used to carry. Module state, like COL1, so
+    # they are cleared the moment this menu is done -- a heading left behind is
+    # how the next table ends up wearing this one's columns.
+    UI_TABLE_COL2="Version"
+    UI_TABLE_COL3="Description"
     ui_table_menu "$EXAKIT_ADDON_TABLE_STATE"
+    UI_TABLE_COL2=""
+    UI_TABLE_COL3=""
     case ",$EXAKIT_TABLE_SELECTION," in
         *",$EXAKIT_ADDON_TABLE_ROW_SKIP,"*)
             _exakit_addon_table_cleanup
@@ -6889,6 +6876,8 @@ EXAKIT_MCP_TABLE_STATE=""
 _exakit_mcp_table_release() {
     UI_TABLE_TITLE=""
     UI_TABLE_COL1=""
+    UI_TABLE_COL2=""
+    UI_TABLE_COL3=""
     # And the read-only user's "already done" flag, which only ever covers the
     # one CLI call this table was drawn for: a later run in the same process
     # (mcp.sh's refresh after a redeploy) must prepare it again.
@@ -7074,6 +7063,8 @@ EOF
         EXAKIT_TABLE_DEFAULTS="$_defaults"
         UI_TABLE_TITLE="AI clients to connect"
         UI_TABLE_COL1="Client"
+        UI_TABLE_COL2=""
+        UI_TABLE_COL3=""
         printf '\n'
         # Loop so a not-confirmed skip returns the user to the menu.
         while :; do
