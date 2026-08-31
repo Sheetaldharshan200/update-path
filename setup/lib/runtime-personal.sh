@@ -542,6 +542,22 @@ personal_deploy_local() {
             die "Port $EXAKIT_PERSONAL_PORT is in use by a process that is not a reachable Exasol Personal deployment. Stop that application and re-run (EXAKIT_DB_PORT does not apply to the macOS deployment)."
     fi
 
+    # Two points, not three. Deploying and then checking health are one fact to
+    # the reader -- the database is up and answering -- so they close on a single
+    # line, and the launcher's EULA notice follows as the step's own second
+    # point instead of being wedged between them.
+    #
+    # Safe to leave the notice until last: personal_wait_ready dies if the
+    # database never answers, die runs the EXIT trap, and the rollback pushed
+    # below destroys this deployment -- so the path that skips the notice is the
+    # path where no deployment survives to have accepted anything.
+    #
+    # Same bracket and the same terminal gate as personal_install_launcher: the
+    # progress bar narrates the deploy and the spinner narrates the health
+    # probe, so the info/ok pairs underneath are the second telling.
+    _pdl_prev_quiet="${EXAKIT_QUIET_DETAIL:-0}"
+    [ -t 1 ] && EXAKIT_QUIET_DETAIL=1
+
     info "Deploying Exasol Personal locally — super quick !"
     push_rollback "$(personal_cli) destroy --remove --auto-approve || true"
 
@@ -568,15 +584,27 @@ personal_deploy_local() {
     EXAKIT_DEPLOY_LIVE=0
 
     if [ "$_deploy_rc" -ne 0 ]; then
+        # Restored before anything explains the failure: the tail below prints
+        # through foreign_note, and a step that says nothing while it works must
+        # still say everything when it goes wrong.
+        EXAKIT_QUIET_DETAIL="$_pdl_prev_quiet"
         _personal_deploy_print_tail "$_deploy_tail"
         rm -rf "$_deploy_tmp"
         die "Local deployment failed. Re-running the installer retries it safely."
     fi
-    ok "Exasol Personal deployed locally ($(( $(date +%s 2>/dev/null || echo 0) - _deploy_t0 ))s)"
+
+    personal_wait_ready
+
+    EXAKIT_QUIET_DETAIL="$_pdl_prev_quiet"
+    # One line for both, and the elapsed covers both -- it is the step's time,
+    # not the deploy's alone. The endpoint is the literal fallback
+    # personal_record_manifest uses when deployment.json cannot be read; the
+    # real DSN is not parsed out of it until a few lines later, and this is the
+    # same address either way on the macOS deployment.
+    ok "Exasol Personal deployed and answering on 127.0.0.1:${EXAKIT_PERSONAL_PORT} ($(( $(date +%s 2>/dev/null || echo 0) - _deploy_t0 ))s)"
     _personal_deploy_print_notice "$_deploy_notice"
     rm -rf "$_deploy_tmp"
 
-    personal_wait_ready
     personal_record_manifest
 }
 
