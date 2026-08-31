@@ -220,12 +220,34 @@ personal_install_launcher() {
     _base="$(personal_release_url)"
     _tmp="$(mktemp -d "${TMPDIR:-/tmp}/exakit-personal.XXXXXX")"
 
+    # The whole step on ONE line. begin_step already set a spinner label, and
+    # fetch/run_logged animate it, so every stage here was narrated twice: once
+    # live by the spinner, then permanently by an info/ok pair repeating it --
+    # four lines carrying two facts, each ✓ restating the bullet above it.
+    # EXAKIT_QUIET_DETAIL routes that pair to the LOGFILE and leaves the spinner
+    # as the narration. Same save-and-restore bracket as exakit_marketplace_install
+    # in common.sh, and for the same reason; warn/error stay ungated there, so a
+    # step that says nothing while it works still speaks when it goes wrong.
+    #
+    # Gated on a terminal: without one ui_spin_begin draws nothing, and quieting
+    # the detail as well would leave a CI log silent for the length of a
+    # download. Piped or redirected, the info lines stay and nothing changes.
+    _pil_prev_label="${EXAKIT_ACTIVE_LABEL:-}"
+    _pil_prev_quiet="${EXAKIT_QUIET_DETAIL:-0}"
+    [ -t 1 ] && EXAKIT_QUIET_DETAIL=1
+    _pil_t0="$(date +%s 2>/dev/null || echo 0)"
+
+    # Re-assigned per phase rather than printed: fetch and run_logged read this
+    # at their next ui_spin_begin, so the words change on the operation boundary
+    # without a second animator and without restarting the one already running.
+    EXAKIT_ACTIVE_LABEL="Downloading Exasol launcher v${EXAKIT_PERSONAL_VERSION}"
     info "Downloading Exasol launcher v${EXAKIT_PERSONAL_VERSION} ($_asset)"
     fetch "$_base/$_asset" "$_tmp/$_asset"
     fetch "$_base/exasol-personal_${EXAKIT_PERSONAL_VERSION}_checksums.txt" "$_tmp/checksums.txt"
     verify_sha256_from_file "$_tmp/$_asset" "$_tmp/checksums.txt"
 
-    info "Installing launcher to $EXAKIT_PERSONAL_BIN"
+    EXAKIT_ACTIVE_LABEL="Installing launcher to $(ui_tilde "$EXAKIT_PERSONAL_BIN")"
+    info "Installing launcher to $(ui_tilde "$EXAKIT_PERSONAL_BIN")"
     mkdir -p "$EXAKIT_BIN_DIR"
     run_logged tar -xzf "$_tmp/$_asset" -C "$_tmp" || die "Could not extract $_asset"
     _binary="$(find "$_tmp" -name exasol -type f | head -1)"
@@ -235,8 +257,13 @@ personal_install_launcher() {
     push_rollback "rm -f \"$EXAKIT_PERSONAL_BIN\""
     rm -rf "$_tmp"
 
+    EXAKIT_QUIET_DETAIL="$_pil_prev_quiet"
+    EXAKIT_ACTIVE_LABEL="$_pil_prev_label"
+    # After the restore, never inside it: this one can end in an `ok` reporting
+    # that the kit edited the user's shell profile, which is not a line to send
+    # to the logfile.
     ensure_path_hint "$EXAKIT_BIN_DIR"
-    ok "Launcher installed: $EXAKIT_PERSONAL_BIN"
+    ok "Exasol launcher v${EXAKIT_PERSONAL_VERSION} installed to $(ui_tilde "$EXAKIT_PERSONAL_BIN") ($(( $(date +%s 2>/dev/null || echo 0) - _pil_t0 ))s)"
 }
 
 personal_cli() {

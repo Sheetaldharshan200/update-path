@@ -541,11 +541,34 @@ function Install-Nano {
         return
     }
 
+    # The whole step on ONE line. Begin-ExakitStep set a spinner label and
+    # Invoke-ExakitLogged animates it, so a fresh install narrated itself twice
+    # over nine lines: an Info/Ok pair for the pull, another for the container,
+    # and one "Still starting..." every 30 seconds of a wait that can run for
+    # ten minutes. ExakitQuietDetail routes all of that to the LOGFILE and
+    # leaves the animation as the narration - the same save-and-restore bracket
+    # Invoke-ExakitMarketplaceApply uses, with Warn2/Write-ExakitError ungated so
+    # a quiet step still speaks when it goes wrong.
+    #
+    # Gated on UiFancy (the twin of `[ -t 1 ]`, and false when redirected):
+    # without a terminal the spinner draws nothing, and quieting the detail as
+    # well would leave a CI log silent for the length of a pull. The two early
+    # returns above are already one line each and are left alone.
+    # Twin of the same block in nano_install (runtime-nano.sh).
+    $prevLabel = $script:ExakitActiveLabel
+    $prevQuiet = $script:ExakitQuietDetail
+    if ($script:UiFancy) { $script:ExakitQuietDetail = $true }
+    $niT0 = Get-Date
+
     if (-not (Test-NanoContainerExists)) {
         $portBusy = Test-ExakitPortInUse -Port ([int]$script:DbPort)
         if ($portBusy) {
             Fail "Port $($script:DbPort) is already in use by another application. Stop it or set EXAKIT_DB_PORT, then re-run."
         }
+        # Re-assigned per phase rather than printed: Invoke-ExakitLogged reads
+        # this at its next Start-ExakitSpinner, so the words change on the
+        # operation boundary without starting a second animator.
+        $script:ExakitActiveLabel = "Pulling image $image"
         Info "Pulling image $image"
         $pulled = $false
         for ($attempt = 1; $attempt -le 3; $attempt++) {
@@ -569,6 +592,7 @@ function Install-Nano {
         # documented, reliable form for a -v source path on Windows.
         $pwFileMount = $pwFile -replace '\\', '/'
 
+        $script:ExakitActiveLabel = "Starting the Nano container"
         Info "Starting Nano container ($($script:NanoContainer))"
         $code = Invoke-ExakitLogged $engine "run" "-d" "--name" $script:NanoContainer `
             "--shm-size=512mb" "--pids-limit=-1" `
@@ -607,15 +631,29 @@ function Install-Nano {
 
     Wait-NanoReady
     Set-NanoManifest
+
+    $script:ExakitQuietDetail = $prevQuiet
+    $script:ExakitActiveLabel = $prevLabel
+    $niSecs = [int]((Get-Date) - $niT0).TotalSeconds
+    Ok "Exasol Nano $($script:NanoTag) running on 127.0.0.1:$($script:DbPort) (${niSecs}s)"
 }
 
 # Wait-NanoReady - poll container logs until the database reports ready.
 function Wait-NanoReady {
     Info "Waiting for the database to come up (timeout: $($script:NanoReadyTimeout)s)"
+    # The longest stretch of the install, and the only one with nothing to
+    # animate it: the poll below is a plain sleep loop, so under a one-line step
+    # the screen would sit still for minutes. The spinner's own elapsed counter
+    # is exactly what the "Still starting..." lines were standing in for, in one
+    # line that updates in place instead of one more every 30 seconds. Every
+    # exit below stops it first - an abandoned animator paints over whatever the
+    # caller prints next. Twin of nano_wait_ready_soft (runtime-nano.sh).
+    Start-ExakitSpinner "Waiting for the database to come up"
     $engine = Get-NanoEngine
     $waited = 0
     while ($waited -lt $script:NanoReadyTimeout) {
         if (-not (Test-NanoContainerRunning)) {
+            Stop-ExakitSpinner
             try {
                 $tail = & $engine logs --tail 30 $script:NanoContainer 2>&1
                 if ($script:LogFile) { $tail | Add-Content -Path $script:LogFile }
@@ -624,11 +662,18 @@ function Wait-NanoReady {
             }
             Fail "Nano container stopped unexpectedly (see log)"
         }
-        if (Test-NanoReadyInLogs) { Ok "Database is up (took ~${waited}s)"; return }
+        if (Test-NanoReadyInLogs) { Stop-ExakitSpinner; Ok "Database is up (took ~${waited}s)"; return }
         Start-Sleep -Seconds 5
         $waited += 5
-        if ($waited % 30 -eq 0) { Info "Still starting... (${waited}s)" }
+        if ($waited % 30 -eq 0) {
+            # Only where the spinner is NOT already counting. On a terminal it
+            # is, and a line printed under a live animator is erased by its next
+            # frame within 0.2s. The logfile gets the tick either way.
+            if ($script:UiFancy) { Write-ExakitLog "INFO" "Still starting... (${waited}s)" }
+            else { Info "Still starting... (${waited}s)" }
+        }
     }
+    Stop-ExakitSpinner
     Write-Host "  x Database did not become ready within $($script:NanoReadyTimeout)s." -ForegroundColor Red
     Write-Host "    Inspect the logs:   $engine logs $($script:NanoContainer)"
     Write-Host "    If a first install was interrupted, the data volume may be half-initialized."
