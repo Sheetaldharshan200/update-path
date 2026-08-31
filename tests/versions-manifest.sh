@@ -1804,6 +1804,20 @@ cp "$REAL" "$NT/kit/versions.json"
 # next plausible exapump release, and 2026.3.0-nano.1 the next plausible nano tag, so
 # a weekly bump could walk into either and turn "the advertised set differs from the
 # shipped set" into a fiction that no assertion here would notice.
+# The KIT'S OWN version, read from the shipped document rather than pinned.
+#
+# It was pinned at "0.2.0" in the manifest below, and the moment the kit reached
+# 0.2.1 the kit itself became a pending light bump -- so the notice correctly
+# said "A recommended update is available for exakit, exapump, mcp" while every
+# assertion here anchors on "...available for exapump". Five of them failed at
+# once, none of them naming the reason, and they stayed failing.
+#
+# The same rot the comment above guards against for exapump and nano; the kit's
+# own version was simply left out of that reasoning. Read dynamically it cannot
+# drift again: the kit is neither behind nor ahead of the document, so it is not
+# pending, and the premise -- that exapump, mcp and nano are the only things
+# behind -- is restored and stays true through any future bump.
+NOTICE_KIT_VERSION="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["kit"]["version"])' "$REAL" 2>/dev/null || printf '0.0.0')"
 NOTICE_INSTALLED_EXAPUMP="0.0.1"
 NOTICE_INSTALLED_MCP="0.0.1"
 NOTICE_ADVERTISED_EXAPUMP="99.1.0"
@@ -1816,7 +1830,7 @@ cat > "$NT/manifest.json" <<EOF
   "manifest_version": 1,
   "kit_level": 1,
   "kit": {
-    "version": "0.2.0"
+    "version": "$NOTICE_KIT_VERSION"
   },
   "runtime": {
     "type": "nano",
@@ -1908,8 +1922,26 @@ if [ "$NOTICE_PTY" = "none" ]; then
         check "$_skipped" "skipped" "skipped"
     done
 else
+# The premise, asserted rather than assumed: if the kit itself is pending, it
+# joins the light group and every "...available for exapump" assertion below
+# reads a list that starts with "exakit," instead. That is exactly how these
+# five went quiet.
+check "the kit itself is not pending" "not-pending" \
+    "$(printf '%s' "$NOTICE_KIT_VERSION" | grep -q . && printf 'not-pending' || printf 'UNKNOWN')"
 rm -f "$NT/cache/notice-state.json"
 flagged="$(notice "$WORK/notice-versions.json")"
+lacks "the kit is not in the notice" "available for exakit" "$flagged"
+{
+  echo "=== flagged ==="; printf '%s\n' "$flagged"
+  echo "=== fixture exapump ==="
+  python3 -c "import json;print(json.load(open('$WORK/notice-versions.json'))['components']['exapump'])" 2>&1
+  echo "=== kit copy exapump ==="
+  python3 -c "import json;print(json.load(open('$NT/kit/versions.json'))['components']['exapump'])" 2>&1
+  echo "=== manifest ==="; cat "$NT/manifest.json" 2>&1
+  echo "=== cache dir ==="; ls -la "$NT/cache/" 2>&1
+  echo "=== stub ==="; cat "$NT/bin/exapump" 2>&1
+  echo "=== NOTICE_PTY ==="; echo "$NOTICE_PTY"
+} >> /tmp/vm-debug.out 2>&1
 has "a recommended light bump is announced as recommended" \
     "A recommended update is available for exapump" "$flagged"
 has "with the cheap command" "apply in seconds:  exakit update" "$flagged"

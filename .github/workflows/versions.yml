@@ -444,6 +444,7 @@ jobs:
       - run: bash tests/install-payload.sh
       - run: bash tests/uninstall-addons-only.sh
       - run: bash tests/whats-new.sh
+<<<<<<< Updated upstream
       # The two PowerShell-native suites had NO caller anywhere -- not this
       # workflow, not their shell siblings, not a script. They document
       # themselves as `pwsh tests/<name>.ps1` and were simply never run by
@@ -456,5 +457,7 @@ jobs:
           else
             echo "pwsh not installed on this runner - PowerShell suites skipped"
           fi
+=======
+>>>>>>> Stashed changes
       # Dry run only without EXAKIT_SMOKE_FULL=1: no install, no database.
       - run: bash tests/smoke-test.sh
