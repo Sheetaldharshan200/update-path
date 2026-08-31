@@ -243,7 +243,6 @@ try {
     # very end of the run - not here, in the middle of the step output where
     # the connection details would push them off the screen.
 
-    Ok "Setup complete"
     Show-ExakitConnectionSummary
     # Only when the kit version moved during this run, and never able to fail it:
     # every reader inside degrades to silence.
@@ -252,6 +251,9 @@ try {
     # the one command that installs it. A step that failed mid-run scrolls away;
     # this is what the user is still looking at when the installer exits.
     Write-ExakitSoftFailures
+    # The install's one closing line, after the panel and after anything that
+    # did not finish. Silent when a soft failure was recorded.
+    Write-ExakitReadyLine
     # The closing offer: optional marketplace add-ons, asked exactly once, only
     # on an interactive run whose steps all completed, and only while something
     # is actually on offer (an add-on already on this machine is never

@@ -3846,6 +3846,28 @@ function Invoke-ExakitMarketplaceApply {
 # and a non-interactive run also gets the hint - unless
 # EXAKIT_MARKETPLACE_ADDONS pre-answers, which installs without asking.
 # Twin of exakit_marketplace_offer in common.sh.
+# Write-ExakitReadyLine - the install's ONE closing line.
+#
+# There were two: an "Ok Setup complete" before the connection panel, and this
+# one after it. The panel is the payoff and the reader does not need to be told
+# twice, so the first is gone and this is what remains.
+#
+# It lives here rather than inside the marketplace offer, where it used to sit,
+# because that offer returns early three separate ways - nothing left to
+# install (every re-run, and the kit tells people to re-run), a scripted
+# EXAKIT_MARKETPLACE_ADDONS answer (how the agent install runs), and no console
+# to prompt on. Behind those gates the only run that got a closing line was an
+# interactive, fully-successful, first-time one.
+#
+# Silent after a soft failure, deliberately: "done and working" must be true
+# before it is said, and Write-ExakitSoftFailures has just listed what is not.
+# Twin of exakit_print_ready_line in common.sh.
+function Write-ExakitReadyLine {
+    if ($script:ExakitSoftFailed.Count -gt 0) { return }
+    Write-Host ""
+    Ok "Your starter kit is ready to use."
+}
+
 function Request-ExakitMarketplaceOffer {
     if (-not (Test-ExakitMarketplaceHasPending)) { return }
     # Fill the About cache now, while the gate question below is still being
@@ -3874,12 +3896,24 @@ function Request-ExakitMarketplaceOffer {
     # uses, no typing: Yes is pre-ticked, No is the exclusive opt-out. Only a
     # Yes opens the marketplace selection itself (where the available add-ons
     # come pre-selected, so Enter installs them and Skip still backs out).
-    Write-Host ""
-    Ok "Your starter kit is ready to use."
+    # "Your starter kit is ready to use." used to be printed here. It is now
+    # Write-ExakitReadyLine, called by the setup script before this offer:
+    # behind these gates it reached only an interactive, fully-successful run
+    # that still had an add-on left to install, which is a minority of runs.
     # The install is over; what follows is a different question. A rule with air
     # around it is the seam, so the offer does not read as one more install step.
     Write-ExakitRule
-    Info "Supercharge starterkit with exasol add-ons"
+    # A green arrow rather than the dim action bullet: what follows the rule is
+    # not one more step of the install, it is the heading of a separate offer.
+    # The glyph is the step header's, in the tick's green; plain mode degrades
+    # it to ">" as every other arrow does. Logged as an info line either way.
+    if ($script:UiFancy) {
+        Write-Host ("    {0}{1}{2} {3}" -f $script:UiOk, $script:UiArrow, $script:UiReset,
+            "Supercharge Exasol with add-ons")
+    } else {
+        Write-Host ("    {0} {1}" -f $script:UiArrow, "Supercharge Exasol with add-ons")
+    }
+    Write-ExakitLog "INFO" "Supercharge Exasol with add-ons"
     $gate = Read-ExakitCheckboxMenu -Title "Explore ?" `
         -Options @("Yes", "No") `
         -Defaults @(1) -ExclusiveIndex 2

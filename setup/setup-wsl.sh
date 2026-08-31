@@ -74,7 +74,6 @@ fi
 kit_shared_steps 2 5 "$SCRIPT_DIR" "$KIT_ROOT"
 
 exakit_finish
-ok "Setup complete"
 connection_summary
 # Only when the kit version moved during this run, and never able to fail it: the
 # trap is already released and every reader inside degrades to silence.
@@ -83,6 +82,9 @@ exakit_print_whats_new_box "$KIT_ROOT" || true
 # the one command that installs it. A step that failed mid-run scrolls away;
 # this is what the user is still looking at when the installer exits.
 exakit_print_soft_failures
+# The install's one closing line, after the panel and after anything that did
+# not finish. Silent when a soft failure was recorded.
+exakit_print_ready_line
 # The closing offer: optional marketplace add-ons, asked exactly once, only on
 # an interactive run whose steps all completed, and only while something is
 # actually on offer. The subshell keeps any failure inside it from ending an

@@ -3578,6 +3578,29 @@ EXAKIT_MM_EOF
 #     EXAKIT_MARKETPLACE_ADDONS pre-answers, which installs without asking.
 # Best-effort by contract: callers run it in a subshell so nothing in here can
 # end an install that already succeeded. ⇄ twin: Request-ExakitMarketplaceOffer.
+# exakit_print_ready_line — the install's ONE closing line.
+#
+# There were two: an "ok Setup complete" before the connection panel, and this
+# one after it. The panel is the payoff and the reader does not need to be told
+# twice, so the first is gone and this is what remains.
+#
+# It lives here rather than inside the marketplace offer, where it used to sit,
+# because that offer returns early three separate ways — nothing left to
+# install (every re-run, and the kit tells people to re-run), a scripted
+# EXAKIT_MARKETPLACE_ADDONS answer (how the agent install runs), and no tty
+# (curl | bash). Behind those gates the only run that got a closing line was an
+# interactive, fully-successful, first-time one.
+#
+# Silent after a soft failure, deliberately: "done and working" must be true
+# before it is said, and exakit_print_soft_failures has just listed what is not.
+# ⇄ twin: Write-ExakitReadyLine in exakit-common.ps1.
+exakit_print_ready_line() {
+    [ -z "${EXAKIT_SOFT_FAILED:-}" ] || return 0
+    printf '\n'
+    ok "Your starter kit is ready to use."
+    return 0
+}
+
 exakit_marketplace_offer() {
     _exakit_marketplace_load_modules
     exakit_marketplace_has_pending || return 0
@@ -3603,12 +3626,22 @@ exakit_marketplace_offer() {
     # uses, no typing: Yes is pre-ticked, No is the exclusive opt-out. Only a
     # Yes opens the marketplace selection itself (where the available add-ons
     # come pre-selected, so Enter installs them and Skip still backs out).
-    printf '\n'
-    ok "Your starter kit is ready to use."
+    #
+    # "Your starter kit is ready to use." used to be printed here. It is now
+    # exakit_print_ready_line, called by the setup scripts before this offer:
+    # behind these gates it reached only an interactive, fully-successful run
+    # that still had an add-on left to install, which is a minority of runs.
     # The install is over; what follows is a different question. A rule with air
     # around it is the seam, so the offer does not read as one more install step.
     ui_rule
-    info "Supercharge starterkit with exasol add-ons"
+    # A green ▸ rather than the dim action bullet: what follows the rule is not
+    # one more step of the install, it is the heading of a separate offer, and
+    # the bullet marked it as another thing being done TO the machine. The glyph
+    # is the step header's, in the tick's green; plain mode degrades it to ">"
+    # exactly as every other arrow does. Logged as an info line either way.
+    printf '    %s%s%s %s\n' "${UI_OK:-}" "${UI_ARROW:->}" "${UI_RESET:-}" \
+        "Supercharge Exasol with add-ons"
+    _exakit_log_file "INFO  Supercharge Exasol with add-ons"
     EXAKIT_CHECKBOX_EXCLUSIVE=2
     ui_checkbox_menu "Explore ?" "1" \
         "Yes" \
