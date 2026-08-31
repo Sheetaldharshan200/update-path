@@ -35,6 +35,19 @@ fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 24, COLS, 0, 0))
 # the table sized itself to one width and was replayed at another, and the
 # mismatch that matters here (a row that fills the last column) could not happen.
 env = dict(os.environ); env['COLUMNS'] = str(COLS)
+# The FANCY palette, guaranteed rather than inherited. ui_detect turns it off
+# for a "dumb" TERM, a non-UTF-8 locale, NO_COLOR, or EXAKIT_NO_FANCY -- and a
+# CI step supplies several of those. Without the fancy palette the table refuses
+# to draw at all, the one-line bar prints instead, and every assertion below
+# counts zero boxes: the suite went green on a developer's macOS terminal and
+# red on Linux for a reason that had nothing to do with the code under test.
+#
+# This harness exists to exercise the fancy table specifically. Anything that
+# cannot run it should say so, not quietly measure the fallback.
+env['TERM'] = 'xterm-256color'
+env['LC_ALL'] = 'C.UTF-8'
+env.pop('NO_COLOR', None)
+env.pop('EXAKIT_NO_FANCY', None)
 proc = subprocess.Popen(['/bin/bash', sys.argv[1], sys.argv[2]], env=env,
                         stdin=slave, stdout=slave, stderr=slave, close_fds=True)
 os.close(slave)
@@ -129,6 +142,13 @@ tops = screen.count('╭─ ' + title)
 bots = screen.count('╰')
 print("=== FINAL SCREEN ===")
 print(screen)
+# A screen with no box glyphs AT ALL is a palette failure, not a stacking bug.
+# Said plainly, because "0 top borders" read for hours like the table had
+# vanished when the table had simply never been fancy enough to draw.
+if '\u256d' not in screen and '\u2570' not in screen:
+    print("=== NO BOX GLYPHS ON SCREEN: the plain palette was in effect, so the "
+          "table never drew and this measured the one-line fallback. Check TERM, "
+          "the locale, NO_COLOR and EXAKIT_NO_FANCY. ===")
 print("=== tables on screen: %d top borders, %d bottom borders (wanted 1 and %d) ==="
       % (tops, bots, want_bots))
 

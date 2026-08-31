@@ -43,7 +43,14 @@ _sj="$(EXAKIT_HOME="$WORK/stopped" bash "$ROOT/setup/exakit" status --json 2>/de
 check "the JSON is valid JSON" "yes" "$(printf '%s' "$_sj" | python3 -m json.tool >/dev/null 2>&1 && echo yes || echo no)"
 has "and carries running=false" '"running": false' "$_sj"
 has "and the loaded datasets" '"tpch"' "$_sj"
-has "prose names the datasets too" "tpch" "$(EXAKIT_HOME="$WORK/stopped" bash "$ROOT/setup/exakit" status 2>/dev/null | grep '^Datasets:')"
+# Asserted against the whole screen, not a `grep '^Datasets:'`. That prose line
+# stopped existing when the Data PANEL replaced it, and grepping for a line that
+# is never there made this assertion fail on main for as long as the panel has
+# been the way datasets are shown. What it was really guarding is that an agent
+# reading the human output can still see which datasets are loaded, and the
+# panel row says so.
+has "the human screen names the datasets too" "tpch" \
+    "$(EXAKIT_HOME="$WORK/stopped" bash "$ROOT/setup/exakit" status 2>/dev/null)"
 has "prose names the fix" "exakit start" "$(EXAKIT_HOME="$WORK/stopped" bash "$ROOT/setup/exakit" status 2>/dev/null | tail -1)"
 # 2, not 1: bad input has its own code across the CLI now (the same one an
 # unknown subcommand uses), so an agent can tell "I typed it wrong" from "the
@@ -768,6 +775,51 @@ lacks "no skill claims the tool gate is the boundary" "rejects a non-SELECT befo
 # An agent that ran the install cannot use the MCP tools it just configured.
 has "AGENTS.md says the MCP tools need a client restart" "no \`exasol\` tools until it restarts" \
     "$(cat "$ROOT/AGENTS.md")"
+
+printf '\n== the help corpus survives into the installed kit ==\n'
+
+# setup/help/ was never staged into ~/.exasol-starter-kit/kit, and
+# exakit_repo_root PREFERS the staged copy once kit/mcp exists -- so it did not
+# fall back to the checkout, it SHADOWED it. Every `exakit help <topic>` on
+# every real install answered "No help entry for ...", and the marketplace lost
+# all three tiers of its add-on descriptions with it: _exakit_addon_repo reads
+# the `repo` field from these documents, so the GitHub About could not even be
+# requested, the cache it fills stayed empty, and the `tagline` offline answer
+# was in the same missing file.
+#
+# It shipped because nothing checked. This checks.
+has "the staging copies the help corpus" \
+    '[ -d "$_kit_root/setup/help" ] && cp -R "$_kit_root/setup/help" "$EXAKIT_HOME/kit/setup/"' \
+    "$(cat "$ROOT/setup/lib/common.sh")"
+has "...and the Windows twin does too" \
+    'Copy-ExakitAsset -Source (Join-Path $KitRoot "setup\help")' \
+    "$(cat "$ROOT/setup/setup-windows-docker.ps1")"
+
+# Functional, not just textual: a kit staged the way the installer stages one
+# must answer for every topic it ships.
+HELPK="$WORK/staged"
+mkdir -p "$HELPK/kit/setup" "$HELPK/kit/mcp"
+cp -R "$ROOT/setup/lib" "$HELPK/kit/setup/"
+cp -R "$ROOT/setup/help" "$HELPK/kit/setup/"
+for _topic in "$ROOT"/setup/help/*.json; do
+    _tid="$(basename "$_topic" .json)"
+    check "a staged kit answers for '$_tid'" "found" \
+        "$( EXAKIT_HOME="$HELPK" bash -c '
+            . "'"$ROOT"'/setup/lib/ui.sh" 2>/dev/null
+            . "'"$ROOT"'/setup/lib/common.sh" 2>/dev/null
+            _exakit_addon_doc "'"$_tid"'" >/dev/null 2>&1 && printf found || printf MISSING
+        ' )"
+done
+# And the inverse, so the guard cannot pass by accident: strip the corpus and
+# the lookups must fail again. A test that only ever sees the fixed state would
+# have passed against the bug too.
+rm -rf "$HELPK/kit/setup/help"
+check "without it, the lookup fails again" "MISSING" \
+    "$( EXAKIT_HOME="$HELPK" bash -c '
+        . "'"$ROOT"'/setup/lib/ui.sh" 2>/dev/null
+        . "'"$ROOT"'/setup/lib/common.sh" 2>/dev/null
+        _exakit_addon_doc dash-server >/dev/null 2>&1 && printf found || printf MISSING
+    ' )"
 
 echo "passed: $PASS, failed: $FAIL"
 [ "$FAIL" -eq 0 ]

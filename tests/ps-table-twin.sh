@@ -89,14 +89,43 @@ has "the percentage is right-aligned"   '$pctText.PadLeft($num)'          "$UI_P
 # was missing from the budget, so the table wrote the console's LAST column and
 # the row wrapped; and the status column was measured from the stored string
 # while the cell renders "<tick> <final>", two columns wider.
-has "the left margin is in the width budget" '$over = 11 + $nameW + $statW + 3 - $cols' "$UI_PS1"
+# ONE decomposition on both sides. Written as "11 + name + status" the gap
+# before Status was folded into the 11, so an extra column had to add its own
+# gap AND unpick that fold -- and not unpicking it made the no-extras table two
+# columns wider than it had been. 9 is that chrome with the fold taken out.
+has "the width budget takes the fold out"  '$total = 9 + $nameW + 3'  "$UI_PS1"
+lacks "and nobody folds it back in"        '11 + $nameW + $statW + 3' "$UI_PS1"
+has "...and the shell agrees"              '_utw_total=$(( 9 + UI_TABLE_NAME_W + 3 ))' "$UI_SH"
 has "the status column is measured as rendered" '$row.Final.Length + $script:UiTick.Length + 1' "$UI_PS1"
 has "and the status column gives way too"      '$statW -= $rest' "$UI_PS1"
-has "the second line carries the phase" '$cell.Text2 = $script:UiDim + $phase' "$UI_PS1"
-# Floors keep the frame ONE height in every state, or a growing frame scrolls the
-# screen and every later cursor-up lands one line off.
-has "the frame reserves its phase line" '$want = [int]$Table.Reserve'     "$UI_PS1"
-has "the status column has a floor"     '$statW = 44'                     "$UI_PS1"
+
+# The phase sub-line is GONE, and so is the blank line that reserved room for
+# it. It appeared and vanished as a row started and stopped running, which is
+# why it needed a reserve at all; with one line per row the frame height is
+# constant structurally rather than by arrangement.
+lacks "no phase sub-line"                  '$cell.Text2' "$UI_PS1"
+lacks "and nothing reserves room for one"  '$Table.Reserve' "$UI_PS1"
+lacks "the shell has neither either"       'UI_TABLE_CELL2' "$UI_SH"
+lacks "...nor a reserve"                   'UI_TABLE_RESERVE' "$UI_SH"
+
+# The Status floor is only held once the table has something to report, and only
+# where another column holds the width. Withheld from a name-and-status menu it
+# shrank the box to barely wider than the longest name, then doubled the moment
+# the first row started.
+has "the status floor is conditional"   'if ($Table.Col2 -or $Table.Col3) {' "$UI_PS1"
+has "the status column has a floor"     '$statW = 44'                        "$UI_PS1"
+has "...and the shell gates it the same way" 'if [ -n "${UI_TABLE_COL2:-}" ] || [ -n "${UI_TABLE_COL3:-}" ]; then' "$UI_SH"
+
+# Two optional columns, last in the row format so every row written in the old
+# ten-field shape still parses.
+has "the twin carries a second column"  'Col2 = $Col2; Col3 = $Col3' "$UI_PS1"
+has "...and rules between them"         'if ($sepW -eq 3) { $sep = " " + $script:UiDim + $script:UiVB' "$UI_PS1"
+has "the shell rules them too"          '_UI_TABLE_SEP=" ${UI_DIM:-}${UI_VB:-|}${UI_RESET:-} "' "$UI_SH"
+has "the description wraps, never truncates" "function Split-ExakitWrap" "$UI_PS1"
+has "...and the shell wraps without forking" "_ui_wrap() {" "$UI_SH"
+has "the description width is fixed"    '$script:UiTableCol3Fixed = 44' "$UI_PS1"
+has "...and may grow into slack"        '$script:UiTableCol3Max = 90'   "$UI_PS1"
+has "the shell fixes and caps it too"   'UI_TABLE_COL3_MAX="${UI_TABLE_COL3_MAX:-90}"' "$UI_SH"
 # A PowerShell [int] cast ROUNDS (and rounds .5 to even), so 12 eighths became
 # two whole cells plus a half-cell frontier - a bar one cell ahead of the number
 # beside it. The shell twin divides in integers, and the table has to agree with
@@ -169,7 +198,9 @@ lacks "and neither do they"               'Read-ExakitCheckboxMenu -Title "Selec
 # Each table is titled and its first column named for what it holds, or the
 # add-ons would sit under "Dataset" - the heading the component defaults to.
 has "the client table is titled"   'New-ExakitTable -Title "AI clients to connect" -Col1 "Client"' "$MCP_PS1"
-has "the add-on table is titled"   'New-ExakitTable -Title "Add-ons to install" -Col1 "Add-on"'    "$COMMON_PS1"
+has "the add-on table is titled"   'New-ExakitTable -Title "Marketplace add-ons" -Col1 "Add-on"'   "$COMMON_PS1"
+has "...with Version and Description" '-Col2 "Version" -Col3 "Description"'                          "$COMMON_PS1"
+has "...and the shell declares both"  'UI_TABLE_COL2="Version"'                                      "$COMMON_SH"
 has "...and the shell agrees"      'UI_TABLE_COL1="Client"'                                        "$COMMON_SH"
 has "...for add-ons too"           'UI_TABLE_COL1="Add-on"'                                        "$COMMON_SH"
 # The heading comes off the TABLE, not out of module state: three tables are
@@ -202,7 +233,7 @@ else
     fail "EXAKIT_MCP_CLIENTS no longer short-circuits the client table (env=$_env_at table=$_tbl_at)"
 fi
 _env_at="$(grep -n 'if ($env:EXAKIT_MARKETPLACE_ADDONS) {' "$COMMON_PS1" | head -1 | cut -d: -f1)"
-_tbl_at="$(grep -n 'New-ExakitTable -Title "Add-ons to install"' "$COMMON_PS1" | head -1 | cut -d: -f1)"
+_tbl_at="$(grep -n 'New-ExakitTable -Title "Marketplace add-ons"' "$COMMON_PS1" | head -1 | cut -d: -f1)"
 if [ -n "$_env_at" ] && [ -n "$_tbl_at" ] && [ "$_env_at" -lt "$_tbl_at" ]; then
     pass "EXAKIT_MARKETPLACE_ADDONS is answered before any table is built"
 else
