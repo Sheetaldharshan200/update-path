@@ -41,11 +41,36 @@ _exakit_uninstall_component() { printf 'WOULD-REMOVE: %s\n' "\$1"; }
 exakit_uninstall_menu
 EOF
 
+# script(1) comes in two incompatible flavours: BSD/macOS takes the command as
+# ARGUMENTS after the typescript file, util-linux takes it after -c. Written the
+# BSD way only, this ran on a developer's macOS and nowhere else -- which went
+# unnoticed for as long as the suite itself was not in CI. The same detection
+# tests/versions-manifest.sh already carries, for the same reason.
+#
+# stdin must be /dev/null for the probe: macOS script(1) refuses to start when
+# its stdin is a socket, which is what a CI or agent shell hands it.
+PTY_KIND="none"
+if command -v script >/dev/null 2>&1; then
+    if script -q /dev/null /bin/echo probe </dev/null >/dev/null 2>&1; then
+        PTY_KIND="bsd"
+    elif script -q -c "/bin/echo probe" /dev/null </dev/null >/dev/null 2>&1; then
+        PTY_KIND="util-linux"
+    fi
+fi
+# in_pty <script-file> — run it on a pty, whichever flavour is present.
+in_pty() {
+    case "$PTY_KIND" in
+        bsd)        script -q /dev/null bash "$1" 2>&1 ;;
+        util-linux) script -q -c "bash $1" /dev/null 2>&1 ;;
+        *)          printf '' ;;
+    esac
+}
+
 # run <keystrokes> -> what the menu did, escape codes stripped
 run() {
     # tr -d '\r': a pty ends every line with CR, which is invisible in output and
     # makes a string compare fail against text that prints identically.
-    printf '%b' "$1" | script -q /dev/null bash "$WORK/menu.sh" 2>&1 \
+    printf '%b' "$1" | in_pty "$WORK/menu.sh" \
         | sed 's/\x1b\[[0-9;]*[A-Za-z]//g' | tr -d '\r'
 }
 removed() { printf '%s\n' "$1" | sed -n 's/^WOULD-REMOVE: //p' | sort | tr '\n' ' ' | sed 's/ $//'; }
