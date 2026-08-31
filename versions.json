@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "updated": "2026-08-27",
+  "updated": "2026-08-31",
   "kit": {
     "version": "0.2.1"
   },
@@ -32,7 +32,7 @@
       "severity": "normal"
     },
     "pyexasol": {
-      "version": "2.3.1",
+      "version": "2.3.2",
       "package": "pyexasol",
       "severity": "normal"
     },
