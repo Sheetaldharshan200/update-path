@@ -2918,7 +2918,7 @@ function Show-ExakitSkills {
     }
 
     Write-Host ""
-    Start-ExakitPanel "AI skills in this kit"
+    Start-ExakitPanel "Exasol skills"
     foreach ($entry in $entries) {
         Write-ExakitPanelLine ("{0,-26} {1,-10} {2}" -f $entry.name, $entry.state, $entry.summary)
     }
@@ -4014,7 +4014,7 @@ function Show-ExakitConnectionPanel {
     $mcpConfigs     = $panel.mcpConfigs
 
     Write-Host ""
-    Start-ExakitPanel "Connection details"
+    Start-ExakitPanel "Setup details"
     Write-ExakitPanelLine ("Runtime:      {0}" -f $(if ($type) { $type } else { 'unknown' }))
     Write-ExakitPanelLine ("DSN:          {0}" -f $(if ($dsn) { $dsn } else { 'unknown' }))
     Write-ExakitPanelLine ("Admin user:   {0}" -f $(if ($user) { $user } else { 'sys' }))
