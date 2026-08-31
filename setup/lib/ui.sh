@@ -713,6 +713,55 @@ UI_TABLE_STAT_W=0
 UI_TABLE_COL2_W=0
 UI_TABLE_COL3_W=0
 
+# UI_TABLE_COL3_FIXED — the Description column's width, FIXED rather than
+# measured. Measured, it would size to the longest About and change the table's
+# width whenever a fetch landed a longer one; fixed, the same description reads
+# the same here as it does in `exakit help`, which wraps to the same 44.
+UI_TABLE_COL3_FIXED="${UI_TABLE_COL3_FIXED:-44}"
+
+# _ui_wrap <text> <width> — greedy word wrap into the _UI_WRAP array, with the
+# count in _UI_WRAP_N. Pure parameter expansion: this runs for every wrapping
+# cell of every frame, five frames a second, and a fork in here is the 223 ms
+# that made the screen sit blank (see the note above _ui_table_cell).
+#
+# A word longer than the cell is BROKEN, not allowed to overhang. That is the
+# one place this differs from exakit_about_wrap, which prints into open space
+# where an overhang costs nothing; here it would print straight through the
+# table's right border.
+_ui_wrap() {
+    _UI_WRAP=(); _UI_WRAP_N=0
+    _uw_w="$2"
+    [ "$_uw_w" -gt 0 ] || return 0
+    [ -n "$1" ] || return 0
+    # Globbing off while the text is split on whitespace: an About containing a
+    # bare * would otherwise expand to the contents of the working directory.
+    set -f
+    # shellcheck disable=SC2086 — deliberate word splitting, that is the split.
+    set -- $1
+    _uw_line=""
+    for _uw_word do
+        # Longer than the whole cell: emit it in cell-wide pieces.
+        while [ "${#_uw_word}" -gt "$_uw_w" ]; do
+            [ -n "$_uw_line" ] && {
+                _UI_WRAP[$_UI_WRAP_N]="$_uw_line"; _UI_WRAP_N=$(( _UI_WRAP_N + 1 )); _uw_line=""
+            }
+            _UI_WRAP[$_UI_WRAP_N]="${_uw_word:0:$_uw_w}"; _UI_WRAP_N=$(( _UI_WRAP_N + 1 ))
+            _uw_word="${_uw_word:$_uw_w}"
+        done
+        if [ -z "$_uw_line" ]; then
+            _uw_line="$_uw_word"
+        elif [ $(( ${#_uw_line} + 1 + ${#_uw_word} )) -le "$_uw_w" ]; then
+            _uw_line="$_uw_line $_uw_word"
+        else
+            _UI_WRAP[$_UI_WRAP_N]="$_uw_line"; _UI_WRAP_N=$(( _UI_WRAP_N + 1 ))
+            _uw_line="$_uw_word"
+        fi
+    done
+    [ -n "$_uw_line" ] && { _UI_WRAP[$_UI_WRAP_N]="$_uw_line"; _UI_WRAP_N=$(( _UI_WRAP_N + 1 )); }
+    set +f
+    return 0
+}
+
 # ui_table_widths <state-file> — how wide the two columns want to be, capped to
 # what the terminal has. The name column is the widest label, the status column
 # is the widest finished status, and neither is allowed to push the table past
@@ -737,7 +786,9 @@ ui_table_widths() {
     # is measured, and drawn, exactly as it was before they existed.
     UI_TABLE_COL2_W=0; UI_TABLE_COL3_W=0
     [ -n "${UI_TABLE_COL2:-}" ] && UI_TABLE_COL2_W="${#UI_TABLE_COL2}"
-    [ -n "${UI_TABLE_COL3:-}" ] && UI_TABLE_COL3_W="${#UI_TABLE_COL3}"
+    # FIXED, never measured: the Description column wraps to fill it rather than
+    # growing to fit the longest About.
+    [ -n "${UI_TABLE_COL3:-}" ] && UI_TABLE_COL3_W="${UI_TABLE_COL3_FIXED:-44}"
     while IFS='|' read -r _utw_kind _utw_label _utw_tick _utw_state _utw_pct \
                           _utw_ceil _utw_secs _utw_t0 _utw_phase _utw_final \
                           _utw_c2 _utw_c3; do
@@ -746,9 +797,6 @@ ui_table_widths() {
         [ "$_utw_len" -gt "$UI_TABLE_NAME_W" ] && UI_TABLE_NAME_W="$_utw_len"
         if [ "$UI_TABLE_COL2_W" -gt 0 ] && [ "${#_utw_c2}" -gt "$UI_TABLE_COL2_W" ]; then
             UI_TABLE_COL2_W="${#_utw_c2}"
-        fi
-        if [ "$UI_TABLE_COL3_W" -gt 0 ] && [ "${#_utw_c3}" -gt "$UI_TABLE_COL3_W" ]; then
-            UI_TABLE_COL3_W="${#_utw_c3}"
         fi
         # Measured the way _ui_table_cell RENDERS it, not as stored: a finished
         # cell is "<tick> <final>", so a column sized to the bare string is short
@@ -991,10 +1039,17 @@ ui_table_frame() {
             _utr_mid="$_utr_mid  ${UI_DIM:-}${_utr_v2}${UI_RESET:-}${_UI_TABLE_SP:0:$(( UI_TABLE_COL2_W - ${#_utr_v2} ))}"
             _utr_used=$(( _utr_used + UI_TABLE_COL2_W + 2 ))
         fi
+        # The Description is never truncated. It wraps to as many lines as it
+        # needs; the first sits on the row, the rest follow underneath with
+        # every other cell blank, so the column stays a column. An About is
+        # written for a repository page, and an ellipsis throws away the half
+        # that says what the tool is for.
+        _utr_wrapn=0
         if [ "$UI_TABLE_COL3_W" -gt 0 ]; then
-            _utr_v3="$_utr_c3"
-            [ "${#_utr_v3}" -le "$UI_TABLE_COL3_W" ] || \
-                _utr_v3="${_utr_v3:0:$(( UI_TABLE_COL3_W - 1 ))}…"
+            _ui_wrap "$_utr_c3" "$UI_TABLE_COL3_W"
+            _utr_wrapn="$_UI_WRAP_N"
+            _utr_v3=""
+            [ "$_utr_wrapn" -gt 0 ] && _utr_v3="${_UI_WRAP[0]}"
             _utr_mid="$_utr_mid  ${UI_DIM:-}${_utr_v3}${UI_RESET:-}${_UI_TABLE_SP:0:$(( UI_TABLE_COL3_W - ${#_utr_v3} ))}"
             _utr_used=$(( _utr_used + UI_TABLE_COL3_W + 2 ))
         fi
@@ -1002,6 +1057,29 @@ ui_table_frame() {
         _utr_f="$_utr_f  ${UI_ACCENT:-}${UI_VB:-|}${UI_RESET:-}${_utr_ptr}${_utr_box} ${_utr_name}${_UI_TABLE_SP:0:$_utr_npad}${_utr_mid}  ${UI_TABLE_CELL}${_UI_TABLE_SP:0:$_utr_rpad}${UI_ACCENT:-}${UI_VB:-|}${UI_RESET:-}
 "
         _utr_lines=$(( _utr_lines + 1 ))
+        # The rest of a wrapped description. Only the Description cell carries
+        # anything: the checkbox, the name and the version belong to the row
+        # above, and repeating them would read as more rows than there are.
+        #
+        # These lines make the frame taller than one line per row, which the
+        # redraw can afford because the height is still the SAME on every
+        # redraw: an About and the column it wraps to are both fixed for the
+        # life of the menu, so a row's height cannot change under it. That is
+        # exactly what the phase sub-line could not promise -- it appeared and
+        # vanished as a row started and stopped running, which is why it needed
+        # a reserved blank line and why it is gone.
+        _utr_wi=1
+        while [ "$_utr_wi" -lt "$_utr_wrapn" ]; do
+            _utr_wl="${_UI_WRAP[$_utr_wi]}"
+            _utr_pre=$(( 5 + UI_TABLE_NAME_W + 2 ))
+            [ "$UI_TABLE_COL2_W" -gt 0 ] && _utr_pre=$(( _utr_pre + UI_TABLE_COL2_W + 2 ))
+            _utr_wpad=$(( _utr_inner - _utr_pre - ${#_utr_wl} ))
+            [ "$_utr_wpad" -ge 0 ] || _utr_wpad=0
+            _utr_f="$_utr_f  ${UI_ACCENT:-}${UI_VB:-|}${UI_RESET:-}${_UI_TABLE_SP:0:$_utr_pre}${UI_DIM:-}${_utr_wl}${UI_RESET:-}${_UI_TABLE_SP:0:$_utr_wpad}${UI_ACCENT:-}${UI_VB:-|}${UI_RESET:-}
+"
+            _utr_lines=$(( _utr_lines + 1 ))
+            _utr_wi=$(( _utr_wi + 1 ))
+        done
     done < "$1"
     # The frame is still ONE height in every state, and now structurally so
     # rather than by arrangement: every row is exactly one line whatever it is

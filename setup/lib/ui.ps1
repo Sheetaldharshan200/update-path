@@ -634,6 +634,37 @@ function Add-ExakitTableRow {
     return $Table.Rows.Count
 }
 
+# $script:UiTableCol3Fixed - the Description column's width, FIXED rather than
+# measured. Measured, it would size to the longest About and change the table's
+# width whenever a fetch landed a longer one; fixed, the same description reads
+# the same here as it does in `exakit help`, which wraps to the same 44.
+$script:UiTableCol3Fixed = 44
+
+# Split-ExakitWrap <text> <width> - greedy word wrap, returned as an array of
+# lines. A word longer than the cell is BROKEN, not allowed to overhang: that is
+# the one place this differs from Format-ExakitAboutWrap, which prints into open
+# space where an overhang costs nothing; here it would print straight through
+# the table's right border. Twin of _ui_wrap in ui.sh.
+function Split-ExakitWrap {
+    param([string]$Text = "", [int]$Width = 44)
+    $out = New-Object 'System.Collections.Generic.List[string]'
+    if ($Width -le 0 -or -not $Text) { return @() }
+    $line = ""
+    foreach ($word in ($Text -split '\s+' | Where-Object { $_ })) {
+        $w = $word
+        while ($w.Length -gt $Width) {
+            if ($line) { [void]$out.Add($line); $line = "" }
+            [void]$out.Add($w.Substring(0, $Width))
+            $w = $w.Substring($Width)
+        }
+        if (-not $line) { $line = $w }
+        elseif (($line.Length + 1 + $w.Length) -le $Width) { $line = "$line $w" }
+        else { [void]$out.Add($line); $line = $w }
+    }
+    if ($line) { [void]$out.Add($line) }
+    return $out.ToArray()
+}
+
 # Get-ExakitTableWidths <table> - how wide the two columns want to be, capped to
 # what the console has. The name column is the widest label, the status column is
 # the widest finished status, and neither is allowed to push the table past the
@@ -654,11 +685,12 @@ function Get-ExakitTableWidths {
     # is measured, and drawn, exactly as it was before they existed.
     $col2W = 0; $col3W = 0
     if ($Table.Col2) { $col2W = ([string]$Table.Col2).Length }
-    if ($Table.Col3) { $col3W = ([string]$Table.Col3).Length }
+    # FIXED, never measured: the Description column wraps to fill it rather than
+    # growing to fit the longest About.
+    if ($Table.Col3) { $col3W = $script:UiTableCol3Fixed }
     foreach ($row in $Table.Rows.ToArray()) {
         $len = $row.Label.Length
         if ($col2W -gt 0 -and ("" + $row.Col2).Length -gt $col2W) { $col2W = ("" + $row.Col2).Length }
-        if ($col3W -gt 0 -and ("" + $row.Col3).Length -gt $col3W) { $col3W = ("" + $row.Col3).Length }
         # The tree connector plus its space is 3 columns of the name cell.
         if ($row.Kind -eq "tee" -or $row.Kind -eq "corner") { $len += 3 }
         if ($len -gt $nameW) { $nameW = $len }
@@ -909,9 +941,16 @@ function Get-ExakitTableFrame {
             $mid += "  " + $script:UiDim + $v2 + $script:UiReset + (" " * ($col2W - $v2.Length))
             $used += $col2W + 2
         }
+        # The Description is never truncated. It wraps to as many lines as it
+        # needs; the first sits on the row, the rest follow underneath with every
+        # other cell blank, so the column stays a column. An About is written for
+        # a repository page, and an ellipsis throws away the half that says what
+        # the tool is for.
+        $wrapped = @()
         if ($col3W -gt 0) {
-            $v3 = "" + $row.Col3
-            if ($v3.Length -gt $col3W) { $v3 = $v3.Substring(0, $col3W - 1) + "…" }
+            $wrapped = @(Split-ExakitWrap -Text ("" + $row.Col3) -Width $col3W)
+            $v3 = ""
+            if ($wrapped.Count -gt 0) { $v3 = $wrapped[0] }
             $mid += "  " + $script:UiDim + $v3 + $script:UiReset + (" " * ($col3W - $v3.Length))
             $used += $col3W + 2
         }
@@ -920,6 +959,29 @@ function Get-ExakitTableFrame {
         [void]$lines.Add("  " + $script:UiAccent + $script:UiVB + $script:UiReset + $ptr + $box + " " +
             $name + (" " * $namePad) + $mid + "  " + $cell.Text + (" " * $tail) +
             $script:UiAccent + $script:UiVB + $script:UiReset)
+        # The rest of a wrapped description. Only the Description cell carries
+        # anything: the checkbox, the name and the version belong to the row
+        # above, and repeating them would read as more rows than there are.
+        #
+        # These lines make the frame taller than one line per row, which the
+        # redraw can afford because the height is still the SAME on every
+        # redraw: an About and the column it wraps to are both fixed for the life
+        # of the menu, so a row's height cannot change under it. That is exactly
+        # what the phase sub-line could not promise - it appeared and vanished as
+        # a row started and stopped running, which is why it needed a reserved
+        # blank line and why it is gone.
+        if ($wrapped.Count -gt 1) {
+            $pre = 5 + $nameW + 2
+            if ($col2W -gt 0) { $pre += $col2W + 2 }
+            for ($k = 1; $k -lt $wrapped.Count; $k++) {
+                $wl = $wrapped[$k]
+                $wpad = $inner - $pre - $wl.Length
+                if ($wpad -lt 0) { $wpad = 0 }
+                [void]$lines.Add("  " + $script:UiAccent + $script:UiVB + $script:UiReset +
+                    (" " * $pre) + $script:UiDim + $wl + $script:UiReset + (" " * $wpad) +
+                    $script:UiAccent + $script:UiVB + $script:UiReset)
+            }
+        }
     }
 
     # The frame is still ONE height in every state, and now structurally so
