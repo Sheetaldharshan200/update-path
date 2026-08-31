@@ -62,7 +62,9 @@ mcp_ssl_cert_validation() {
 
 mcp_uv_install() {
     if command -v uv >/dev/null 2>&1; then
-        ok "uv already installed: $(command -v uv)"
+        # A dependency that was already there is not an outcome of this step,
+        # and its path is not something to act on. Logged, not printed.
+        _exakit_log_file "OK    uv already installed: $(command -v uv)"
         return 0
     fi
     info "Installing uv (Python tool runner used by the MCP server)"
@@ -90,8 +92,14 @@ mcp_uv_install() {
     ok "uv installed"
 }
 
+# Six lines became one. uv's path, the priming bullet, "package cached",
+# "ready to run via uvx", the handshake bullet and its tick were one fact:
+# the server is cached and answers. mcp_validate prints the merged line; the
+# phases live on the spinner instead. ⇄ twin: Install-Mcp in mcp.ps1.
 mcp_install() {
+    EXAKIT_MCP_STEP_T0="$(date +%s 2>/dev/null || echo 0)"
     mcp_uv_install
+    EXAKIT_ACTIVE_LABEL="Priming ${EXAKIT_MCP_PACKAGE}@${EXAKIT_MCP_VERSION}"
     info "Priming ${EXAKIT_MCP_PACKAGE}@${EXAKIT_MCP_VERSION} (downloads on first use)"
     # `--help` exits non-zero on server versions that demand connection env
     # before printing usage — so the exit code can't distinguish "download
@@ -114,7 +122,9 @@ mcp_install() {
     manifest_set components.mcp_server.command "$(mcp_command_path)"
     manifest_set components.mcp_server.package "$EXAKIT_MCP_PACKAGE"
     manifest_set components.mcp_server.version "$EXAKIT_MCP_VERSION"
-    ok "MCP server ready to run via uvx"
+    # Not announced: "cached" above and "answers over stdio" below are the two
+    # facts, and this said neither of them again.
+    _exakit_log_file "OK    MCP server ready to run via uvx"
 }
 
 mcp_update() {
@@ -334,6 +344,7 @@ PY
 # initialize handshake. Uses the same env the client configs use.
 mcp_validate() {
     info "Validating the MCP server (stdio handshake)"
+    EXAKIT_ACTIVE_LABEL="Validating the MCP server"
     _dsn="$(manifest_get runtime.dsn 2>/dev/null)"
     mcp_resolve_creds
     _user="$_mcp_user"
@@ -366,7 +377,10 @@ mcp_validate() {
         fi
     fi
     if [ "$_handshake_ok" -eq 1 ]; then
-        ok "MCP server answers over stdio"
+        # The step's one line: what is cached, and that it answers. The elapsed
+        # spans the prime and the handshake, which is the whole of this step's
+        # work. Through ok_step so it survives the caller's one-line quieting.
+        ok_step "MCP server ${EXAKIT_MCP_PACKAGE}@${EXAKIT_MCP_VERSION} cached and answering over stdio ($(( $(date +%s 2>/dev/null || echo 0) - ${EXAKIT_MCP_STEP_T0:-0} ))s)"
         manifest_set components.mcp_server.mode "stdio"
         manifest_set components.mcp_server.validated true
     else

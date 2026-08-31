@@ -109,8 +109,20 @@ try {
     # --- step 3: AI bridge (server, clients, skills) ----------------------------
     if ($exapumpSupported -and (Begin-ExakitStep "mcp" "Step 3/5  AI bridge (MCP server, clients and skills)")) {
         if (Invoke-ExakitSoftStep -Component "mcp" -Repair "exakit update mcp" -Body {
-                Install-Mcp
-                Test-McpServer
+                # One line for this step's server work: the spinner narrates
+                # the prime and the handshake, so the Info/Ok pairs beneath
+                # were the second telling. try/finally because the body can
+                # throw and this is a soft step - a leaked quiet flag would
+                # silence every step after it.
+                # Twin of _exakit_install_mcp (common.sh).
+                $prevQuiet = $script:ExakitQuietDetail
+                if ($script:UiFancy) { $script:ExakitQuietDetail = $true }
+                try {
+                    Install-Mcp
+                    Test-McpServer
+                } finally {
+                    $script:ExakitQuietDetail = $prevQuiet
+                }
             }) {
             Set-ExakitStepDone "mcp"
         }

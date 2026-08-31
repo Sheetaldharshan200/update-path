@@ -96,8 +96,14 @@ function Get-McpSslCertValidation {
     return "yes"
 }
 
+# Six lines became one. uv's path, the priming bullet, "package cached",
+# "ready to run via uvx", the handshake bullet and its tick were one fact:
+# the server is cached and answers. Test-McpServer prints the merged line; the
+# phases live on the spinner instead. Twin of mcp_install in mcp.sh.
 function Install-Mcp {
+    $script:McpStepT0 = Get-Date
     Install-ExakitUv | Out-Null
+    $script:ExakitActiveLabel = "Priming $($script:McpPackage)@$($script:McpVersion)"
     Info "Priming $($script:McpPackage)@$($script:McpVersion) (downloads on first use)"
     # Use the resolved uvx path, not a bare "uvx" - uv was just installed to
     # a dir that isn't on this process's PATH yet.
@@ -128,7 +134,9 @@ function Install-Mcp {
     Set-ExakitManifestValue "components.mcp_server.command" (Get-McpCommandPath)
     Set-ExakitManifestValue "components.mcp_server.package" $script:McpPackage
     Set-ExakitManifestValue "components.mcp_server.version" $script:McpVersion
-    Ok "MCP server ready to run via uvx"
+    # Not announced: "cached" above and "answers over stdio" below are the two
+    # facts, and this said neither of them again.
+    Write-ExakitLog "OK" "MCP server ready to run via uvx"
 }
 
 # Get-McpCredentials - "user, password_file" for the client configs. Prefers
@@ -154,6 +162,7 @@ function Resolve-McpCredentials {
 # initialize handshake. Uses the same env the client configs use.
 function Test-McpServer {
     Info "Validating the MCP server (stdio handshake)"
+    $script:ExakitActiveLabel = "Validating the MCP server"
     $dsn = Get-ExakitManifestValue "runtime.dsn"
     $creds = Resolve-McpCredentials
     $command = Get-McpCommandPath
@@ -215,7 +224,11 @@ sys.exit(1)
         }
     }
     if ($handshakeOk) {
-        Ok "MCP server answers over stdio"
+        # The step's one line: what is cached, and that it answers. The elapsed
+        # spans the prime and the handshake. Through OkStep so it survives the
+        # caller's one-line quieting.
+        $mcpSecs = if ($script:McpStepT0) { [int]((Get-Date) - $script:McpStepT0).TotalSeconds } else { 0 }
+        OkStep "MCP server $($script:McpPackage)@$($script:McpVersion) cached and answering over stdio (${mcpSecs}s)"
         Set-ExakitManifestValue "components.mcp_server.mode" "stdio"
         Set-ExakitManifestValue "components.mcp_server.validated" $true
     } else {
@@ -412,150 +425,167 @@ function Assert-McpReadonlyPosture {
 # Set-McpReadonlyAccess - create (or refresh) the dedicated read-only
 # database user, grant database-wide read (USE ANY SCHEMA + SELECT ANY TABLE),
 # validate its login, and assert the read-only posture. Safe to re-run.
+# Four lines became one. Creating the user, creating the schema and validating
+# the login are phases of a single outcome - the read-only access exists and
+# works - and the tick at the end already said all three happened.
+# Twin of exakit_configure_mcp_readonly_access in common.sh.
 function Set-McpReadonlyAccess {
-    # Ensure exapump is on PATH for this session
-    $exapumpBin = Get-ExakitExapumpBin
-    if ($exapumpBin) {
-        $binDir = Split-Path -Parent $exapumpBin
-        Ensure-ExakitOnPath $binDir
-    }
-    
-    $runtimeUser = Get-ExakitManifestValue "runtime.user"
-    if (-not $runtimeUser) { Fail "runtime.user is missing; cannot prepare the MCP read-only database user." }
-    $runtimePwFile = Get-ExakitManifestValue "runtime.password_file"
-    $adminPassword = ""
-    if ($runtimePwFile -and (Test-Path $runtimePwFile)) {
-        $adminPassword = (Get-Content $runtimePwFile -Raw).TrimEnd("`r", "`n")
-    }
-    # Fallback (mirrors common.sh): recover the admin password from the exapump
-    # profile the data step already validated. Covers adopted deployments whose
-    # secrets couldn't be read, including re-runs where the exapump step is
-    # skipped as "already done". Persist it forward so later runs find it.
-    if (-not $adminPassword) {
-        $adminPassword = Get-ExapumpProfilePassword $script:ExapumpProfile
-        if ($adminPassword) {
-            Set-ExakitCredential "runtime_sys_password" $adminPassword
-            Set-ExakitManifestValue "runtime.password_file" (Join-Path $script:CredsDir "runtime_sys_password")
-        }
-    }
-    if (-not $adminPassword) { Fail "No runtime database password is available (runtime.password_file is missing and the exapump '$($script:ExapumpProfile)' profile has none). Set it with 'exapump profile init $($script:ExapumpProfile)', then re-run." }
-    $dbHost = Get-RuntimeHost
-    $dbPort = Get-RuntimePort
-    if (-not $dbHost) { Fail "runtime.dsn is missing a host; cannot prepare the MCP read-only database user." }
-    if (-not $dbPort) { Fail "runtime.dsn is missing a port; cannot prepare the MCP read-only database user." }
-
-    $readonlyUser = $script:McpReadonlyUser
-    # The MCP user gets database-wide READ (USE ANY SCHEMA + SELECT ANY TABLE),
-    # so it can query every schema and table - bundled datasets, your own
-    # uploads, and anything you create later - with no per-schema grant. This
-    # list is now only the connection's DEFAULT schema (the landing spot for
-    # local uploads); it must exist so the exapump profile can OPEN it on
-    # connect, and it is the schema the write-rejection probe targets. Mirrors
-    # common.sh.
-    $readonlySchemas = $script:McpReadonlySchemas
-    $defaultSchema = Get-FirstSchema $readonlySchemas
-    $readonlyPassword = Get-ExakitCredential "mcp_readonly_password"
-    if (-not (Test-ExakitSqlPasswordToken $readonlyPassword)) {
-        $readonlyPassword = New-ExakitSqlPasswordToken
-        Set-ExakitCredential "mcp_readonly_password" $readonlyPassword
-    }
-
-    $identifierUser = ConvertTo-UpperInvariantString $readonlyUser
-    $defaultSchemaUc = ConvertTo-UpperInvariantString $defaultSchema
-    if (-not (Test-ExakitIdentifier $identifierUser)) { Fail "Invalid EXAKIT_MCP_READONLY_USER: $readonlyUser" }
-
-    $tempConfig = Join-Path ([System.IO.Path]::GetTempPath()) "exakit-exapump-$([guid]::NewGuid().ToString('N')).toml"
-    # try/finally guarantees the credential-bearing temp TOML is deleted on
-    # every exit path - success, a thrown Fail, or any other exception - so no
-    # individual step has to remember to clean it up.
+    $cmraPrevQuiet = $script:ExakitQuietDetail
+    $cmraT0 = Get-Date
+    if ($script:UiFancy) { $script:ExakitQuietDetail = $true }
+    # try/finally, not a plain restore at the end: every Fail in this
+    # function throws, the MCP step is a SOFT step, and a caught throw
+    # would leave ExakitQuietDetail set - silencing every step after it.
     try {
-        Set-ExapumpTomlSection -ConfigPath $tempConfig -Profile "admin" -Host_ $dbHost -Port $dbPort -User $runtimeUser -Password $adminPassword
-        Set-ExapumpTomlSection -ConfigPath $tempConfig -Profile "mcp_readonly" -Host_ $dbHost -Port $dbPort -User $readonlyUser -Password $readonlyPassword -Schema $defaultSchemaUc
-
-        # Verify the TOML config was created and is readable
-        if (-not (Test-Path $tempConfig)) {
-            Fail "Failed to create temporary exapump configuration file: $tempConfig"
+        # Ensure exapump is on PATH for this session
+        $exapumpBin = Get-ExakitExapumpBin
+        if ($exapumpBin) {
+            $binDir = Split-Path -Parent $exapumpBin
+            Ensure-ExakitOnPath $binDir
         }
-        Write-ExakitLog "DEBUG" "TOML config created at: $tempConfig"
-        if ($script:LogFile) {
-            Write-ExakitLog "DEBUG" "TOML config contents (passwords redacted):"
-            $redactedConfig = (Get-Content $tempConfig -Raw) -replace '(?m)^(password\s*=\s*").*(")\s*$', '$1<redacted>$2'
-            $redactedConfig | Add-Content -Path $script:LogFile
+    
+        $runtimeUser = Get-ExakitManifestValue "runtime.user"
+        if (-not $runtimeUser) { Fail "runtime.user is missing; cannot prepare the MCP read-only database user." }
+        $runtimePwFile = Get-ExakitManifestValue "runtime.password_file"
+        $adminPassword = ""
+        if ($runtimePwFile -and (Test-Path $runtimePwFile)) {
+            $adminPassword = (Get-Content $runtimePwFile -Raw).TrimEnd("`r", "`n")
+        }
+        # Fallback (mirrors common.sh): recover the admin password from the exapump
+        # profile the data step already validated. Covers adopted deployments whose
+        # secrets couldn't be read, including re-runs where the exapump step is
+        # skipped as "already done". Persist it forward so later runs find it.
+        if (-not $adminPassword) {
+            $adminPassword = Get-ExapumpProfilePassword $script:ExapumpProfile
+            if ($adminPassword) {
+                Set-ExakitCredential "runtime_sys_password" $adminPassword
+                Set-ExakitManifestValue "runtime.password_file" (Join-Path $script:CredsDir "runtime_sys_password")
+            }
+        }
+        if (-not $adminPassword) { Fail "No runtime database password is available (runtime.password_file is missing and the exapump '$($script:ExapumpProfile)' profile has none). Set it with 'exapump profile init $($script:ExapumpProfile)', then re-run." }
+        $dbHost = Get-RuntimeHost
+        $dbPort = Get-RuntimePort
+        if (-not $dbHost) { Fail "runtime.dsn is missing a host; cannot prepare the MCP read-only database user." }
+        if (-not $dbPort) { Fail "runtime.dsn is missing a port; cannot prepare the MCP read-only database user." }
+
+        $readonlyUser = $script:McpReadonlyUser
+        # The MCP user gets database-wide READ (USE ANY SCHEMA + SELECT ANY TABLE),
+        # so it can query every schema and table - bundled datasets, your own
+        # uploads, and anything you create later - with no per-schema grant. This
+        # list is now only the connection's DEFAULT schema (the landing spot for
+        # local uploads); it must exist so the exapump profile can OPEN it on
+        # connect, and it is the schema the write-rejection probe targets. Mirrors
+        # common.sh.
+        $readonlySchemas = $script:McpReadonlySchemas
+        $defaultSchema = Get-FirstSchema $readonlySchemas
+        $readonlyPassword = Get-ExakitCredential "mcp_readonly_password"
+        if (-not (Test-ExakitSqlPasswordToken $readonlyPassword)) {
+            $readonlyPassword = New-ExakitSqlPasswordToken
+            Set-ExakitCredential "mcp_readonly_password" $readonlyPassword
         }
 
-        # Test basic connectivity before attempting user creation
-        Info "Testing database connectivity"
-        $connTestResult = Invoke-ExapumpAdminSql -ConfigPath $tempConfig -Profile "admin" -Sql "SELECT 1 AS connection_test"
-        Assert-ExapumpResult -Result $connTestResult -Label "Database connection test" -FailMessage "Cannot connect to database with admin credentials. Check database status and credentials."
-        Ok "Database connection successful"
-
-        $identifierLit = ConvertTo-SqlLiteral $identifierUser
-        if (-not (Test-ExapumpSqlHasToken $tempConfig "admin" "SELECT CASE WHEN EXISTS (SELECT 1 FROM EXA_DBA_USERS WHERE USER_NAME = '$identifierLit') THEN 'EXAKIT_MCP_USER_PRESENT' ELSE 'EXAKIT_MCP_USER_MISSING' END AS STATUS" "EXAKIT_MCP_USER_PRESENT")) {
-            Info "Creating the dedicated MCP read-only database user ($readonlyUser)"
-            Write-ExakitLog "SQL" "CREATE USER $identifierUser IDENTIFIED BY <redacted>"
-            $r = Invoke-ExapumpAdminSql -ConfigPath $tempConfig -Profile "admin" -Sql "CREATE USER $identifierUser IDENTIFIED BY $readonlyPassword"
-            Assert-ExapumpResult -Result $r -Label "CREATE USER" -FailMessage "Could not create the MCP read-only database user." -Secrets @($readonlyPassword, $adminPassword)
-        }
-
-        Write-ExakitLog "SQL" "ALTER USER $identifierUser IDENTIFIED BY <redacted>"
-        $r = Invoke-ExapumpAdminSql -ConfigPath $tempConfig -Profile "admin" -Sql "ALTER USER $identifierUser IDENTIFIED BY $readonlyPassword"
-        Assert-ExapumpResult -Result $r -Label "ALTER USER" -FailMessage "Could not refresh the MCP read-only database password." -Secrets @($readonlyPassword, $adminPassword)
-
-        $r = Invoke-ExapumpAdminSql -ConfigPath $tempConfig -Profile "admin" -Sql "GRANT CREATE SESSION TO $identifierUser"
-        Assert-ExapumpResult -Result $r -Label "GRANT CREATE SESSION" -FailMessage "Could not grant CREATE SESSION to the MCP read-only database user."
-
-        # Make sure the connection's default schema exists - exapump OPENs it on
-        # connect, and the write-rejection probe targets it.
-        $schemaTokens = @($readonlySchemas -split '[,\s]+' | Where-Object { $_ })
+        $identifierUser = ConvertTo-UpperInvariantString $readonlyUser
         $defaultSchemaUc = ConvertTo-UpperInvariantString $defaultSchema
-        if (-not (Test-ExakitIdentifier $defaultSchemaUc)) { Fail "Invalid MCP default schema name: $defaultSchema" }
-        $defaultSchemaLit = ConvertTo-SqlLiteral $defaultSchemaUc
-        if (-not (Test-ExapumpSqlHasToken $tempConfig "admin" "SELECT CASE WHEN EXISTS (SELECT 1 FROM EXA_ALL_SCHEMAS WHERE SCHEMA_NAME = '$defaultSchemaLit') THEN 'EXAKIT_SCHEMA_PRESENT' ELSE 'EXAKIT_SCHEMA_MISSING' END AS STATUS" "EXAKIT_SCHEMA_PRESENT")) {
-            Info "Creating default schema $defaultSchemaUc for MCP-safe querying"
-            Write-ExakitLog "SQL" "CREATE SCHEMA $defaultSchemaUc"
-            $r = Invoke-ExapumpAdminSql -ConfigPath $tempConfig -Profile "admin" -Sql "CREATE SCHEMA $defaultSchemaUc"
-            Assert-ExapumpResult -Result $r -Label "CREATE SCHEMA $defaultSchemaUc" -FailMessage "Could not create schema $defaultSchemaUc for MCP access."
-        }
+        if (-not (Test-ExakitIdentifier $identifierUser)) { Fail "Invalid EXAKIT_MCP_READONLY_USER: $readonlyUser" }
 
-        # Database-wide READ: USE ANY SCHEMA (see every schema) + SELECT ANY
-        # TABLE (read contents in any schema). Together they let the AI client
-        # query every schema and table - present and future, including ones you
-        # create by hand - without a per-schema grant. Neither permits any write
-        # or DDL, so the read-only guarantee holds (re-checked below).
-        # SELECT ANY DICTIONARY is deliberately NOT granted, so system
-        # dictionaries (audit logs, sessions, other users) stay private.
-        Write-ExakitLog "SQL" "GRANT USE ANY SCHEMA TO $identifierUser"
-        $r = Invoke-ExapumpAdminSql -ConfigPath $tempConfig -Profile "admin" -Sql "GRANT USE ANY SCHEMA TO $identifierUser"
-        Assert-ExapumpResult -Result $r -Label "GRANT USE ANY SCHEMA" -FailMessage "Could not grant USE ANY SCHEMA to the MCP read-only database user."
-        Write-ExakitLog "SQL" "GRANT SELECT ANY TABLE TO $identifierUser"
-        $r = Invoke-ExapumpAdminSql -ConfigPath $tempConfig -Profile "admin" -Sql "GRANT SELECT ANY TABLE TO $identifierUser"
-        Assert-ExapumpResult -Result $r -Label "GRANT SELECT ANY TABLE" -FailMessage "Could not grant SELECT ANY TABLE to the MCP read-only database user."
+        $tempConfig = Join-Path ([System.IO.Path]::GetTempPath()) "exakit-exapump-$([guid]::NewGuid().ToString('N')).toml"
+        # try/finally guarantees the credential-bearing temp TOML is deleted on
+        # every exit path - success, a thrown Fail, or any other exception - so no
+        # individual step has to remember to clean it up.
+        try {
+            Set-ExapumpTomlSection -ConfigPath $tempConfig -Profile "admin" -Host_ $dbHost -Port $dbPort -User $runtimeUser -Password $adminPassword
+            Set-ExapumpTomlSection -ConfigPath $tempConfig -Profile "mcp_readonly" -Host_ $dbHost -Port $dbPort -User $readonlyUser -Password $readonlyPassword -Schema $defaultSchemaUc
 
-        Info "Validating dedicated MCP read-only login"
-        if (-not (Test-ExapumpSqlHasToken $tempConfig "mcp_readonly" "SELECT CURRENT_USER AS EXAKIT_CURRENT_USER" $identifierUser)) {
-            Fail "The MCP read-only user could not log in with the generated credentials."
-        }
-        if (-not (Test-ExapumpSqlHasToken $tempConfig "mcp_readonly" "SELECT 'EXAKIT_MCP_READONLY_OK' AS STATUS" "EXAKIT_MCP_READONLY_OK")) {
-            Fail "The MCP read-only user did not pass the validation query."
-        }
-        Assert-McpReadonlyPosture -ConfigPath $tempConfig -ReadonlyUser $readonlyUser -Schemas $readonlySchemas
+            # Verify the TOML config was created and is readable
+            if (-not (Test-Path $tempConfig)) {
+                Fail "Failed to create temporary exapump configuration file: $tempConfig"
+            }
+            Write-ExakitLog "DEBUG" "TOML config created at: $tempConfig"
+            if ($script:LogFile) {
+                Write-ExakitLog "DEBUG" "TOML config contents (passwords redacted):"
+                $redactedConfig = (Get-Content $tempConfig -Raw) -replace '(?m)^(password\s*=\s*").*(")\s*$', '$1<redacted>$2'
+                $redactedConfig | Add-Content -Path $script:LogFile
+            }
 
-        Set-ExakitManifestValue "components.mcp_server.connection.user" $readonlyUser
-        Set-ExakitManifestValue "components.mcp_server.connection.password_file" (Join-Path $script:CredsDir "mcp_readonly_password")
-        Set-ExakitManifestValue "components.mcp_server.connection.schemas" $schemaTokens
-        # THE SAME FACT, SPELLED SO IT CANNOT BE MISREAD. schemas: ["STARTER_KIT"]
-        # reads as "this user can only see STARTER_KIT" - and an agent checking
-        # the install record before querying concluded exactly that, while the
-        # MCP user was in fact returning every loaded schema quite happily. The
-        # array stays (internal readers parse it); these two say what it means.
-        Set-ExakitManifestValue "components.mcp_server.connection.default_schema" ($schemaTokens | Select-Object -First 1)
-        Set-ExakitManifestValue "components.mcp_server.connection.read_scope" `
-            "every schema (USE ANY SCHEMA + SELECT ANY TABLE); 'schemas' is the connection default, not a limit"
-        Set-ExakitManifestValue "components.mcp_server.connection.validated" $true
+            # Test basic connectivity before attempting user creation
+            Info "Testing database connectivity"
+            $connTestResult = Invoke-ExapumpAdminSql -ConfigPath $tempConfig -Profile "admin" -Sql "SELECT 1 AS connection_test"
+            Assert-ExapumpResult -Result $connTestResult -Label "Database connection test" -FailMessage "Cannot connect to database with admin credentials. Check database status and credentials."
+            Ok "Database connection successful"
+
+            $identifierLit = ConvertTo-SqlLiteral $identifierUser
+            if (-not (Test-ExapumpSqlHasToken $tempConfig "admin" "SELECT CASE WHEN EXISTS (SELECT 1 FROM EXA_DBA_USERS WHERE USER_NAME = '$identifierLit') THEN 'EXAKIT_MCP_USER_PRESENT' ELSE 'EXAKIT_MCP_USER_MISSING' END AS STATUS" "EXAKIT_MCP_USER_PRESENT")) {
+                $script:ExakitActiveLabel = "Creating the dedicated MCP read-only database user"
+                Info "Creating the dedicated MCP read-only database user ($readonlyUser)"
+                Write-ExakitLog "SQL" "CREATE USER $identifierUser IDENTIFIED BY <redacted>"
+                $r = Invoke-ExapumpAdminSql -ConfigPath $tempConfig -Profile "admin" -Sql "CREATE USER $identifierUser IDENTIFIED BY $readonlyPassword"
+                Assert-ExapumpResult -Result $r -Label "CREATE USER" -FailMessage "Could not create the MCP read-only database user." -Secrets @($readonlyPassword, $adminPassword)
+            }
+
+            Write-ExakitLog "SQL" "ALTER USER $identifierUser IDENTIFIED BY <redacted>"
+            $r = Invoke-ExapumpAdminSql -ConfigPath $tempConfig -Profile "admin" -Sql "ALTER USER $identifierUser IDENTIFIED BY $readonlyPassword"
+            Assert-ExapumpResult -Result $r -Label "ALTER USER" -FailMessage "Could not refresh the MCP read-only database password." -Secrets @($readonlyPassword, $adminPassword)
+
+            $r = Invoke-ExapumpAdminSql -ConfigPath $tempConfig -Profile "admin" -Sql "GRANT CREATE SESSION TO $identifierUser"
+            Assert-ExapumpResult -Result $r -Label "GRANT CREATE SESSION" -FailMessage "Could not grant CREATE SESSION to the MCP read-only database user."
+
+            # Make sure the connection's default schema exists - exapump OPENs it on
+            # connect, and the write-rejection probe targets it.
+            $schemaTokens = @($readonlySchemas -split '[,\s]+' | Where-Object { $_ })
+            $defaultSchemaUc = ConvertTo-UpperInvariantString $defaultSchema
+            if (-not (Test-ExakitIdentifier $defaultSchemaUc)) { Fail "Invalid MCP default schema name: $defaultSchema" }
+            $defaultSchemaLit = ConvertTo-SqlLiteral $defaultSchemaUc
+            if (-not (Test-ExapumpSqlHasToken $tempConfig "admin" "SELECT CASE WHEN EXISTS (SELECT 1 FROM EXA_ALL_SCHEMAS WHERE SCHEMA_NAME = '$defaultSchemaLit') THEN 'EXAKIT_SCHEMA_PRESENT' ELSE 'EXAKIT_SCHEMA_MISSING' END AS STATUS" "EXAKIT_SCHEMA_PRESENT")) {
+                $script:ExakitActiveLabel = "Creating the default schema for MCP-safe querying"
+                Info "Creating default schema $defaultSchemaUc for MCP-safe querying"
+                Write-ExakitLog "SQL" "CREATE SCHEMA $defaultSchemaUc"
+                $r = Invoke-ExapumpAdminSql -ConfigPath $tempConfig -Profile "admin" -Sql "CREATE SCHEMA $defaultSchemaUc"
+                Assert-ExapumpResult -Result $r -Label "CREATE SCHEMA $defaultSchemaUc" -FailMessage "Could not create schema $defaultSchemaUc for MCP access."
+            }
+
+            # Database-wide READ: USE ANY SCHEMA (see every schema) + SELECT ANY
+            # TABLE (read contents in any schema). Together they let the AI client
+            # query every schema and table - present and future, including ones you
+            # create by hand - without a per-schema grant. Neither permits any write
+            # or DDL, so the read-only guarantee holds (re-checked below).
+            # SELECT ANY DICTIONARY is deliberately NOT granted, so system
+            # dictionaries (audit logs, sessions, other users) stay private.
+            Write-ExakitLog "SQL" "GRANT USE ANY SCHEMA TO $identifierUser"
+            $r = Invoke-ExapumpAdminSql -ConfigPath $tempConfig -Profile "admin" -Sql "GRANT USE ANY SCHEMA TO $identifierUser"
+            Assert-ExapumpResult -Result $r -Label "GRANT USE ANY SCHEMA" -FailMessage "Could not grant USE ANY SCHEMA to the MCP read-only database user."
+            Write-ExakitLog "SQL" "GRANT SELECT ANY TABLE TO $identifierUser"
+            $r = Invoke-ExapumpAdminSql -ConfigPath $tempConfig -Profile "admin" -Sql "GRANT SELECT ANY TABLE TO $identifierUser"
+            Assert-ExapumpResult -Result $r -Label "GRANT SELECT ANY TABLE" -FailMessage "Could not grant SELECT ANY TABLE to the MCP read-only database user."
+
+            $script:ExakitActiveLabel = "Validating the dedicated MCP read-only login"
+            Info "Validating dedicated MCP read-only login"
+            if (-not (Test-ExapumpSqlHasToken $tempConfig "mcp_readonly" "SELECT CURRENT_USER AS EXAKIT_CURRENT_USER" $identifierUser)) {
+                Fail "The MCP read-only user could not log in with the generated credentials."
+            }
+            if (-not (Test-ExapumpSqlHasToken $tempConfig "mcp_readonly" "SELECT 'EXAKIT_MCP_READONLY_OK' AS STATUS" "EXAKIT_MCP_READONLY_OK")) {
+                Fail "The MCP read-only user did not pass the validation query."
+            }
+            Assert-McpReadonlyPosture -ConfigPath $tempConfig -ReadonlyUser $readonlyUser -Schemas $readonlySchemas
+
+            Set-ExakitManifestValue "components.mcp_server.connection.user" $readonlyUser
+            Set-ExakitManifestValue "components.mcp_server.connection.password_file" (Join-Path $script:CredsDir "mcp_readonly_password")
+            Set-ExakitManifestValue "components.mcp_server.connection.schemas" $schemaTokens
+            # THE SAME FACT, SPELLED SO IT CANNOT BE MISREAD. schemas: ["STARTER_KIT"]
+            # reads as "this user can only see STARTER_KIT" - and an agent checking
+            # the install record before querying concluded exactly that, while the
+            # MCP user was in fact returning every loaded schema quite happily. The
+            # array stays (internal readers parse it); these two say what it means.
+            Set-ExakitManifestValue "components.mcp_server.connection.default_schema" ($schemaTokens | Select-Object -First 1)
+            Set-ExakitManifestValue "components.mcp_server.connection.read_scope" `
+                "every schema (USE ANY SCHEMA + SELECT ANY TABLE); 'schemas' is the connection default, not a limit"
+            Set-ExakitManifestValue "components.mcp_server.connection.validated" $true
+        } finally {
+            Remove-Item -Force $tempConfig -ErrorAction SilentlyContinue
+        }
+        OkStep "Dedicated MCP read-only access is configured and validated ($([int]((Get-Date) - $cmraT0).TotalSeconds)s)"
     } finally {
-        Remove-Item -Force $tempConfig -ErrorAction SilentlyContinue
+        $script:ExakitQuietDetail = $cmraPrevQuiet
     }
-    Ok "Dedicated MCP read-only access is configured and validated"
 }
 
 # Confirm-McpReadonlyPosture - re-run the grant-posture check against the
@@ -779,7 +809,10 @@ function Show-McpSetupSummary {
         if ($a.kind -eq "restart_client") { continue }
         if ($a.message) { Info "$($a.message)" }
     }
-    Info "Config file paths and per-client state: exakit mcp-status"
+    # Already in the closing panel, verbatim in effect:
+    #   MCP configs:  in each AI client's config (list: exakit mcp-status)
+    # so the pointer survives without being given twice.
+    Write-ExakitLog "INFO" "Config file paths and per-client state: exakit mcp-status"
 }
 
 function Show-McpReadyPanel {
@@ -1236,7 +1269,8 @@ function Invoke-McpSetup {
     Reset-McpClientTable
     if (-not $resultJson) { return $false }
     Show-McpReadyPanel "permanent"
-    Ok "MCP setup guidance is ready."
+    # The panel above IS the guidance; announcing that it exists, directly
+    # under it, told the reader nothing they had not just read.
     return $true
 }
 
@@ -1374,7 +1408,8 @@ function Request-ExakitMcpSetupOffer {
         Info "Skipping MCP client setup (EXAKIT_SKIP_MCP=1). Run it any time with: exakit mcp-setup"
         return
     }
-    Info "The Exasol runtime and MCP server are ready."
+    # No lead-in: the ticks directly above already said the runtime and the
+    # server are ready, and this restated them in a sentence.
     if (-not (Invoke-McpSetup)) {
         Warn2 "Your local runtime is installed, but MCP client setup did not finish cleanly."
         Warn2 "Retry any time with: exakit mcp-setup"

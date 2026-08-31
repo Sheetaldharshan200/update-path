@@ -2945,7 +2945,10 @@ function Install-ExakitSkills {
     # The read-only allowlist the skill documents, applied for real.
     $applied = Set-ExakitReadonlyAllowlist
     if ($applied -eq "ADDED 0") {
-        Info "Read-only command allowlist already present in ~\.claude\settings.json."
+        # ADDED 0 is the nothing-changed branch, so it fired on every re-run to
+        # report that nothing happened. The branch below, where commands really
+        # are allowlisted, still says so.
+        Write-ExakitLog "INFO" "Read-only command allowlist already present in ~\.claude\settings.json."
     } elseif ($applied -like "ADDED *") {
         Ok "Read-only exakit commands allowlisted in ~\.claude\settings.json (status, info, version, mcp-doctor, logs; uninstall stays gated)."
     } else {
