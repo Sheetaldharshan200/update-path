@@ -47,7 +47,7 @@ if (-not (Get-Command Start-ExakitSpinner -ErrorAction SilentlyContinue)) {
     # Each stub carries the real signature, because a function with NO parameter
     # list refuses named arguments: a bare `function Set-ExakitTableRow { }` would
     # only trade the missing-command error for a missing-parameter one.
-    function New-ExakitTable([string]$Title = "", [string]$Col1 = "", [int]$Reserve = 1) { return $null }
+    function New-ExakitTable([string]$Title = "", [string]$Col1 = "") { return $null }
     function Add-ExakitTableRow([string]$Kind = "plain", [string]$Label = "",
         [switch]$Ticked, $Table = $null) { return 0 }
     function Set-ExakitTableRow([int]$Row = 0, [string]$State = "", [int]$Pct = 0,
@@ -3548,7 +3548,7 @@ function Show-ExakitMarketplaceMenu {
     # a checkbox that cannot be ticked would be the same fact twice. This is also
     # what keeps the group's child range contiguous.
     $addonIds = New-Object 'System.Collections.Generic.List[string]'
-    $script:ExakitAddonTable = New-ExakitTable -Title "Add-ons to install" -Col1 "Add-on" -Reserve 1
+    $script:ExakitAddonTable = New-ExakitTable -Title "Add-ons to install" -Col1 "Add-on"
     [void](Add-ExakitTableRow -Kind "group" -Label "Select All" -Table $script:ExakitAddonTable)
     [void]$addonIds.Add("")
     $addonCount = $selectable.Count
