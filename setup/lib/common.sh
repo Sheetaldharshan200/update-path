@@ -182,6 +182,30 @@ ok() {
         printf '      %s%s%s %s\n' "${UI_OK:-}" "${UI_TICK:-[ok]}" "${UI_RESET:-}" "$*"
     _exakit_log_file "OK    $*"
 }
+# ok_step / info_step — the lines a one-line step keeps.
+#
+# A step that narrates itself on one line sets EXAKIT_QUIET_DETAIL, which gates
+# every info/ok underneath it to the logfile. That is the right default: the
+# spinner is already saying what is happening. But each step still has one or
+# two facts worth leaving on screen -- the profile name someone will type again,
+# the path to a Python that is now on disk -- and they are printed from inside
+# the same functions being quieted. These two say it anyway.
+#
+# The flag is saved and restored rather than cleared, so a step nested inside
+# another quiet caller (an add-on install, a data load) does not tear a hole in
+# ITS one-line narration either. ⇄ twins: OkStep/InfoStep in exakit-common.ps1.
+ok_step() {
+    _oks_prev="${EXAKIT_QUIET_DETAIL:-0}"
+    EXAKIT_QUIET_DETAIL=0
+    ok "$@"
+    EXAKIT_QUIET_DETAIL="$_oks_prev"
+}
+info_step() {
+    _ifs_prev="${EXAKIT_QUIET_DETAIL:-0}"
+    EXAKIT_QUIET_DETAIL=0
+    info "$@"
+    EXAKIT_QUIET_DETAIL="$_ifs_prev"
+}
 warn() { printf '      %s!%s %s\n'  "${UI_WARN:-}" "${UI_RESET:-}" "$*" >&2;        _exakit_log_file "WARN  $*"; }
 error(){ printf '      %s%s%s %s\n' "${UI_ERR:-}"  "${UI_CROSS:-[x]}" "${UI_RESET:-}" "$*" >&2; _exakit_log_file "ERROR $*"; }
 
@@ -7358,7 +7382,8 @@ exakit_maybe_offer_data_load() {
         return 0
     fi
 
-    info "The database is ready for data. Loading it now lets MCP validate against real tables."
+    # No lead-in sentence: the checkbox below names every dataset on offer and
+    # the skip, which is the whole of what this line was explaining.
     # Dynamic dataset checkbox (shared with `exakit data-load`): only bundled
     # datasets that are not loaded yet are offered, plus the local-file option
     # and an explicit skip. Each load runs in a subshell so a die() inside the
@@ -7545,10 +7570,22 @@ exakit_print_soft_failures() {
 }
 
 # The component chains, named so exakit_soft_step has something to isolate.
+# Three lines for this step, not nine. run_logged animates the label
+# begin_step set, so the info bullets under it were the second telling, and the
+# checksum tick named a mktemp temp file rather than the asset (exapump
+# downloads to a bare mktemp path, so basename saw "exakit-exapump.ANyKf0").
+# What survives goes through ok_step: what was installed and where, the profile
+# name someone types again, and the one fact the next two steps depend on --
+# that the database can persist a schema, not merely answer SELECT 1.
 _exakit_install_exapump() {
-    exapump_install || return 1
-    exapump_create_profile || return 1
+    _eie_prev_quiet="${EXAKIT_QUIET_DETAIL:-0}"
+    [ -t 1 ] && EXAKIT_QUIET_DETAIL=1
+    exapump_install || { EXAKIT_QUIET_DETAIL="$_eie_prev_quiet"; return 1; }
+    exapump_create_profile || { EXAKIT_QUIET_DETAIL="$_eie_prev_quiet"; return 1; }
     exapump_validate_connection
+    _eie_rc=$?
+    EXAKIT_QUIET_DETAIL="$_eie_prev_quiet"
+    return $_eie_rc
 }
 
 _exakit_install_mcp() {
@@ -7561,9 +7598,18 @@ _exakit_install_mcp() {
 # anywhere inside validation (a manifest write on a full disk, say) still ended
 # the run before the exakit helper was installed. Install and validate belong to
 # the same isolated unit.
+# Two lines for this step, not five: the outcome, and the interpreter to run it
+# with. Everything between -- the venv creation, the pip resolve, the SELECT 1
+# narration -- is in the logfile, and the spinner covered it live.
 _exakit_install_pyexasol() {
-    pyexasol_install || return 1
+    _eip_prev_quiet="${EXAKIT_QUIET_DETAIL:-0}"
+    [ -t 1 ] && EXAKIT_QUIET_DETAIL=1
+    if ! pyexasol_install; then
+        EXAKIT_QUIET_DETAIL="$_eip_prev_quiet"
+        return 1
+    fi
     pyexasol_validate || true
+    EXAKIT_QUIET_DETAIL="$_eip_prev_quiet"
 }
 
 # --- What's new -------------------------------------------------------------
@@ -7999,13 +8045,18 @@ kit_shared_steps() {
         fi
         ensure_path_hint "$EXAKIT_BIN_DIR"
         mark_step exakit_helper
-        ok "exakit installed ($EXAKIT_BIN_DIR/exakit)"
+        ok_step "exakit installed ($(ui_tilde "$EXAKIT_BIN_DIR/exakit"))"
     fi
 
     # The database should be there after a reboot without anyone thinking about
-    # it, the way a system service is. Best-effort and announced: a platform
-    # with no supervisor says so, and `exakit autostart off` reverses it.
+    # it, the way a system service is. Best-effort, and now reported to the
+    # LOGFILE rather than the screen: the step leaves one line, and the plist
+    # path was never something to act on -- `exakit autostart off` reverses it
+    # and `exakit status` reports it.
+    _eah_prev_quiet="${EXAKIT_QUIET_DETAIL:-0}"
+    [ -t 1 ] && EXAKIT_QUIET_DETAIL=1
     exakit_autostart_enable || true
+    EXAKIT_QUIET_DETAIL="$_eah_prev_quiet"
 
     # The upgrade news (exakit_print_whats_new_box) and the closing summary
     # (exakit_print_soft_failures) are printed by the setup scripts after the

@@ -216,6 +216,30 @@ function Ok([string]$Msg) {
     }
     Write-ExakitLog "OK" $Msg
 }
+# OkStep / InfoStep - the lines a one-line step keeps.
+#
+# A step that narrates itself on one line sets ExakitQuietDetail, which gates
+# every Info/Ok underneath it to the logfile. That is the right default: the
+# spinner is already saying what is happening. But each step still has one or
+# two facts worth leaving on screen - the profile name someone will type again,
+# the path to a Python that is now on disk - and they are printed from inside
+# the same functions being quieted. These two say it anyway.
+#
+# The flag is saved and restored rather than cleared, so a step nested inside
+# another quiet caller does not tear a hole in ITS one-line narration either.
+# Twins of ok_step/info_step in common.sh.
+function OkStep([string]$Msg) {
+    $prev = $script:ExakitQuietDetail
+    $script:ExakitQuietDetail = $false
+    Ok $Msg
+    $script:ExakitQuietDetail = $prev
+}
+function InfoStep([string]$Msg) {
+    $prev = $script:ExakitQuietDetail
+    $script:ExakitQuietDetail = $false
+    Info $Msg
+    $script:ExakitQuietDetail = $prev
+}
 function Warn2([string]$Msg) {
     if ($script:UiFancy) { Write-Host ("      {0}!{1} {2}" -f $script:UiWarn, $script:UiReset, $Msg) }
     else { Write-Host "      ! $Msg" -ForegroundColor Yellow }

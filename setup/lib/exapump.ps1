@@ -168,6 +168,7 @@ function Get-ExapumpCli {
 }
 
 function Install-Exapump {
+    $exiT0 = Get-Date
     $asset = Get-ExapumpAssetName
     if (-not $asset) {
         Fail "Unsupported CPU architecture: $($env:PROCESSOR_ARCHITECTURE). exapump publishes a Windows build for x86_64 only."
@@ -204,6 +205,11 @@ function Install-Exapump {
     $url = "https://github.com/$($script:ExapumpRepo)/releases/download/v$($script:ExapumpVersion)/$asset"
     $tmp = Join-Path ([System.IO.Path]::GetTempPath()) "exakit-exapump-$([guid]::NewGuid().ToString('N')).exe"
 
+    # Named per phase so the one animated line says what is happening now. The
+    # checksum has no phase of its own: it is sub-second on a 20 MB binary, and
+    # its own tick is gone - it named a temp path, never the asset. The
+    # verification itself is untouched.
+    $script:ExakitActiveLabel = "Downloading exapump v$($script:ExapumpVersion)"
     Info "Downloading exapump v$($script:ExapumpVersion) ($asset)"
     Get-ExakitFile -Url $url -Dest $tmp
 
@@ -225,7 +231,7 @@ function Install-Exapump {
     New-Item -ItemType Directory -Force -Path $script:BinDir | Out-Null
     Move-Item -Force $tmp $script:ExapumpBinPath
     Confirm-ExakitOnPath $script:BinDir
-    Ok "exapump installed: $script:ExapumpBinPath"
+    OkStep "exapump v$($script:ExapumpVersion) installed to $(Get-ExakitTilde $script:ExapumpBinPath) ($([int]((Get-Date) - $exiT0).TotalSeconds)s)"
     Set-ExapumpManifest
 }
 
@@ -293,7 +299,7 @@ function New-ExapumpProfile {
     Set-ExapumpTomlSection -ConfigPath $script:ExapumpConfigPath -Profile $script:ExapumpProfile -Host_ $host_ -Port $port -User $user -Password $password
     Protect-ExakitFile $script:ExapumpConfigPath
     Set-ExakitManifestValue "components.exapump.profile" $script:ExapumpProfile
-    Ok "Connection profile written: [$($script:ExapumpProfile)] in $script:ExapumpConfigPath"
+    OkStep "Connection profile [$($script:ExapumpProfile)] written to $(Get-ExakitTilde $script:ExapumpConfigPath)"
 }
 
 function Format-TomlString {
@@ -397,9 +403,16 @@ function Test-ExapumpDdlRoundtrip {
 function Confirm-ExapumpDatabaseReady {
     $timeout = if ($env:EXAKIT_DDL_READY_TIMEOUT) { [int]$env:EXAKIT_DDL_READY_TIMEOUT } else { 180 }
     Info "Confirming the database can persist schema changes"
+    # Announced by the caller, not here: answering SELECT 1 and persisting a
+    # schema are one fact to the reader - the database is ready - and two ticks
+    # for it read as two things to keep track of. This one stays in the logfile;
+    # Test-ExapumpConnection prints the merged line.
+    # Twin of exapump_confirm_database_ready (exapump.sh).
+    Start-ExakitSpinner "Confirming the database can persist schema changes"
     $waited = 0
     while ($true) {
         if (Test-ExapumpDdlRoundtrip) {
+            Stop-ExakitSpinner
             if ($waited -eq 0) { Ok "Database is ready for schema changes" }
             else { Ok "Database is ready for schema changes (after ~${waited}s)" }
             return
@@ -407,8 +420,14 @@ function Confirm-ExapumpDatabaseReady {
         if ($waited -ge $timeout) { break }
         Start-Sleep -Seconds 5
         $waited += 5
-        if ($waited % 30 -eq 0) { Info "Database still stabilizing... (${waited}s)" }
+        if ($waited % 30 -eq 0) {
+            # Only where the spinner is not already counting - a line printed
+            # under a live animator is erased by its next frame.
+            if ($script:UiFancy) { Write-ExakitLog "INFO" "Database still stabilizing... (${waited}s)" }
+            else { Info "Database still stabilizing... (${waited}s)" }
+        }
     }
+    Stop-ExakitSpinner
     Fail "The database accepts connections but could not durably persist a schema within ${timeout}s (first-boot stabilization window). Wait a moment, then retry: exakit data-load"
 }
 
@@ -420,6 +439,8 @@ function Test-ExapumpConnection {
         Fail "No connection profile exists (no database password was available to write one). Create it manually with 'exapump profile init $($script:ExapumpProfile)', then re-run this script."
     }
     Info "Validating the database connection (SELECT 1)"
+    $evcT0 = Get-Date
+    $script:ExakitActiveLabel = "Validating the database connection"
     $connected = $false
     $lastOutput = ""
     for ($tries = 0; $tries -lt 6; $tries++) {
@@ -442,6 +463,10 @@ function Test-ExapumpConnection {
     # yet - see Test-ExapumpDdlRoundtrip. Gate here so both the data-load and MCP
     # steps that follow run against a database that is genuinely ready.
     Confirm-ExapumpDatabaseReady
+
+    # One line for both checks. Reaching here means SELECT 1 answered AND a
+    # schema round-tripped durably; either failing fails with its own message.
+    OkStep "Database ready - connection and schema changes verified ($([int]((Get-Date) - $evcT0).TotalSeconds)s)"
 
     Set-ExakitManifestValue "components.exapump.validated" $true
     # Now that the password is proven to work, persist it as the runtime
