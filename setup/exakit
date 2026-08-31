@@ -343,12 +343,16 @@ EXAKIT_SJ_PY
     ui_panel_line "$(_cs_pad 'Runtime' "${_type:-none}$(_cs_engine_suffix) · $_cs_db")"
     ui_panel_line "$(_cs_pad 'Database' "$(manifest_get runtime.dsn 2>/dev/null || printf 'unknown')$(
         [ "$_cs_running" -eq 1 ] && printf ' · reachable' || printf ' · not reachable')")"
+    # "enabled"/"disabled", not "on"/"off": this row reports a STATE, and on/off
+    # reads as the switch you flip rather than the position it is in. The
+    # `exakit autostart on|off` command keeps its verbs -- those are commands.
     if [ "$_cs_autostart" = "true" ]; then
-        ui_panel_line "$(_cs_pad 'Autostart' 'on')"
+        ui_panel_line "$(_cs_pad 'Autostart' 'enabled')"
     else
-        ui_panel_line "$(_cs_pad 'Autostart' 'off — turn it on with: exakit autostart on')"
+        ui_panel_line "$(_cs_pad 'Autostart' 'disabled — enable it with: exakit autostart on')"
     fi
-    ui_panel_line "$(_cs_pad 'Kit level' "$(manifest_get kit_level 2>/dev/null)")"
+    # "Kit level" is an internal schema number. It means nothing to the person
+    # reading this screen, and `exakit version` carries what they do want.
     # NOT the install date: `exakit version` already prints it, and repeating
     # it here is exactly the duplication that made the older screens read like
     # the same content three times.
@@ -412,19 +416,24 @@ EXAKIT_CS_INSTALLED
         # written into a shell that exits a moment later and the panel would
         # render EMPTY. Fed from a heredoc the loop runs in this shell and the
         # buffer survives.
+        # Only the clients that ARE connected. Eight rows of which five said
+        # "not installed" answered a question nobody asked of a status screen --
+        # what this machine does not have -- and buried the three that matter.
+        # `exakit mcp-setup` is where the full roster belongs, because there the
+        # list IS the choice.
+        _cs_any=0
         while IFS='|' read -r _cs_cl _cs_cs; do
             [ -n "$_cs_cl" ] || continue
+            [ "$_cs_cs" = "configured" ] || continue
             ui_panel_line "$(_cs_pad "$_cs_cl" "$_cs_cs")"
+            _cs_any=1
         done <<EXAKIT_CS_CLIENTS
 $_cs_clients
 EXAKIT_CS_CLIENTS
-        # mcp-setup records how it went. "success_with_warnings" was never
-        # shown anywhere, so a kit carrying a real warning looked perfect.
-        _cs_mcpwarn="$(manifest_get components.mcp_server.client_setup.status 2>/dev/null || true)"
-        case "$_cs_mcpwarn" in
-            success|"") ;;
-            *) ui_panel_line "$(_cs_pad 'health' "$_cs_mcpwarn — details: exakit mcp-doctor")" ;;
-        esac
+        # A record of configured clients that yields no configured ROW means
+        # every one of them was skipped: say so rather than draw an empty panel.
+        [ "$_cs_any" -eq 1 ] || \
+            ui_panel_line "$(_cs_pad 'none' 'connect one with: exakit mcp-setup')"
     else
         ui_panel_line "$(_cs_pad 'none' 'connect one with: exakit mcp-setup')"
     fi
@@ -445,8 +454,9 @@ EXAKIT_CS_CLIENTS
             fi
             ui_panel_line "$(printf '%-11s %-11s %s' "$_cs_ds" "$_cs_dsch" "$_cs_dline")"
         done
-        _cs_last="$(manifest_get data.last_load.source 2>/dev/null || true)"
-        [ -n "$_cs_last" ] && ui_panel_line "$(printf '%-11s %s' 'last load' "$_cs_last")"
+        # No "last load" row: the rows above already say what is in the
+        # database, which is the question. Which of them arrived most recently
+        # is not something anyone acts on.
     else
         ui_panel_line 'none loaded — load some with: exakit data-load'
     fi
@@ -493,7 +503,8 @@ EXAKIT_CS_SOFT
         done
         IFS=$_cs_oifs
     fi
-    _cs_row 'Manifest:' "$EXAKIT_MANIFEST"
+    # No "Manifest:" row: an internal file path, on the last line of the screen,
+    # that nothing on this screen asks the reader to open.
     # Superseded launchers the kit set aside during an upgrade. Each is a full
     # ~130 MB binary, and nothing reported them, so they accumulated silently
     # and no command would ever reclaim the space.

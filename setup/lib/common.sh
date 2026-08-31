@@ -5572,7 +5572,7 @@ EXAKIT_SKL_EOF
     _skl_count=0
     _skl_pending=0
     printf '\n'
-    ui_panel_begin "AI skills in this kit"
+    ui_panel_begin "Exasol skills"
     while IFS='|' read -r _skl_id _skl_sum; do
         [ -n "$_skl_id" ] || continue
         _skl_state="$(exakit_skill_state "$_skl_id")"
@@ -8225,7 +8225,7 @@ _EXAKIT_CONN_EOF
     ui_spin_end
 
     printf '\n'
-    ui_panel_begin "Connection details"
+    ui_panel_begin "Setup details"
     ui_panel_line "Runtime:      ${_type:-unknown}"
     ui_panel_line "DSN:          ${_dsn:-unknown}"
     ui_panel_line "Admin user:   ${_user:-sys}"

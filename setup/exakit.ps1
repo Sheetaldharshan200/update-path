@@ -230,12 +230,16 @@ function Invoke-CmdStatus {
     if (-not $dsn) { $dsn = "unknown" }
     if ($running) { $reach = "reachable" } else { $reach = "not reachable" }
     Write-StatusPanelRow "Database" "$dsn - $reach"
+    # "enabled"/"disabled", not "on"/"off": this row reports a STATE, and on/off
+    # reads as the switch you flip rather than the position it is in. The
+    # `exakit autostart on|off` command keeps its verbs - those are commands.
     if ((Get-ExakitManifestValue "autostart.enabled") -eq $true) {
-        Write-StatusPanelRow "Autostart" "on"
+        Write-StatusPanelRow "Autostart" "enabled"
     } else {
-        Write-StatusPanelRow "Autostart" "off - turn it on with: exakit autostart on"
+        Write-StatusPanelRow "Autostart" "disabled - enable it with: exakit autostart on"
     }
-    Write-StatusPanelRow "Kit level" "$(Get-ExakitManifestValue 'kit_level')"
+    # "Kit level" is an internal schema number. It means nothing to the person
+    # reading this screen, and `exakit version` carries what they do want.
     # NOT the install date: `exakit version` already prints it.
     Complete-ExakitPanel
     Write-Host ""
@@ -289,19 +293,23 @@ function Invoke-CmdStatus {
         @("opencode", "OpenCode"), @("continue", "Continue")
     )
     $configured = @(Get-ExakitManifestValue "components.mcp_server.client_setup.configured_clients")
-    $skipped = @(Get-ExakitManifestValue "components.mcp_server.client_setup.skipped_clients")
     if ($configured.Count -gt 0 -and $configured[0]) {
+        # Only the clients that ARE connected. Eight rows of which five said
+        # "not installed" answered a question nobody asked of a status screen -
+        # what this machine does not have - and buried the three that matter.
+        # `exakit mcp-setup` is where the full roster belongs, because there the
+        # list IS the choice.
+        $anyClient = $false
         foreach ($pair in $labels) {
-            if ($configured -contains $pair[0]) { $state = "configured" }
-            elseif ($skipped -contains $pair[0]) { $state = "skipped" }
-            else { $state = "not installed" }
-            Write-StatusPanelRow $pair[1] $state
+            if ($configured -contains $pair[0]) {
+                Write-StatusPanelRow $pair[1] "configured"
+                $anyClient = $true
+            }
         }
-        # mcp-setup records how it went. "success_with_warnings" was never shown
-        # anywhere, so a kit carrying a real warning looked perfect.
-        $mcpHealth = Get-ExakitManifestValue "components.mcp_server.client_setup.status"
-        if ($mcpHealth -and $mcpHealth -ne "success") {
-            Write-StatusPanelRow "health" "$mcpHealth - details: exakit mcp-doctor"
+        # A record of configured clients that yields no configured ROW means
+        # every one of them was skipped: say so rather than draw an empty panel.
+        if (-not $anyClient) {
+            Write-StatusPanelRow "none" "connect one with: exakit mcp-setup"
         }
     } else {
         Write-StatusPanelRow "none" "connect one with: exakit mcp-setup"
@@ -328,8 +336,9 @@ function Invoke-CmdStatus {
             }
             Write-ExakitPanelLine ("$ds".PadRight(11) + " " + "$dsSchema".PadRight(11) + " " + $detail)
         }
-        $lastLoad = Get-ExakitManifestValue "data.last_load.source"
-        if ($lastLoad) { Write-ExakitPanelLine ("last load".PadRight(11) + " " + $lastLoad) }
+        # No "last load" row: the rows above already say what is in the
+        # database, which is the question. Which of them arrived most recently
+        # is not something anyone acts on.
     } else {
         Write-ExakitPanelLine "none loaded - load some with: exakit data-load"
     }
@@ -361,7 +370,8 @@ function Invoke-CmdStatus {
         Write-StatusRow $softLabel $row
         $softLabel = ""
     }
-    Write-StatusRow "Manifest:" $script:ManifestPath
+    # No "Manifest:" row: an internal file path, on the last line of the screen,
+    # that nothing on this screen asks the reader to open.
     if (-not $running) {
         Write-Host "Start it:   exakit start"
         exit 3
