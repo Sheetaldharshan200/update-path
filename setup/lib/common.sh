@@ -3197,9 +3197,9 @@ _exakit_addon_table_build() {
         # it still never pays for the description lookup.
         _atb_ver="$(exakit_version_plain "$(exakit_component_available "$_atb_id" 2>/dev/null || printf 'unknown')")"
         _atb_desc="$(exakit_marketplace_addon_description "$_atb_id" 2>/dev/null || true)"
-        # One line, whatever the About says: the column truncates, and a folded
-        # cell would make the row two lines tall -- which is the frame-height
-        # invariant the redraw depends on.
+        # Flattened to ONE line for the RECORD, not for the screen: a newline
+        # here would end the row's line in the state file. The table re-flows it
+        # across as many lines as it needs at draw time, in full -- see _ui_wrap.
         _atb_desc="$(printf '%s' "$_atb_desc" | tr '\n' ' ')"
         printf '%s|%s|1|idle|||||| |%s|%s\n' "$_atb_kind" "$_atb_id" \
             "$_atb_ver" "$_atb_desc" >> "$_atb_f"
