@@ -758,8 +758,27 @@ function Show-McpSetupSummary {
         if (-not $reason) { $reason = "unknown reason" }
         Warn2 "Skipped ${skippedLabel}: $reason"
     }
-    foreach ($f in @($doc.findings)) { if ($f.message) { Warn2 "$($f.message)" } }
-    foreach ($a in @($doc.next_actions)) { if ($a.message) { Info "$($a.message)" } }
+    # The plaintext-credential finding is a standing property of how every MCP
+    # client stores a credential, not something this run did or the reader can
+    # act on - and it is the READ-ONLY user's password, not the admin one.
+    # Raising it as a warning on every single install taught people to read past
+    # warnings. It stays in the result JSON and in the logfile, and
+    # `exakit help mcp` documents it in full.
+    # Twin of the same filter in exakit_print_mcp_setup_summary (common.sh).
+    foreach ($f in @($doc.findings)) {
+        if ($f.code -eq "plaintext_credential_reference") { continue }
+        if ($f.message) { Warn2 "$($f.message)" }
+    }
+    # One "restart your client" line per configured client says the same thing
+    # four times over, in four wordings, for an action the reader takes once.
+    # The skills step closes the same install with the generic form already.
+    # Every adapter tags these kind="restart_client" (json_config.py covers
+    # Cursor), so dropping that kind drops exactly them - a repair's
+    # next_actions carry the finding code as their kind and are untouched.
+    foreach ($a in @($doc.next_actions)) {
+        if ($a.kind -eq "restart_client") { continue }
+        if ($a.message) { Info "$($a.message)" }
+    }
     Info "Config file paths and per-client state: exakit mcp-status"
 }
 

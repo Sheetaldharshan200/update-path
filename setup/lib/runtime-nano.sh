@@ -365,10 +365,31 @@ nano_install() {
         return 0
     fi
 
+    # The whole step on ONE line. begin_step set a spinner label and run_logged
+    # animates it, so a fresh install narrated itself twice over nine lines: an
+    # info/ok pair for the pull, another for the container, and one
+    # "Still starting..." every 30 seconds of a wait that can run for ten
+    # minutes. EXAKIT_QUIET_DETAIL routes all of that to the LOGFILE and leaves
+    # the animation as the narration -- the same save-and-restore bracket
+    # exakit_marketplace_install uses in common.sh, with warn/error ungated so a
+    # quiet step still speaks when it goes wrong.
+    #
+    # Gated on a terminal: without one the spinner draws nothing, and quieting
+    # the detail as well would leave a CI log silent for the length of a pull.
+    # The two early returns above are already one line each and are left alone.
+    _ni_prev_label="${EXAKIT_ACTIVE_LABEL:-}"
+    _ni_prev_quiet="${EXAKIT_QUIET_DETAIL:-0}"
+    [ -t 1 ] && EXAKIT_QUIET_DETAIL=1
+    _ni_t0="$(date +%s 2>/dev/null || echo 0)"
+
     if ! nano_container_exists; then
         if port_in_use "$EXAKIT_DB_PORT"; then
             die "Port $EXAKIT_DB_PORT is already in use by another application. Stop it or set EXAKIT_DB_PORT, then re-run."
         fi
+        # Re-assigned per phase rather than printed: run_logged reads this at its
+        # next ui_spin_begin, so the words change on the operation boundary
+        # without starting a second animator.
+        EXAKIT_ACTIVE_LABEL="Pulling image $_image"
         info "Pulling image $_image"
         _pulled=0
         for _attempt in 1 2 3; do
@@ -403,6 +424,7 @@ nano_install() {
         [ -f "${EXAKIT_CREDS_DIR}/nano_sys_password" ] || \
             die "Credential file ${EXAKIT_CREDS_DIR}/nano_sys_password is missing or not a regular file — re-run the installer."
 
+        EXAKIT_ACTIVE_LABEL="Starting the Nano container"
         info "Starting Nano container ($EXAKIT_NANO_CONTAINER)"
         run_logged "$_engine" run -d \
             --name "$EXAKIT_NANO_CONTAINER" \
@@ -422,6 +444,10 @@ nano_install() {
 
     nano_wait_ready
     nano_record_manifest
+
+    EXAKIT_QUIET_DETAIL="$_ni_prev_quiet"
+    EXAKIT_ACTIVE_LABEL="$_ni_prev_label"
+    ok "Exasol Nano ${EXAKIT_NANO_TAG} running on 127.0.0.1:${EXAKIT_DB_PORT} ($(( $(date +%s 2>/dev/null || echo 0) - _ni_t0 ))s)"
 }
 
 # nano_wait_ready — poll container logs until the database reports ready.
@@ -431,23 +457,42 @@ nano_wait_ready() {
 
 nano_wait_ready_soft() {
     info "Waiting for the database to come up (timeout: ${EXAKIT_NANO_READY_TIMEOUT}s)"
+    # The longest stretch of the install, and the only one with nothing to
+    # animate it: the poll below is a plain sleep loop, so under a one-line step
+    # the screen would sit still for minutes. The spinner's own elapsed counter
+    # is exactly what the "Still starting..." lines were standing in for, in one
+    # line that updates in place instead of one more every 30 seconds. Every
+    # exit below stops it first -- an abandoned animator paints over whatever
+    # the caller prints next.
+    ui_spin_begin "Waiting for the database to come up"
     _waited=0
     while [ "$_waited" -lt "$EXAKIT_NANO_READY_TIMEOUT" ]; do
         if ! nano_container_running; then
+            ui_spin_end
             "$(nano_engine)" logs --tail 30 "$EXAKIT_NANO_CONTAINER" >> "${EXAKIT_LOG_FILE:-/dev/null}" 2>&1
             warn "Nano container stopped unexpectedly (see log)"
             return 1
         fi
         if nano_ready_in_logs; then
+            ui_spin_end
             ok "Database is up (took ~${_waited}s)"
             return 0
         fi
         sleep 5
         _waited=$((_waited + 5))
         if [ $((_waited % 30)) -eq 0 ]; then
-            info "Still starting... (${_waited}s)"
+            # Only where the spinner is NOT already counting. On a terminal it
+            # is, and a line printed under a live animator is erased by its next
+            # frame within 0.2s -- the defect the table work spent weeks on. The
+            # logfile gets the tick either way.
+            if [ -t 1 ]; then
+                _exakit_log_file "INFO  Still starting... (${_waited}s)"
+            else
+                info "Still starting... (${_waited}s)"
+            fi
         fi
     done
+    ui_spin_end
     error "Database did not become ready within ${EXAKIT_NANO_READY_TIMEOUT}s."
     printf '    Inspect the logs:   %s logs %s\n' "$(nano_engine)" "$EXAKIT_NANO_CONTAINER" >&2
     printf '    If a first install was interrupted, the data volume may be half-initialized.\n' >&2

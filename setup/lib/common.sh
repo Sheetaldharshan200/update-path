@@ -6446,10 +6446,26 @@ for skipped in doc.get("details", {}).get("skipped_clients", []):
     client = LABELS.get(skipped.get("client"), skipped.get("client", "unknown"))
     lines.append(f"warn|Skipped {client}: {skipped.get('reason', 'unknown reason')}")
 
+# The plaintext-credential finding is a standing property of how every MCP
+# client stores a credential, not something this run did or the reader can act
+# on -- and it is the READ-ONLY user's password, not the admin one. Raising it
+# as a warning on every single install taught people to read past warnings.
+# It stays in the result JSON and in the logfile, and `exakit help mcp`
+# documents it in full.
 for finding in doc.get("findings", []):
+    if finding.get("code") == "plaintext_credential_reference":
+        continue
     lines.append(f"warn|{finding.get('message', 'Unknown issue')}")
 
+# One "restart your client" line per configured client says the same thing
+# four times over, in four wordings, for an action the reader takes once. The
+# skills step closes the same install with the generic form already. Every
+# adapter tags these kind="restart_client" (json_config.py covers Cursor), so
+# dropping that kind drops exactly them -- a repair's next_actions carry the
+# finding code as their kind and are untouched.
 for action in doc.get("next_actions", []):
+    if action.get("kind") == "restart_client":
+        continue
     message = action.get("message", "")
     if message:
         lines.append(f"info|{message}")
