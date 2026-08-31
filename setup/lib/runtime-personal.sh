@@ -400,13 +400,21 @@ _personal_deploy_milestone() {
         *"validating presets"*)                    printf '5|10|2|Preparing the deployment' ;;
         *"extracting preset files"*)               printf '10|20|2|Preparing the deployment' ;;
         *"successfully initialized deployment"*)   printf '20|35|5|Preparing the deployment' ;;
-        # The long one. On a warm cache the launcher says nothing at all between
-        # here and "waiting for database to start" -- about twenty-five seconds
-        # of VM boot -- so the ceiling is that next milestone rather than the
+        # The long one, and the only label that covers two different situations:
+        # the launcher emits one of these whether it DOWNLOADED the resource or
+        # found it already cached. It said "Fetching the Exasol runtime" for
+        # both, which was wrong on the warm path twice over -- nothing is
+        # fetched, and per the note below the launcher then goes quiet for the
+        # VM boot, so "fetching" sat on screen through twenty-five seconds of
+        # something else entirely. The wording now holds either way.
+        #
+        # On a warm cache the launcher says nothing at all between here and
+        # "waiting for database to start" -- about twenty-five seconds of VM
+        # boot -- so the ceiling is that next milestone rather than the
         # "starting deployment" one, which a warm run never emits. If it DOES
         # emit it, the line below picks the segment up mid-flight.
         *"fetching resource"*|*"found resource in cache"*)
-                                                   printf '35|65|25|Fetching the Exasol runtime' ;;
+                                                   printf '35|65|25|Getting the Exasol database ready' ;;
         *"starting deployment"*)                   printf '45|65|15|Starting the database' ;;
         *"waiting for database to start"*)         printf '65|90|10|Waiting for the database' ;;
         *"installing script language container"*)  printf '80|90|15|Installing script languages' ;;
