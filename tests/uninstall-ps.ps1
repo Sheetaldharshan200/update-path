@@ -71,6 +71,19 @@ function Unregister-ExakitAutostart { param([string]$Id) $script:markers.autosta
 # this test depend on which add-ons happen to be registered.
 function Get-ExakitMarketplaceInstalledAddons { @() }
 function Get-ExakitMarketplaceAddon { param([string]$Id) $null }
+function Get-ExakitMarketplaceAddons { @() }
+# These four live in setup/lib/, not setup/exakit.ps1, so extracting the CLI's
+# functions does not bring them along.
+#
+# The skill names are the two the sandbox seeds, because the assertions below
+# are that BOTH are gone after a real run: a stub returning fewer would let a
+# kit skill survive uninstall and still pass. The roots mirror the real helper
+# exactly ($HOME is the fake home here, so it is already sealed).
+function Get-ExakitKitSkillNames { @("local-agent-ready-starter", "trusted-ai-workflow") }
+function Get-ExakitSkillRoots {
+    @((Join-Path $HOME ".claude\skills"), (Join-Path $HOME ".agents\skills"))
+}
+function Write-ExakitLog { param($Level, $Message) }
 
 function Seed {
     if (Test-Path $sandbox) { Remove-Item -Recurse -Force $sandbox }

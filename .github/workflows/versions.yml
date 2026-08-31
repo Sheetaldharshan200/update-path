@@ -448,6 +448,11 @@ jobs:
       # workflow, not their shell siblings, not a script. They document
       # themselves as `pwsh tests/<name>.ps1` and were simply never run by
       # anything. The Linux runner ships pwsh, which is where they belong.
+      # Cheap, pwsh-free, and runs on every host: it reads the CLI and the test
+      # as text. The PowerShell suite below can only be verified where pwsh
+      # exists, and finding its next unresolved call by pushing and waiting
+      # costs a full CI round each time.
+      - run: bash tests/lib/ps-uninstall-calls.sh
       - name: PowerShell-native suites
         run: |
           if command -v pwsh >/dev/null 2>&1; then
