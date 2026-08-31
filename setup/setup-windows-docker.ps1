@@ -70,10 +70,22 @@ try {
 
     # --- step 3: exapump (data loading CLI) ------------------------------------
     if ($exapumpSupported -and (Begin-ExakitStep "exapump" "Step 2/5  exapump (data loading CLI)")) {
+        # Three lines for this step, not nine. Invoke-ExakitLogged animates the
+        # label Begin-ExakitStep set, so the Info bullets under it were the
+        # second telling. What survives goes through OkStep: what was installed
+        # and where, the profile name someone types again, and the one fact the
+        # next steps depend on - that the database can persist a schema, not
+        # merely answer SELECT 1. Twin of _exakit_install_exapump (common.sh).
         if (Invoke-ExakitSoftStep -Component "exapump" -Repair "exakit update exapump" -Body {
-                Install-Exapump
-                New-ExapumpProfile
-                Test-ExapumpConnection
+                $prevQuiet = $script:ExakitQuietDetail
+                if ($script:UiFancy) { $script:ExakitQuietDetail = $true }
+                try {
+                    Install-Exapump
+                    New-ExapumpProfile
+                    Test-ExapumpConnection
+                } finally {
+                    $script:ExakitQuietDetail = $prevQuiet
+                }
             }) {
             Set-ExakitStepDone "exapump"
         }
@@ -139,10 +151,19 @@ try {
     # validating (an unwritable manifest, say) still ended the run before the
     # exakit helper below existed. Install and validate are one isolated unit.
     if (Begin-ExakitStep "pyexasol" "Step 4/5  pyexasol (Exasol Python driver)") {
+        # Two lines for this step, not five: the outcome, and the interpreter to
+        # run it with. Everything between is in the logfile, and the spinner
+        # covered it live. Twin of _exakit_install_pyexasol (common.sh).
         if (Invoke-ExakitSoftStep -Component "pyexasol" -Repair "exakit update pyexasol" -Body {
-                if (-not (Install-Pyexasol)) { return $false }
-                Test-PyexasolConnection
-                return $true
+                $prevQuiet = $script:ExakitQuietDetail
+                if ($script:UiFancy) { $script:ExakitQuietDetail = $true }
+                try {
+                    if (-not (Install-Pyexasol)) { return $false }
+                    Test-PyexasolConnection
+                    return $true
+                } finally {
+                    $script:ExakitQuietDetail = $prevQuiet
+                }
             }) {
             Set-ExakitStepDone "pyexasol"
         }
@@ -202,7 +223,7 @@ try {
 
         Confirm-ExakitOnPath $script:BinDir
         Set-ExakitStepDone "exakit_helper"
-        Ok "exakit installed ($(Join-Path $script:BinDir 'exakit.cmd'))"
+        OkStep "exakit installed ($(Get-ExakitTilde (Join-Path $script:BinDir 'exakit.cmd')))"
     }
 
     # The upgrade news (Write-ExakitWhatsNewBox) and the closing summary

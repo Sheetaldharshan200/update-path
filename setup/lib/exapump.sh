@@ -159,7 +159,13 @@ exapump_install() {
     _asset="$(exapump_asset_name)"
     _url="https://github.com/${EXAKIT_EXAPUMP_REPO}/releases/download/v${EXAKIT_EXAPUMP_VERSION}/${_asset}"
     _tmp="$(mktemp "${TMPDIR:-/tmp}/exakit-exapump.XXXXXX")"
+    _exi_t0="$(date +%s 2>/dev/null || echo 0)"
 
+    # Named per phase so the one animated line says what is happening now. The
+    # checksum has no phase of its own: it is sub-second on a 20 MB binary, and
+    # its own tick is gone -- it announced basename($_tmp), the mktemp path,
+    # never the asset. The verification itself is untouched.
+    EXAKIT_ACTIVE_LABEL="Downloading exapump v${EXAKIT_EXAPUMP_VERSION}"
     info "Downloading exapump v${EXAKIT_EXAPUMP_VERSION} ($_asset)"
     fetch "$_url" "$_tmp"
 
@@ -192,7 +198,7 @@ exapump_install() {
     # un-launchable binary would otherwise surface 30s later as an opaque
     # "SELECT 1 failed" after the connection retries.
     exapump_verify_runs
-    ok "exapump installed: $EXAKIT_EXAPUMP_BIN"
+    ok_step "exapump v${EXAKIT_EXAPUMP_VERSION} installed to $(ui_tilde "$EXAKIT_EXAPUMP_BIN") ($(( $(date +%s 2>/dev/null || echo 0) - _exi_t0 ))s)"
     exapump_record_manifest
 }
 
@@ -360,7 +366,7 @@ os.replace(tmp, path)
 PY
     chmod 600 "$EXAPUMP_CONFIG"
     manifest_set components.exapump.profile "$EXAKIT_EXAPUMP_PROFILE"
-    ok "Connection profile written: [$EXAKIT_EXAPUMP_PROFILE] in $EXAPUMP_CONFIG"
+    ok_step "Connection profile [$EXAKIT_EXAPUMP_PROFILE] written to $(ui_tilde "$EXAPUMP_CONFIG")"
 }
 
 # exapump_ddl_roundtrip — one DDL write-readback round through the profile.
@@ -403,9 +409,15 @@ exapump_ddl_roundtrip() {
 exapump_confirm_database_ready() {
     _timeout="${EXAKIT_DDL_READY_TIMEOUT:-180}"
     info "Confirming the database can persist schema changes"
+    # Announced by the caller, not here: answering SELECT 1 and persisting a
+    # schema are one fact to the reader -- the database is ready -- and two
+    # ticks for it read as two things to keep track of. This one stays in the
+    # logfile; exapump_validate_connection prints the merged line.
+    ui_spin_begin "Confirming the database can persist schema changes"
     _waited=0
     while :; do
         if exapump_ddl_roundtrip; then
+            ui_spin_end
             if [ "$_waited" -eq 0 ]; then
                 ok "Database is ready for schema changes"
             else
@@ -417,9 +429,16 @@ exapump_confirm_database_ready() {
         sleep 5
         _waited=$((_waited + 5))
         if [ $((_waited % 30)) -eq 0 ]; then
-            info "Database still stabilizing... (${_waited}s)"
+            # Only where the spinner is not already counting -- a line printed
+            # under a live animator is erased by its next frame.
+            if [ -t 1 ]; then
+                _exakit_log_file "INFO  Database still stabilizing... (${_waited}s)"
+            else
+                info "Database still stabilizing... (${_waited}s)"
+            fi
         fi
     done
+    ui_spin_end
     die "The database accepts connections but could not durably persist a schema within ${_timeout}s (first-boot stabilization window). Wait a moment, then retry: exakit data-load"
 }
 
@@ -431,6 +450,8 @@ exapump_validate_connection() {
         die "No connection profile exists (no database password was available to write one). Create it manually with 'exapump profile init $EXAKIT_EXAPUMP_PROFILE', then re-run this script."
     fi
     info "Validating the database connection (SELECT 1)"
+    _evc_t0="$(date +%s 2>/dev/null || echo 0)"
+    EXAKIT_ACTIVE_LABEL="Validating the database connection"
     _connected=0
     _tries=0
     while [ "$_tries" -lt 6 ]; do
@@ -449,6 +470,10 @@ exapump_validate_connection() {
     # yet — see exapump_ddl_roundtrip. Gate here so both the data-load and MCP
     # steps that follow run against a database that is genuinely ready.
     exapump_confirm_database_ready
+
+    # One line for both checks. Reaching here means SELECT 1 answered AND a
+    # schema round-tripped durably; either failing dies with its own message.
+    ok_step "Database ready — connection and schema changes verified ($(( $(date +%s 2>/dev/null || echo 0) - _evc_t0 ))s)"
 
     manifest_set components.exapump.validated true
     # Now that the password is proven to work, persist it as the runtime
