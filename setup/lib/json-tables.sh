@@ -603,7 +603,8 @@ _json_tables_print_usage() {
 # json_tables_summary — the one fact worth a place on the result line. Optional
 # hook, resolved generically by _exakit_addon_fn like install/validate/start.
 json_tables_summary() {
-    printf 'load JSON with: exasol-json-tables ingest --input <file.json>\n'
+    # 31 characters: the finished cell truncates at 33 in the plain palette.
+    printf 'ingest JSON: exasol-json-tables\n'
 }
 
 # json_tables_uninstall [dry] — the venv, the engine, the shim, the launcher

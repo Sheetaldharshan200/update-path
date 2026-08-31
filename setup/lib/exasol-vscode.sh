@@ -360,7 +360,8 @@ exasol_vscode_validate() {
 # exasol_vscode_summary — the one fact worth a place on the result line.
 # Optional hook, resolved generically by _exakit_addon_fn.
 exasol_vscode_summary() {
-    printf "the Exasol view appears in VS Code's activity bar\n"
+    # 32 characters: the finished cell truncates at 33 in the plain palette.
+    printf "Exasol view in VS Code's sidebar\n"
 }
 
 # exasol_vscode_uninstall [dry] — remove the KIT-MANAGED extension from VS

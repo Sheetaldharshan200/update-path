@@ -479,7 +479,10 @@ function Write-DashServerUsagePanel {
 # Get-DashServerSummary - the one fact worth a place on the result line.
 # Optional registry hook (SummaryFn); twin of dash_server_summary.
 function Get-DashServerSummary {
-    return "dashboards at http://127.0.0.1:$($script:DashServerPort)"
+    # 33 characters at a four-digit port. The cell truncates anything longer,
+    # and its room is 33 in the PLAIN palette, whose tick is the four-character
+    # "[ok]" rather than a one-character glyph.
+    return "dashboards: http://127.0.0.1:$($script:DashServerPort)"
 }
 
 # ---------------------------------------------------------------------------

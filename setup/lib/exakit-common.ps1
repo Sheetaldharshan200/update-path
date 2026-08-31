@@ -240,6 +240,23 @@ function InfoStep([string]$Msg) {
     Info $Msg
     $script:ExakitQuietDetail = $prev
 }
+# Write-ExakitHeading <text> - a green arrow at the action indent.
+#
+# Not an action and not an outcome, so neither the dim bullet nor the tick fits:
+# this marks a heading the reader is meant to stop at - the add-on offer after
+# the closing rule, the support line at the very end. The bullet made both read
+# as one more thing the installer was doing. The glyph is the step header's, in
+# the tick's green, and degrades to ">" in plain mode like every other arrow.
+# Never gated by ExakitQuietDetail: nothing that uses it runs inside a one-line
+# step. Twin of heading in common.sh.
+function Write-ExakitHeading([string]$Msg) {
+    if ($script:UiFancy) {
+        Write-Host ("    {0}{1}{2} {3}" -f $script:UiOk, $script:UiArrow, $script:UiReset, $Msg)
+    } else {
+        Write-Host ("    {0} {1}" -f $script:UiArrow, $Msg)
+    }
+    Write-ExakitLog "INFO" $Msg
+}
 function Warn2([string]$Msg) {
     if ($script:UiFancy) { Write-Host ("      {0}!{1} {2}" -f $script:UiWarn, $script:UiReset, $Msg) }
     else { Write-Host "      ! $Msg" -ForegroundColor Yellow }
@@ -3903,23 +3920,18 @@ function Request-ExakitMarketplaceOffer {
     # The install is over; what follows is a different question. A rule with air
     # around it is the seam, so the offer does not read as one more install step.
     Write-ExakitRule
-    # A green arrow rather than the dim action bullet: what follows the rule is
-    # not one more step of the install, it is the heading of a separate offer.
-    # The glyph is the step header's, in the tick's green; plain mode degrades
-    # it to ">" as every other arrow does. Logged as an info line either way.
-    if ($script:UiFancy) {
-        Write-Host ("    {0}{1}{2} {3}" -f $script:UiOk, $script:UiArrow, $script:UiReset,
-            "Supercharge Exasol with add-ons")
-    } else {
-        Write-Host ("    {0} {1}" -f $script:UiArrow, "Supercharge Exasol with add-ons")
-    }
-    Write-ExakitLog "INFO" "Supercharge Exasol with add-ons"
+    # A heading, not an action: what follows the rule is a separate offer, and
+    # the dim bullet marked it as one more thing being done TO the machine.
+    Write-ExakitHeading "Supercharge Exasol with add-ons"
     $gate = Read-ExakitCheckboxMenu -Title "Explore ?" `
         -Options @("Yes", "No") `
         -Defaults @(1) -ExclusiveIndex 2
     if ($gate -contains 1) {
         try { Show-ExakitMarketplaceMenu } catch { Warn2 "The marketplace did not finish cleanly: $_" }
-        Info "Browse again: exakit marketplace  |  how to use one: exakit help <add-on>"
+        # "Browse again: exakit marketplace | how to use one: exakit help
+        # <add-on>" stood here. The table above has just said what was installed
+        # and what each one gives you; the reader has not asked to browse again,
+        # and the closing support line already names `exakit help`.
     } else {
         Info "Maybe later - browse any time with: exakit marketplace"
     }

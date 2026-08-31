@@ -490,7 +490,8 @@ function Test-JsonTables {
 # Get-JsonTablesSummary - the one fact worth a place on the result line.
 # Optional registry hook (SummaryFn); twin of json_tables_summary.
 function Get-JsonTablesSummary {
-    return "load JSON with: exasol-json-tables ingest --input <file.json>"
+    # 31 characters: the finished cell truncates at 33 in the plain palette.
+    return "ingest JSON: exasol-json-tables"
 }
 
 function Uninstall-JsonTables {
