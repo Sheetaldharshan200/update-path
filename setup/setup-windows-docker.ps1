@@ -291,6 +291,11 @@ try {
     # is not a step.
     Write-ExakitRule
     Write-ExakitHeading "Run ""exakit help"" for support"
+    # Two blank lines before the console prompt returns. The installer's last
+    # line was landing directly against it, so the prompt read as part of the
+    # output.
+    Write-Host ""
+    Write-Host ""
 } catch [ExakitFailException] {
     # A hard stop (no container runtime, no database) still owes the user the
     # account of what had already been skipped before it.

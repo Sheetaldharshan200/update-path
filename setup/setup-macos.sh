@@ -118,3 +118,6 @@ exakit_autostart_default_on || true
 # its bullets. The rule gives it air; the green arrow says it is not a step.
 ui_rule
 heading "Run \"exakit help\" for support"
+# Two blank lines before the shell prompt returns. The installer's last line was
+# landing directly against it, so the prompt read as part of the output.
+printf '\n\n'
