@@ -544,7 +544,6 @@ function Get-ExakitBar {
 #
 #   Title    what the top border says
 #   Col1     what the first column is called (datasets, clients, add-ons)
-#   Reserve  how many phase sub-lines the frame ALWAYS has (see below)
 #   Cols     the console width, measured once
 #   Lines    how many lines the last frame really occupied
 #   Width    how wide the last frame's box was - see Update-ExakitTable, which
@@ -580,7 +579,7 @@ $script:UiTableSrc = ""
 if ($PSCommandPath) { $script:UiTableSrc = $PSCommandPath }
 elseif ($PSScriptRoot) { $script:UiTableSrc = Join-Path $PSScriptRoot "ui.ps1" }
 
-# New-ExakitTable [-Title] [-Col1] [-Reserve] - a fresh, empty table. Returns it,
+# New-ExakitTable [-Title] [-Col1] - a fresh, empty table. Returns it,
 # and also parks it as the module's current one so every other call can default
 # to it.
 #
@@ -589,11 +588,10 @@ elseif ($PSScriptRoot) { $script:UiTableSrc = Join-Path $PSScriptRoot "ui.ps1" }
 # datasets, add-ons), and a heading left behind in module state is how the second
 # one ends up wearing the first one's column name.
 function New-ExakitTable {
-    param([string]$Title = "Progress", [string]$Col1 = "Dataset", [int]$Reserve = 1)
+    param([string]$Title = "Progress", [string]$Col1 = "Dataset")
     $t = [hashtable]::Synchronized(@{
         Title   = $Title
         Col1    = $Col1
-        Reserve = $Reserve
         Cols    = 80
         Lines   = 0
         Width   = 0
@@ -685,10 +683,14 @@ function Get-ExakitTableWidths {
 }
 
 # Get-ExakitTableCell <row> <status-width> <now> - the Status column for one row,
-# as up to TWO lines: the bar and its percentage, then the phase and its elapsed
-# count directly underneath, so the percentage sits above the seconds. Returns
-# the text AND how wide it reads, because only the builder can tell those apart
-# once colour is in the string. Twin of _ui_table_cell in ui.sh.
+# as ONE line. Returns the text AND how wide it reads, because only the builder
+# can tell those apart once colour is in the string.
+#
+# A running row used to get a second line underneath carrying the phase on the
+# left and an elapsed "(Ns)" on the right; it is gone, and with it the reserved
+# blank line that kept the frame a constant height while no row was running. The
+# bar still creeps with the clock, so the row goes on saying "alive" without a
+# counter to read it off. Twin of _ui_table_cell in ui.sh.
 function Get-ExakitTableCell {
     param(
         [Parameter(Mandatory)][hashtable]$Row,
@@ -698,7 +700,7 @@ function Get-ExakitTableCell {
     $num = 7
     $barw = $StatusWidth - $num
     if ($barw -lt 8) { $barw = 8 }
-    $cell = @{ Text = ""; Len = 0; Text2 = ""; Len2 = 0 }
+    $cell = @{ Text = ""; Len = 0 }
     switch ($Row.State) {
         "running" {
             # The creep, inline: where the bar sits between the stage the job last
@@ -737,13 +739,6 @@ function Get-ExakitTableCell {
             $cell.Text = $script:UiAccent + ($script:UiBarFull * $full) + $script:UiDim + $head +
                 ($script:UiBarEmpty * $empty) + $script:UiReset + $pctText.PadLeft($num)
             $cell.Len = $barw + $num
-            $el = "(" + $inSeg + "s)"
-            $phase = "" + $Row.Phase
-            if ($phase.Length -gt $barw) { $phase = $phase.Substring(0, $barw - 1) + "…" }
-            $pad2 = $barw - $phase.Length + $num - $el.Length
-            if ($pad2 -lt 0) { $pad2 = 0 }
-            $cell.Text2 = $script:UiDim + $phase + (" " * $pad2) + $el + $script:UiReset
-            $cell.Len2 = $phase.Length + $pad2 + $el.Length
         }
         "waiting" {
             $cell.Text = $script:UiDim + "waiting" + $script:UiReset
@@ -795,7 +790,6 @@ function Get-ExakitTableFrame {
         (" " * $headTail) + $script:UiAccent + $script:UiVB + $script:UiReset)
 
     $now = Get-Date
-    $sub = 0
     $i = 0
     foreach ($row in $Table.Rows.ToArray()) {
         $i++
@@ -855,31 +849,16 @@ function Get-ExakitTableFrame {
         [void]$lines.Add("  " + $script:UiAccent + $script:UiVB + $script:UiReset + $ptr + $box + " " +
             $name + (" " * $namePad) + "  " + $cell.Text + (" " * $tail) +
             $script:UiAccent + $script:UiVB + $script:UiReset)
-        if ($cell.Text2) {
-            $tail2 = $inner - (5 + $nameW + 2 + [int]$cell.Len2)
-            if ($tail2 -lt 0) { $tail2 = 0 }
-            [void]$lines.Add("  " + $script:UiAccent + $script:UiVB + $script:UiReset + "     " +
-                (" " * $nameW) + "  " + $cell.Text2 + (" " * $tail2) +
-                $script:UiAccent + $script:UiVB + $script:UiReset)
-            $sub++
-        }
     }
 
-    # The frame is ONE height in every state. A frame that grows by a line pushes
-    # the console to scroll, and once the screen has scrolled a cursor-up by the
-    # frame height no longer lands at the frame's top - every redraw after that is
-    # off by one and the error accumulates, which is what strands the top of an old
-    # frame above the new one near the bottom of a screen.
-    #
-    # So the phase lines are RESERVED rather than grown into: one line, because one
-    # dataset runs at a time. Should they ever run concurrently, this is the number
-    # to raise, and nothing else changes.
-    $want = [int]$Table.Reserve
-    while ($sub -lt $want) {
-        [void]$lines.Add("  " + $script:UiAccent + $script:UiVB + $script:UiReset + (" " * $inner) +
-            $script:UiAccent + $script:UiVB + $script:UiReset)
-        $sub++
-    }
+    # The frame is still ONE height in every state, and now structurally so
+    # rather than by arrangement: every row is exactly one line whatever it is
+    # doing, so there is nothing left to reserve. That property is what the
+    # redraw depends on - a frame that grows by a line pushes the console to
+    # scroll, and once the screen has scrolled a cursor-up by the frame height no
+    # longer lands at the frame's top. Every redraw after that is off by one and
+    # the error accumulates, which is what strands the top of an old frame above
+    # the new one near the bottom of a screen.
     [void]$lines.Add("  " + $script:UiAccent + $script:UiBL + ($script:UiHr * $inner) +
         $script:UiBR + $script:UiReset)
 

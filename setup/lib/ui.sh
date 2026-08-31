@@ -788,14 +788,19 @@ _ui_table_prep() {
 }
 
 # _ui_table_cell <state> <pct> <ceiling> <secs> <segt0> <phase> <final> <now>
-# Sets UI_TABLE_CELL / _LEN and UI_TABLE_CELL2 / _LEN2 — the text and how wide it
-# reads, because only the builder can tell them apart once colour is in.
+# Sets UI_TABLE_CELL / _LEN — the text and how wide it reads, because only the
+# builder can tell them apart once colour is in.
+#
+# ONE line per row. A running row used to get a second line underneath carrying
+# the phase on the left and an elapsed "(Ns)" on the right; it is gone, and with
+# it the reserved blank line that kept the frame a constant height while no row
+# was running. The bar still creeps with the clock (see ui_progress_creep), so
+# the row goes on saying "alive" without a counter to read it off.
 _ui_table_cell() {
     _utc_num=7
     _utc_barw=$(( UI_TABLE_STAT_W - _utc_num ))
     [ "$_utc_barw" -ge 8 ] || _utc_barw=8
     UI_TABLE_CELL=""; UI_TABLE_CELL_LEN=0
-    UI_TABLE_CELL2=""; UI_TABLE_CELL2_LEN=0
     case "$1" in
         running)
             # The creep, inline: where the bar sits between the stage the job
@@ -825,16 +830,6 @@ _ui_table_cell() {
             _utc_npad=$(( _utc_num - ${#_utc_pct} )); [ "$_utc_npad" -ge 0 ] || _utc_npad=0
             UI_TABLE_CELL="${UI_ACCENT:-}${_UI_TABLE_FULL:0:$_utc_full}${UI_DIM:-}${_utc_head}${_UI_TABLE_EMPTY:0:$_utc_empty}${UI_RESET:-}${_UI_TABLE_SP:0:$_utc_npad}${_utc_pct}"
             UI_TABLE_CELL_LEN=$(( _utc_barw + _utc_num ))
-            _utc_el="($(( $8 - $5 ))s)"
-            _utc_ph="$6"
-            [ "${#_utc_ph}" -le "$_utc_barw" ] || _utc_ph="${_utc_ph:0:$(( _utc_barw - 1 ))}…"
-            # A phase longer than the bar is a real possibility (a long
-            # dataset id and a long verb), and unclamped it errored and then
-            # printed a line wider than the box.
-            _utc_ppad=$(( _utc_barw - ${#_utc_ph} + _utc_num - ${#_utc_el} ))
-            [ "$_utc_ppad" -ge 0 ] || _utc_ppad=0
-            UI_TABLE_CELL2="${UI_DIM:-}${_utc_ph}${_UI_TABLE_SP:0:$_utc_ppad}${_utc_el}${UI_RESET:-}"
-            UI_TABLE_CELL2_LEN=$(( _utc_barw + _utc_num ))
             ;;
         waiting)
             UI_TABLE_CELL="${UI_DIM:-}waiting${UI_RESET:-}"; UI_TABLE_CELL_LEN=7 ;;
@@ -869,7 +864,6 @@ ui_table_frame() {
     _utr_f="$_utr_f  ${UI_ACCENT:-}${UI_VB:-|}${UI_RESET:-}${_utr_head}${_UI_TABLE_SP:0:$(( _utr_inner - ${#_utr_head} ))}${UI_ACCENT:-}${UI_VB:-|}${UI_RESET:-}
 "
     _utr_lines=2
-    _utr_sub=0
     _utr_now="$(date +%s 2>/dev/null || echo 0)"
     _utr_i=0
     while IFS='|' read -r _utr_kind _utr_label _utr_tick _utr_state _utr_pct \
@@ -930,40 +924,15 @@ ui_table_frame() {
         _utr_f="$_utr_f  ${UI_ACCENT:-}${UI_VB:-|}${UI_RESET:-}${_utr_ptr}${_utr_box} ${_utr_name}${_UI_TABLE_SP:0:$_utr_npad}  ${UI_TABLE_CELL}${_UI_TABLE_SP:0:$_utr_rpad}${UI_ACCENT:-}${UI_VB:-|}${UI_RESET:-}
 "
         _utr_lines=$(( _utr_lines + 1 ))
-        # A row that CAN run always gets its second line, blank while it is not
-        # running. The height of the frame is then the same in every state, which
-        # is the whole reason: a frame that grows by a line pushes the terminal
-        # to scroll, and once the screen has scrolled a cursor-up by the frame
-        # height no longer lands at the frame's top. Every redraw after that is
-        # off by one and the error accumulates -- which is what left four lines
-        # of an old frame stranded above the new one, near the bottom of a
-        # screen. Nothing here can prevent the FIRST draw from scrolling; what it
-        # can do is never scroll again.
-        if [ -n "$UI_TABLE_CELL2" ]; then
-            _utr_used2=$(( 5 + UI_TABLE_NAME_W + 2 + UI_TABLE_CELL2_LEN ))
-            _utr_rpad2=$(( _utr_inner - _utr_used2 )); [ "$_utr_rpad2" -ge 0 ] || _utr_rpad2=0
-            _utr_f="$_utr_f  ${UI_ACCENT:-}${UI_VB:-|}${UI_RESET:-}     ${_UI_TABLE_SP:0:$UI_TABLE_NAME_W}  ${UI_TABLE_CELL2}${_UI_TABLE_SP:0:$_utr_rpad2}${UI_ACCENT:-}${UI_VB:-|}${UI_RESET:-}
-"
-            _utr_lines=$(( _utr_lines + 1 ))
-            _utr_sub=$(( _utr_sub + 1 ))
-        fi
     done < "$1"
-    # The frame is ONE height in every state. A frame that grows by a line pushes
-    # the terminal to scroll, and once the screen has scrolled a cursor-up by the
-    # frame height no longer lands at the frame's top -- every redraw after that
-    # is off by one and the error accumulates, which is what left four lines of an
-    # old frame stranded above the new one near the bottom of a screen.
-    #
-    # So the phase lines are RESERVED rather than grown into: one line, because
-    # one dataset runs at a time. Should they ever run concurrently, this is the
-    # number to raise, and nothing else changes.
-    _utr_want="${UI_TABLE_RESERVE:-1}"
-    while [ "$_utr_sub" -lt "$_utr_want" ]; do
-        _utr_f="$_utr_f  ${UI_ACCENT:-}${UI_VB:-|}${UI_RESET:-}${_UI_TABLE_SP:0:$_utr_inner}${UI_ACCENT:-}${UI_VB:-|}${UI_RESET:-}
-"
-        _utr_lines=$(( _utr_lines + 1 ))
-        _utr_sub=$(( _utr_sub + 1 ))
-    done
+    # The frame is still ONE height in every state, and now structurally so
+    # rather than by arrangement: every row is exactly one line whatever it is
+    # doing, so there is nothing left to reserve. That property is what the
+    # redraw depends on -- a frame that grows by a line pushes the terminal to
+    # scroll, and once the screen has scrolled a cursor-up by the frame height
+    # no longer lands at the frame's top. Every redraw after that is off by one
+    # and the error accumulates, which is what left four lines of an old frame
+    # stranded above the new one near the bottom of a screen.
     _utr_f="$_utr_f  ${UI_ACCENT:-}${UI_BL:-+}${_UI_TABLE_HR:0:$_utr_inner}${UI_BR:-+}${UI_RESET:-}"
     UI_TABLE_FRAME="$_utr_f"
     UI_TABLE_LINES=$(( _utr_lines + 1 ))

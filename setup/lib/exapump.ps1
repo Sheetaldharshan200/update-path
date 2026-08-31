@@ -2016,7 +2016,7 @@ $script:ExakitTableRow = 0            # the row the dataset being loaded owns
 # selection layer expects. Twin of exakit_data_table_build in exapump.sh.
 function New-ExakitDataTable {
     param([Parameter(Mandatory)][string]$FinalLabel)
-    [void](New-ExakitTable -Title "Datasets to load" -Reserve 1)
+    [void](New-ExakitTable -Title "Datasets to load")
     $ids = New-Object 'System.Collections.Generic.List[string]'
     $defaults = New-Object 'System.Collections.Generic.List[int]'
     $script:ExakitTableGroupFirst = 0

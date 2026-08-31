@@ -1141,7 +1141,7 @@ function Invoke-McpSetup {
         $rowSkip = $rowLast + 1
         $script:McpTableRowFirst = $rowFirst
         $script:McpTableIds = $menuIds.ToArray()
-        $script:McpTable = New-ExakitTable -Title "AI clients to connect" -Col1 "Client" -Reserve 1
+        $script:McpTable = New-ExakitTable -Title "AI clients to connect" -Col1 "Client"
         [void](Add-ExakitTableRow -Kind "group" -Label "Select All" -Table $script:McpTable)
         for ($i = 0; $i -lt $clientCount; $i++) {
             if ($i -eq ($clientCount - 1)) { $kind = "corner" } else { $kind = "tee" }
