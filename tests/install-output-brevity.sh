@@ -498,8 +498,9 @@ check "nothing in, nothing out"        ""      "$(exakit_version_plain '')"
 has "the version table spells it"   'exakit_version_plain "$(exakit_version_installed_cell' "$COMMON"
 has "...both columns"               'exakit_version_plain "$(exakit_component_available' "$COMMON"
 # The marketplace no longer formats rows of its own: the version is a COLUMN of
-# the one table, filled by the row builder.
-has "the marketplace table too"     'exakit_version_plain "$(exakit_component_available "$_atb_id"' "$COMMON"
+# the one table, resolved by the caller that is already visiting every add-on
+# and handed to the row builder, which looks nothing up itself.
+has "the marketplace table too"     'exakit_version_plain "${_mm_adv:-unknown}"' "$COMMON"
 has "...and for a covered add-on"   'Installed ($(exakit_version_plain "${_mm_cv:-?}"))' "$COMMON"
 has "the twin has the helper"       'function Get-ExakitVersionPlain'           "$COMMON_PS1"
 has "...and uses it in its table"   'Get-ExakitVersionPlain $advertised'        "$COMMON_PS1"
