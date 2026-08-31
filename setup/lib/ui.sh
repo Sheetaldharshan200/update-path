@@ -679,12 +679,21 @@ ui_bar() {
 # the work usually cannot reach the drawing code's variables — a pipeline's
 # right-hand side, a subshell, a background animator. The line is:
 #
-#   <kind>|<label>|<tick>|<state>|<pct>|<ceiling>|<secs>|<segment-start>|<phase>|<final>
+#   <kind>|<label>|<tick>|<state>|<pct>|<ceiling>|<secs>|<segment-start>|<phase>|<final>|<col2>|<col3>
 #
 #   kind    group | tee | corner | plain   — the tree connector to draw
 #   tick    1 while the row is selected
 #   state   idle | waiting | running | done | failed | disabled
 #   final   what the Status column says once the row is finished
+#   col2    the second column's cell, drawn only when UI_TABLE_COL2 names one
+#   col3    the third column's cell, drawn only when UI_TABLE_COL3 names one
+#
+# col2/col3 are OPTIONAL and were added after the fact, which is why they are
+# last: `read` with IFS='|' fills missing trailing fields with the empty string,
+# so every row written in the old ten-field shape still parses, and a table that
+# names no extra headings draws exactly what it drew before. The rewriters below
+# read all twelve for the same reason -- reading ten would fold "final|col2|col3"
+# into the final cell, because the last variable takes the whole remainder.
 #
 # A "disabled" row is one the reader can look at but never pick — an AI client
 # that is not installed on this machine. It is drawn by ui_table_frame itself
@@ -701,6 +710,8 @@ UI_TABLE_INNER=0
 _UI_TABLE_PREV_INNER=''
 UI_TABLE_NAME_W=0
 UI_TABLE_STAT_W=0
+UI_TABLE_COL2_W=0
+UI_TABLE_COL3_W=0
 
 # ui_table_widths <state-file> — how wide the two columns want to be, capped to
 # what the terminal has. The name column is the widest label, the status column
@@ -722,11 +733,23 @@ ui_table_widths() {
     # last row completed. Wide enough for a bar worth looking at, and for
     # "completed · 8 tables, 173,745 rows (23s)".
     UI_TABLE_STAT_W="${UI_TABLE_STAT_MIN:-44}"
-    while IFS='|' read -r _utw_kind _utw_label _utw_rest; do
+    # Zero unless a heading names the column, so a table that asks for neither
+    # is measured, and drawn, exactly as it was before they existed.
+    UI_TABLE_COL2_W=0; UI_TABLE_COL3_W=0
+    [ -n "${UI_TABLE_COL2:-}" ] && UI_TABLE_COL2_W="${#UI_TABLE_COL2}"
+    [ -n "${UI_TABLE_COL3:-}" ] && UI_TABLE_COL3_W="${#UI_TABLE_COL3}"
+    while IFS='|' read -r _utw_kind _utw_label _utw_tick _utw_state _utw_pct \
+                          _utw_ceil _utw_secs _utw_t0 _utw_phase _utw_final \
+                          _utw_c2 _utw_c3; do
         [ -n "$_utw_kind" ] || continue
         case "$_utw_kind" in tee|corner) _utw_len=$(( ${#_utw_label} + 3 )) ;; *) _utw_len="${#_utw_label}" ;; esac
         [ "$_utw_len" -gt "$UI_TABLE_NAME_W" ] && UI_TABLE_NAME_W="$_utw_len"
-        _utw_final="${_utw_rest##*|}"
+        if [ "$UI_TABLE_COL2_W" -gt 0 ] && [ "${#_utw_c2}" -gt "$UI_TABLE_COL2_W" ]; then
+            UI_TABLE_COL2_W="${#_utw_c2}"
+        fi
+        if [ "$UI_TABLE_COL3_W" -gt 0 ] && [ "${#_utw_c3}" -gt "$UI_TABLE_COL3_W" ]; then
+            UI_TABLE_COL3_W="${#_utw_c3}"
+        fi
         # Measured the way _ui_table_cell RENDERS it, not as stored: a finished
         # cell is "<tick> <final>", so a column sized to the bare string is short
         # by the glyph and its space -- and the plain palette's tick is "[ok]",
@@ -746,7 +769,27 @@ ui_table_widths() {
     # previous frame's top border on screen until a later frame re-syncs -- a
     # table that flickers into two and heals itself a second later. The one-line
     # progress bar reserves its last column for the same reason.
-    _utw_over=$(( 11 + UI_TABLE_NAME_W + UI_TABLE_STAT_W + 3 - _utw_cols ))
+    # Each optional column costs its width plus the two-space gap before it.
+    _utw_extra=0
+    [ "$UI_TABLE_COL2_W" -gt 0 ] && _utw_extra=$(( _utw_extra + UI_TABLE_COL2_W + 2 ))
+    [ "$UI_TABLE_COL3_W" -gt 0 ] && _utw_extra=$(( _utw_extra + UI_TABLE_COL3_W + 2 ))
+    _utw_over=$(( 11 + UI_TABLE_NAME_W + _utw_extra + UI_TABLE_STAT_W + 3 - _utw_cols ))
+    # The description gives way FIRST, and can give way entirely. It is the one
+    # cell whose absence costs nothing that is not recoverable -- `exakit help
+    # <add-on>` is one command away -- while a truncated add-on id is a name the
+    # reader cannot match to anything and a squeezed bar stops reading as
+    # progress. On an 80-column terminal this column is the first thing to go,
+    # which is the intended outcome, not a failure of the layout.
+    if [ "$_utw_over" -gt 0 ] && [ "$UI_TABLE_COL3_W" -gt 0 ]; then
+        if [ "$_utw_over" -ge "$(( UI_TABLE_COL3_W + 2 ))" ]; then
+            _utw_over=$(( _utw_over - UI_TABLE_COL3_W - 2 ))
+            UI_TABLE_COL3_W=0
+        else
+            UI_TABLE_COL3_W=$(( UI_TABLE_COL3_W - _utw_over ))
+            _utw_over=0
+            [ "$UI_TABLE_COL3_W" -ge 8 ] || { _utw_over=$(( 8 - UI_TABLE_COL3_W )); UI_TABLE_COL3_W=8; }
+        fi
+    fi
     if [ "$_utw_over" -gt 0 ]; then
         UI_TABLE_NAME_W=$(( UI_TABLE_NAME_W - _utw_over ))
         if [ "$UI_TABLE_NAME_W" -lt 12 ]; then
@@ -850,7 +893,11 @@ _ui_table_cell() {
 ui_table_frame() {
     _ui_table_prep
     ui_table_widths "$1"
-    _utr_inner=$(( 5 + UI_TABLE_NAME_W + 2 + UI_TABLE_STAT_W + 1 ))
+    # Each optional column adds its width and the two-space gap before it.
+    _utr_extra=0
+    [ "$UI_TABLE_COL2_W" -gt 0 ] && _utr_extra=$(( _utr_extra + UI_TABLE_COL2_W + 2 ))
+    [ "$UI_TABLE_COL3_W" -gt 0 ] && _utr_extra=$(( _utr_extra + UI_TABLE_COL3_W + 2 ))
+    _utr_inner=$(( 5 + UI_TABLE_NAME_W + 2 + _utr_extra + UI_TABLE_STAT_W + 1 ))
     _utr_title=" ${UI_TABLE_TITLE:-Progress} "
     _utr_fill=$(( _utr_inner - ${#_utr_title} - 1 ))
     [ "$_utr_fill" -ge 0 ] || _utr_fill=0
@@ -860,14 +907,26 @@ ui_table_frame() {
     # datasets, the MCP step with AI clients. Its width is UI_TABLE_NAME_W,
     # whose floor is 10, so any short heading pads without going negative.
     _utr_col1="${UI_TABLE_COL1:-Dataset}"
-    _utr_head="     ${_utr_col1}${_UI_TABLE_SP:0:$(( UI_TABLE_NAME_W - ${#_utr_col1} ))}  Status"
+    _utr_head="     ${_utr_col1}${_UI_TABLE_SP:0:$(( UI_TABLE_NAME_W - ${#_utr_col1} ))}"
+    # Headings are clamped the same way their cells are, so a column squeezed by
+    # a narrow terminal never prints a heading wider than the column under it.
+    if [ "$UI_TABLE_COL2_W" -gt 0 ]; then
+        _utr_h2="${UI_TABLE_COL2:0:$UI_TABLE_COL2_W}"
+        _utr_head="$_utr_head  ${_utr_h2}${_UI_TABLE_SP:0:$(( UI_TABLE_COL2_W - ${#_utr_h2} ))}"
+    fi
+    if [ "$UI_TABLE_COL3_W" -gt 0 ]; then
+        _utr_h3="${UI_TABLE_COL3:0:$UI_TABLE_COL3_W}"
+        _utr_head="$_utr_head  ${_utr_h3}${_UI_TABLE_SP:0:$(( UI_TABLE_COL3_W - ${#_utr_h3} ))}"
+    fi
+    _utr_head="$_utr_head  Status"
     _utr_f="$_utr_f  ${UI_ACCENT:-}${UI_VB:-|}${UI_RESET:-}${_utr_head}${_UI_TABLE_SP:0:$(( _utr_inner - ${#_utr_head} ))}${UI_ACCENT:-}${UI_VB:-|}${UI_RESET:-}
 "
     _utr_lines=2
     _utr_now="$(date +%s 2>/dev/null || echo 0)"
     _utr_i=0
     while IFS='|' read -r _utr_kind _utr_label _utr_tick _utr_state _utr_pct \
-                          _utr_ceil _utr_secs _utr_t0 _utr_phase _utr_final; do
+                          _utr_ceil _utr_secs _utr_t0 _utr_phase _utr_final \
+                          _utr_c2 _utr_c3; do
         [ -n "$_utr_kind" ] || continue
         _utr_i=$(( _utr_i + 1 ))
         case "$_utr_kind" in
@@ -920,8 +979,27 @@ ui_table_frame() {
         # out unpadded -- so a width miscalculation would show up as garbage on
         # screen instead of a border a column out of line.
         _utr_npad=$(( UI_TABLE_NAME_W - ${#_utr_name} )); [ "$_utr_npad" -ge 0 ] || _utr_npad=0
+        # The optional cells, dim so the eye still lands on the name and the
+        # status. Truncated to their own column, never measured with
+        # _ui_visible_len: every string here is one this file assembled, so its
+        # width is arithmetic rather than a sed per cell per frame.
+        _utr_mid=""
+        if [ "$UI_TABLE_COL2_W" -gt 0 ]; then
+            _utr_v2="$_utr_c2"
+            [ "${#_utr_v2}" -le "$UI_TABLE_COL2_W" ] || \
+                _utr_v2="${_utr_v2:0:$(( UI_TABLE_COL2_W - 1 ))}…"
+            _utr_mid="$_utr_mid  ${UI_DIM:-}${_utr_v2}${UI_RESET:-}${_UI_TABLE_SP:0:$(( UI_TABLE_COL2_W - ${#_utr_v2} ))}"
+            _utr_used=$(( _utr_used + UI_TABLE_COL2_W + 2 ))
+        fi
+        if [ "$UI_TABLE_COL3_W" -gt 0 ]; then
+            _utr_v3="$_utr_c3"
+            [ "${#_utr_v3}" -le "$UI_TABLE_COL3_W" ] || \
+                _utr_v3="${_utr_v3:0:$(( UI_TABLE_COL3_W - 1 ))}…"
+            _utr_mid="$_utr_mid  ${UI_DIM:-}${_utr_v3}${UI_RESET:-}${_UI_TABLE_SP:0:$(( UI_TABLE_COL3_W - ${#_utr_v3} ))}"
+            _utr_used=$(( _utr_used + UI_TABLE_COL3_W + 2 ))
+        fi
         _utr_rpad=$(( _utr_inner - _utr_used )); [ "$_utr_rpad" -ge 0 ] || _utr_rpad=0
-        _utr_f="$_utr_f  ${UI_ACCENT:-}${UI_VB:-|}${UI_RESET:-}${_utr_ptr}${_utr_box} ${_utr_name}${_UI_TABLE_SP:0:$_utr_npad}  ${UI_TABLE_CELL}${_UI_TABLE_SP:0:$_utr_rpad}${UI_ACCENT:-}${UI_VB:-|}${UI_RESET:-}
+        _utr_f="$_utr_f  ${UI_ACCENT:-}${UI_VB:-|}${UI_RESET:-}${_utr_ptr}${_utr_box} ${_utr_name}${_UI_TABLE_SP:0:$_utr_npad}${_utr_mid}  ${UI_TABLE_CELL}${_UI_TABLE_SP:0:$_utr_rpad}${UI_ACCENT:-}${UI_VB:-|}${UI_RESET:-}
 "
         _utr_lines=$(( _utr_lines + 1 ))
     done < "$1"
@@ -998,7 +1076,7 @@ ui_table_set() {
     [ "$_uts_state" = "running" ] && _uts_t0="$(date +%s 2>/dev/null || echo 0)"
     _uts_tmp="$_uts_f.new"
     _uts_i=0
-    while IFS='|' read -r _u1 _u2 _u3 _u4 _u5 _u6 _u7 _u8 _u9 _u10; do
+    while IFS='|' read -r _u1 _u2 _u3 _u4 _u5 _u6 _u7 _u8 _u9 _u10 _u11 _u12; do
         [ -n "$_u1" ] || continue
         _uts_i=$(( _uts_i + 1 ))
         if [ "$_uts_i" = "$_uts_row" ]; then
@@ -1006,12 +1084,12 @@ ui_table_set() {
             # the same job must not restart the elapsed count the reader is
             # watching. Only entering "running" starts one.
             [ "$_u4" = "running" ] && [ "$_uts_state" = "running" ] && _uts_t0="$_u8"
-            printf '%s|%s|%s|%s|%s|%s|%s|%s|%s|%s\n' "$_u1" "$_u2" "$_u3" \
+            printf '%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s\n' "$_u1" "$_u2" "$_u3" \
                 "$_uts_state" "$_uts_pct" "$_uts_ceil" "$_uts_secs" "$_uts_t0" \
-                "$_uts_phase" "$_uts_final"
+                "$_uts_phase" "$_uts_final" "$_u11" "$_u12"
         else
-            printf '%s|%s|%s|%s|%s|%s|%s|%s|%s|%s\n' "$_u1" "$_u2" "$_u3" "$_u4" \
-                "$_u5" "$_u6" "$_u7" "$_u8" "$_u9" "$_u10"
+            printf '%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s\n' "$_u1" "$_u2" "$_u3" "$_u4" \
+                "$_u5" "$_u6" "$_u7" "$_u8" "$_u9" "$_u10" "$_u11" "$_u12"
         fi
     done < "$_uts_f" > "$_uts_tmp"
     mv -f "$_uts_tmp" "$_uts_f"
@@ -1021,7 +1099,7 @@ ui_table_set() {
 ui_table_tick() {
     _utt_tmp="$1.new"
     _utt_i=0
-    while IFS='|' read -r _u1 _u2 _u3 _u4 _u5 _u6 _u7 _u8 _u9 _u10; do
+    while IFS='|' read -r _u1 _u2 _u3 _u4 _u5 _u6 _u7 _u8 _u9 _u10 _u11 _u12; do
         [ -n "$_u1" ] || continue
         _utt_i=$(( _utt_i + 1 ))
         case ",$2," in *",$_utt_i,"*) _u3=1 ;; *) _u3=0 ;; esac
@@ -1029,8 +1107,8 @@ ui_table_tick() {
         # a range that may contain one, and the defaults are built by the caller
         # — this is the one place both of those pass through.
         [ "$_u4" = "disabled" ] && _u3=0
-        printf '%s|%s|%s|%s|%s|%s|%s|%s|%s|%s\n' "$_u1" "$_u2" "$_u3" "$_u4" \
-            "$_u5" "$_u6" "$_u7" "$_u8" "$_u9" "$_u10"
+        printf '%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s\n' "$_u1" "$_u2" "$_u3" "$_u4" \
+            "$_u5" "$_u6" "$_u7" "$_u8" "$_u9" "$_u10" "$_u11" "$_u12"
     done < "$1" > "$_utt_tmp"
     mv -f "$_utt_tmp" "$1"
 }
@@ -1048,7 +1126,7 @@ ui_table_disable() {
     _utx_f="$1"; _utx_row="$2"; _utx_note="$3"
     _utx_tmp="$_utx_f.new"
     _utx_i=0
-    while IFS='|' read -r _u1 _u2 _u3 _u4 _u5 _u6 _u7 _u8 _u9 _u10; do
+    while IFS='|' read -r _u1 _u2 _u3 _u4 _u5 _u6 _u7 _u8 _u9 _u10 _u11 _u12; do
         [ -n "$_u1" ] || continue
         _utx_i=$(( _utx_i + 1 ))
         if [ "$_utx_i" = "$_utx_row" ]; then
@@ -1057,8 +1135,8 @@ ui_table_disable() {
             printf '%s|%s|0|disabled|%s|%s|%s|%s|%s|%s\n' "$_u1" "$_u2" \
                 "$_u5" "$_u6" "$_u7" "$_u8" "$_u9" "$_utx_note"
         else
-            printf '%s|%s|%s|%s|%s|%s|%s|%s|%s|%s\n' "$_u1" "$_u2" "$_u3" "$_u4" \
-                "$_u5" "$_u6" "$_u7" "$_u8" "$_u9" "$_u10"
+            printf '%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s\n' "$_u1" "$_u2" "$_u3" "$_u4" \
+                "$_u5" "$_u6" "$_u7" "$_u8" "$_u9" "$_u10" "$_u11" "$_u12"
         fi
     done < "$_utx_f" > "$_utx_tmp"
     mv -f "$_utx_tmp" "$_utx_f"

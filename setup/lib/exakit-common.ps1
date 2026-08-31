@@ -47,9 +47,9 @@ if (-not (Get-Command Start-ExakitSpinner -ErrorAction SilentlyContinue)) {
     # Each stub carries the real signature, because a function with NO parameter
     # list refuses named arguments: a bare `function Set-ExakitTableRow { }` would
     # only trade the missing-command error for a missing-parameter one.
-    function New-ExakitTable([string]$Title = "", [string]$Col1 = "") { return $null }
+    function New-ExakitTable([string]$Title = "", [string]$Col1 = "", [string]$Col2 = "", [string]$Col3 = "") { return $null }
     function Add-ExakitTableRow([string]$Kind = "plain", [string]$Label = "",
-        [switch]$Ticked, $Table = $null) { return 0 }
+        [string]$Col2 = "", [string]$Col3 = "", [switch]$Ticked, $Table = $null) { return 0 }
     function Set-ExakitTableRow([int]$Row = 0, [string]$State = "", [int]$Pct = 0,
         [int]$Ceiling = 0, [int]$Secs = 0, [string]$Phase = "", [string]$Final = "",
         $Table = $null) { }
@@ -3431,16 +3431,13 @@ function Show-ExakitMarketplaceMenu {
             $ver = Get-ExakitComponentCurrent $addon.Id
             if (-not $ver -and (Get-Command $addon.VersionFn -ErrorAction SilentlyContinue)) { $ver = & $addon.VersionFn }
             if (-not $ver) { $ver = "?" }
-            $rows += @{ Id = $null; Label = "$($addon.Id) - already installed"
-                Table = ("{0,-14} {1,-14} {2}" -f $addon.Id, (Get-ExakitVersionPlain $ver), "Installed") }
+            $rows += @{ Id = $null; Label = "$($addon.Id) - already installed" }
         } elseif (Test-ExakitAddonSystemPresent $addon.Id) {
             # The user already has the tool from somewhere else - covered, and
             # the kit does not manage it.
-            $rows += @{ Id = $null; Label = "$($addon.Id) - already on this system"
-                Table = ("{0,-14} {1,-14} {2}" -f $addon.Id, "-", "Already on this system, managed outside the kit") }
+            $rows += @{ Id = $null; Label = "$($addon.Id) - already on this system" }
         } elseif (-not (Get-Command $addon.InstallFn -ErrorAction SilentlyContinue)) {
-            $rows += @{ Id = $null; Label = "$($addon.Id) - not in this kit copy"
-                Table = ("{0,-14} {1,-14} {2}" -f $addon.Id, "-", "Not in this kit copy. Run: exakit update exakit") }
+            $rows += @{ Id = $null; Label = "$($addon.Id) - not in this kit copy" }
         } else {
             # Get-ExakitComponentAvailable lives in the CLI (setup\exakit.ps1)
             # and NOWHERE else. The closing offer during a fresh install runs
@@ -3459,24 +3456,17 @@ function Show-ExakitMarketplaceMenu {
             # will actually DRAW one resolves it: a scripted answer
             # (EXAKIT_MARKETPLACE_ADDONS) installs without a table, so an agent
             # or a CI job never pays for the lookup.
+            # The description is no longer folded onto continuation lines: it
+            # goes in a COLUMN now, which truncates, and a folded cell would make
+            # the row two lines tall - the frame-height invariant the redraw
+            # depends on. Still resolved only on the path that draws it, so a
+            # scripted answer (EXAKIT_MARKETPLACE_ADDONS) never pays for it.
             $cell = ""
             if (-not $env:EXAKIT_MARKETPLACE_ADDONS) {
-                # The table carries the About IN FULL, folded onto as many lines
-                # as it needs. Nothing truncates it.
-                # The continuation indent is the width of the two leading
-                # cells, MEASURED from the very format the rows are built with
-                # rather than counted by hand. Counted by hand it was 32 against
-                # a 30-column prefix, so every folded line of a description sat
-                # two columns to the right of the line above it. Written this way
-                # the two cannot drift apart again.
-                $indent = "{0,-14} {1,-14} " -f "", ""
-                $cell = Format-ExakitAboutWrap (Get-ExakitMarketplaceAddonDescription $addon.Id) $script:ExakitAboutWidth $indent
+                $cell = "" + (Get-ExakitMarketplaceAddonDescription $addon.Id)
             }
-            # The label NAMES the row, it does not re-explain it: the full text is
-            # in the table directly above, and the checkbox layer truncates every
-            # menu row to exactly one terminal line (its redraw depends on that).
             $rows += @{ Id = $addon.Id; Label = $addon.Id
-                Table = ("{0,-14} {1,-14} {2}" -f $addon.Id, (Get-ExakitVersionPlain $advertised), $cell) }
+                Version = (Get-ExakitVersionPlain $advertised); Description = $cell }
         }
     }
 
@@ -3505,25 +3495,18 @@ function Show-ExakitMarketplaceMenu {
         return
     }
 
-    # The state table, drawn with the SAME panel `exakit version` uses so every
-    # table in the kit reads as one family. The glyphs come from the ui palette
-    # (rounded where the terminal supports it, ASCII where it does not); nothing
-    # here may contain a box character of its own - every .ps1 but ui.ps1 has to
-    # stay pure ASCII, or PowerShell 5.1 reads it in the legacy codepage.
+    # There is ONE table. The reference panel that used to stand above the
+    # selection carried an Add-on / Version / Description row per add-on, and
+    # then the selection below it repeated every installable add-on by name -
+    # the same list twice, a box apart. The version and the description now sit
+    # in the selection itself as columns, so the reader picks from the thing
+    # that describes them.
+    #
+    # What that costs, on the all-covered path only: the rows for add-ons that
+    # are NOT installable had nowhere else to go, and the panel was the only
+    # output that path produced. They are represented by the message below
+    # instead. Twin of exakit_marketplace_menu in common.sh.
     $selectable = @($rows | Where-Object { $_.Id })
-    # The last column is named for what it actually carries. With nothing left
-    # to install every row is a state, so it is a Status column; while anything
-    # is still installable the column carries the add-on's description.
-    $lastCol = if ($selectable.Count -eq 0) { "Status" } else { "Description" }
-    Write-Host ""
-    Start-ExakitPanel "Marketplace add-ons"
-    Write-ExakitPanelLine ("{0,-14} {1,-14} {2}" -f "Add-on", "Version", $lastCol)
-    foreach ($row in $rows) {
-        # A description cell is folded onto continuation lines upstream; each
-        # one has to become its own panel line or the border breaks.
-        foreach ($line in ($row.Table -split "`r?`n")) { Write-ExakitPanelLine $line }
-    }
-    Complete-ExakitPanel
     Write-Host ""
 
     if ($selectable.Count -eq 0) {
@@ -3542,19 +3525,24 @@ function Show-ExakitMarketplaceMenu {
     # The rows the reader ticks here are the rows Invoke-ExakitMarketplaceApply
     # then fills in, so the choice and the progress are one screen.
     #
-    # Only INSTALLABLE add-ons get a row. The disabled rows the checkbox version
-    # carried are gone: the state table directly above already gives each of them
-    # a version and a status, in more room than a dimmed one-line label had - and
-    # a checkbox that cannot be ticked would be the same fact twice. This is also
-    # what keeps the group's child range contiguous.
+    # Only INSTALLABLE add-ons get a row - which is also what keeps the group's
+    # child range contiguous. ui_table_disable / the disabled state is how the
+    # rest would come back, as dim unpickable rows, the way the MCP client list
+    # shows "Cursor - not installed".
     $addonIds = New-Object 'System.Collections.Generic.List[string]'
-    $script:ExakitAddonTable = New-ExakitTable -Title "Add-ons to install" -Col1 "Add-on"
+    $script:ExakitAddonTable = New-ExakitTable -Title "Marketplace add-ons" -Col1 "Add-on" `
+        -Col2 "Version" -Col3 "Description"
     [void](Add-ExakitTableRow -Kind "group" -Label "Select All" -Table $script:ExakitAddonTable)
     [void]$addonIds.Add("")
     $addonCount = $selectable.Count
     for ($i = 0; $i -lt $addonCount; $i++) {
         if ($i -eq ($addonCount - 1)) { $kind = "corner" } else { $kind = "tee" }
-        [void](Add-ExakitTableRow -Kind $kind -Label $selectable[$i].Id -Table $script:ExakitAddonTable)
+        # One line, whatever the About says: the column truncates, and a folded
+        # cell would make the row two lines tall - which is the frame-height
+        # invariant the redraw depends on.
+        $desc = ("" + $selectable[$i].Description) -replace "`r?`n", " "
+        [void](Add-ExakitTableRow -Kind $kind -Label $selectable[$i].Id `
+            -Col2 ("" + $selectable[$i].Version) -Col3 $desc -Table $script:ExakitAddonTable)
         [void]$addonIds.Add($selectable[$i].Id)
     }
     [void](Add-ExakitTableRow -Kind "plain" -Label "Skip" -Table $script:ExakitAddonTable)
