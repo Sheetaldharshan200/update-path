@@ -141,6 +141,15 @@ while IFS= read -r line; do
         *:*) ;;
         *) continue ;;
     esac
+    # PANEL rows are not "Label: value" rows. This loop is about the plain rows
+    # printed under the panels, where the values must line up with each other;
+    # a panel draws its own interior and a colon inside one ("connect one with:
+    # exakit mcp-setup") is prose, not a label. Scanning them too compared a
+    # column inside a box against a column outside it, which is why this failed
+    # on main for as long as status has drawn panels.
+    case "$(printf '%s' "$line" | sed 's/^[[:space:]]*//' | cut -c1-3)" in
+        '|'*|'+'*|'╭'*|'│'*|'╰'*|'─'*) continue ;;
+    esac
     _lbl="${line%%:*}"
     _rest="${line#*:}"
     # the value column is the label, its colon, and the run of spaces after it

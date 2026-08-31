@@ -1590,12 +1590,21 @@ echo "the selection and the install progress are ONE table:"
 # underneath it, so the reader had to map one onto the other.
 COMMON_SH_ADDONS="$(cat "$ROOT/setup/lib/common.sh")"
 has "the selection IS the table"        'ui_table_menu "$EXAKIT_ADDON_TABLE_STATE"' "$COMMON_SH_ADDONS"
-has "...titled for add-ons"            'UI_TABLE_TITLE="Add-ons to install"'       "$COMMON_SH_ADDONS"
+has "...titled for add-ons"            'UI_TABLE_TITLE="Marketplace add-ons"'      "$COMMON_SH_ADDONS"
+has "...with a Version column"          'UI_TABLE_COL2="Version"'                    "$COMMON_SH_ADDONS"
+has "...and a Description column"       'UI_TABLE_COL3="Description"'                "$COMMON_SH_ADDONS"
 lacks "and not a checkbox any more"    'ui_checkbox_menu "Select add-ons to install"' "$COMMON_SH_ADDONS"
 has "the install starts the same table" 'ui_table_begin "$EXAKIT_ADDON_TABLE_STATE"' "$COMMON_SH_ADDONS"
 has "...and stops it"                   'ui_table_end "$EXAKIT_ADDON_TABLE_STATE"'   "$COMMON_SH_ADDONS"
-# The STATE table above the selection is a different, deliberate thing and stays.
-has "the state table is still printed"  'ui_panel_begin "Marketplace add-ons"'       "$COMMON_SH_ADDONS"
+# The state PANEL above the selection is gone: it listed every add-on with a
+# version and a description, and then the selection under it repeated every
+# installable one by name -- the same list twice, a box apart. Its two columns
+# moved into the selection, and the add-ons it alone could show (installed,
+# already on the system, missing from this kit copy) come back as dim,
+# unpickable rows in that same table.
+lacks "the state panel is gone"         'ui_panel_begin "Marketplace add-ons"'       "$COMMON_SH_ADDONS"
+has "...its columns moved into the table" 'UI_TABLE_COL3="Description"'              "$COMMON_SH_ADDONS"
+has "...and its other rows became disabled ones" 'disabled|||||| %s||' "$COMMON_SH_ADDONS"
 
 # The rows: a group, one per installable add-on on a tree connector, then Skip.
 ADDON_STATE_FILE="$WORK/addon-table"

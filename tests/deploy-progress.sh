@@ -124,7 +124,7 @@ printf '%s\n' \
     '{"msg":"extracting preset files"}' \
     | _personal_deploy_collect "$STATE" "$TAIL" "$NOTICE" >/dev/null
 check "a lower milestone never rewinds" "35" "$(cut -d'|' -f1 "$STATE")"
-check "...keeping its phase"          "Fetching the Exasol runtime" "$(cut -d'|' -f5 "$STATE")"
+check "...keeping its phase"          "Getting the Exasol database ready" "$(cut -d'|' -f5 "$STATE")"
 
 printf '\n== unknown output is harmless ==\n'
 
@@ -142,7 +142,15 @@ printf '0|5|3|0|Preparing the deployment\n' > "$STATE"
 EXAKIT_DEPLOY_LIVE=0
 PLAIN="$(_personal_deploy_collect "$STATE" "$TAIL" "$NOTICE" < "$WORK/launcher.txt")"
 has "phase: preparing"  "Preparing the deployment"          "$PLAIN"
-has "phase: fetching"   "Fetching the Exasol runtime"       "$PLAIN"
+has "phase: getting ready" "Getting the Exasol database ready" "$PLAIN"
+# The label has to hold for BOTH launcher messages this arm matches. It said
+# "Fetching the Exasol runtime" for a cache hit too, where nothing is fetched
+# and the launcher then goes quiet for the VM boot.
+check "the cached path says the same" "Getting the Exasol database ready" \
+    "$(_personal_deploy_milestone 'found resource in cache' | cut -d'|' -f4)"
+check "and so does the download path" "Getting the Exasol database ready" \
+    "$(_personal_deploy_milestone 'fetching resource abc' | cut -d'|' -f4)"
+lacks "nothing still says 'runtime' at the reader" "Fetching the Exasol runtime" "$PLAIN"
 has "phase: waiting"    "Waiting for the database" "$PLAIN"
 has "phase: finishing"  "Finishing up"                      "$PLAIN"
 has "phase: deployed"   "Deployed"                          "$PLAIN"

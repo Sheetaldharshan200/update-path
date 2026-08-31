@@ -796,7 +796,13 @@ function Show-McpSetupSummary {
     # `exakit help mcp` documents it in full.
     # Twin of the same filter in exakit_print_mcp_setup_summary (common.sh).
     foreach ($f in @($doc.findings)) {
-        if ($f.code -eq "plaintext_credential_reference") { continue }
+        if ($f.code -eq "plaintext_credential_reference") {
+            # Suppressing the line is the point; losing the record is not, and
+            # dropping it outright left the only trace in the result JSON, which
+            # is deleted when this function returns.
+            if ($f.message) { Write-ExakitLog "INFO" "$($f.message)" }
+            continue
+        }
         if ($f.message) { Warn2 "$($f.message)" }
     }
     # One "restart your client" line per configured client says the same thing
@@ -806,7 +812,10 @@ function Show-McpSetupSummary {
     # Cursor), so dropping that kind drops exactly them - a repair's
     # next_actions carry the finding code as their kind and are untouched.
     foreach ($a in @($doc.next_actions)) {
-        if ($a.kind -eq "restart_client") { continue }
+        if ($a.kind -eq "restart_client") {
+            if ($a.message) { Write-ExakitLog "INFO" "$($a.message)" }
+            continue
+        }
         if ($a.message) { Info "$($a.message)" }
     }
     # Already in the closing panel, verbatim in effect:

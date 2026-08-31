@@ -3206,10 +3206,25 @@ _exakit_addon_table_build() {
     # close up — the row number is the index, and it has to stay one.
     EXAKIT_ADDON_TABLE_IDS="
 "
+    # How many unpickable rows follow, counted BEFORE the loop: the corner
+    # connector belongs to the last row of the tree, and when a disabled row
+    # comes after the installable ones the corner is not the last installable.
+    # Drawn the other way the tree closed early and then kept going.
+    _atb_dn=0
+    while IFS='|' read -r _atb_cid _atb_cwhy; do
+        [ -n "$_atb_cid" ] || continue
+        _atb_dn=$(( _atb_dn + 1 ))
+    done <<EXAKIT_ATB_COUNT
+${EXAKIT_ADDON_TABLE_DISABLED:-}
+EXAKIT_ATB_COUNT
     _atb_i=0
     for _atb_id in "$@"; do
         _atb_i=$(( _atb_i + 1 ))
-        if [ "$_atb_i" -eq "$_atb_n" ]; then _atb_kind=corner; else _atb_kind=tee; fi
+        if [ "$_atb_i" -eq "$_atb_n" ] && [ "$_atb_dn" -eq 0 ]; then
+            _atb_kind=corner
+        else
+            _atb_kind=tee
+        fi
         # Fields 11 and 12: the Version and Description columns. Looked up here
         # rather than passed in because only this interactive path draws them --
         # a scripted EXAKIT_MARKETPLACE_ADDONS answer never builds a table, so
@@ -3225,10 +3240,25 @@ _exakit_addon_table_build() {
         EXAKIT_ADDON_TABLE_IDS="$EXAKIT_ADDON_TABLE_IDS$_atb_id
 "
     done
+    # The add-ons that cannot be installed, AFTER the installable ones so the
+    # group's child range stays contiguous, and unpickable so a checkbox never
+    # offers what cannot be chosen. Each carries why. An empty id line keeps the
+    # row-number-to-id mapping intact: the index IS the row.
+    _atb_d=0
+    while IFS='|' read -r _atb_did _atb_dwhy; do
+        [ -n "$_atb_did" ] || continue
+        _atb_d=$(( _atb_d + 1 ))
+        if [ "$_atb_d" -eq "$_atb_dn" ]; then _atb_dkind=corner; else _atb_dkind=tee; fi
+        printf '%s|%s|0|disabled|||||| %s||\n' "$_atb_dkind" "$_atb_did" "$_atb_dwhy" >> "$_atb_f"
+        EXAKIT_ADDON_TABLE_IDS="$EXAKIT_ADDON_TABLE_IDS
+"
+    done <<EXAKIT_ATB_DISABLED
+${EXAKIT_ADDON_TABLE_DISABLED:-}
+EXAKIT_ATB_DISABLED
     printf 'plain|Skip|0|idle|||||| \n' >> "$_atb_f"
     EXAKIT_ADDON_TABLE_IDS="$EXAKIT_ADDON_TABLE_IDS
 "
-    EXAKIT_ADDON_TABLE_ROW_SKIP=$(( _atb_n + 2 ))
+    EXAKIT_ADDON_TABLE_ROW_SKIP=$(( _atb_n + _atb_d + 2 ))
     EXAKIT_TABLE_EXCLUSIVE="$EXAKIT_ADDON_TABLE_ROW_SKIP"
     # "all": the parent is a master toggle, checked only while EVERY child is.
     # Under the default "any" it stayed checked with one child ticked, so the
@@ -3424,6 +3454,13 @@ _exakit_addon_progress() {
 exakit_marketplace_menu() {
     _mm_ids=()
     _mm_selectable=0
+    # One "<id>|<why>" per add-on that cannot be installed. The reference panel
+    # used to carry these; deleting it took the answer to "why is this one not
+    # on offer?" with it, and on the all-covered path took the ONLY output that
+    # path produced. They come back as dim, unpickable rows inside the one
+    # table -- the way the MCP client list shows "Cursor · not installed" --
+    # and as plain lines when there is no table to put them in.
+    _mm_covered=""
     while IFS='|' read -r _mm_id _mm_label <&3; do
         [ -n "$_mm_id" ] || continue
         # Not applicable here and not installed: it is not an option on this
@@ -3438,12 +3475,19 @@ exakit_marketplace_menu() {
         # version and a reason for each of these is gone (see below), and the
         # selection only ever listed installable add-ons.
         if exakit_marketplace_addon_installed "$_mm_id"; then
+            _mm_cv="$(exakit_component_current "$_mm_id" 2>/dev/null || true)"
+            _mm_covered="$_mm_covered$_mm_id|Installed ($(exakit_version_plain "${_mm_cv:-?}"))
+"
             _mm_ids+=("__disabled__")
         elif _exakit_addon_system_present "$_mm_id"; then
             # The user already has the tool from somewhere else: covered, and
             # the kit does not manage it.
+            _mm_covered="$_mm_covered$_mm_id|already on this system, managed outside the kit
+"
             _mm_ids+=("__disabled__")
         elif ! exakit_marketplace_addon_available "$_mm_id"; then
+            _mm_covered="$_mm_covered$_mm_id|not in this kit copy. Run: exakit update exakit
+"
             _mm_ids+=("__disabled__")
         else
             # The version and the description are resolved by
@@ -3521,6 +3565,14 @@ EXAKIT_MM_EOF
 
     if [ "$_mm_selectable" -eq 0 ]; then
         info "Everything available is already covered."
+        # Named, not just counted: "everything is covered" without saying WHICH
+        # things, or how, is the whole of what this path prints.
+        while IFS='|' read -r _mm_cid _mm_cwhy; do
+            [ -n "$_mm_cid" ] || continue
+            info "$(printf '%-14s %s' "$_mm_cid" "$_mm_cwhy")"
+        done <<EXAKIT_MM_COVERED
+$_mm_covered
+EXAKIT_MM_COVERED
         return 0
     fi
 
@@ -3550,6 +3602,7 @@ EXAKIT_MM_EOF
         esac
         _mm_i=$((_mm_i + 1))
     done
+    EXAKIT_ADDON_TABLE_DISABLED="$_mm_covered"
     _exakit_addon_table_build "$EXAKIT_ADDON_TABLE_STATE" "${_mm_pick_ids[@]}"
     UI_TABLE_TITLE="Marketplace add-ons"
     # The first column's heading, or the add-ons would sit under "Dataset".
@@ -6530,6 +6583,11 @@ for skipped in doc.get("details", {}).get("skipped_clients", []):
 # documents it in full.
 for finding in doc.get("findings", []):
     if finding.get("code") == "plaintext_credential_reference":
+        # "log" is a kind the shell writes to the LOGFILE and not the screen.
+        # Suppressing the line is the point; losing the record is not, and
+        # dropping it outright left the only trace in the result JSON, which is
+        # deleted when this function returns.
+        lines.append(f"log|{finding.get('message', 'Unknown issue')}")
         continue
     lines.append(f"warn|{finding.get('message', 'Unknown issue')}")
 
@@ -6540,9 +6598,11 @@ for finding in doc.get("findings", []):
 # dropping that kind drops exactly them -- a repair's next_actions carry the
 # finding code as their kind and are untouched.
 for action in doc.get("next_actions", []):
-    if action.get("kind") == "restart_client":
-        continue
     message = action.get("message", "")
+    if action.get("kind") == "restart_client":
+        if message:
+            lines.append(f"log|{message}")
+        continue
     if message:
         lines.append(f"info|{message}")
 
@@ -6554,6 +6614,9 @@ PY
         case "$_sum_kind" in
             ok)   ok   "$_sum_text" ;;
             warn) warn "$_sum_text" ;;
+            # Logged, never printed: a line the screen is better off without but
+            # the log should still be able to answer for.
+            log)  _exakit_log_file "INFO  $_sum_text" ;;
             *)    info "$_sum_text" ;;
         esac
     done <<EOF

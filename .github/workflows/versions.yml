@@ -432,5 +432,29 @@ jobs:
       - run: bash tests/bulk-folder-load.sh
       - run: bash tests/dataset-load-progress.sh
       - run: bash tests/install-output-brevity.sh
+      # The table component's PowerShell twin is asserted STATICALLY -- there is
+      # no pwsh on the machine this kit is developed on, so CI is the only thing
+      # that ever reads ui.ps1 at all. It was written and then never wired in
+      # here, which is how the twin drifted while 119 checks sat unrun.
+      - run: bash tests/ps-table-twin.sh
+      - run: bash tests/checkbox-group.sh
+      - run: bash tests/menu-hint.sh
+      - run: bash tests/mcp-status-clients.sh
+      - run: bash tests/status-soft-components.sh
+      - run: bash tests/install-payload.sh
+      - run: bash tests/uninstall-addons-only.sh
+      - run: bash tests/whats-new.sh
+      # The two PowerShell-native suites had NO caller anywhere -- not this
+      # workflow, not their shell siblings, not a script. They document
+      # themselves as `pwsh tests/<name>.ps1` and were simply never run by
+      # anything. The Linux runner ships pwsh, which is where they belong.
+      - name: PowerShell-native suites
+        run: |
+          if command -v pwsh >/dev/null 2>&1; then
+            pwsh -NoProfile -File tests/noninteractive-answers.ps1
+            pwsh -NoProfile -File tests/uninstall-ps.ps1
+          else
+            echo "pwsh not installed on this runner - PowerShell suites skipped"
+          fi
       # Dry run only without EXAKIT_SMOKE_FULL=1: no install, no database.
       - run: bash tests/smoke-test.sh
