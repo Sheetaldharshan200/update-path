@@ -640,6 +640,18 @@ function Add-ExakitTableRow {
 # the same here as it does in `exakit help`, which wraps to the same 44.
 $script:UiTableCol3Fixed = 44
 
+# $script:UiTableCol3Max - how wide the Description may GROW into slack the
+# console has going spare. The Status column reserves a 44-column floor for
+# statuses that only arrive once rows finish, so on a wide console the selection
+# screen showed a 44-wide description wrapped to five lines next to an empty
+# 44-wide column: a wall of text beside a void. Growing the description into the
+# slack spends that width on the only cell that has anything to say yet. Capped,
+# because past about 90 columns a line of prose stops being easy to track back
+# to the next one. Still fixed for the life of the menu - it derives from a
+# console width measured once - so a row's height cannot change under the
+# animator. Twin of UI_TABLE_COL3_MAX in ui.sh.
+$script:UiTableCol3Max = 90
+
 # Split-ExakitWrap <text> <width> - greedy word wrap, returned as an array of
 # lines. A word longer than the cell is BROKEN, not allowed to overhang: that is
 # the one place this differs from Format-ExakitAboutWrap, which prints into open
@@ -680,7 +692,22 @@ function Get-ExakitTableWidths {
     # forty when it finished, and the whole table would change width as the last
     # row completed. Wide enough for a bar worth looking at, and for
     # "completed - 8 tables, 173,745 rows (23s)".
+    # The FLOOR is only reserved once the table has something to report, and
+    # only for a table with OTHER columns to carry the width. While every row is
+    # idle - the selection screen, before a single install has started - there
+    # is no status to hold room for, and holding it anyway put a 44-column void
+    # beside a description squeezed to fit around it. A name-and-status menu has
+    # nothing else holding the width, so it keeps its floor: withhold Status
+    # there and the box shrinks to barely wider than the longest name, then
+    # doubles the moment the first row starts.
+    # Twin of the same block in ui_table_widths (ui.sh).
     $statW = 44
+    if ($Table.Col2 -or $Table.Col3) {
+        $statW = 0
+        foreach ($r in $Table.Rows.ToArray()) {
+            if ($r.State -and $r.State -ne "idle" -and $r.State -ne "disabled") { $statW = 44; break }
+        }
+    }
     # Zero unless a heading names the column, so a table that asks for neither
     # is measured, and drawn, exactly as it was before they existed.
     $col2W = 0; $col3W = 0
@@ -699,7 +726,9 @@ function Get-ExakitTableWidths {
         # is short by the glyph and its space. Short means a row wider than the
         # box, which wraps, which makes the frame one line taller than the height
         # the animator moves the cursor up by.
-        if ($row.Final) {
+        # Only for a row that HAS a status; an idle row's final is empty and
+        # measuring it would reintroduce the column withheld above.
+        if ($row.Final -and $row.State -and $row.State -ne "idle" -and $row.State -ne "disabled") {
             $finalLen = $row.Final.Length + $script:UiTick.Length + 1
             if ($finalLen -gt $statW) { $statW = $finalLen }
         }
@@ -713,11 +742,35 @@ function Get-ExakitTableWidths {
     # a wrapped row is two lines where the frame counted one, so the next
     # cursor-up lands inside the frame before it and strands its top border on
     # screen. The one-line progress bar reserves its last column for this reason.
-    # Each optional column costs its width plus the two-space gap before it.
-    $extra = 0
-    if ($col2W -gt 0) { $extra += $col2W + 2 }
-    if ($col3W -gt 0) { $extra += $col3W + 2 }
-    $over = 11 + $nameW + $extra + $statW + 3 - $cols
+    # A table with extra columns separates them with " | " (three columns)
+    # rather than a bare two-space gap; without them the gaps stay two.
+    $sepW = 2
+    if ($col2W -gt 0 -or $col3W -gt 0) { $sepW = 3 }
+    # ONE decomposition, and the same one Write-ExakitTableFrame uses: the fixed
+    # chrome, the name, then every column that follows preceded by its gap.
+    # Written as "11 + name + status" with the gap folded into the 11, an extra
+    # column had to add its gap AND unpick that fold - which is how the
+    # no-extras table came out two columns wider than it had been.
+    #
+    # 9 is the chrome without that fold: 2 border + 1 space + 4 checkbox + 1
+    # space + 1 border. 3 is the two-column left margin every row is drawn with
+    # plus the one column left unwritten at the right.
+    $statSep = 0
+    if ($statW -gt 0) { $statSep = $sepW }
+    $total = 9 + $nameW + 3
+    if ($col2W -gt 0) { $total += $sepW + $col2W }
+    if ($col3W -gt 0) { $total += $sepW + $col3W }
+    $total += $statSep + $statW
+    $over = $total - $cols
+    # Slack, not overflow: spend it on the Description rather than leave it as a
+    # gap beside an empty Status column.
+    if ($over -lt 0 -and $col3W -gt 0) {
+        $grow = $script:UiTableCol3Max - $col3W
+        if ($grow -lt 0) { $grow = 0 }
+        if ((-$over) -lt $grow) { $grow = -$over }
+        $col3W += $grow
+        $over += $grow
+    }
     # The description gives way FIRST, and can give way entirely. It is the one
     # cell whose absence costs nothing that is not recoverable - `exakit help
     # <add-on>` is one command away - while a truncated add-on id is a name the
@@ -746,7 +799,7 @@ function Get-ExakitTableWidths {
             if ($statW -lt 12) { $statW = 12 }
         }
     }
-    return @{ Name = $nameW; Status = $statW; Col2 = $col2W; Col3 = $col3W }
+    return @{ Name = $nameW; Status = $statW; Col2 = $col2W; Col3 = $col3W; Sep = $sepW }
 }
 
 # Get-ExakitTableCell <row> <status-width> <now> - the Status column for one row,
@@ -834,11 +887,25 @@ function Get-ExakitTableFrame {
     $statW = [int]$w.Status
     $col2W = [int]$w.Col2
     $col3W = [int]$w.Col3
-    # Each optional column adds its width and the two-space gap before it.
-    $extra = 0
-    if ($col2W -gt 0) { $extra += $col2W + 2 }
-    if ($col3W -gt 0) { $extra += $col3W + 2 }
-    $inner = 5 + $nameW + 2 + $extra + $statW + 1
+    # Column rules, and only for a table that has columns to rule between: the
+    # dataset and AI-client menus are a name and a status, where a line between
+    # two columns is furniture around nothing. Dim, so the eye reads the cells
+    # and not the scaffolding.
+    $sepW = [int]$w.Sep
+    if ($sepW -lt 2) { $sepW = 2 }
+    $sep = "  "
+    if ($sepW -eq 3) { $sep = " " + $script:UiDim + $script:UiVB + $script:UiReset + " " }
+    # No Status column at all while nothing has a status: no heading, no rule,
+    # no reserved width. $statSep is the rule before it, which goes with it.
+    $statSep = ""
+    $statSepW = 0
+    if ($statW -gt 0) { $statSep = $sep; $statSepW = $sepW }
+    # The same decomposition Get-ExakitTableWidths uses: 5 of chrome, the name,
+    # then every column that follows preceded by its rule, and one trailing.
+    $inner = 5 + $nameW + 1
+    if ($col2W -gt 0) { $inner += $sepW + $col2W }
+    if ($col3W -gt 0) { $inner += $sepW + $col3W }
+    $inner += $statSepW + $statW
     $lines = New-Object 'System.Collections.Generic.List[string]'
 
     $title = " " + $Table.Title + " "
@@ -857,20 +924,28 @@ function Get-ExakitTableFrame {
     $headPad = $nameW - $col1.Length
     if ($headPad -lt 0) { $headPad = 0 }
     $head = "     " + $col1 + (" " * $headPad)
+    $headLen = 5 + $nameW
     # Headings are clamped the same way their cells are, so a column squeezed by
     # a narrow console never prints a heading wider than the column under it.
     if ($col2W -gt 0) {
         $h2 = "" + $Table.Col2
         if ($h2.Length -gt $col2W) { $h2 = $h2.Substring(0, $col2W) }
-        $head += "  " + $h2 + (" " * ($col2W - $h2.Length))
+        $head += $sep + $h2 + (" " * ($col2W - $h2.Length))
+        $headLen += $sepW + $col2W
     }
     if ($col3W -gt 0) {
         $h3 = "" + $Table.Col3
         if ($h3.Length -gt $col3W) { $h3 = $h3.Substring(0, $col3W) }
-        $head += "  " + $h3 + (" " * ($col3W - $h3.Length))
+        $head += $sep + $h3 + (" " * ($col3W - $h3.Length))
+        $headLen += $sepW + $col3W
     }
-    $head += "  Status"
-    $headTail = $inner - $head.Length
+    if ($statW -gt 0) {
+        $head += $statSep + "Status"
+        $headLen += $statSepW + 6
+    }
+    # Padded from the LENGTH COUNTED ABOVE, never from $head.Length: the rules
+    # carry colour escapes, so the string is longer than it reads.
+    $headTail = $inner - $headLen
     if ($headTail -lt 0) { $headTail = 0 }
     [void]$lines.Add("  " + $script:UiAccent + $script:UiVB + $script:UiReset + $head +
         (" " * $headTail) + $script:UiAccent + $script:UiVB + $script:UiReset)
@@ -934,12 +1009,12 @@ function Get-ExakitTableFrame {
         # status. Truncated to their own column; every string here is one this
         # file assembled, so its width is arithmetic, never measured.
         $mid = ""
-        $used = 1 + $boxLen + 1 + $nameW + 2 + [int]$cell.Len
+        $used = 1 + $boxLen + 1 + $nameW + $statSepW + [int]$cell.Len
         if ($col2W -gt 0) {
             $v2 = "" + $row.Col2
             if ($v2.Length -gt $col2W) { $v2 = $v2.Substring(0, $col2W - 1) + "…" }
-            $mid += "  " + $script:UiDim + $v2 + $script:UiReset + (" " * ($col2W - $v2.Length))
-            $used += $col2W + 2
+            $mid += $sep + $script:UiDim + $v2 + $script:UiReset + (" " * ($col2W - $v2.Length))
+            $used += $col2W + $sepW
         }
         # The Description is never truncated. It wraps to as many lines as it
         # needs; the first sits on the row, the rest follow underneath with every
@@ -951,13 +1026,13 @@ function Get-ExakitTableFrame {
             $wrapped = @(Split-ExakitWrap -Text ("" + $row.Col3) -Width $col3W)
             $v3 = ""
             if ($wrapped.Count -gt 0) { $v3 = $wrapped[0] }
-            $mid += "  " + $script:UiDim + $v3 + $script:UiReset + (" " * ($col3W - $v3.Length))
-            $used += $col3W + 2
+            $mid += $sep + $script:UiDim + $v3 + $script:UiReset + (" " * ($col3W - $v3.Length))
+            $used += $col3W + $sepW
         }
         $tail = $inner - $used
         if ($tail -lt 0) { $tail = 0 }
         [void]$lines.Add("  " + $script:UiAccent + $script:UiVB + $script:UiReset + $ptr + $box + " " +
-            $name + (" " * $namePad) + $mid + "  " + $cell.Text + (" " * $tail) +
+            $name + (" " * $namePad) + $mid + $statSep + $cell.Text + (" " * $tail) +
             $script:UiAccent + $script:UiVB + $script:UiReset)
         # The rest of a wrapped description. Only the Description cell carries
         # anything: the checkbox, the name and the version belong to the row
@@ -971,14 +1046,25 @@ function Get-ExakitTableFrame {
         # a row started and stopped running, which is why it needed a reserved
         # blank line and why it is gone.
         if ($wrapped.Count -gt 1) {
-            $pre = 5 + $nameW + 2
-            if ($col2W -gt 0) { $pre += $col2W + 2 }
+            # The rules carry down the continuation line: without them the text
+            # floats in the middle of the row and the columns stop reading as
+            # columns for as long as a description runs. Built cell by cell and
+            # MEASURED as it goes, because every rule carries colour escapes and
+            # .Length would count those as width.
+            $wleft = " " * (5 + $nameW)
+            $wlen = 5 + $nameW
+            if ($col2W -gt 0) {
+                $wleft += $sep + (" " * $col2W)
+                $wlen += $sepW + $col2W
+            }
+            $wlen += $sepW + $col3W + $statSepW
+            $wpad = $inner - $wlen
+            if ($wpad -lt 0) { $wpad = 0 }
             for ($k = 1; $k -lt $wrapped.Count; $k++) {
                 $wl = $wrapped[$k]
-                $wpad = $inner - $pre - $wl.Length
-                if ($wpad -lt 0) { $wpad = 0 }
                 [void]$lines.Add("  " + $script:UiAccent + $script:UiVB + $script:UiReset +
-                    (" " * $pre) + $script:UiDim + $wl + $script:UiReset + (" " * $wpad) +
+                    $wleft + $sep + $script:UiDim + $wl + $script:UiReset +
+                    (" " * ($col3W - $wl.Length)) + $statSep + (" " * $wpad) +
                     $script:UiAccent + $script:UiVB + $script:UiReset)
             }
         }
