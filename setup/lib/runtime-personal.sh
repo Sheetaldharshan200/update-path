@@ -413,8 +413,14 @@ _personal_deploy_milestone() {
         # boot -- so the ceiling is that next milestone rather than the
         # "starting deployment" one, which a warm run never emits. If it DOES
         # emit it, the line below picks the segment up mid-flight.
+        #
+        # SHORT, and deliberately. The phase cell is 30% of the line: 21 columns
+        # on an 80-column terminal, 27 on a 100, and never more than 33. The
+        # first wording here ran to 33 characters and so was ellipsed on every
+        # terminal but the very widest -- a truncated phase is worse than the
+        # imprecision it was written to fix.
         *"fetching resource"*|*"found resource in cache"*)
-                                                   printf '35|65|25|Getting the Exasol database ready' ;;
+                                                   printf '35|65|25|Getting Exasol ready' ;;
         *"starting deployment"*)                   printf '45|65|15|Starting the database' ;;
         *"waiting for database to start"*)         printf '65|90|10|Waiting for the database' ;;
         *"installing script language container"*)  printf '80|90|15|Installing script languages' ;;
