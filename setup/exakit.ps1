@@ -233,7 +233,7 @@ function Invoke-CmdStatus {
     if ((Get-ExakitManifestValue "autostart.enabled") -eq $true) {
         Write-StatusPanelRow "Autostart" "enabled"
     } else {
-        Write-StatusPanelRow "Autostart" "disabled - enable it with: exakit autostart on"
+        Write-StatusPanelRow "Autostart" "disabled - change it with: exakit autostart"
     }
     # "Kit level" is an internal schema number. It means nothing to the person
     # reading this screen, and `exakit version` carries what they do want.
@@ -474,23 +474,51 @@ function Show-ExakitAutostart {
     Start-ExakitPanel "Automatic start after a restart"
     Write-ExakitPanelLine (("{0,-$w}  {1}") -f "Service", "Status")
     foreach ($id in (Get-ExakitServiceIds)) {
-        $state = if (Test-ExakitAutostartRegistered -Id $id) { "yes" } else { "no" }
+        $state = if (Test-ExakitAutostartRegistered -Id $id) { "enabled" } else { "disabled" }
         Write-ExakitPanelLine (("{0,-$w}  {1}") -f $id, $state)
     }
     Complete-ExakitPanel
     Write-Host ""
-    Info "Turn it on with: exakit autostart on   -   off with: exakit autostart off"
+    # No "turn it on with ..." line: the question that follows this panel IS the
+    # way to change it, and naming two commands that no longer exist was how
+    # this screen used to end.
 }
 
+# Invoke-CmdAutostart - one command: show where it stands, then offer to flip it.
+#
+# It was three ("on", "off", and a bare form that only reported), which made the
+# reader pick the verb before being told what the current state even was - and
+# the bare form then closed by explaining the other two. Now the answer comes
+# first and the only decision left is yes or no.
+#
+# EXAKIT_AUTOSTART_CHANGE pre-answers it for automation, the same contract every
+# other prompt in the kit uses; without a console the default is NO CHANGE, so a
+# scripted run can never silently flip a boot setting.
+# Twin of cmd_autostart in setup/exakit.
 function Invoke-CmdAutostart {
     param([string]$Action = "")
     Assert-ExakitInstalled
     Initialize-ExakitLogging
-    switch ($Action) {
-        { $_ -in @("on", "enable") }   { Enable-ExakitAutostart }
-        { $_ -in @("off", "disable") } { Disable-ExakitAutostart }
-        { $_ -in @("", "status") }     { Show-ExakitAutostart }
-        default { Fail "Unknown option '$Action' for autostart (use: on, off, or no argument to show the state)." }
+    if ($Action) {
+        Fail "autostart takes no arguments - run 'exakit autostart' and answer the question."
+    }
+    Show-ExakitAutostart
+
+    $ids = @(Get-ExakitServiceIds)
+    if ($ids.Count -eq 0) { return }
+    $on = @($ids | Where-Object { Test-ExakitAutostartRegistered -Id $_ }).Count
+
+    # "Everything is on" is the only state that offers to turn things off;
+    # anything else - none of it, or some of it - offers to turn it all on,
+    # because a partly-registered set is the one a reader wants made whole.
+    if ($on -eq $ids.Count) {
+        if (Confirm-ExakitEnvPrompt "EXAKIT_AUTOSTART_CHANGE" "Turn it off?" $false) {
+            Disable-ExakitAutostart
+        }
+    } else {
+        if (Confirm-ExakitEnvPrompt "EXAKIT_AUTOSTART_CHANGE" "Turn it on?" $false) {
+            Enable-ExakitAutostart
+        }
     }
 }
 
@@ -580,6 +608,19 @@ function Invoke-CmdRepairRuntime {
 # PATH entry are intentionally left in place and only reported.
 function Invoke-ExakitUninstallRun {
     param([switch]$DryRun)
+
+    # A real run narrates itself on ONE line. Every path it touches was printed
+    # as its own bullet, around twenty lines for a command whose whole result is
+    # "it is gone". The paths go to the LOGFILE, which is the right place for an
+    # account of what a destructive command touched, and the outcomes stay on
+    # screen through OkStep. NOT in a dry run: there, listing every path IS the
+    # output. Twin of exakit_uninstall_run in common.sh.
+    $unPrevQuiet = $script:ExakitQuietDetail
+    if (-not $DryRun -and $script:UiFancy) {
+        $script:ExakitQuietDetail = $true
+        Start-ExakitSpinner "Removing the kit"
+    }
+    try {
 
     # 0a) Boot entries first: a Startup entry left behind would try to start
     #     something that no longer exists at the next login.
@@ -686,6 +727,10 @@ function Invoke-ExakitUninstallRun {
     }
     if (-not $DryRun -and $binPaths.Count -gt 0) {
         Remove-ExakitBinariesDeferred -Paths $binPaths
+    }
+    } finally {
+        Stop-ExakitSpinner
+        $script:ExakitQuietDetail = $unPrevQuiet
     }
 }
 

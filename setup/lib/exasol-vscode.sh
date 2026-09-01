@@ -392,7 +392,7 @@ exasol_vscode_uninstall() {
     fi
     manifest_del components.exasol_vscode
     manifest_del desired.exasol_vscode
-    ok "Exasol for VS Code removed — reinstall any time with: exakit marketplace"
+    ok_step "Exasol for VS Code removed — reinstall any time with: exakit marketplace"
     return 0
 }
 

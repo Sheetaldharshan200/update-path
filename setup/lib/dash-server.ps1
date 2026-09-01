@@ -658,7 +658,7 @@ function Uninstall-DashServer {
     if (-not $DryRun) {
         Remove-ExakitManifestValue "components.dash_server"
         Remove-ExakitManifestValue "desired.dash_server"
-        Ok "dash-server removed - reinstall any time with: exakit marketplace"
+        OkStep "dash-server removed - reinstall any time with: exakit marketplace"
     }
     return $true
 }

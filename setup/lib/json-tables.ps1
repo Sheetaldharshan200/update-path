@@ -508,7 +508,7 @@ function Uninstall-JsonTables {
     if (-not $DryRun) {
         Remove-ExakitManifestValue "components.json_tables"
         Remove-ExakitManifestValue "desired.json_tables"
-        Ok "JSON Tables removed - reinstall any time with: exakit marketplace"
+        OkStep "JSON Tables removed - reinstall any time with: exakit marketplace"
     }
     return $true
 }

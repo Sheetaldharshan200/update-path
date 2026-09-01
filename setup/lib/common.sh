@@ -9184,14 +9184,15 @@ exakit_autostart_print() {
     ui_panel_line "$(printf '%-*s  %s' "$_ap_w" "Service" "Status")"
     for _ap_id in $(exakit_service_ids); do
         if _exakit_autostart_registered "$_ap_id"; then
-            ui_panel_line "$(printf '%-*s  %s' "$_ap_w" "$_ap_id" "yes")"
+            ui_panel_line "$(printf '%-*s  %s' "$_ap_w" "$_ap_id" "enabled")"
         else
-            ui_panel_line "$(printf '%-*s  %s' "$_ap_w" "$_ap_id" "no")"
+            ui_panel_line "$(printf '%-*s  %s' "$_ap_w" "$_ap_id" "disabled")"
         fi
     done
     ui_panel_end
     printf '\n'
-    info "Turn it on with: exakit autostart on   ·   off with: exakit autostart off"
+    # No "turn it on with ..." line: the question that follows this panel IS the
+    # way to change it, and it named two commands that no longer exist.
     return 0
 }
 
@@ -9367,6 +9368,21 @@ EXAKIT_UM_PANEL_EOF
 
 exakit_uninstall_run() {
     _dry="${1:-0}"
+    # A real run narrates itself on ONE line. Every path it touches was printed
+    # as its own bullet -- three per add-on, then the deployment, the MCP
+    # configs, the kit home and one per CLI binary -- around twenty lines of
+    # "Removing <absolute path>" for a command whose whole result is "it is
+    # gone". The paths go to the LOGFILE, which is the right place for an
+    # account of what a destructive command touched, and the outcomes stay on
+    # screen through ok_step.
+    #
+    # NOT in a dry run: there, listing every path IS the output. That is the
+    # only thing --dry-run produces and the reason anyone asks for it.
+    _un_prev_quiet="${EXAKIT_QUIET_DETAIL:-0}"
+    if [ "$_dry" != "1" ] && [ -t 1 ]; then
+        EXAKIT_QUIET_DETAIL=1
+        ui_spin_begin "Removing the kit"
+    fi
     _step() { # _step <message>  — narrate the action (or the plan line)
         if [ "$_dry" = "1" ]; then info "  will remove: $1"; else info "$1"; fi
     }
@@ -9456,4 +9472,6 @@ exakit_uninstall_run() {
             _rm "$EXAKIT_BIN_DIR/$_bin"
         fi
     done
+    ui_spin_end
+    EXAKIT_QUIET_DETAIL="$_un_prev_quiet"
 }
