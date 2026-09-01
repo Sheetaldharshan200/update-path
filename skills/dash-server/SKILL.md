@@ -1,5 +1,6 @@
 ---
 name: dash-server
+addon: dash-server
 description: Build and operate live dashboards on the local Exasol database with the dash-server add-on — an agent-operated Dash hosting server the AI drives through its MCP control plane while the user opens a browser URL. Covers installing it from the marketplace, starting and stopping it as a kit service, the port it serves on, and diagnosing a control plane that answers while the dashboards page does not. Triggers — "build me a dashboard", "visualize this Exasol data", "install dash-server", "dash-server is not running", "port 5100", "my dashboard page is blank or 500", "deploy a dashboard on my database".
 ---
 

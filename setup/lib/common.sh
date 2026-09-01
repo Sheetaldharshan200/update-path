@@ -3437,6 +3437,11 @@ _exakit_marketplace_install_one() {
         [ -n "$_mi_state" ] && _exakit_addon_progress "$_mi_state" "$1" 65 90 8 "validating"
         "$_mi_validate" || true
     fi
+    # The add-on's own skills, placed now rather than at the AI-bridge step.
+    # Generic on purpose: this reads the owner out of each SKILL.md, so a future
+    # add-on ships its skill by declaring "addon: <id>" in the frontmatter and
+    # nothing here learns its name.
+    exakit_install_addon_skills "$1" || true
     # A service add-on joins the boot set the moment it is installed, so the
     # user does not have to remember a second command after saying yes. On
     # macOS loading the agent also starts it, so it is usable right away.
@@ -5615,6 +5620,113 @@ exakit_skill_field() {
     ' "$1" 2>/dev/null
 }
 
+# exakit_skill_addon <skill-md> — the marketplace add-on that OWNS this skill,
+# or empty for a core one.
+#
+# Declared in the skill's own frontmatter ("addon: dash-server"), NOT inferred
+# from the folder name. The three add-on skills happen to be named after their
+# add-ons today, so a convention would work by luck; it would also silently
+# capture any future core skill that happened to share a name with an add-on,
+# and it could not survive either side being renamed. A declared owner says the
+# thing out loud to anyone opening the file, and it keeps the registry in the
+# filesystem where skills/README.md promises it is — the shell still names no
+# skill.
+exakit_skill_addon() {
+    exakit_skill_field "$1" addon
+}
+
+# exakit_skills_for_addon <addon-id> — the skill folder names that add-on owns.
+exakit_skills_for_addon() {
+    _sfa_dir="$(exakit_skills_dir)" || return 0
+    for _sfa_path in "$_sfa_dir"/*/; do
+        [ -f "$_sfa_path/SKILL.md" ] || continue
+        [ "$(exakit_skill_addon "$_sfa_path/SKILL.md")" = "$1" ] || continue
+        printf '%s\n' "$(basename "$_sfa_path")"
+    done
+    return 0
+}
+
+# _exakit_skill_wanted <skill-md> — does this skill belong on the machine now?
+# A core skill always does. An add-on's skill does only once its add-on is
+# installed: a skill for something the reader does not have is a set of triggers
+# an agent can match on for a tool that is not there.
+_exakit_skill_wanted() {
+    _skw_owner="$(exakit_skill_addon "$1")"
+    [ -n "$_skw_owner" ] || return 0
+    exakit_marketplace_addon_installed "$_skw_owner" 2>/dev/null
+}
+
+# _exakit_skill_place <src-dir> <name> — copy one skill into every discovery
+# root, replacing whatever is there.
+_exakit_skill_place() {
+    for _skp_root in $EXAKIT_SKILL_ROOTS; do
+        rm -rf "$_skp_root/$2"
+        mkdir -p "$_skp_root/$2"
+        cp -R "$1". "$_skp_root/$2/"
+    done
+}
+
+# _exakit_skill_unplace <name> — take one skill back out of every root.
+_exakit_skill_unplace() {
+    for _sku_root in $EXAKIT_SKILL_ROOTS; do
+        [ -e "$_sku_root/$1" ] || continue
+        rm -rf "$_sku_root/$1"
+    done
+}
+
+# _exakit_skills_record_installed — write components.skills.installed by LOOKING
+# at the discovery roots, rather than by counting what a particular call copied.
+#
+# That list is what a full uninstall removes, so it has to stay true as add-ons
+# come and go — and three different paths now change it (the skills step, an
+# add-on install, an add-on removal). Derived state cannot drift the way three
+# separate bookkeeping updates can.
+_exakit_skills_record_installed() {
+    [ -f "$EXAKIT_MANIFEST" ] || return 0
+    _sri_dir="$(exakit_skills_dir)" || return 0
+    _sri_json=""
+    for _sri_path in "$_sri_dir"/*/; do
+        [ -f "$_sri_path/SKILL.md" ] || continue
+        _sri_name="$(basename "$_sri_path")"
+        [ "$(exakit_skill_state "$_sri_name")" = "available" ] && continue
+        _sri_json="${_sri_json:+$_sri_json,}\"$_sri_name\""
+    done
+    manifest_set components.skills.version \
+        "$(exakit_versions_value components.skills.version 2>/dev/null || printf 'unknown')"
+    manifest_set components.skills.installed "[$_sri_json]"
+}
+
+# exakit_install_addon_skills <addon-id> — place the skills that add-on owns.
+# Called from the generic marketplace install path, so a new add-on that ships a
+# skill needs no wiring: declaring the owner in its SKILL.md is the whole change.
+exakit_install_addon_skills() {
+    _ias_dir="$(exakit_skills_dir)" || return 0
+    _ias_n=0
+    for _ias_name in $(exakit_skills_for_addon "$1"); do
+        [ -f "$_ias_dir/$_ias_name/SKILL.md" ] || continue
+        _exakit_skill_place "$_ias_dir/$_ias_name/" "$_ias_name"
+        _exakit_log_file "OK    Installed skill: $_ias_name (with $1)"
+        _ias_n=$((_ias_n + 1))
+    done
+    [ "$_ias_n" -gt 0 ] || return 0
+    _exakit_skills_record_installed
+    return 0
+}
+
+# exakit_remove_addon_skills <addon-id> — take them back out again. A skill left
+# behind after its add-on is gone still advertises triggers for a tool that is
+# no longer on the machine, which is worse than never having shipped it.
+exakit_remove_addon_skills() {
+    _ras_n=0
+    for _ras_name in $(exakit_skills_for_addon "$1"); do
+        _exakit_skill_unplace "$_ras_name"
+        _ras_n=$((_ras_n + 1))
+    done
+    [ "$_ras_n" -gt 0 ] || return 0
+    _exakit_skills_record_installed
+    return 0
+}
+
 # exakit_skill_summary <description> — the one-line gist for a list row. The
 # full description is written for an AGENT to match on (long, trigger-laden);
 # a human scanning a table wants the first sentence, so cut the trigger list
@@ -5771,7 +5883,6 @@ exakit_install_skills() {
     fi
 
     _installed=0
-    _installed_json=""
     for _skill_dir in "$_skills_src"/*/; do
         [ -f "$_skill_dir/SKILL.md" ] || continue
         # Frontmatter that does not parse is skipped HERE as well as in the
@@ -5781,17 +5892,20 @@ exakit_install_skills() {
             warn "Skipping $(basename "$_skill_dir"): its SKILL.md has no readable name in the frontmatter."
             continue
         }
+        # An add-on's skill waits for its add-on. It is placed by the add-on
+        # install instead, so a reader who never opens the marketplace is not
+        # given triggers for three tools they do not have -- and a reader who
+        # installs one later gets its skill as part and parcel of that install.
+        # On a refresh (exakit skills-install after a kit update) this is also
+        # what keeps the add-ons you DO have up to date without resurrecting the
+        # ones you removed.
+        _exakit_skill_wanted "$_skill_dir/SKILL.md" || continue
         _name="$(basename "$_skill_dir")"
-        for _dest_root in $EXAKIT_SKILL_ROOTS; do
-            rm -rf "$_dest_root/$_name"
-            mkdir -p "$_dest_root/$_name"
-            cp -R "$_skill_dir". "$_dest_root/$_name/"
-        done
+        _exakit_skill_place "$_skill_dir" "$_name"
         # The names go to the logfile, not the screen: nine ticked lines say
         # nothing the count does not, and `exakit skills` lists them any time.
         _exakit_log_file "OK    Installed skill: $_name"
         _installed=$((_installed + 1))
-        _installed_json="${_installed_json:+$_installed_json,}\"$_name\""
     done
 
     if [ "$_installed" -eq 0 ]; then
@@ -5805,11 +5919,7 @@ exakit_install_skills() {
     # are OURS to remove at uninstall time (the discovery folders also hold
     # skills the user installed themselves, which the kit must never touch),
     # and whether the installed copies have gone stale behind a kit update.
-    if [ -f "$EXAKIT_MANIFEST" ]; then
-        manifest_set components.skills.version \
-            "$(exakit_versions_value components.skills.version 2>/dev/null || printf 'unknown')"
-        manifest_set components.skills.installed "[$_installed_json]"
-    fi
+    _exakit_skills_record_installed
 
     exakit_report_readonly_allowlist
     info "Restart or reload your AI client to pick them up."
@@ -8715,6 +8825,9 @@ _exakit_uninstall_component() {
                 _uc_fn="$(_exakit_addon_fn "$_uc_key" uninstall)"
                 if command -v "$_uc_fn" >/dev/null 2>&1; then
                     "$_uc_fn" "$_uc_dry" || warn "Removing the $_uc_key add-on reported issues"
+                    # ...and the skills it owns go with it. Here rather than in
+                    # the module, so every add-on gets it without writing a line.
+                    [ "$_uc_dry" = "1" ] || exakit_remove_addon_skills "$_uc_key" || true
                 else
                     warn "The $_uc_key module carries no uninstall — update the kit: exakit update exakit"
                 fi

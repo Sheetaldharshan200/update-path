@@ -2847,6 +2847,93 @@ function Get-ExakitSkillField {
 # description is written for an AGENT to match on (long, trigger-laden); a
 # human scanning a table wants the first sentence, so cut the trigger list and
 # then the first sentence, and truncate on a word boundary.
+# Get-ExakitSkillAddon - the marketplace add-on that OWNS this skill, or empty
+# for a core one. Twin of exakit_skill_addon in common.sh.
+#
+# Declared in the skill's own frontmatter ("addon: dash-server"), NOT inferred
+# from the folder name: the three add-on skills happen to be named after their
+# add-ons today, so a convention would work by luck, would silently capture a
+# future core skill that shared a name with an add-on, and could not survive
+# either side being renamed. The shell still names no skill.
+function Get-ExakitSkillAddon {
+    param([string]$Path)
+    return (Get-ExakitSkillField -Path $Path -Field "addon")
+}
+
+# Get-ExakitSkillsForAddon <id> - the skill folder names that add-on owns.
+# Twin of exakit_skills_for_addon.
+function Get-ExakitSkillsForAddon {
+    param([string]$Id)
+    $out = @()
+    $dir = Get-ExakitSkillsDir
+    if (-not $dir) { return $out }
+    foreach ($d in (Get-ChildItem -Path $dir -Directory -ErrorAction SilentlyContinue)) {
+        $md = Join-Path $d.FullName "SKILL.md"
+        if (-not (Test-Path $md)) { continue }
+        if ((Get-ExakitSkillAddon -Path $md) -ne $Id) { continue }
+        $out += $d.Name
+    }
+    return $out
+}
+
+# Test-ExakitSkillWanted <skill-md> - does this skill belong on the machine now?
+# A core skill always does; an add-on's skill only once its add-on is installed.
+# Twin of _exakit_skill_wanted.
+function Test-ExakitSkillWanted {
+    param([string]$Path)
+    $owner = Get-ExakitSkillAddon -Path $Path
+    if (-not $owner) { return $true }
+    return (Test-ExakitMarketplaceAddonInstalled $owner)
+}
+
+# Copy-ExakitSkill <src> <name> - place one skill in every discovery root,
+# replacing whatever is there. Twin of _exakit_skill_place.
+function Copy-ExakitSkill {
+    param([string]$Source, [string]$Name)
+    foreach ($destRoot in (Get-ExakitSkillRoots)) {
+        $dest = Join-Path $destRoot $Name
+        if (Test-Path $dest) { Remove-Item -Recurse -Force $dest }
+        New-Item -ItemType Directory -Force -Path $dest | Out-Null
+        Copy-Item -Recurse -Force -Path (Join-Path $Source "*") -Destination $dest
+    }
+}
+
+# Remove-ExakitSkillCopy <name> - take one back out of every root.
+# Twin of _exakit_skill_unplace.
+function Remove-ExakitSkillCopy {
+    param([string]$Name)
+    foreach ($destRoot in (Get-ExakitSkillRoots)) {
+        $dest = Join-Path $destRoot $Name
+        if (Test-Path $dest) { Remove-Item -Recurse -Force $dest }
+    }
+}
+
+# Install-ExakitAddonSkills <id> - place the skills that add-on owns, as part of
+# installing it. Generic: the owner is read out of each SKILL.md, so a future
+# add-on ships a skill by declaring "addon: <id>" and nothing here learns its
+# name. Twin of exakit_install_addon_skills.
+function Install-ExakitAddonSkills {
+    param([string]$Id)
+    $dir = Get-ExakitSkillsDir
+    if (-not $dir) { return }
+    foreach ($name in (Get-ExakitSkillsForAddon $Id)) {
+        $src = Join-Path $dir $name
+        if (-not (Test-Path (Join-Path $src "SKILL.md"))) { continue }
+        Copy-ExakitSkill -Source $src -Name $name
+        Write-ExakitLog "OK" "Installed skill: $name (with $Id)"
+    }
+}
+
+# Remove-ExakitAddonSkills <id> - and take them out again when the add-on goes.
+# A skill left behind still advertises triggers for a tool that is no longer on
+# the machine. Twin of exakit_remove_addon_skills.
+function Remove-ExakitAddonSkills {
+    param([string]$Id)
+    foreach ($name in (Get-ExakitSkillsForAddon $Id)) {
+        Remove-ExakitSkillCopy -Name $name
+    }
+}
+
 function Get-ExakitSkillSummary {
     param([string]$Description)
     $text = $Description
@@ -3006,13 +3093,15 @@ function Install-ExakitSkills {
             Warn2 "Skipping $($skillDir.Name): its SKILL.md has no readable name in the frontmatter."
             continue
         }
+        # An add-on's skill waits for its add-on. It is placed by the add-on
+        # install instead, so a reader who never opens the marketplace is not
+        # given triggers for three tools they do not have - and one who installs
+        # an add-on later gets its skill as part and parcel of that install. On a
+        # refresh this also keeps the add-ons you DO have current without
+        # resurrecting the ones you removed.
+        if (-not (Test-ExakitSkillWanted -Path (Join-Path $skillDir.FullName "SKILL.md"))) { continue }
         $name = $skillDir.Name
-        foreach ($destRoot in @((Join-Path $HOME ".claude\skills"), (Join-Path $HOME ".agents\skills"))) {
-            $dest = Join-Path $destRoot $name
-            if (Test-Path $dest) { Remove-Item -Recurse -Force $dest }
-            New-Item -ItemType Directory -Force -Path $dest | Out-Null
-            Copy-Item -Recurse -Force -Path (Join-Path $skillDir.FullName "*") -Destination $dest
-        }
+        Copy-ExakitSkill -Source $skillDir.FullName -Name $name
         # The names go to the logfile, not the screen: nine ticked lines say
         # nothing the count does not, and `exakit skills` lists them any time.
         if ($script:LogFile) { "OK    Installed skill: $name" | Add-Content -Path $script:LogFile }
@@ -3863,6 +3952,9 @@ function Invoke-ExakitMarketplaceApply {
                     & $addon.ValidateFn
                 } catch { Write-ExakitAddonNote "warn" "$id validation reported: $_" }
             }
+            # The add-on's own skills, placed now rather than at the AI-bridge
+            # step. Twin of the same call in _exakit_marketplace_install_one.
+            try { Install-ExakitAddonSkills $id } catch { }
             # A service add-on joins the boot set the moment it is installed, so
             # nobody has to remember a second command. This used to be skipped
             # during an install, because Register-ExakitAutostart was CLI-only -

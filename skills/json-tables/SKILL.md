@@ -1,5 +1,6 @@
 ---
 name: json-tables
+addon: json-tables
 description: Load JSON-shaped data into the local Exasol database with the JSON Tables add-on, which shreds nested JSON into relational tables — covering why exapump alone cannot load JSON, how the add-on is offered automatically during a data load, and the fact that its ingest engine ships prebuilt so no Rust toolchain is ever needed. Triggers — "load a JSON file into Exasol", "import JSON data", "exapump will not take my .json", "install JSON Tables", "exasol-json-tables", "flatten nested JSON into tables", "do I need Rust for this".
 ---
 
