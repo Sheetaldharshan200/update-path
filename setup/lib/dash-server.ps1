@@ -45,12 +45,33 @@ function Get-DashServerLauncherPath {
 
 # dash-server exposes no __version__; the distribution metadata written by the
 # install is the authority. Twin of dash_server_installed_version.
-function Get-DashServerInstalledVersion {
+# Get-DashServerPackageVersion - what the VENV alone says, with no opinion on
+# whether the add-on is usable yet. The installer asks this immediately after
+# pip, before the launcher exists; Get-DashServerInstalledVersion below is the
+# stricter question every other caller wants.
+function Get-DashServerPackageVersion {
     $python = Get-DashServerVenvPython
     if (-not (Test-Path $python)) { return $null }
     $version = & $python -c "from importlib.metadata import version; print(version('dash-server'))" 2>$null
     if ($LASTEXITCODE -ne 0) { return $null }
     return ($version | Out-String).Trim()
+}
+
+function Get-DashServerInstalledVersion {
+    # The manifest RECORD as well as the venv. The record is written at the END
+    # of a successful install, so an install that died earlier - the Windows tar
+    # failure did exactly that, leaving a venv and nothing else - no longer
+    # reports a version for something no command can start. Every caller
+    # believed the old answer: `exakit marketplace` said "already present -
+    # nothing to install", `exakit update dash-server` said "everything is
+    # already current", and Start-DashServer said "not installed", with no
+    # documented command able to recover it.
+    #
+    # Both halves, because neither alone is evidence: the record may have been
+    # written by another machine, and the venv may be a half-install.
+    # Get-JsonTablesInstalledVersion already takes exactly this line.
+    if (-not (Get-ExakitManifestValue "components.dash_server.version")) { return $null }
+    return (Get-DashServerPackageVersion)
 }
 
 # The source tarball of the tagged release. Twin of dash_server_release_url.
@@ -119,7 +140,7 @@ function Install-DashServer {
         # The install is not done until the venv can answer for the version: a
         # tarball that unpacked but failed to build would otherwise be reported
         # as installed and only fail at first launch.
-        if (-not (Get-DashServerInstalledVersion)) {
+        if (-not (Get-DashServerPackageVersion)) {
             return (Write-DashServerNotInstalled "the venv cannot report a dash-server version after the install (see log)")
         }
         # Belt and braces even on a fresh venv: --seed above should have put
@@ -394,8 +415,39 @@ function Restore-DashServerPackageData {
                     -OutFile $tarball -UseBasicParsing -TimeoutSec 120 -ErrorAction Stop
             })
         } catch { return }
-        & tar -xzf $tarball -C $tmp 2>$null
-        if ($LASTEXITCODE -ne 0) { return }
+        # tar, resolved deliberately rather than taken off PATH. Two hazards
+        # here, and they stack:
+        #
+        # 1. PATH ORDER. On a machine with Git for Windows, its GNU tar
+        #    (Git\usr\bin\tar.exe) comes BEFORE Windows' own bsdtar
+        #    (System32\tar.exe). GNU tar reads a "C:\..." argument as host:path
+        #    rsh syntax and dies with
+        #    "tar (child): Cannot connect to C: resolve failed".
+        #    bsdtar understands drive letters, so it is asked for by name.
+        #
+        # 2. $ErrorActionPreference is Stop module-wide, and a native command's
+        #    FIRST stderr write becomes a TERMINATING error under it - which
+        #    2>$null does not prevent. So this best-effort repair did not "fail
+        #    and return" as written: it threw, and the caller reported the whole
+        #    dash-server install as failed, over a data-file top-up that is
+        #    allowed to be skipped. Same fix as Invoke-ExakitLogged uses.
+        $tarExe = "tar"
+        if ($env:SystemRoot) {
+            $systemTar = Join-Path $env:SystemRoot "System32\tar.exe"
+            if (Test-Path $systemTar) { $tarExe = $systemTar }
+        }
+        $tarCode = 1
+        $prevTarEAP = $ErrorActionPreference
+        try {
+            $ErrorActionPreference = "Continue"
+            & $tarExe -xzf $tarball -C $tmp 2>$null
+            $tarCode = $LASTEXITCODE
+        } catch {
+            $tarCode = 1
+        } finally {
+            $ErrorActionPreference = $prevTarEAP
+        }
+        if ($tarCode -ne 0) { return }
         $src = Join-Path $tmp "dash-server-$($script:DashServerVersion)\src\dash_server"
         if (-not (Test-Path $src)) { return }
 
