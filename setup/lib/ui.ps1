@@ -742,10 +742,11 @@ function Get-ExakitTableWidths {
     # a wrapped row is two lines where the frame counted one, so the next
     # cursor-up lands inside the frame before it and strands its top border on
     # screen. The one-line progress bar reserves its last column for this reason.
-    # A table with extra columns separates them with " | " (three columns)
-    # rather than a bare two-space gap; without them the gaps stay two.
+    # Columns are separated by a plain two-space gap, whatever they hold. A
+    # drawn rule between them was tried here and taken out: alignment already
+    # tells the eye where a column starts, and the ONE vertical the table needs
+    # is the tree spine in the name column, which is a different line entirely.
     $sepW = 2
-    if ($col2W -gt 0 -or $col3W -gt 0) { $sepW = 3 }
     # ONE decomposition, and the same one Write-ExakitTableFrame uses: the fixed
     # chrome, the name, then every column that follows preceded by its gap.
     # Written as "11 + name + status" with the gap folded into the 11, an extra
@@ -887,14 +888,12 @@ function Get-ExakitTableFrame {
     $statW = [int]$w.Status
     $col2W = [int]$w.Col2
     $col3W = [int]$w.Col3
-    # Column rules, and only for a table that has columns to rule between: the
-    # dataset and AI-client menus are a name and a status, where a line between
-    # two columns is furniture around nothing. Dim, so the eye reads the cells
-    # and not the scaffolding.
+    # A plain gap between columns. Rules were drawn here once and removed: they
+    # boxed every wrapped description into a cage, and they competed with the
+    # one line that carries meaning -- the tree spine down the name column.
     $sepW = [int]$w.Sep
     if ($sepW -lt 2) { $sepW = 2 }
     $sep = "  "
-    if ($sepW -eq 3) { $sep = " " + $script:UiDim + $script:UiVB + $script:UiReset + " " }
     # No Status column at all while nothing has a status: no heading, no rule,
     # no reserved width. $statSep is the rule before it, which goes with it.
     $statSep = ""
@@ -955,7 +954,8 @@ function Get-ExakitTableFrame {
     foreach ($row in $Table.Rows.ToArray()) {
         $i++
         $conn = ""
-        if ($row.Kind -eq "tee") { $conn = $script:UiTee + " " }
+        $spine = $false
+        if ($row.Kind -eq "tee") { $conn = $script:UiTee + " "; $spine = $true }
         elseif ($row.Kind -eq "corner") { $conn = $script:UiCorner + " " }
         # A row nobody can pick: no checkbox at all (an empty one invites the
         # reader to try), and the note reads straight on from the label -
@@ -1046,12 +1046,19 @@ function Get-ExakitTableFrame {
         # a row started and stopped running, which is why it needed a reserved
         # blank line and why it is gone.
         if ($wrapped.Count -gt 1) {
-            # The rules carry down the continuation line: without them the text
-            # floats in the middle of the row and the columns stop reading as
-            # columns for as long as a description runs. Built cell by cell and
-            # MEASURED as it goes, because every rule carries colour escapes and
-            # .Length would count those as width.
-            $wleft = " " * (5 + $nameW)
+            # The TREE SPINE carries down the continuation lines. Without it the
+            # connector column goes blank for as long as a description wraps, and
+            # the line joining the add-ons snaps in half -- the same menu draws
+            # an unbroken spine while it installs, where every row is one line,
+            # so a description must not be what breaks it. Only a tee continues:
+            # after the corner the tree has ended and a spine below it would
+            # point at nothing. Built cell by cell and MEASURED as it goes, so
+            # the width is arithmetic rather than a count of escape bytes.
+            if ($spine) {
+                $wleft = (" " * 5) + $script:UiVB + (" " * ($nameW - 1))
+            } else {
+                $wleft = " " * (5 + $nameW)
+            }
             $wlen = 5 + $nameW
             if ($col2W -gt 0) {
                 $wleft += $sep + (" " * $col2W)
