@@ -56,7 +56,7 @@ You already use AI. The hard part is trusting it with your data. This kit gives 
 
 At the end: connection details on screen, a managed runtime state under `~/.exasol-starter-kit/`, and guided MCP setup for supported clients. Time to first query: **under 2 minutes**.
 
-**Three optional add-ons  `exakit marketplace`:**
+**Three optional add-ons — add them any time with `exakit marketplace`:**
 
 | | Add-on | What it does for you |
 |---|---|---|
@@ -199,12 +199,9 @@ later with:
 exakit marketplace
 ```
 
-Space selects, Enter installs. The first add-on is **dash-server**, an
-agent-operated dashboard host: your AI assistant builds live, query-backed
-dashboards on the local database through its MCP control plane, and you open
-them in the browser. Installed add-ons update through `exakit update` like
-everything else; a tool you already have (even installed outside the kit) is
-never offered twice. Flowcharts of every scenario:
+Space selects, Enter installs. Installed add-ons update through `exakit update`
+like everything else, and a tool you already have — even one installed outside
+the kit — is never offered twice. Flowcharts of every scenario:
 [MARKETPLACE-FLOWS.md](MARKETPLACE-FLOWS.md). Building your own add-on:
 [MARKETPLACE.md](MARKETPLACE.md).
 
@@ -214,11 +211,6 @@ The kit tracks a **tested set** of versions, not the newest of everything. The
 maintainers publish that set, and your machine reads it — so an update means
 "move to the combination we verified together", never "hope four independent
 releases work with each other".
-
-```bash
-exakit version         # what is installed vs what is available, and why
-exakit update          # apply everything that is waiting; it asks before it stops the database
-```
 
 `exakit update` applies the quick components (kit scripts, exapump, MCP server,
 pyexasol) in seconds. If a **database** update is waiting it asks you first,
@@ -240,11 +232,11 @@ deliberately with `exakit update --yes` (or `EXAKIT_CONFIRM_RUNTIME_UPDATE=1`).
 
 ```
 Component  Installed         Tagged            Severity    Action
-exakit     0.2.0             0.2.0             -           current
-nano       2026.2.0-nano.2   2026.3.0-nano.1   -           exakit update runtime (heavy)
-exapump    0.11.2            0.12.0            recommended exakit update exapump
-mcp        1.10.1            1.10.1            -           current
-pyexasol   2.2.2             2.2.2             -           current
+exakit     0.2.1             0.2.1             -           current
+nano       2026.2.0-nano.2   2026.2.0-nano.3   -           exakit update runtime (heavy)
+exapump    0.11.3            0.12.0            recommended exakit update exapump
+mcp        2.1.0             2.1.0             -           current
+pyexasol   2.3.2             2.3.2             -           current
 ```
 
 A few things worth knowing:
