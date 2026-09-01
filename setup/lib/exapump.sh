@@ -1034,7 +1034,18 @@ _exakit_json_tables_ensure() {
     # ok_step rather than ok: the load narrates on one line, which gates plain
     # ok to the logfile, and ok_step also hands the spinner's line back before
     # printing so this lands on a row of its own.
-    ok_step "JSON Tables installed — the add-on that loads JSON into Exasol"
+    # Nothing on screen. This runs in the middle of a folder load, where the
+    # one-line progress bar owns the row and rewrites it continuously -- the
+    # line landed inside it:
+    #
+    #   ⠇ products.json (2/2)  ████████ 99% (7s)   ✓ JSON Tables installed — ...
+    #
+    # ok_step cannot help here: its ui_spin_pause looks for a SPINNER, and a
+    # progress bar is a different animator holding the same line. Announcing an
+    # add-on the reader did not choose was worth one line; it is not worth one
+    # line printed through the middle of another. The logfile keeps it, and the
+    # add-on shows as installed in `exakit marketplace` like any other.
+    _exakit_log_file "OK    JSON Tables installed — the add-on that loads JSON into Exasol"
     return 0
 }
 
@@ -1385,7 +1396,7 @@ exakit_load_local_folder() {
     # One schema for the whole folder, asked once.
     _blf_schema="${EXAKIT_SCHEMA:-STARTER_KIT}"
     while :; do
-        _blf_schema="$(prompt_text "Target schema for all $_blf_n file(s) (back to return)" "$_blf_schema")"
+        _blf_schema="$(prompt_text "Target schema (back to return)" "$_blf_schema")"
         case "$_blf_schema" in
             b|B|back|Back|BACK) info "Returning to data loading options."; return 2 ;;
             ""|*[!A-Za-z0-9_]*)
@@ -1398,7 +1409,7 @@ exakit_load_local_folder() {
     _blf_schema="$(printf '%s' "$_blf_schema" | tr '[:lower:]' '[:upper:]')"
 
     exakit_bulk_print_plan "$_blf_plan" "$_blf_chosen" "$_blf_schema" "$_blf_dir"
-    confirm_env EXAKIT_BULK_CONFIRM "Load these $_blf_n file(s) into $_blf_schema?" y || {
+    confirm_env EXAKIT_BULK_CONFIRM "Load $(exakit_plural "$_blf_n" file) from $(ui_tilde "$_blf_dir") into $_blf_schema?" y || {
         info "Nothing was loaded."
         return 2
     }
@@ -1420,7 +1431,7 @@ EXAKIT_BULK_WEIGH_EOF
     _blf_t0="$(date +%s 2>/dev/null || echo 0)"
     _blf_state="$(mktemp "${TMPDIR:-/tmp}/exakit-folder.XXXXXX")" || _blf_state=""
     if [ -n "$_blf_state" ]; then
-        ui_progress_state "$_blf_state" 0 1 2 "reading $_blf_n file(s)"
+        ui_progress_state "$_blf_state" 0 1 2 "reading $(exakit_plural "$_blf_n" file)"
         ui_progress_begin "$_blf_state" "$_blf_t0" || true
     fi
     _blf_done=0
@@ -1478,11 +1489,18 @@ EXAKIT_BULK_LOAD_EOF
     manifest_set data.last_load.files "$_blf_done"
 
     if [ "$_blf_failed" -gt 0 ]; then
-        warn "Loaded $_blf_done of $_blf_n file(s) into $_blf_schema; $_blf_failed not loaded (reason above, full detail: exakit logs)."
+        warn "Loaded $_blf_done of $_blf_n into $_blf_schema; $_blf_failed not loaded (reason above, full detail: exakit logs)."
         return 1
     fi
-    ok "Loaded $_blf_done file(s) into $_blf_schema"
+    ok "Loaded $(exakit_plural "$_blf_done" file) into $_blf_schema"
     return 0
+}
+
+# exakit_plural <n> <noun> — "1 file", "2 files". The kit wrote "file(s)" in
+# nine places, which is a form nobody says out loud and which reads as unfinished
+# on the only count that is ever common: one.
+exakit_plural() {
+    if [ "$1" = "1" ]; then printf '%s %s\n' "$1" "$2"; else printf '%s %ss\n' "$1" "$2"; fi
 }
 
 # exakit_bulk_print_plan <plan> <chosen> <schema> <dir> — what is about to
@@ -1491,12 +1509,17 @@ EXAKIT_BULK_LOAD_EOF
 # because a folder of exports beside two hundred images should not print two
 # hundred lines.
 exakit_bulk_print_plan() {
-    info "From $(ui_tilde "$4") into $3:"
+    # No header line. The confirm below names the count, the schema and the
+    # folder in one sentence, so a line above the list saying the same three
+    # things was the plan introducing itself.
     printf '%s\n' "$2" | while IFS='|' read -r _bpp_kind _bpp_table _bpp_path; do
         [ -n "$_bpp_path" ] || continue
-        printf '      %s%s%s %s %s->%s %s.%s\n' \
+        # Table name only. The schema is the same for every row and is said
+        # once, in the question underneath -- repeating it per file made the
+        # busiest column the one carrying the least information.
+        printf '      %s%s%s %s %s->%s %s\n' \
             "${UI_DIM:-}" "${UI_BULLET:--}" "${UI_RESET:-}" \
-            "$(basename "$_bpp_path")" "${UI_DIM:-}" "${UI_RESET:-}" "$3" "$_bpp_table"
+            "$(basename "$_bpp_path")" "${UI_DIM:-}" "${UI_RESET:-}" "$_bpp_table"
     done
     printf '%s\n' "$1" | grep '^skip|duplicate' | while IFS='|' read -r _bpp_v _bpp_reason _bpp_of _bpp_path; do
         case "$_bpp_reason" in
@@ -1506,12 +1529,16 @@ exakit_bulk_print_plan() {
         printf '      %s! %s skipped (%s)%s\n' \
             "${UI_DIM:-}" "$(basename "$_bpp_path")" "$_bpp_why" "${UI_RESET:-}"
     done
+    # The two counts on ONE line when both happen, and each with its own
+    # plural. Two near-identical sentences stacked under a three-file plan was
+    # more lines about what is NOT being loaded than about what is.
     _bpp_other="$(printf '%s\n' "$1" | grep -c '^skip|unsupported|' || true)"
     _bpp_empty="$(printf '%s\n' "$1" | grep -c '^skip|empty|' || true)"
-    [ "$_bpp_other" -gt 0 ] && printf '      %s%s file(s) of other kinds ignored%s\n' \
-        "${UI_DIM:-}" "$_bpp_other" "${UI_RESET:-}"
-    [ "$_bpp_empty" -gt 0 ] && printf '      %s%s empty file(s) ignored%s\n' \
-        "${UI_DIM:-}" "$_bpp_empty" "${UI_RESET:-}"
+    _bpp_ig=""
+    [ "$_bpp_other" -gt 0 ] && _bpp_ig="$_bpp_other of other kinds"
+    [ "$_bpp_empty" -gt 0 ] && _bpp_ig="${_bpp_ig:+$_bpp_ig, }$_bpp_empty empty"
+    [ -n "$_bpp_ig" ] && printf '      %signored: %s%s\n' \
+        "${UI_DIM:-}" "$_bpp_ig" "${UI_RESET:-}"
     return 0
 }
 
