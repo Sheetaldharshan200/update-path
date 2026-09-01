@@ -72,6 +72,11 @@ else
     if ! personal_deployment_exists; then
         info "Deployment marked done but not reachable — redeploying"
         personal_deploy_local
+        # The deploy registers `destroy --remove --auto-approve` as its undo.
+        # The branch above disarms it with mark_step; this one has no mark_step
+        # to make -- the step is already recorded -- so it must say so directly,
+        # or that destroy stays armed for every later failure in this run.
+        rollback_clear
     elif ! personal_deployment_running; then
         # Exists but merely STOPPED (exakit stop, a reboot — the Personal
         # runtime does not auto-start): start it, don't skip it. Every step

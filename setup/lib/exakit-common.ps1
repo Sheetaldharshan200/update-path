@@ -4182,9 +4182,12 @@ function Show-ExakitConnectionPanel {
     Write-ExakitPanelLine ("Runtime:      {0}" -f $(if ($type) { $type } else { 'unknown' }))
     Write-ExakitPanelLine ("DSN:          {0}" -f $(if ($dsn) { $dsn } else { 'unknown' }))
     Write-ExakitPanelLine ("Admin user:   {0}" -f $(if ($user) { $user } else { 'sys' }))
-    if ($pwFile) { Write-ExakitPanelLine "Admin pass:   stored in $(Get-ExakitTilde $pwFile)" }
+    # No "stored in": the path IS the answer, and those two words are what took
+    # this panel past 80 columns on the shell side, where the box then breaks.
+    # Twin of the same two rows in common.sh.
+    if ($pwFile) { Write-ExakitPanelLine "Admin pass:   $(Get-ExakitTilde $pwFile)" }
     if ($mcpUser) { Write-ExakitPanelLine "MCP user:     $mcpUser" }
-    if ($mcpPwf)  { Write-ExakitPanelLine "MCP pass:     stored in $(Get-ExakitTilde $mcpPwf)" }
+    if ($mcpPwf)  { Write-ExakitPanelLine "MCP pass:     $(Get-ExakitTilde $mcpPwf)" }
     Write-ExakitPanelLine "TLS:          enabled (self-signed certificate)"
     if ($exapumpPath) { Write-ExakitPanelLine "exapump:      $(Get-ExakitTilde $exapumpPath) (profile: $exapumpProfile)" }
     # Stdio MCP configs live inside each AI client's own config file, not in
