@@ -3191,7 +3191,7 @@ _exakit_addon_bar_live() {
     [ "${EXAKIT_ADDON_TABLE_LIVE:-0}" = 1 ]
 }
 
-# _exakit_addon_note <info|warn|ok> <text> — something the reader must see, said
+# _exakit_addon_note <info|warn> <text> — something the reader must see, said
 # AFTER the table has stopped. A line printed into a frame that is still being
 # repainted lands INSIDE the box, so while the table is live nothing speaks
 # except the table. With no table it is said where it stands, exactly as before.
@@ -3203,7 +3203,6 @@ _exakit_addon_note() {
     fi
     case "$1" in
         warn) warn "$2" ;;
-        ok)   ok_step "$2" ;;
         *)    info "$2" ;;
     esac
 }
@@ -3215,7 +3214,6 @@ _exakit_addon_notes_say() {
         [ -n "$_ans_text" ] || continue
         case "$_ans_kind" in
             warn) warn "$_ans_text" ;;
-            ok)   ok_step "$_ans_text" ;;
             *)    info "$_ans_text" ;;
         esac
     done <<EXAKIT_ADDON_NOTES_EOF

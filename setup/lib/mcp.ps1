@@ -1488,12 +1488,12 @@ function Register-ExakitAddonMcpServers {
     }
     $configured = @($configured | Where-Object { $_ })
     if ($configured.Count -gt 0) {
-        # Held back while the marketplace table is live: a line printed into a
-        # frame that is still repainting lands inside the box and strands it.
-        # Twin of _exakit_mcp_addon_say in mcp.sh -- OkStep was the wrong tool,
-        # it survives the QUIETING, which is how it punched through the very
-        # protection that keeps the table intact.
-        Write-ExakitAddonNote "ok" "$Label is registered with your AI clients ($($configured -join ', ')) - restart them to pick it up"
+        # Nothing on screen - twin of the same silence in mcp.sh. Registering the
+        # endpoint is part of installing the add-on, not a step of its own, and
+        # the marketplace row already reported the install. On this side the line
+        # was landing mid-redraw badly enough to duplicate the table's top border
+        # and spill its own tail across the closing one.
+        Write-ExakitLog "OK" "$Label MCP endpoint registered with: $($configured -join ', ')"
         return $true
     }
     # Every connected client was skipped: the two that cannot express a remote

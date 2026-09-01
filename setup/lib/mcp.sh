@@ -247,7 +247,7 @@ mcp_refresh_client_pins() {
     ok "AI client configs now launch ${EXAKIT_MCP_PACKAGE}@${EXAKIT_MCP_VERSION}"
 }
 
-# _exakit_mcp_addon_say <info|warn|ok> <text> - say something that may be
+# _exakit_mcp_addon_say <info|warn> <text> - say something that may be
 # happening UNDER A LIVE TABLE.
 #
 # The marketplace paints its add-ons as an animated table: it redraws the frame
@@ -274,7 +274,6 @@ _exakit_mcp_addon_say() {
     fi
     case "$1" in
         warn) warn "$2" ;;
-        ok)   ok "$2" ;;
         *)    info "$2" ;;
     esac
 }
@@ -316,7 +315,14 @@ PY
     )"
     rm -f "$_mras_result"
     if [ -n "$_mras_configured" ]; then
-        _exakit_mcp_addon_say ok "$_mras_label is registered with your AI clients ($_mras_configured) - restart them to pick it up"
+        # Nothing on screen. Registering the endpoint is part of installing the
+        # add-on, not a step of its own, and the row in the marketplace table
+        # already says the add-on installed. A separate line for a sub-step of a
+        # row that has just reported success is one fact twice -- and it was
+        # arriving under a live table, where any line at all strands the frame.
+        # The logfile keeps the record, which is where the account of what an
+        # install touched belongs.
+        _exakit_log_file "OK    $_mras_label MCP endpoint registered with: $_mras_configured"
         return 0
     fi
     # Every connected client was skipped: the two that cannot express a remote
