@@ -109,7 +109,10 @@ lines removed.
 **Deploy phase labels.** The progress line's phase cell is 30% of the width — 21
 columns at 80, 27 at 100, capped at 33. `Getting the Exasol database ready` (33)
 was ellipsed on all but the widest terminals and is now `Getting Exasol ready` (20).
-macOS-only by nature: the Nano runtime reports no progress phases at all.
+Every other phase was shortened to match, so the whole set is 8 to 21
+characters and none truncates at any supported width; a guard in
+`tests/deploy-progress.sh` measures them and fails on the next one that does not
+fit. macOS-only by nature: the Nano runtime reports no progress phases at all.
 
 **Test suites.** Brought from 8 failing to green on both runners, and several
 suites that existed but were never wired into CI are now wired in — including the
@@ -206,10 +209,6 @@ Not bugs — do not "fix" these without asking:
 - Em dashes are **not** to be swept from the codebase — two lines match them as
   patterns and a sweep would break them.
 - Existing installs need `exakit update exakit` to pick up the help-corpus change.
-- Three deploy phases still truncate on narrow terminals:
-  `Installing script languages` (27 chars, cut below 100 columns),
-  `Preparing the deployment` and `Waiting for the database` (24, cut at 80).
-  Left alone deliberately rather than reword unasked.
 - `~/Downloads/exakit-feedback-tasks.html` is a status page for Krishna's
   visibility. It lives on the Mac and is a few cards behind.
 
