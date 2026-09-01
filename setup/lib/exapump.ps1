@@ -587,6 +587,39 @@ function Invoke-ExapumpSqlFile {
 # and keeps its step-by-step narration.
 $script:ExakitUploadQuiet = $false
 
+# The reason the last -Soft upload failed, in one short line. Twin of
+# exakit_upload_failure_reason in exapump.sh.
+$script:ExakitUploadReason = ""
+
+# Get-ExakitUploadFailureReason - why an upload failed, in words.
+#
+# The engine says something genuinely useful and the kit was throwing it away,
+# leaving "could not be loaded (see log)" and a reader four directories from the
+# answer. Only the shapes worth translating are translated; anything else is
+# passed through trimmed, because a slightly long engine message beats none.
+function Get-ExakitUploadFailureReason {
+    param([string[]]$Output = @())
+    $line = @($Output | Where-Object { $_ -like "Error: *" } | Select-Object -Last 1)
+    if ($line.Count -eq 0) { return "" }
+    $text = [string]$line[0]
+    $row = ""
+    $m = [regex]::Match($text, "row=(\d+)")
+    if ($m.Success) { $row = $m.Groups[1].Value }
+    if ($text -like "*not enclosed field*") {
+        if (-not $row) { $row = "?" }
+        return "row $row has a line break or an unescaped comma inside a quoted field"
+    }
+    $e = [regex]::Match($text, "(ETL-\d+): *([^[]*)")
+    if ($e.Success) {
+        $out = ($e.Groups[1].Value + " " + $e.Groups[2].Value).Trim()
+        if ($out.Length -gt 100) { $out = $out.Substring(0, 100) }
+        return $out
+    }
+    $out = $text -replace "^Error: ", ""
+    if ($out.Length -gt 100) { $out = $out.Substring(0, 100) }
+    return $out
+}
+
 function Invoke-ExapumpUpload {
     param([Parameter(Mandatory)][string]$Path, [Parameter(Mandatory)][string]$Target, [switch]$Soft)
     if (-not (Test-Path $Path) -or (Get-Item $Path).Length -eq 0) {
@@ -596,13 +629,21 @@ function Invoke-ExapumpUpload {
     if (-not $script:ExakitUploadQuiet) { Info "Loading $(Split-Path $Path -Leaf) into $Target" }
     $result = Invoke-Exapump @("upload", $Path, "--table", $Target, "-p", $script:ExapumpProfile)
     if (-not $result.Success) {
-        Write-ExapumpOutput -Output $result.Output
-        Show-ExakitDbErrorRemedy $result.Output
         # -Soft: a bulk folder load must not lose the other thirty-nine files to
         # one bad one. Fail() exits the whole PROCESS here - PowerShell has no
         # subshell to contain it, which is how the bash twin keeps this soft - so
         # a caller that means to carry on asks for a return value instead.
-        if ($Soft) { return $false }
+        #
+        # The engine's raw output and the remedy banner are held back too, not
+        # just the Fail: a caller reporting each file itself would say the same
+        # news twice, the loud way first. The REASON is kept, so that caller can
+        # put it in its own line instead of sending the reader to a logfile.
+        if ($Soft) {
+            $script:ExakitUploadReason = Get-ExakitUploadFailureReason -Output $result.Output
+            return $false
+        }
+        Write-ExapumpOutput -Output $result.Output
+        Show-ExakitDbErrorRemedy $result.Output
         Fail "Upload failed: $Path -> $Target (see log)"
     }
     if (-not $script:ExakitUploadQuiet) { Ok "$(Split-Path $Path -Leaf) loaded" }
@@ -1514,7 +1555,9 @@ function Import-ExakitLocalFolder {
                 $done++
                 $doneWeight += $w
             } else {
-                Warn2 "$(Split-Path $file -Leaf) could not be loaded (see log) - the rest of the folder continues."
+                $why = ""
+                if ($script:ExakitUploadReason) { $why = " - " + $script:ExakitUploadReason }
+                Warn2 "$(Split-Path $file -Leaf) not loaded$why"
                 $failed++
             }
         }
@@ -1530,7 +1573,7 @@ function Import-ExakitLocalFolder {
     Set-ExakitManifestValue "data.last_load.files" $done
 
     if ($failed -gt 0) {
-        Warn2 "Loaded $done of $($chosen.Count) file(s) into $schema; $failed failed (see log)."
+        Warn2 "Loaded $done of $($chosen.Count) file(s) into $schema; $failed not loaded (reason above, full detail: exakit logs)."
         return "failed"
     }
     Ok "Loaded $done file(s) into $schema"

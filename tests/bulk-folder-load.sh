@@ -160,9 +160,39 @@ OUT="$(exakit_load_local_folder "$D" 2>&1)"
 RC=$?
 check "a failed file is reported" "1" "$RC"
 check "the other three still loaded" "3" "$(grep -cE '^(upload|json) ' "$LOADED")"
-has "the failure names the file" "orders.parquet could not be loaded" "$OUT"
+has "the failure names the file" "orders.parquet not loaded" "$OUT"
 has "and the rest are counted" "Loaded 3 of 4 file(s)" "$OUT"
 FAIL_ON=""
+
+printf '\n== a file that will not load says why, and the rest still load ==\n'
+
+# The engine explains itself well and the kit was throwing that away. One file of
+# three failed as "could not be loaded (see log)", under a red "Upload failed"
+# banner and a log path -- which reads as the whole job dying. It is one file.
+EXAKIT_LOG_FILE="$WORK/reason.log"
+cat > "$EXAKIT_LOG_FILE" <<'REASONLOG'
+Error: SQL execution failed: Protocol error: ETL-2107: Error while parsing row=4 (starting from 0) [CSV Parser found at byte 8 of 76 single field delimiter in a not enclosed field]
+REASONLOG
+check "the commonest CSV fault is put into words" \
+    "row 4 has a line break or an unescaped comma inside a quoted field" \
+    "$(exakit_upload_failure_reason)"
+printf 'Error: ETL-5000: something else entirely\n' > "$EXAKIT_LOG_FILE"
+has "an unrecognised engine fault is passed through" "ETL-5000" "$(exakit_upload_failure_reason)"
+: > "$EXAKIT_LOG_FILE"
+check "and nothing is invented when the log says nothing" "" "$(exakit_upload_failure_reason || true)"
+EXAKIT_LOG_FILE=""
+
+# Soft mode is what stops one bad file announcing itself as a failed job.
+EXAPUMP_SRC="$(cat "$ROOT/setup/lib/exapump.sh")"
+EXAPUMP_PS_SRC="$(cat "$ROOT/setup/lib/exapump.ps1")"
+has "the folder loop asks for soft failures" "EXAKIT_UPLOAD_SOFT=1 exapump_upload" "$EXAPUMP_SRC"
+has "...and the uploader honours it" 'if [ "${EXAKIT_UPLOAD_SOFT:-0}" = 1 ]; then' "$EXAPUMP_SRC"
+# Matched on the STATEMENT, not the phrase: the phrase appears in the comments
+# that explain why it was dropped, and a needle that cannot tell code from prose
+# fails on its own documentation.
+lacks "no per-file line sends the reader to the log" 'warn "$(basename "$_blf_path") could not be loaded' "$EXAPUMP_SRC"
+lacks "...nor on the PowerShell side" 'Warn2 "$(Split-Path $file -Leaf) could not be loaded' "$EXAPUMP_PS_SRC"
+has "the twin keeps the reason instead of the banner" 'ExakitUploadReason = Get-ExakitUploadFailureReason' "$EXAPUMP_PS_SRC"
 
 printf '\n== a mixed folder loads every kind in one pass ==\n'
 
