@@ -3832,7 +3832,7 @@ function Get-ExakitAddonTableCell {
     return ($text.PadRight($room) + " " + $el)
 }
 
-# Write-ExakitAddonNote <info|warn|ok> <text> - something the reader must see, said
+# Write-ExakitAddonNote <info|warn> <text> - something the reader must see, said
 # AFTER the table has stopped. A line printed into a frame that is still being
 # repainted lands INSIDE the box, so while the table is live nothing speaks
 # except the table. With no table it is said where it stands, exactly as before.
@@ -3844,9 +3844,7 @@ function Write-ExakitAddonNote {
         $script:ExakitAddonNotes += @{ Kind = $Kind; Text = $Text }
         return
     }
-    if ($Kind -eq "warn") { Warn2 $Text }
-    elseif ($Kind -eq "ok") { OkStep $Text }
-    else { Info $Text }
+    if ($Kind -eq "warn") { Warn2 $Text } else { Info $Text }
 }
 
 # Show-ExakitAddonNotes - drain the collected notes, now that the table is off
@@ -3854,9 +3852,7 @@ function Write-ExakitAddonNote {
 # Twin of _exakit_addon_notes_say in common.sh.
 function Show-ExakitAddonNotes {
     foreach ($note in @($script:ExakitAddonNotes)) {
-        if ($note.Kind -eq "warn") { Warn2 $note.Text }
-        elseif ($note.Kind -eq "ok") { OkStep $note.Text }
-        else { Info $note.Text }
+        if ($note.Kind -eq "warn") { Warn2 $note.Text } else { Info $note.Text }
     }
     $script:ExakitAddonNotes = @()
 }
