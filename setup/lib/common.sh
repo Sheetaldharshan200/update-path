@@ -3783,7 +3783,7 @@ exakit_marketplace_offer() {
     ui_rule
     # A heading, not an action: what follows the rule is a separate offer, and
     # the dim bullet marked it as one more thing being done TO the machine.
-    heading "Supercharge Exasol with add-ons"
+    heading "Supercharge Exasol with add-ons from marketplace"
     EXAKIT_CHECKBOX_EXCLUSIVE=2
     ui_checkbox_menu "Explore marketplace ?" "1" \
         "Yes" \
@@ -9270,7 +9270,12 @@ _exakit_autostart_register() {
             # rewritten plist replaces the old registration.
             launchctl unload "$_ar_plist" >/dev/null 2>&1
             launchctl load "$_ar_plist" >/dev/null 2>&1
-            ok "$_ar_id: starts at login ($(ui_tilde "$_ar_plist"))"
+            # The plist path is not something to act on: `exakit autostart`
+            # turns this off and `exakit status` reports it. Printed per SERVICE
+            # it was also one line each, so a kit with add-ons announced the same
+            # fact three times over three paths nobody types. The logfile keeps
+            # the path, and enable() says the one sentence that matters.
+            _exakit_log_file "OK    $_ar_id: starts at login ($_ar_plist)"
             ;;
         # WSL takes the linux arm: detect_os separates the two because the
         # INSTALLER must, but a systemd --user session is a systemd --user
@@ -9294,7 +9299,7 @@ _exakit_autostart_register() {
             systemctl --user daemon-reload >/dev/null 2>&1
             systemctl --user enable "$_ar_label.service" >/dev/null 2>&1 || {
                 warn "Could not enable $_ar_label.service"; return 1; }
-            ok "$_ar_id: starts at login ($(ui_tilde "$_ar_unit"))"
+            _exakit_log_file "OK    $_ar_id: starts at login ($_ar_unit)"
             ;;
         *)
             warn "$_ar_id: automatic start is not supported on this platform."
@@ -9365,6 +9370,11 @@ exakit_autostart_enable() {
     done
     if [ "$_ae_any" = 1 ]; then
         manifest_set autostart.enabled true
+        # One line, whatever the service count -- the twin of the sentence
+        # disable() has always printed. Without it, answering "yes" to
+        # `exakit autostart` produced no output at all once the per-service
+        # lines went.
+        ok "Automatic start after a restart is on."
     else
         manifest_set autostart.enabled false
     fi

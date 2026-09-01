@@ -2152,9 +2152,14 @@ exakit_data_load_select() {
         return 1
     }
     exakit_data_table_build "$EXAKIT_TABLE_STATE"
+    # Nothing said about the bundled datasets already being loaded. The table
+    # below shows exactly what is on offer, and when they are all in it offers
+    # the local-file row and Skip -- their absence IS the message. A sentence
+    # explaining why the list is short, printed above the list, is the screen
+    # apologising for itself. The logfile keeps the fact.
     if [ "$(exakit_data_table_row local)" = "$EXAKIT_TABLE_ROW_LOCAL" ] && \
        [ "$EXAKIT_TABLE_ROW_LOCAL" = "1" ]; then
-        info "Every bundled dataset is already loaded (reload with: exakit data-load --force)."
+        _exakit_log_file "INFO  Every bundled dataset is already loaded (reload with: exakit data-load --force)."
     fi
     UI_TABLE_TITLE="Datasets to load"
     printf '\n'
