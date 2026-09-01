@@ -951,8 +951,9 @@ _exakit_json_tables_load_module() {
 # _exakit_json_tables_ensure - make the JSON engine usable, saying nothing.
 # A JSON file is just data the user asked to load, so the engine it needs is an
 # implementation detail: it installs with its output in the log, under the same
-# "Loading your data" spinner as the load itself. No question is asked, and no
-# download or install step is announced.
+# "Loading your data" spinner as the load itself. No question is asked and no
+# install STEP is announced -- but the fact that an add-on arrived is, on one
+# line, once it has.
 #
 # Returns 0 when the engine is ready, 1 when this machine cannot have it - that
 # case still speaks up, because a silent failure is worse than a loud one.
@@ -983,6 +984,20 @@ _exakit_json_tables_ensure() {
         warn "The JSON engine installed but is not usable yet - retry with: exakit data-load"
         return 1
     }
+    # Said once, and only when this run actually installed it -- the early
+    # readiness check above returns before reaching here, so a machine that
+    # already has the add-on stays quiet.
+    #
+    # An add-on the reader never chose has just appeared on their machine, and
+    # since an add-on's skills now install WITH it, a skill arrived too. Leaving
+    # both silent asks them to discover it in `exakit marketplace` later and work
+    # out where it came from. The install itself is still unannounced: this says
+    # that it happened and what it is for, not what it did.
+    #
+    # ok_step rather than ok: the load narrates on one line, which gates plain
+    # ok to the logfile, and ok_step also hands the spinner's line back before
+    # printing so this lands on a row of its own.
+    ok_step "JSON Tables installed — the add-on that loads JSON into Exasol"
     return 0
 }
 
