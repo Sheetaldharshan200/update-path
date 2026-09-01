@@ -984,6 +984,9 @@ function Invoke-ExakitUninstallComponent {
                 (Get-Command $addonEntry.UninstallFn -ErrorAction SilentlyContinue)) {
                 try { [void](& $addonEntry.UninstallFn) }
                 catch { Warn2 "Removing the $Key add-on reported issues" }
+                # ...and the skills it owns go with it. Here rather than in the
+                # module, so every add-on gets it without writing a line.
+                try { Remove-ExakitAddonSkills $Key } catch { }
             } else {
                 Warn2 "The $Key module carries no uninstall - update the kit: exakit update exakit"
             }

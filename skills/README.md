@@ -43,6 +43,12 @@ user's request actually needs, not a manual for the whole kit.
 
 **The marketplace** — opt-in add-ons
 
+The three add-on skills below are **installed with their add-on**, not with the
+kit: each declares `addon: <id>` in its frontmatter, and the marketplace places
+it as part of installing that add-on and removes it again when the add-on goes.
+A skill is a set of triggers for an agent to match on, and matching them for a
+tool that is not on the machine is worse than not shipping the skill at all.
+
 | Skill | Use it when… |
 |---|---|
 | [`exasol-marketplace`](exasol-marketplace/SKILL.md) | Choosing, installing, updating or removing add-ons; explaining why one is not offered at all. |
@@ -55,7 +61,9 @@ and `exakit skills` reports when the copies in your agent's folders predate the
 kit you have.
 
 Each skill is a directory containing a `SKILL.md`: `name` + `description`
-frontmatter, then the instructions. The agent always sees the name and
+frontmatter, then the instructions. A skill that belongs to a marketplace add-on
+adds one more key, `addon: <add-on id>` — that is the whole wiring, and it is
+what makes the skill travel with its add-on instead of with the kit. The agent always sees the name and
 description, and loads the full body only when it decides the skill is relevant
 (progressive disclosure). The `description`'s **"Triggers —"** list is how the
 agent decides when to fire it — keep it accurate.
