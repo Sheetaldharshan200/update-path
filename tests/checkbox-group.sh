@@ -32,7 +32,7 @@ pass() { checks=$((checks + 1)); printf 'ok   %s\n' "$1"; }
 fail() { checks=$((checks + 1)); fails=$((fails + 1)); printf 'FAIL %s\n' "$1"; }
 
 # The three pure helpers, lifted out of common.sh so this stays hermetic.
-eval "$(sed -n '/^_ui_checkbox_toggle()/,/^}/p;/^_ui_checkbox_group_children()/,/^}/p;/^_ui_checkbox_apply_group()/,/^}/p' "$ROOT/setup/lib/common.sh")"
+eval "$(sed -n '/^_ui_checkbox_toggle()/,/^}/p;/^_ui_checkbox_group_children()/,/^}/p;/^_ui_checkbox_apply_group()/,/^}/p;/^_ui_checkbox_apply_one_group()/,/^}/p' "$ROOT/setup/lib/common.sh")"
 
 # Rows: 1 = parent, 2..4 = three children, all selectable.
 _UI_CHECKBOX_SELECTABLE="2 3 4"
@@ -42,13 +42,23 @@ _UI_CHECKBOX_SELECTABLE="2 3 4"
 press() { _p_s="$(_ui_checkbox_toggle "$1" 4 "$2")"; _ui_checkbox_apply_group "$_p_s" "$2" "$3"; }
 parent_on() { case ",$1," in *",1,"*) printf 'checked' ;; *) printf 'unchecked' ;; esac; }
 
-# The mode is taken from the SHIPPED marketplace call site, not hardcoded here,
-# so these behavioural checks fail when the call site loses its 4th field. A
-# guard that asserts a literal ":all" only proves the widget can do it, never
-# that the kit asks for it.
-_live="$(grep -o 'EXAKIT_CHECKBOX_GROUP="[^"]*"' "$ROOT/setup/lib/common.sh" | grep -v '=""' | head -1)"
+# The mode is taken from a SHIPPED call site, not hardcoded here, so these
+# behavioural checks fail when a call site loses its 4th field. A guard that
+# asserts a literal ":all" only proves the widget can do it, never that the kit
+# asks for it.
+#
+# Specifically an ":all" spec, not merely the first one. The kit now ships two
+# modes -- the add-on group is "all", and EVERYTHING above it is "master", which
+# is "all" downward only -- and a plain `head -1` picked up whichever came
+# first. When that turned out to be the "master" spec, the case below matched
+# neither arm, fell back to "any", and every all-mode assertion here started
+# testing the wrong mode: still red, but for the wrong reason.
+# Matched anywhere in the assignment rather than anchored at its end: a spec
+# may now be one of SEVERAL in the string ("2:3:5:all 6:2:5:master"), so the
+# one asking for :all is not necessarily the last thing before the quote.
+_live="$(grep -o 'EXAKIT_CHECKBOX_GROUP="[^"]*"' "$ROOT/setup/lib/common.sh" | grep -v '=""' | grep ':all' | head -1)"
 case "$_live" in
-    *':all"') _mode="all" ;;
+    *':all'*) _mode="all" ;;
     *)        _mode="" ;;   # no 4th field: the widget falls back to "any"
 esac
 SPEC="1:2:4${_mode:+:$_mode}"

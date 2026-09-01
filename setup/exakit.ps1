@@ -855,9 +855,20 @@ function Show-ExakitUninstallMenu {
     # never claim "everything" while something sits unticked. Skip stays the
     # exclusive opt-out.
     if ($everyIdx -gt 2) {
+        # "Add-ons only" is itself a master over the add-ons drawn under it, so
+        # the row and its tree agree: ticking it ticks them, and ticking the last
+        # of them ticks it. Listed in -Groups because it nests INSIDE EVERYTHING,
+        # and an inner group must settle before the outer one reads its parent.
+        $innerGroups = @()
+        if ($everyIdx -gt 3) { $innerGroups = @("2:3:$($everyIdx - 1):all") }
+        # EVERYTHING is "master", not "all": it removes the database, which no
+        # row above it represents, so ticking every add-on must never come to
+        # mean "remove the kit". It still ticks them all when picked, and still
+        # releases the moment one is unticked.
         $selection = Read-ExakitCheckboxMenu -Title "Select what to uninstall" `
             -Options $labels.ToArray() -Defaults @(1) -ExclusiveIndex 1 `
-            -GroupParent $everyIdx -GroupFirst 2 -GroupLast ($everyIdx - 1) -GroupMode "all"
+            -Groups $innerGroups `
+            -GroupParent $everyIdx -GroupFirst 2 -GroupLast ($everyIdx - 1) -GroupMode "master"
     } else {
         $selection = Read-ExakitCheckboxMenu -Title "Select what to uninstall" `
             -Options $labels.ToArray() -Defaults @(1) -ExclusiveIndex 1

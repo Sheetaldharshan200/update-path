@@ -331,7 +331,8 @@ function Read-ExakitCheckboxMenu {
     param(
         [string]$Title, [string[]]$Options, [int[]]$Defaults = @(), [int]$ExclusiveIndex = 0,
         [int]$GroupParent = 0, [int]$GroupFirst = 0, [int]$GroupLast = 0,
-        [string]$GroupMode = "any"
+        [string]$GroupMode = "any",
+        [string[]]$Groups = @()
     )
     # $ExclusiveIndex (1-based, 0 = none): an option that cannot be combined
     # with the others - think "Skip". Selecting it clears every other
@@ -342,7 +343,14 @@ function Read-ExakitCheckboxMenu {
     # selects every child; OFF clears them all. Toggling a child re-derives the
     # parent per $GroupMode: "any" (default) leaves it checked while ANY child
     # is checked (a group header), "all" only while EVERY child is checked - a
-    # MASTER toggle, which is how EVERYTHING behaves in the uninstall menu.
+    # MASTER toggle - and "master" is "all" downward only: the children may
+    # RELEASE the parent but never claim it, for a parent that is a SCOPE rather
+    # than an aggregate.
+    # $Groups (optional): further "parent:first:last[:mode]" specs, applied IN
+    # ORDER and BEFORE the single group above. That is what nests them - an
+    # inner group has to settle its own parent before the outer group re-reads
+    # that parent as one of its children. Twin of the whitespace-separated
+    # EXAKIT_CHECKBOX_GROUP in common.sh.
     Info $Title
     $sel = New-Object 'System.Collections.Generic.List[int]'
     foreach ($d in $Defaults) {
@@ -360,29 +368,56 @@ function Read-ExakitCheckboxMenu {
         }
         return $out
     }
+    # Every group this menu applies, innermost first. $Groups comes before the
+    # single named group so a nested spec settles its own parent before the
+    # group above re-reads that parent as one of its own children.
+    $groupSpecs = @()
+    foreach ($g in $Groups) {
+        $parts = ("" + $g).Split(":")
+        if ($parts.Count -lt 3) { continue }
+        $gm = "any"
+        if ($parts.Count -ge 4) { $gm = $parts[3] }
+        $groupSpecs += @{ Parent = [int]$parts[0]; First = [int]$parts[1]; Last = [int]$parts[2]; Mode = $gm }
+    }
+    if ($GroupParent -ge 1) {
+        $groupSpecs += @{ Parent = $GroupParent; First = $GroupFirst; Last = $GroupLast; Mode = $GroupMode }
+    }
     $applyGroup = {
         param($toggled)
-        if ($GroupParent -lt 1) { return }
-        $children = & $groupChildren
-        if ($toggled -eq $GroupParent) {
-            $parentOn = $sel.Contains($GroupParent)
-            foreach ($c in $children) {
-                if ($parentOn) { if (-not $sel.Contains($c)) { [void]$sel.Add($c) } }
-                else { [void]$sel.Remove($c) }
+        foreach ($spec in $groupSpecs) {
+            $gp = [int]$spec.Parent; $gf = [int]$spec.First; $gl = [int]$spec.Last; $gmode = [string]$spec.Mode
+            if ($gp -lt 1 -or $gf -lt 1 -or $gl -lt $gf) { continue }
+            $children = @()
+            for ($c = $gf; $c -le $gl; $c++) {
+                if ($c -lt 1 -or $c -gt $Options.Count) { continue }
+                if ($Options[$c - 1].StartsWith("#") -or $Options[$c - 1].StartsWith("!")) { continue }
+                $children += $c
             }
-        } elseif ($toggled -ge $GroupFirst -and $toggled -le $GroupLast) {
-            # "all" makes the parent a MASTER toggle - checked only while EVERY
-            # child is checked, so unticking any one of them releases it.
-            # "any" (default) is the group-header rule.
-            $on = $false
-            if ($GroupMode -eq "all") {
-                $on = $true
-                foreach ($c in $children) { if (-not $sel.Contains($c)) { $on = $false; break } }
-            } else {
-                foreach ($c in $children) { if ($sel.Contains($c)) { $on = $true; break } }
+            if ($toggled -eq $gp) {
+                $parentOn = $sel.Contains($gp)
+                foreach ($c in $children) {
+                    if ($parentOn) { if (-not $sel.Contains($c)) { [void]$sel.Add($c) } }
+                    else { [void]$sel.Remove($c) }
+                }
+            } elseif ($toggled -ge $gf -and $toggled -le $gl) {
+                # "all" makes the parent a MASTER toggle - checked only while
+                # EVERY child is checked, so unticking any one releases it.
+                # "master" is that downward only: a child that just went ON
+                # leaves the parent alone, so ticking every child never comes to
+                # mean the parent's own scope. "any" is the group-header rule.
+                if ($gmode -eq "master" -and $sel.Contains($toggled)) { continue }
+                $on = $false
+                if ($gmode -eq "all") {
+                    $on = $true
+                    foreach ($c in $children) { if (-not $sel.Contains($c)) { $on = $false; break } }
+                } elseif ($gmode -eq "master") {
+                    $on = $false
+                } else {
+                    foreach ($c in $children) { if ($sel.Contains($c)) { $on = $true; break } }
+                }
+                if ($on) { if (-not $sel.Contains($gp)) { [void]$sel.Add($gp) } }
+                else { [void]$sel.Remove($gp) }
             }
-            if ($on) { if (-not $sel.Contains($GroupParent)) { [void]$sel.Add($GroupParent) } }
-            else { [void]$sel.Remove($GroupParent) }
         }
     }
     $applyExclusive = {

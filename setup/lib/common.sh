@@ -349,7 +349,19 @@ _ui_checkbox_toggle() {
 #   mode "all"           — checked only while EVERY child is checked, so the
 #                          parent reads as a MASTER toggle: pick it and you get
 #                          everything, untick any one row and it releases.
-#                          Used by "EVERYTHING" in the uninstall menu.
+#   mode "master"        — like "all" downward, but the children may only
+#                          RELEASE the parent, never claim it: ticking every
+#                          child does NOT tick the parent. For a parent that is
+#                          a SCOPE rather than an aggregate. "EVERYTHING" in the
+#                          uninstall menu is one -- it removes the database,
+#                          which no row above it represents, so "every add-on is
+#                          ticked" must never come to mean "remove the kit".
+# SEVERAL specs may be given, separated by whitespace, and they are applied IN
+# ORDER. That is what nests them: the uninstall menu has "Add-ons only" as a
+# master over the add-ons listed under it, and "EVERYTHING" as a master over
+# that row and the add-ons together. The inner spec must come FIRST, so it has
+# settled its own parent before the outer spec re-reads that parent as one of
+# its own children.
 EXAKIT_CHECKBOX_SELECTION=""
 EXAKIT_CHECKBOX_EXCLUSIVE=""
 EXAKIT_CHECKBOX_GROUP=""
@@ -381,7 +393,19 @@ _ui_checkbox_group_children() {
     printf '%s' "${_cgc_out# }"
 }
 
+# _ui_checkbox_apply_group <selection> <toggled-row> <specs>
+# Applies every spec in <specs>, in order. One spec is the common case and
+# iterates exactly once, so nothing that passed a single spec changes.
 _ui_checkbox_apply_group() {
+    _cga_sel="$1"; _cga_toggled="$2"; _cga_specs="$3"
+    [ -n "$_cga_specs" ] || { printf '%s' "$_cga_sel"; return 0; }
+    for _cga_spec in $_cga_specs; do
+        _cga_sel="$(_ui_checkbox_apply_one_group "$_cga_sel" "$_cga_toggled" "$_cga_spec")"
+    done
+    printf '%s' "$_cga_sel"
+}
+
+_ui_checkbox_apply_one_group() {
     _cg_sel="$1"; _cg_toggled="$2"; _cg_spec="$3"
     [ -n "$_cg_spec" ] || { printf '%s' "$_cg_sel"; return 0; }
     _cg_parent="${_cg_spec%%:*}"
@@ -421,7 +445,16 @@ _ui_checkbox_apply_group() {
     if [ "$_cg_toggled" -ge "$_cg_first" ] && [ "$_cg_toggled" -le "$_cg_last" ]; then
         # Child toggled: re-derive the parent from the children.
         _cg_on=0
-        if [ "$_cg_mode" = "all" ]; then
+        if [ "$_cg_mode" = "master" ]; then
+            # A child that just went ON leaves the parent exactly as it was; only
+            # a child going OFF may release it. Without this, giving "Add-ons
+            # only" a group of its own meant one click on that row ticked every
+            # row EVERYTHING watches -- and armed a full-kit uninstall, database
+            # included, that the reader never asked for.
+            case ",$_cg_sel," in
+                *",$_cg_toggled,"*) printf '%s' "$_cg_sel"; return 0 ;;
+            esac
+        elif [ "$_cg_mode" = "all" ]; then
             _cg_on=1
             for _cg_i in $_cg_children; do
                 case ",$_cg_sel," in
@@ -9280,7 +9313,16 @@ exakit_uninstall_menu() {
     # exclusive opt-out. (No children means nothing but Skip and EVERYTHING is
     # on offer, and a group spec would be meaningless.)
     if [ "$_um_every_idx" -gt 2 ]; then
-        EXAKIT_CHECKBOX_GROUP="$_um_every_idx:2:$((_um_every_idx - 1)):all"
+        EXAKIT_CHECKBOX_GROUP="$_um_every_idx:2:$((_um_every_idx - 1)):master"
+        # "Add-ons only" is itself a master over the add-ons drawn under it, so
+        # the row and its tree agree: ticking it ticks them, and ticking the last
+        # of them ticks it. It was only ever a sweep KEY -- the removal expanded
+        # it to every add-on, which was right -- but the checkboxes underneath
+        # never moved, so the screen showed a scope that was on with none of its
+        # members chosen. Listed FIRST because it nests inside EVERYTHING.
+        if [ "$_um_every_idx" -gt 3 ]; then
+            EXAKIT_CHECKBOX_GROUP="2:3:$((_um_every_idx - 1)):all $EXAKIT_CHECKBOX_GROUP"
+        fi
     fi
     EXAKIT_CHECKBOX_EXCLUSIVE=1
     ui_checkbox_menu "Select what to uninstall" "1" "${_um_labels[@]}"
