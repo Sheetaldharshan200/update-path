@@ -38,8 +38,14 @@ while IFS= read -r file; do
     else
         pass "$rel is pure ASCII"
     fi
+# .claude/ is excluded because a git worktree under .claude/worktrees/ is a
+# FULL second checkout: its setup/lib/ui.ps1 is a copy of the one file allowed
+# to hold glyphs, but the exemption above matches an exact path, so the copy
+# reported as an offender. CI never sees this -- a fresh checkout has no
+# worktrees -- so it only ever failed on a developer's machine, which is the
+# worst place to spend a false failure.
 done <<EOF
-$(find "$ROOT" -name '*.ps1' -not -path "$ROOT/.git/*" | sort)
+$(find "$ROOT" -name '*.ps1' -not -path "$ROOT/.git/*" -not -path "$ROOT/.claude/*" | sort)
 EOF
 
 printf '\n%d checks, %d failed\n' "$checks" "$fails"

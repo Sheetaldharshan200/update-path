@@ -24,7 +24,8 @@
 #                       launcher reports it interrupted and every start fails);
 #                       DESTRUCTIVE — the deployment is replaced and its data
 #                       is gone, bundled datasets are reloaded afterwards
-#   autostart [on|off]  whether everything comes back after a restart
+#   autostart           whether everything comes back after a restart; shows
+#                       the current state and asks whether to change it
 #   data-load [--force|<path>]
 #                       open focused data loading options; a file path loads that
 #                       file, a FOLDER path bulk-loads every CSV/Parquet/JSON file
@@ -342,7 +343,7 @@ EXAKIT_SJ_PY
         [ "$_cs_running" -eq 1 ] && printf ' · reachable' || printf ' · not reachable')")"
     # "enabled"/"disabled", not "on"/"off": this row reports a STATE, and on/off
     # reads as the switch you flip rather than the position it is in. The
-    # `exakit autostart on|off` command keeps its verbs -- those are commands.
+    # The command itself takes no verb: it shows this state and asks.
     if [ "$_cs_autostart" = "true" ]; then
         ui_panel_line "$(_cs_pad 'Autostart' 'enabled')"
     else
