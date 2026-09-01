@@ -119,8 +119,17 @@ has "...and the shell gates it the same way" 'if [ -n "${UI_TABLE_COL2:-}" ] || 
 # Two optional columns, last in the row format so every row written in the old
 # ten-field shape still parses.
 has "the twin carries a second column"  'Col2 = $Col2; Col3 = $Col3' "$UI_PS1"
-has "...and rules between them"         'if ($sepW -eq 3) { $sep = " " + $script:UiDim + $script:UiVB' "$UI_PS1"
-has "the shell rules them too"          '_UI_TABLE_SEP=" ${UI_DIM:-}${UI_VB:-|}${UI_RESET:-} "' "$UI_SH"
+# No rule is drawn between columns -- alignment carries them, and a rule turned
+# every wrapped description into a cage. The one vertical the table does draw is
+# the TREE SPINE, which has to survive a description that wraps: a blank
+# connector column snapped the line joining the add-ons in half, while the very
+# same menu drew it unbroken while installing, where every row is one line.
+lacks "no rule drawn between columns"   'if ($sepW -eq 3) { $sep = " " + $script:UiDim + $script:UiVB' "$UI_PS1"
+lacks "...and none on the shell side"   '_UI_TABLE_SEP=" ${UI_DIM:-}${UI_VB:-|}${UI_RESET:-} "' "$UI_SH"
+has "a tee remembers to carry a spine"  'if ($row.Kind -eq "tee") { $conn = $script:UiTee + " "; $spine = $true }' "$UI_PS1"
+has "...drawn on every wrapped line"    '$wleft = (" " * 5) + $script:UiVB + (" " * ($nameW - 1))' "$UI_PS1"
+has "the shell flags the tee the same"  'tee)    _utr_conn="${UI_TEE:-|-} "; _utr_spine=1 ;;' "$UI_SH"
+has "...and draws the same spine"       '_utr_wleft="     ${UI_VB:-|}${_UI_TABLE_SP:0:$(( UI_TABLE_NAME_W - 1 ))}"' "$UI_SH"
 has "the description wraps, never truncates" "function Split-ExakitWrap" "$UI_PS1"
 has "...and the shell wraps without forking" "_ui_wrap() {" "$UI_SH"
 has "the description width is fixed"    '$script:UiTableCol3Fixed = 44' "$UI_PS1"

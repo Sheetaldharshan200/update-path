@@ -871,10 +871,11 @@ ui_table_widths() {
     # previous frame's top border on screen until a later frame re-syncs -- a
     # table that flickers into two and heals itself a second later. The one-line
     # progress bar reserves its last column for the same reason.
-    # A table with extra columns separates them with " │ " (three columns)
-    # rather than a bare two-space gap; without them the gaps stay two.
+    # Columns are separated by a plain two-space gap, whatever they hold. A
+    # drawn rule between them was tried here and taken out: alignment already
+    # tells the eye where a column starts, and the ONE vertical the table needs
+    # is the tree spine in the name column, which is a different line entirely.
     _utw_sepw=2
-    { [ "$UI_TABLE_COL2_W" -gt 0 ] || [ "$UI_TABLE_COL3_W" -gt 0 ]; } && _utw_sepw=3
     # ONE decomposition, and the same one ui_table_frame uses: the fixed chrome,
     # the name, then every column that follows preceded by its gap. Written as
     # "11 + name + status" with the gap folded into the 11, an extra column had
@@ -1022,16 +1023,11 @@ _ui_table_cell() {
 ui_table_frame() {
     _ui_table_prep
     ui_table_widths "$1"
-    # Column rules, and only for a table that has columns to rule between: the
-    # dataset and AI-client menus are a name and a status, where a line between
-    # two columns is furniture around nothing. Dim, so the eye reads the cells
-    # and not the scaffolding.
+    # A plain gap between columns. Rules were drawn here once and removed: they
+    # boxed every wrapped description into a cage, and they competed with the
+    # one line that carries meaning -- the tree spine down the name column.
     _UI_TABLE_SEP="  "
     _UI_TABLE_SEP_W=2
-    if [ "$UI_TABLE_COL2_W" -gt 0 ] || [ "$UI_TABLE_COL3_W" -gt 0 ]; then
-        _UI_TABLE_SEP=" ${UI_DIM:-}${UI_VB:-|}${UI_RESET:-} "
-        _UI_TABLE_SEP_W=3
-    fi
 
     # No Status column at all while nothing has a status: no heading, no rule,
     # no reserved width. _utr_statsep is the rule before it, which goes with it.
@@ -1087,9 +1083,9 @@ ui_table_frame() {
         [ -n "$_utr_kind" ] || continue
         _utr_i=$(( _utr_i + 1 ))
         case "$_utr_kind" in
-            tee)    _utr_conn="${UI_TEE:-|-} " ;;
-            corner) _utr_conn="${UI_CORNER:-\`-} " ;;
-            *)      _utr_conn="" ;;
+            tee)    _utr_conn="${UI_TEE:-|-} "; _utr_spine=1 ;;
+            corner) _utr_conn="${UI_CORNER:-\`-} "; _utr_spine=0 ;;
+            *)      _utr_conn=""; _utr_spine=0 ;;
         esac
         # A row nobody can pick: no checkbox at all (an empty one invites the
         # reader to try), and the note reads straight on from the label —
@@ -1180,12 +1176,19 @@ ui_table_frame() {
         _utr_wi=1
         while [ "$_utr_wi" -lt "$_utr_wrapn" ]; do
             _utr_wl="${_UI_WRAP[$_utr_wi]}"
-            # The rules carry down the continuation line: without them the text
-            # floats in the middle of the row and the columns stop reading as
-            # columns for as long as a description runs. Built cell by cell and
-            # MEASURED as it goes, because every rule carries colour escapes and
-            # ${#...} would count those bytes as width.
-            _utr_wleft="${_UI_TABLE_SP:0:$(( 5 + UI_TABLE_NAME_W ))}"
+            # The TREE SPINE carries down the continuation lines. Without it the
+            # connector column goes blank for as long as a description wraps, and
+            # the line joining the add-ons snaps in half -- the same menu draws
+            # an unbroken spine while it installs, where every row is one line,
+            # so a description must not be what breaks it. Only a tee continues:
+            # after the corner the tree has ended and a spine below it would
+            # point at nothing. Built cell by cell and MEASURED as it goes, so
+            # the width is arithmetic rather than a count of escape bytes.
+            if [ "${_utr_spine:-0}" = 1 ]; then
+                _utr_wleft="     ${UI_VB:-|}${_UI_TABLE_SP:0:$(( UI_TABLE_NAME_W - 1 ))}"
+            else
+                _utr_wleft="${_UI_TABLE_SP:0:$(( 5 + UI_TABLE_NAME_W ))}"
+            fi
             _utr_wlen=$(( 5 + UI_TABLE_NAME_W ))
             if [ "$UI_TABLE_COL2_W" -gt 0 ]; then
                 _utr_wleft="${_utr_wleft}${_UI_TABLE_SEP}${_UI_TABLE_SP:0:$UI_TABLE_COL2_W}"
