@@ -62,6 +62,18 @@
     {
       "name": "EXAKIT_DB_PORT",
       "effect": "Use an alternate host port, e.g. 8564, when 8563 is taken."
+    },
+    {
+      "name": "EXAKIT_NANO_CONTAINER",
+      "effect": "Name of the container (default exasol-nano). Set it before installing to keep a Windows and a WSL install apart: Docker Desktop with WSL integration is one engine, so both otherwise share this container."
+    },
+    {
+      "name": "EXAKIT_NANO_VOLUME",
+      "effect": "Name of the data volume (default exasol-nano-data). That volume is the database; set it alongside EXAKIT_NANO_CONTAINER."
+    },
+    {
+      "name": "EXAKIT_NANO_READY_TIMEOUT",
+      "effect": "Seconds to wait for the database to report ready (default 600). Raise it on a slow machine."
     }
   ],
   "troubleshooting": [
@@ -76,6 +88,10 @@
     {
       "symptom": "Connection refused on 8563",
       "remedy": "exakit start, then exakit status."
+    },
+    {
+      "symptom": "A WSL install and a Windows install are fighting over one database",
+      "remedy": "Docker Desktop with WSL integration is one engine and both default to the container exasol-nano, so the second install takes over the first one's container and either uninstall removes it. Pick one path per machine, or set EXAKIT_NANO_CONTAINER and EXAKIT_NANO_VOLUME on one of them before installing."
     }
   ],
   "see_also": [

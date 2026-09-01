@@ -54,7 +54,7 @@ You already use AI. The hard part is trusting it with your data. This kit gives 
 | ⚡ | **[exapump](https://github.com/exasol-labs/exapump)** | Load CSV/Parquet files and run SQL from your terminal |
 | 🐍 | **[pyexasol](https://github.com/exasol/pyexasol)** | The official Exasol Python driver, ready in its own environment |
 
-At the end: connection details on screen, a managed runtime state under `~/.exasol-starter-kit/`, and guided MCP setup for supported clients. Time to first query: **under 2 minutes**.
+At the end: connection details on screen, a managed runtime state under `~/.exasol-starter-kit/`, and guided MCP setup for supported clients. The database itself is usually up in **under 2 minutes**.
 
 **Three optional add-ons — add them any time with `exakit marketplace`:**
 
@@ -68,8 +68,8 @@ At the end: connection details on screen, a managed runtime state under `~/.exas
 
 ## Key features
 
-- 🪶 **Almost no prerequisites.** No Homebrew or Rust needed. Python 3.11+ is needed.
-- ⚡ **Ready in under 2 minutes.** One command installs and connects the whole stack.
+- 🪶 **Almost no prerequisites.** No Homebrew, Rust or Python install needed. The kit uses a suitable Python if it finds one, otherwise it installs a managed one for itself.
+- ⚡ **Database up in under 2 minutes.** The full install — sample data and AI client setup included — takes longer, notably so on Windows. Let it finish; re-running is always safe.
 - 🔒 **Read-only AI.** Your assistant can read everything and change nothing. The database enforces it.
 - 🤖 **Support for multiple AI clients.** Claude, Codex, Cursor, GitHub Copilot, Gemini CLI, OpenCode, Continue.
 - 📊 **Sample data included.** Three sample datasets, loaded and verified for you.
@@ -83,23 +83,32 @@ At the end: connection details on screen, a managed runtime state under `~/.exas
 
 | Your machine | Minimum Requirements | That's all |
 |---|---|---|
-| **macOS** | 8 GB+ RAM, 10 GB free disk | The database runs natively |
+| **macOS** | 8 GB+ RAM, 20 GB free disk | The database runs natively |
 | **Linux / WSL** | Docker or Podman (running), 4 GB+ RAM | Container runtime required |
 | **Windows** | Docker Desktop (running), 4 GB+ RAM | Native Windows uses the PowerShell installer |
 
-Every platform also needs **Python 3.11+**.
+**No Python install needed** on any platform: the kit uses a system Python 3.11+ when it finds one, and otherwise installs a managed Python for its own use.
 
 Not sure? Check first. It installs **nothing**:
 
+**macOS / Linux / WSL**
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/krishna-exasol/update-path/main/install.sh | EXAKIT_PREFLIGHT=1 sh
+```
+
+**Windows (PowerShell)** — there is no `sh` there, and `curl` is an alias for `Invoke-WebRequest`, so set the variable first:
+
+```powershell
+$env:EXAKIT_PREFLIGHT = '1'
+irm https://raw.githubusercontent.com/krishna-exasol/update-path/main/install.ps1 | iex
 ```
 
 Step-by-step guides: [QUICKSTART](QUICKSTART.md) · [macOS](quickstarts/macos.md) · [WSL](quickstarts/windows-wsl.md) · [Windows + Docker](quickstarts/windows-docker.md)
 
 ### Installing: what to expect
 
-The installer detects your OS and hardware, shows its plan, then installs everything: the database, exapump, the MCP server, pyexasol, and your AI client connections. The flow is the same on macOS, Linux, WSL, and Windows PowerShell. The database is usually up in **under 2 minutes**.
+The installer detects your OS and hardware, shows its plan, then installs everything: the database, exapump, the MCP server, pyexasol, and your AI client connections. The flow is the same on macOS, Linux, WSL, and Windows PowerShell. The database is usually up in **under 2 minutes**; the steps after it — sample data, the AI bridge, the Python driver — take longer, and a full Windows install is the slowest of them. A long-running install is not a stuck one.
 
 At the end you get a connection panel with everything you need, and a first prompt for your AI client is on your clipboard.
 
@@ -274,7 +283,7 @@ https://github.com/user-attachments/assets/77916db0-d273-4720-8d59-1aedac95d5e8
 
 | Question | Answer |
 |---|---|
-| Do&nbsp;I&nbsp;need&nbsp;Rust&nbsp;/&nbsp;Python&nbsp;/&nbsp;Homebrew? | **Rust and Homebrew, no.** Python 3.11+ is needed. |
+| Do&nbsp;I&nbsp;need&nbsp;Rust&nbsp;/&nbsp;Python&nbsp;/&nbsp;Homebrew? | **None of them.** The kit uses a system Python 3.11+ if you have one, and otherwise installs a managed Python for its own use. |
 | Does&nbsp;it&nbsp;cost&nbsp;anything? | No. Exasol Personal Local is free. |
 | What&nbsp;makes&nbsp;this&nbsp;"for&nbsp;Agentic&nbsp;AI"? | An MCP server ships in the box with a dedicated read-only login, so Claude, Cursor, and other MCP clients can query your data directly, with every SQL statement inspectable before it runs. |
 | What&nbsp;sample&nbsp;data&nbsp;is&nbsp;included? | Three bundled datasets: TPC-H retail, smart-meter energy, daily weather, each in its own schema. See the [data dictionary](data/data-dictionary.md). |

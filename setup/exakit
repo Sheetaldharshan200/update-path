@@ -600,8 +600,18 @@ cmd_repair_runtime() {
     warn "Repairing the runtime REPLACES the database. Its data is not recoverable."
     info "Bundled datasets are reloaded afterwards; anything you loaded yourself is not."
     if [ "$_rr_yes" -ne 1 ]; then
-        confirm "Delete the database and rebuild it now?" n || \
-            die "Nothing was changed. Re-run with --yes (or EXAKIT_CONFIRM_RUNTIME_REPAIR=1) when you are ready."
+        if ! confirm "Delete the database and rebuild it now?" n; then
+            # DECLINING A DESTRUCTIVE PROMPT IS THE SAFE ANSWER, not an error.
+            # die() rendered it as a red error card and exited 1 - and because
+            # die() calls exakit_note_failure, it also left `exakit status
+            # --json` reporting a last_failure on a machine where nothing had
+            # gone wrong. common.sh documents that exact hazard as the reason
+            # reject() exists; the answer here is simpler still, because "no,
+            # not now" is a successful outcome of this command.
+            info "Repair cancelled — nothing was changed."
+            info "When you are ready: exakit repair-runtime --yes (or set EXAKIT_CONFIRM_RUNTIME_REPAIR=1)"
+            return 0
+        fi
     fi
 
     exakit_init_logging

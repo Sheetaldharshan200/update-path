@@ -186,6 +186,23 @@ detect_container_runtime_detail() {
     echo "none"
 }
 
+# port_holder_desc <port> — "pid N (name)" for whatever is listening, or empty.
+#
+# "Stop it or set EXAKIT_DB_PORT" is unactionable when "it" is never named, and
+# the holder is often not what the user expects: on a Windows machine with WSL,
+# a failed WSL install leaves wslrelay holding the port after its container is
+# long gone. dash-server has named its port's holder this way for a while
+# (_dash_server_port_foreign_desc); the database port deserves the same.
+port_holder_desc() {
+    _phd_port="$1"
+    command -v lsof >/dev/null 2>&1 || return 1
+    _phd_pid="$(lsof -nP -iTCP:"$_phd_port" -sTCP:LISTEN -t 2>/dev/null | head -1)"
+    [ -n "$_phd_pid" ] || return 1
+    printf 'pid %s (%s)' "$_phd_pid" \
+        "$(ps -o comm= -p "$_phd_pid" 2>/dev/null | sed 's|.*/||' | tr -d ' ')"
+    return 0
+}
+
 # port_in_use <port> — succeeds when something already listens on the port.
 port_in_use() {
     (exec 3<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null && { exec 3>&- 3<&-; return 0; }
