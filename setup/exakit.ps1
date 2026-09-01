@@ -454,6 +454,10 @@ function Enable-ExakitAutostart {
         if (Register-ExakitAutostart -Id $id) { $any = $true }
     }
     Set-ExakitManifestValue "autostart.enabled" $any
+    # One line, whatever the service count - the twin of the sentence
+    # Disable-ExakitAutostart has always printed, and of the one in
+    # exakit_autostart_enable.
+    if ($any) { Ok "Automatic start after a restart is on." }
 }
 
 function Disable-ExakitAutostart {

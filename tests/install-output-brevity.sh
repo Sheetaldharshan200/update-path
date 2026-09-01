@@ -236,8 +236,8 @@ printf '\n== the closing offer is two words and a question ==\n'
 
 # A HEADING, not an action: the dim bullet marked the offer as one more thing
 # being done TO the machine, and sat level with the question it introduces.
-has "the pitch"            'heading "Supercharge Exasol with add-ons"'          "$COMMON"
-has "...on Windows too"    'Write-ExakitHeading "Supercharge Exasol with add-ons"' "$COMMON_PS1"
+has "the pitch"            'heading "Supercharge Exasol with add-ons from marketplace"'          "$COMMON"
+has "...on Windows too"    'Write-ExakitHeading "Supercharge Exasol with add-ons from marketplace"' "$COMMON_PS1"
 # Two spaces, the same column as begin_step's own arrow: at four it sat in the
 # action gutter, level with the question it introduces.
 has "the heading is at the STEP indent" "printf '  %s%s%s %s" "$COMMON"
@@ -279,11 +279,11 @@ has "and it draws a divider" "$UI_HR$UI_HR$UI_HR" "$RULE"
 has "the offer is behind the seam" 'ui_rule
     # A heading, not an action: what follows the rule is a separate offer, and
     # the dim bullet marked it as one more thing being done TO the machine.
-    heading "Supercharge Exasol with add-ons"' "$COMMON"
+    heading "Supercharge Exasol with add-ons from marketplace"' "$COMMON"
 has "...on Windows too" 'Write-ExakitRule
     # A heading, not an action: what follows the rule is a separate offer, and
     # the dim bullet marked it as one more thing being done TO the machine.
-    Write-ExakitHeading "Supercharge Exasol with add-ons"' "$COMMON_PS1"
+    Write-ExakitHeading "Supercharge Exasol with add-ons from marketplace"' "$COMMON_PS1"
 has "ui.sh has the rule"  "ui_rule()"                  "$(cat "$ROOT/setup/lib/ui.sh")"
 has "ui.ps1 has its twin" "function Write-ExakitRule"  "$(cat "$ROOT/setup/lib/ui.ps1")"
 

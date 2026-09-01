@@ -4091,7 +4091,7 @@ function Request-ExakitMarketplaceOffer {
     Write-ExakitRule
     # A heading, not an action: what follows the rule is a separate offer, and
     # the dim bullet marked it as one more thing being done TO the machine.
-    Write-ExakitHeading "Supercharge Exasol with add-ons"
+    Write-ExakitHeading "Supercharge Exasol with add-ons from marketplace"
     $gate = Read-ExakitCheckboxMenu -Title "Explore marketplace ?" `
         -Options @("Yes", "No") `
         -Defaults @(1) -ExclusiveIndex 2
@@ -4649,7 +4649,9 @@ function Register-ExakitAutostart {
         "start `"`" /min $command"
     )
     Set-Content -Path $entry -Value ($lines -join "`r`n") -Encoding Ascii
-    Ok "$Id`: starts at login ($entry)"
+    # Twin of the same silence in common.sh: the entry path is not actionable,
+    # and per-service it said the same fact once per service.
+    Write-ExakitLog "OK" "$Id starts at login ($entry)"
     return $true
 }
 

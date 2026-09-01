@@ -2343,8 +2343,10 @@ function Select-ExakitDataLoad {
     New-ExakitDataTable -FinalLabel $FinalLabel
     # The local-file row being row 1 means there was no group above it, which
     # means nothing is pending.
+    # Nothing said about it - twin of the same silence in exapump.sh. The table
+    # below shows what is on offer, and their absence from it is the message.
     if ($script:ExakitTableRowLocal -eq 1) {
-        Info "Every bundled dataset is already loaded (reload with: exakit data-load -Force)."
+        Write-ExakitLog "INFO" "Every bundled dataset is already loaded (reload with: exakit data-load -Force)."
     }
     $groupParent = 0
     if ($script:ExakitTableGroupFirst -gt 0) { $groupParent = 1 }
