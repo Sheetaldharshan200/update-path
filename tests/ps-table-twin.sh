@@ -497,5 +497,24 @@ fi
 has "the twin drops Version on the object"  '$script:ExakitAddonTable.Col2 = ""' "$COMMON_PS1"
 has "...and Description with it"            '$script:ExakitAddonTable.Col3 = ""' "$COMMON_PS1"
 
+printf '\n== a row nobody can pick keeps its columns ==\n'
+# It used to merge into one sentence -- "json-tables · Installed (0.2)" -- which
+# put a version in the middle of a name while the Version column beside it sat
+# empty, and left Status with nothing to say about the one row whose state was
+# already known. Now it renders like any other row, minus the checkbox.
+lacks "the shell no longer merges the note into the name" '_utr_text="$_utr_conn$_utr_label${_utr_note:+ · $_utr_note}"' "$UI_SH"
+lacks "...nor does the twin"        '$text = $text + " " + $script:UiMidDot + " " + $note' "$UI_PS1"
+has "the shell blanks the checkbox" '_utr_ptr=" "; _utr_box="   "; _utr_boxlen=3' "$UI_SH"
+has "...and the twin does too"      'if ($row.State -eq "disabled") { $box = "   "; $boxLen = 3 }' "$UI_PS1"
+# The name carries colour now, so its width must be measured before the escapes
+# are added or every disabled row pads short by the length of the escape.
+has "the shell measures the name plain" '_utr_namelen=${#_utr_plain}' "$UI_SH"
+has "...and so does the twin"           '$nameLen = $plain.Length' "$UI_PS1"
+# And the state cell is drawn ONLY where a Status column exists: a disabled row
+# does not count as a status for width, so filling it on the selection screen
+# drew into a column of width zero and pushed the row past its border.
+has "the shell guards the cell on width" 'if [ "${UI_TABLE_STAT_W:-0}" -gt 0 ]; then' "$UI_SH"
+has "...and the twin guards it too"      'if ($StatusWidth -gt 0) {' "$UI_PS1"
+
 printf '\n%d checks, %d failed\n' "$checks" "$fails"
 [ "$fails" -eq 0 ]
