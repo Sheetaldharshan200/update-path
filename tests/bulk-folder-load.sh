@@ -94,26 +94,23 @@ has "a same-table name is skipped"     "skip|duplicate-table|orders.parquet|$D/o
 # punctuation on macOS and does not in CI.
 has "the first in byte order wins" "load|csv|SALES|$D/sales.csv" "$PLAN"
 
-printf '\n== formats: asked only when there is a choice ==\n'
+printf '\n== a folder is never asked about its formats ==\n'
 
 check "kinds present, in menu order" "csv parquet json" \
     "$(exakit_bulk_kinds_present "$PLAN" | tr '\n' ' ' | sed 's/ $//')"
 
-# One format in the folder: nothing to ask, and the answer is that format.
-ONE="$WORK/one"; mkdir -p "$ONE"
-printf 'a\n1\n' > "$ONE/only.csv"
-exakit_bulk_select_formats "$(exakit_bulk_scan_folder "$ONE")"
-check "a single-format folder asks nothing" "csv" "$EXAKIT_BULK_FORMATS"
+# The question is GONE, not merely defaulted. A folder means "here is my data",
+# so every loadable file is taken whatever its kind -- and the menu that used to
+# ask was being drawn while the selection table was still on screen, which is
+# what duplicated its borders.
+lacks "no format selector survives"    "exakit_bulk_select_formats" "$(cat "$ROOT/setup/lib/exapump.sh")"
+lacks "...nor on the PowerShell side"  "Select-ExakitBulkFormats"   "$(cat "$ROOT/setup/lib/exapump.ps1")"
+lacks "no env var pre-answers it"      "EXAKIT_DATA_FORMATS"        "$(cat "$ROOT/setup/lib/exapump.sh")"
+lacks "and the help stops promising it" "more than one format"      "$(cat "$ROOT/setup/help/exakit.json")"
 
-EXAKIT_DATA_FORMATS="csv,json" exakit_bulk_select_formats "$PLAN"
-check "EXAKIT_DATA_FORMATS answers the menu" "csv,json" "$EXAKIT_BULK_FORMATS"
-EXAKIT_DATA_FORMATS="pq,jsonl" exakit_bulk_select_formats "$PLAN"
-check "extension aliases resolve" "parquet,json" "$EXAKIT_BULK_FORMATS"
-# Not in $( ): the function reports through EXAKIT_BULK_FORMATS, which a
-# command substitution's subshell would throw away. The warning is on stderr.
-EXAKIT_DATA_FORMATS="parquet,avro" exakit_bulk_select_formats "$PLAN" 2>"$WORK/fmt.err"
-has "a format the folder lacks is called out" "No avro files in this folder" "$(cat "$WORK/fmt.err")"
-check "...and the rest still load" "parquet" "$EXAKIT_BULK_FORMATS"
+# Behaviour, not just absence: a mixed folder yields every loadable row.
+MIXED_ALL="$(printf '%s\n' "$PLAN" | grep -c '^load|' || true)"
+check "every loadable file is taken from a mixed folder" "4" "$MIXED_ALL"
 
 printf '\n== the loop loads every chosen file, one table each ==\n'
 
@@ -167,13 +164,20 @@ has "the failure names the file" "orders.parquet could not be loaded" "$OUT"
 has "and the rest are counted" "Loaded 3 of 4 file(s)" "$OUT"
 FAIL_ON=""
 
-printf '\n== choosing formats narrows what loads ==\n'
+printf '\n== a mixed folder loads every kind in one pass ==\n'
 
+# This block used to prove that EXAKIT_DATA_FORMATS narrowed the load. That
+# narrowing is gone on purpose: the folder is the answer, so all four files go
+# in together and no variable can hold any of them back.
 : > "$LOADED"
 OUT="$(EXAKIT_DATA_FORMATS=csv exakit_load_local_folder "$D" 2>&1)"
-check "only the chosen format loads" "2" "$(grep -c '^upload ' "$LOADED")"
-lacks "parquet stayed out" "orders.parquet" "$(cat "$LOADED")"
-lacks "json stayed out"    "events.json"    "$(cat "$LOADED")"
+# Three UPLOADS, four files: JSON does not go through the uploader at all, it is
+# shredded into tables by the ingest engine first. The "Loaded 4 file(s)" line
+# below is the one that counts files.
+check "every non-JSON kind uploads" "3" "$(grep -c '^upload ' "$LOADED")"
+has "parquet is in"  "orders"    "$(cat "$LOADED")"
+has "json is in"     "events"    "$(cat "$LOADED")"
+has "and the old variable no longer narrows anything" "Loaded 4 file(s)" "$OUT"
 
 printf '\n== a folder with nothing to load says so ==\n'
 
@@ -205,8 +209,8 @@ has "data-load accepts a path argument" '_dl_path="$1"' "$CLI"
 has "a path pre-answers the local-data question" 'EXAKIT_DATA_FILE="$_dl_norm"' "$CLI"
 has "a missing path is refused" 'No such file or folder' "$CLI"
 HELP="$(cat "$ROOT/setup/help/exakit.json")"
-has "the help documents a folder" "or a folder" "$HELP"
-has "the help documents the format variable" "EXAKIT_DATA_FORMATS" "$HELP"
+has "the help documents a folder" "A FOLDER is a bulk load" "$HELP"
+lacks "the help no longer documents a format variable" "EXAKIT_DATA_FORMATS" "$HELP"
 
 printf '\n== Windows loads JSON where the engine exists ==\n'
 

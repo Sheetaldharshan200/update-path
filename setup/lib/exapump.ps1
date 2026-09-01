@@ -1382,52 +1382,6 @@ function Get-ExakitBulkLabel {
     }
 }
 
-# Select-ExakitBulkFormats <plan> - which formats to load, returned as an array
-# of kinds (empty = cancel).
-#
-# Only asked when the folder actually holds more than one loadable format: with
-# a single format there is nothing to choose, and a menu whose every answer is
-# the same answer is just a keystroke. EXAKIT_DATA_FORMATS pre-answers it for an
-# unattended run, the same way EXAKIT_DATASETS pre-answers the dataset menu.
-function Select-ExakitBulkFormats {
-    param([string[]]$Plan)
-    $kinds = @(Get-ExakitBulkKindsPresent $Plan)
-
-    if ($env:EXAKIT_DATA_FORMATS) {
-        $chosen = New-Object 'System.Collections.Generic.List[string]'
-        foreach ($raw in ($env:EXAKIT_DATA_FORMATS -split ',')) {
-            $want = $raw.Trim().ToLowerInvariant()
-            if (-not $want) { continue }
-            if ($want -eq "pq") { $want = "parquet" }
-            if ($want -eq "ndjson" -or $want -eq "jsonl") { $want = "json" }
-            if ($kinds -contains $want) {
-                if (-not ($chosen -contains $want)) { [void]$chosen.Add($want) }
-            } else {
-                Warn2 "No $(Get-ExakitBulkLabel $want) files in this folder (EXAKIT_DATA_FORMATS)."
-            }
-        }
-        return $chosen.ToArray()
-    }
-
-    if ($kinds.Count -le 1) { return $kinds }
-
-    $labels = New-Object 'System.Collections.Generic.List[string]'
-    $defaults = New-Object 'System.Collections.Generic.List[int]'
-    for ($i = 0; $i -lt $kinds.Count; $i++) {
-        $count = @($Plan | Where-Object { $_.StartsWith("load|$($kinds[$i])|") }).Count
-        if ($count -eq 1) { $unit = "file" } else { $unit = "files" }
-        [void]$labels.Add("$(Get-ExakitBulkLabel $kinds[$i]) ($count $unit)")
-        [void]$defaults.Add($i + 1)
-    }
-    [void]$labels.Add("Skip")
-    $finalIdx = $labels.Count
-    $selection = Read-ExakitCheckboxMenu `
-        -Title "This folder has more than one format - which do you want to load?" `
-        -Options $labels.ToArray() -Defaults $defaults.ToArray() -ExclusiveIndex $finalIdx
-    if ($selection -contains $finalIdx) { return @() }
-    return @($selection | Where-Object { $_ -ge 1 -and $_ -lt $finalIdx } | ForEach-Object { $kinds[$_ - 1] })
-}
-
 # Show-ExakitBulkPlan - what is about to happen, and what will not. Duplicates
 # are named one by one, because being skipped is a surprise worth explaining;
 # files of other kinds are counted, because a folder of exports beside two
@@ -1488,13 +1442,11 @@ function Import-ExakitLocalFolder {
         return "failed"
     }
 
-    $formats = @(Select-ExakitBulkFormats $plan)
-    if ($formats.Count -eq 0) {
-        Info "Nothing selected - no files were loaded."
-        return "back"
-    }
-    $chosen = @($loadable | Where-Object { $formats -contains $_.Split('|', 3)[1] } |
-        ForEach-Object { $_.Substring(5) })
+    # EVERY loadable file, whatever its kind. A folder means "here is my data",
+    # and asking which of CSV, Parquet and JSON to take is asking the reader to
+    # do the sorting the kit exists to do. Anything unreadable is already listed
+    # as skipped with its reason. Twin of the same change in exapump.sh.
+    $chosen = @($loadable | ForEach-Object { $_.Substring(5) })
     if ($chosen.Count -eq 0) {
         Info "Nothing selected - no files were loaded."
         return "back"
