@@ -7824,6 +7824,7 @@ exakit_maybe_offer_data_load() {
         ui_table_begin "$EXAKIT_TABLE_STATE" && EXAKIT_TABLE_LIVE=1
     fi
     _data_notes=""
+    _data_has_local=0
     # Anything fatal inside the loads below is written here instead of onto the
     # animating table; it is read out after ui_table_end.
     EXAKIT_DEFER_ERRORS=""
@@ -7834,17 +7835,10 @@ exakit_maybe_offer_data_load() {
     for _data_id in $(printf '%s' "$EXAKIT_DATA_LOAD_SELECTION" | tr ',' ' '); do
         case "$_data_id" in
             local)
-                ( ui_table_detach; exakit_load_local_file )
-                _local_status=$?
-                if [ "$_local_status" -eq 2 ]; then
-                    _data_notes="${_data_notes}info|Local file load skipped.
-"
-                elif [ "$_local_status" -ne 0 ]; then
-                    _data_notes="${_data_notes}warn|Data loading did not finish cleanly. Retry any time with: exakit data-load
-"
-                    exakit_note_failure "loading the local file did not finish (see the log)"
-                    _data_failed=1
-                fi
+                # Deferred until the table has stopped - see below. This row is
+                # made of QUESTIONS, and ui_table_detach does not take the frame
+                # off the screen: the animator kept repainting over the prompt.
+                _data_has_local=1
                 ;;
             *)
                 if ! ( ui_table_detach; exakit_load_dataset "$_kit_root" "$_data_id" ); then
@@ -7868,6 +7862,31 @@ exakit_maybe_offer_data_load() {
         rm -f "$EXAKIT_DEFER_ERRORS"
     fi
     EXAKIT_DEFER_ERRORS=""
+    # The local file / folder load, now that the box has stopped moving.
+    #
+    # This is the INSTALLER's copy of the data-load loop -- `exakit data-load`
+    # has its own in exapump.sh -- and it was left behind when that one was
+    # fixed. The symptom is the same and worse here: the animator repaints every
+    # 80ms, so the prompt was overwritten mid-question and the typed path landed
+    # on top of the words, "/Users/me/data  or a folder of them (type back to
+    # return)". On the install screen the frame was reprinted twenty-two times.
+    #
+    # ui_table_detach was never the answer: it stops a subshell's exit from
+    # killing the animator, it does not take the frame off the screen.
+    if [ "$_data_has_local" = 1 ]; then
+        printf '\n'
+        ( exakit_load_local_file )
+        _local_status=$?
+        if [ "$_local_status" -eq 2 ]; then
+            _data_notes="${_data_notes}info|Local file load skipped.
+"
+        elif [ "$_local_status" -ne 0 ]; then
+            _data_notes="${_data_notes}warn|Data loading did not finish cleanly. Retry any time with: exakit data-load
+"
+            exakit_note_failure "loading the local file did not finish (see the log)"
+            _data_failed=1
+        fi
+    fi
     while IFS='|' read -r _dn_kind _dn_text; do
         [ -n "$_dn_text" ] || continue
         case "$_dn_kind" in
