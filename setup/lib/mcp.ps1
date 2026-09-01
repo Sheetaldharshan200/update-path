@@ -1476,7 +1476,7 @@ function Register-ExakitAddonMcpServers {
     }
     $resultJson = Invoke-McpAddonCli -Clients $clients
     if (-not $resultJson) {
-        Warn2 "Could not register the $Label MCP endpoint with your AI clients - run: exakit mcp-setup"
+        Write-ExakitAddonNote "warn" "Could not register the $Label MCP endpoint with your AI clients - run: exakit mcp-setup"
         return $false
     }
     $configured = @()
@@ -1488,13 +1488,18 @@ function Register-ExakitAddonMcpServers {
     }
     $configured = @($configured | Where-Object { $_ })
     if ($configured.Count -gt 0) {
-        OkStep "$Label is registered with your AI clients ($($configured -join ', ')) - restart them to pick it up"
+        # Held back while the marketplace table is live: a line printed into a
+        # frame that is still repainting lands inside the box and strands it.
+        # Twin of _exakit_mcp_addon_say in mcp.sh -- OkStep was the wrong tool,
+        # it survives the QUIETING, which is how it punched through the very
+        # protection that keeps the table intact.
+        Write-ExakitAddonNote "ok" "$Label is registered with your AI clients ($($configured -join ', ')) - restart them to pick it up"
         return $true
     }
     # Every connected client was skipped: the two that cannot express a remote
     # MCP server (Codex, Claude) are the usual reason, and that is a fact about
     # the client, not a failure of this install.
-    Info "No connected AI client can take a remote MCP endpoint - drive $Label with: exakit help dash-server"
+    Write-ExakitAddonNote "info" "No connected AI client can take a remote MCP endpoint - drive $Label with: exakit help dash-server"
     return $true
 }
 
