@@ -292,5 +292,64 @@ lacks "no misleading platform list"     "load it from macOS, Linux or WSL"     "
 has "the prompt offers JSON"            "Local CSV / Parquet / JSON file"      "$EXAPUMP_PS1"
 has "...and so does the remote one"     "Remote CSV / Parquet / JSON URL"      "$EXAPUMP_PS1"
 
+printf '\n== a FATAL upload failure names the reason too ==\n'
+
+# The translator was used on the soft path and dropped on the fatal one, so the
+# worse outcome got the worse message. exakit_explain_db_error, which the fatal
+# path did call, knows connection, LIMIT and privilege faults - a malformed CSV
+# is none of those, and it is the commonest upload failure there is, so a single
+# file load died as "(see log)" while the folder loop above was already putting
+# the very same engine line into words.
+#
+# exapump_upload is stubbed further up this suite, and `die` exits the shell it
+# runs in, so the real function is exercised in a child bash: the engine fails,
+# and the logfile already holds its Error: line, which is the whole situation.
+FATAL_LOG="$WORK/fatal.log"
+cat > "$FATAL_LOG" <<'FATALLOG'
+Error: SQL execution failed: Protocol error: ETL-2107: Error while parsing row=412 (starting from 0) [CSV Parser found at byte 8 of 76 single field delimiter in a not enclosed field]
+FATALLOG
+
+fatal_upload() { # fatal_upload <log-file> -> the message a doomed upload prints
+    EXAKIT_HOME="$WORK/home" EXAKIT_BIN_DIR="$WORK/bin" HOME="$WORK/fake-home" \
+    bash -c '
+        set -u
+        . "$1/setup/lib/ui.sh"
+        . "$1/setup/lib/common.sh"
+        . "$1/setup/lib/exapump.sh"
+        EXAKIT_LOG_FILE="$2"
+        # The layer below: the upload fails, and the engine has already said why
+        # in the logfile.
+        run_logged() { return 1; }
+        exapump_upload "$3" "STARTER_KIT.SALES"
+    ' _ "$ROOT" "$1" "$D/sales.csv" 2>&1
+}
+
+FATAL_OUT="$(fatal_upload "$FATAL_LOG" || true)"
+
+has "the fatal path says what the engine said" \
+    "row 412 has a line break or an unescaped comma inside a quoted field" "$FATAL_OUT"
+has "...and names the file and the table it was going into" \
+    "Could not load sales.csv into STARTER_KIT.SALES" "$FATAL_OUT"
+lacks "the fatal path no longer sends the reader to the log" "Upload failed:" "$FATAL_OUT"
+
+# The fallback survives: with nothing in the log to translate, inventing a
+# reason would be worse than the old wording.
+: > "$FATAL_LOG"
+FATAL_BARE="$(fatal_upload "$FATAL_LOG" || true)"
+has "an untranslatable failure keeps the old wording" "Upload failed:" "$FATAL_BARE"
+lacks "...and invents no reason" "Could not load sales.csv" "$FATAL_BARE"
+
+# Both paths call the same translator, on both sides of the kit.
+FATAL_SH="$(cat "$ROOT/setup/lib/exapump.sh")"
+FATAL_PS="$(cat "$ROOT/setup/lib/exapump.ps1")"
+has "the shell fatal path asks for the reason" \
+    '_upl_why="$(exakit_upload_failure_reason' "$FATAL_SH"
+has "the twin asks for it on its fatal path too" \
+    '$uploadWhy = Get-ExakitUploadFailureReason -Output $result.Output' "$FATAL_PS"
+has "...and puts it in the message it dies with" \
+    'Fail "Could not load $(Split-Path $Path -Leaf) into $Target - $uploadWhy"' "$FATAL_PS"
+check "the twin asks on both paths, not one" "2" \
+    "$(printf '%s\n' "$FATAL_PS" | grep -c 'Get-ExakitUploadFailureReason -Output $result.Output')"
+
 printf '\n%s: %d passed, %d failed\n' "$(basename "$0")" "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

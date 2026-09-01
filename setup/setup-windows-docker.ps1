@@ -59,13 +59,21 @@ try {
     }
 
     # exapump publishes Windows binaries for x86_64 only. On other
-    # architectures (e.g. Windows-on-ARM) the exapump/data/MCP steps are
-    # skipped gracefully instead of aborting an install whose database
-    # container is already up and fully usable.
+    # architectures (e.g. Windows-on-ARM) the exapump, sample-data and AI
+    # bridge steps are skipped gracefully instead of aborting an install whose
+    # database container is already up and fully usable.
+    #
+    # The note has to name the WHOLE skip. It used to say "MCP client setup",
+    # which reads as "your AI clients are not configured, the bridge is there" -
+    # and the bridge is not there: step 3 installs and validates the MCP SERVER
+    # too, because the read-only database user it connects as is provisioned
+    # through exapump. Understating it is how a reader ends up hunting for a
+    # server that was never built.
     $exapumpSupported = ($env:PROCESSOR_ARCHITECTURE -eq "AMD64")
     if (-not $exapumpSupported) {
         Warn2 "exapump publishes Windows builds for x86_64 only (detected: $($env:PROCESSOR_ARCHITECTURE))."
-        Info "Skipping exapump, sample-data loading and MCP client setup - the database container itself is fully supported. Details: quickstarts/windows-docker.md"
+        Info "Skipping exapump, the sample data and the whole AI bridge (MCP server and clients) - the read-only database user the bridge connects as is provisioned through exapump, so the bridge cannot be built without it."
+        Info "The database container itself is fully supported. Details: quickstarts/windows-docker.md"
     }
 
     # --- step 3: exapump (data loading CLI) ------------------------------------
@@ -89,6 +97,14 @@ try {
             }) {
             Set-ExakitStepDone "exapump"
         }
+    } elseif (-not $exapumpSupported) {
+        # Say which step is not happening. Begin-ExakitStep is the only thing
+        # that prints a step label, so gating the whole call made the screen
+        # jump from "Step 1/5" to "Step 4/5" - which reads as output that got
+        # lost, not as two steps this machine does not need. Twin of
+        # kit_shared_steps (common.sh), which prints this same line when a
+        # step is not part of the installation.
+        Info "Step 2/5  exapump - not part of this installation, skipping"
     }
 
     # Load the sample data before any MCP configuration. exapump is now up
@@ -126,6 +142,8 @@ try {
             }) {
             Set-ExakitStepDone "mcp"
         }
+    } elseif (-not $exapumpSupported) {
+        Info "Step 3/5  AI bridge (MCP server, clients and skills) - not part of this installation, skipping"
     }
 
     # The AI bridge is finished HERE, in the step that says it is being built:
@@ -141,10 +159,19 @@ try {
     # back to the checkout for skills\ when the helper step has not staged its
     # copy yet. What they DO need is the database and exapump, two steps back.
     # Twin of the same block in kit_shared_steps (common.sh).
-    [void](Invoke-ExakitBestEffort -Component "mcp_clients" -Repair "exakit mcp-setup" `
-        -Label "AI client (MCP) setup" `
-        -Warning "Your local runtime is installed, but MCP client setup did not finish cleanly." `
-        -Body { Request-ExakitMcpSetupOffer })
+
+    # Gated on $exapumpSupported like the step that builds the bridge. Ungated,
+    # the installer skipped building the AI bridge and then asked which AI
+    # clients to connect to it - pointing them at an MCP server this run never
+    # installed and a read-only database user it never provisioned. The skills
+    # offer below stays unconditional: skills are documents an AI client reads,
+    # and they are just as useful with the database alone.
+    if ($exapumpSupported) {
+        [void](Invoke-ExakitBestEffort -Component "mcp_clients" -Repair "exakit mcp-setup" `
+            -Label "AI client (MCP) setup" `
+            -Warning "Your local runtime is installed, but MCP client setup did not finish cleanly." `
+            -Body { Request-ExakitMcpSetupOffer })
+    }
 
     [void](Invoke-ExakitBestEffort -Component "skills" -Repair "exakit skills-install" `
         -Label "AI skills" `

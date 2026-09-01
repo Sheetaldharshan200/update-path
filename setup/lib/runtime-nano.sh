@@ -302,12 +302,30 @@ nano_start_existing() {
             --pids-limit=-1 \
             -p "127.0.0.1:${EXAKIT_DB_PORT}:8563" \
             -v "${EXAKIT_NANO_VOLUME}:/exa" \
-            "$_image" || die "Container failed to start (see log)"
+            "$_image" || nano_die_container_start
     else
         run_logged "$_engine" start "$EXAKIT_NANO_CONTAINER" || \
             die "Could not start existing container $EXAKIT_NANO_CONTAINER (see log)"
     fi
     nano_wait_ready
+}
+
+# nano_die_container_start — the engine refused to start the container; say what
+# it said.
+#
+# `docker run` failures are single-line and self-explanatory - "port is already
+# allocated", "no space left on device", "invalid mount config for type bind",
+# "invalid reference format" - and they have four different fixes. Sending the
+# reader to a logfile for one line is the kit refusing to pass on an answer it
+# already has (the principle exapump.sh:503 states outright).
+nano_die_container_start() {
+    if [ -n "${EXAKIT_LOG_FILE:-}" ] && [ -r "${EXAKIT_LOG_FILE}" ]; then
+        error "The container engine refused to start the database container:"
+        tail -n 5 "$EXAKIT_LOG_FILE" 2>/dev/null | grep -v '^[[:space:]]*$' | while IFS= read -r _ndcs_line; do
+            printf '      %s%s %s%s\n' "${UI_ERR:-}" "${UI_VB:-|}" "$_ndcs_line" "${UI_RESET:-}" >&2
+        done
+    fi
+    die "Container failed to start."
 }
 
 # nano_creds_poisoned — detect the debris a root Docker daemon leaves behind
@@ -404,7 +422,17 @@ nano_install() {
 
     if ! nano_container_exists; then
         if port_in_use "$EXAKIT_DB_PORT"; then
-            die "Port $EXAKIT_DB_PORT is already in use by another application. Stop it or set EXAKIT_DB_PORT, then re-run."
+            # Name the holder. "Stop it" is unactionable when "it" is never
+            # named, and the holder is often not what the user expects: on a
+            # machine with WSL, a failed WSL install leaves wslrelay holding
+            # this port long after its container is gone.
+            _nip_who="$(port_holder_desc "$EXAKIT_DB_PORT" 2>/dev/null || true)"
+            error "Port $EXAKIT_DB_PORT is already taken${_nip_who:+ by $_nip_who}."
+            printf '    Free it, or run the database on another port:
+' >&2
+            printf '      EXAKIT_DB_PORT=8564 %s
+' "$(exakit_install_command 2>/dev/null || echo 'bash setup/setup-wsl.sh')" >&2
+            die "Port $EXAKIT_DB_PORT is not available."
         fi
         # Re-assigned per phase rather than printed: run_logged reads this at its
         # next ui_spin_begin, so the words change on the operation boundary
@@ -422,12 +450,47 @@ nano_install() {
         [ "$_pulled" -eq 1 ] || die "Image pull failed after 3 attempts: $_image (network/Docker Hub issue — see log)"
         ok "Image pulled"
 
+        # DOES THE DATA VOLUME ALREADY EXIST? This branch only knows that the
+        # CONTAINER is absent, which is a different question - a removed
+        # container, a partial uninstall or a rolled-back run all leave the
+        # volume behind, and that volume IS the database.
+        #
+        # Deploying over it does two wrong things at once: a freshly generated
+        # password is mounted as the first-deploy secret (the real password
+        # stays inside the volume, so the new one is a fiction the kit then
+        # records), and the single-use `init` arguments are passed over an
+        # already-initialised /exa, which the image refuses to boot with.
+        #
+        # So: adopt it, or replace it on an explicit instruction. Never
+        # silently re-initialise it.
+        _nano_volume_existed=0
+        if "$_engine" volume inspect "$EXAKIT_NANO_VOLUME" >/dev/null 2>&1; then
+            _nano_volume_existed=1
+        fi
+        if [ "$_nano_volume_existed" -eq 1 ] && [ "${EXAKIT_REUSE_DB:-1}" = "0" ]; then
+            warn "Replacing the existing database volume $EXAKIT_NANO_VOLUME (EXAKIT_REUSE_DB=0) - its data is being deleted."
+            run_logged "$_engine" volume rm "$EXAKIT_NANO_VOLUME" || \
+                die "Could not remove the existing data volume $EXAKIT_NANO_VOLUME (see log). Remove it by hand, then re-run."
+            _nano_volume_existed=0
+        fi
+
         # First deployment: generate the SYS password up front and hand it to
         # the container as a read-only secret file. It is only applied when
         # /exa is empty; on an existing volume the previous password stays.
         nano_repair_creds
         _password="$(read_credential nano_sys_password)"
         if [ -z "$_password" ]; then
+            # An ADOPTED volume already has a password, and it is inside the
+            # volume - not here. Minting one now would record a password the
+            # database has never heard of, and every later connection would
+            # fail against a credential the kit itself reported as correct. Say
+            # so instead. (Reachable when the kit home was removed but the
+            # volume was not, which a partial uninstall leaves behind.)
+            if [ "$_nano_volume_existed" -eq 1 ]; then
+                warn "The data volume $EXAKIT_NANO_VOLUME is being adopted, but this machine has no stored password for it."
+                info "Its SYS password lives inside the volume, from the install that created it."
+                info "If you no longer have it, replace the volume and lose its data with: EXAKIT_REUSE_DB=0"
+            fi
             _password="$(generate_password)"
             store_credential nano_sys_password "$_password"
         fi
@@ -437,29 +500,64 @@ nano_install() {
         _secret_mount="${EXAKIT_CREDS_DIR}/nano_sys_password:/run/secrets/sys_password:ro"
         [ "$_engine" = "podman" ] && _secret_mount="${_secret_mount},z"
 
-        # The secret must exist as a regular FILE before the engine sees the
-        # bind mount: if the path were missing, a root Docker daemon would
-        # create it as a root-owned directory on the host — the exact debris
-        # nano_repair_creds exists to clean up. Never hand it that chance.
-        [ -f "${EXAKIT_CREDS_DIR}/nano_sys_password" ] || \
-            die "Credential file ${EXAKIT_CREDS_DIR}/nano_sys_password is missing or not a regular file — re-run the installer."
+        # The secret must exist as a regular NON-EMPTY file before the engine
+        # sees the bind mount. Two distinct hazards, one guard:
+        #
+        # If the path were missing, a root Docker daemon would create it as a
+        # root-owned DIRECTORY on the host - the exact debris nano_repair_creds
+        # exists to clean up. Never hand it that chance.
+        #
+        # And -s, not -f: a ZERO-BYTE secret passes an existence test, and the
+        # image then refuses to deploy with
+        #     sys_password_file '/run/secrets/sys_password' is empty
+        # which surfaces minutes later as a container that started and exited,
+        # reported as a startup timeout. One character here turns that whole
+        # mystery into a sentence printed before the container is ever created.
+        [ -s "${EXAKIT_CREDS_DIR}/nano_sys_password" ] || \
+            die "The database password file ${EXAKIT_CREDS_DIR}/nano_sys_password is missing or empty. Delete it and re-run the installer to generate a new one."
 
         EXAKIT_ACTIVE_LABEL="Starting the Nano container"
         info "Starting Nano container ($EXAKIT_NANO_CONTAINER)"
-        run_logged "$_engine" run -d \
-            --name "$EXAKIT_NANO_CONTAINER" \
-            --shm-size=512mb \
-            --pids-limit=-1 \
-            -p "127.0.0.1:${EXAKIT_DB_PORT}:8563" \
-            -v "${EXAKIT_NANO_VOLUME}:/exa" \
-            -v "$_secret_mount" \
-            "$_image" init sys_password_file=/run/secrets/sys_password || \
-            die "Container failed to start (see log)"
-        # run_rollback executes in reverse order: the container must be
-        # removed BEFORE its volume, or the engine refuses ("volume in use")
-        # and a half-initialized volume is orphaned for the next install.
-        push_rollback "$_engine volume rm $EXAKIT_NANO_VOLUME"
-        push_rollback "$_engine rm -f $EXAKIT_NANO_CONTAINER"
+        # The `init` arguments and the secret mount are FIRST-DEPLOY ONLY. On an
+        # adopted volume the database and its password already exist inside it,
+        # and the image refuses to boot when handed init options over an
+        # initialised /exa - so an adopted volume gets neither.
+        if [ "$_nano_volume_existed" -eq 1 ]; then
+            info "Adopting the existing database volume $EXAKIT_NANO_VOLUME (its data and password are kept)"
+            run_logged "$_engine" run -d \
+                --name "$EXAKIT_NANO_CONTAINER" \
+                --shm-size=512mb \
+                --pids-limit=-1 \
+                -p "127.0.0.1:${EXAKIT_DB_PORT}:8563" \
+                -v "${EXAKIT_NANO_VOLUME}:/exa" \
+                "$_image" || nano_die_container_start
+            # No volume rollback: this run did not create it, so undoing this
+            # step must never delete it. Only the container is ours to remove.
+            push_rollback "$_engine rm -f $EXAKIT_NANO_CONTAINER"
+        else
+            run_logged "$_engine" run -d \
+                --name "$EXAKIT_NANO_CONTAINER" \
+                --shm-size=512mb \
+                --pids-limit=-1 \
+                -p "127.0.0.1:${EXAKIT_DB_PORT}:8563" \
+                -v "${EXAKIT_NANO_VOLUME}:/exa" \
+                -v "$_secret_mount" \
+                "$_image" init sys_password_file=/run/secrets/sys_password || \
+                nano_die_container_start
+            # run_rollback executes in reverse order: the container must be
+            # removed BEFORE its volume, or the engine refuses ("volume in use")
+            # and a half-initialized volume is orphaned for the next install.
+            #
+            # Registered ONLY here, because only here did this run create the
+            # volume. Registering it unconditionally meant that answering "yes"
+            # to "undo the failed step?" deleted a database the run had merely
+            # adopted.
+            push_rollback "$_engine volume rm $EXAKIT_NANO_VOLUME"
+            push_rollback "$_engine rm -f $EXAKIT_NANO_CONTAINER"
+            # Read by nano_wait_ready: only a first deploy may be told to
+            # delete the data volume, because only it has nothing to lose.
+            EXAKIT_NANO_FIRST_DEPLOY=1
+        fi
     fi
 
     nano_wait_ready
@@ -471,8 +569,43 @@ nano_install() {
 }
 
 # nano_wait_ready — poll container logs until the database reports ready.
+#
+# Two ways this ends badly, and they are not the same thing: the container can
+# EXIT, or it can keep running without ever reporting ready. Both used to die
+# with "Nano startup timed out", which is simply false for the first - and it is
+# the common one. EXAKIT_NANO_EXITED tells them apart.
 nano_wait_ready() {
-    nano_wait_ready_soft || die "Nano startup timed out"
+    EXAKIT_NANO_EXITED=0
+    nano_wait_ready_soft && return 0
+    if [ "${EXAKIT_NANO_EXITED:-0}" = "1" ]; then
+        die "The database container exited before the database came up - the lines above are its own reason."
+    fi
+    die "The database did not become ready in time."
+}
+
+# nano_explain_container_exit <tail> — say which known fatal cause this is.
+#
+# The container states its own problem plainly and then exits; matching the few
+# markers we have seen in the field turns a wall of engine log into one sentence
+# with a remedy. Anything unmatched simply gets no extra line: the tail is
+# already printed, which is more than the old "(see log)" ever gave.
+nano_explain_container_exit() {
+    case "$1" in
+        *"sys_password_file"*|*"is empty"*)
+            printf '    The container was handed an empty password secret.\n' >&2
+            printf '    Delete %s/nano_sys_password and re-run the installer.\n' "$EXAKIT_CREDS_DIR" >&2
+            ;;
+        *"already initialized"*|*"already initialised"*)
+            printf '    The data volume %s is already initialised, so the first-deploy\n' "$EXAKIT_NANO_VOLUME" >&2
+            printf '    options it was started with cannot apply. Reuse it, or replace it\n' >&2
+            printf '    and lose its data, with: EXAKIT_REUSE_DB=0\n' >&2
+            ;;
+        *"no space left"*)
+            printf '    The container ran out of disk. Free space where the engine stores\n' >&2
+            printf '    its data, then re-run.\n' >&2
+            ;;
+    esac
+    return 0
 }
 
 nano_wait_ready_soft() {
@@ -489,8 +622,22 @@ nano_wait_ready_soft() {
     while [ "$_waited" -lt "$EXAKIT_NANO_READY_TIMEOUT" ]; do
         if ! nano_container_running; then
             ui_spin_end
-            "$(nano_engine)" logs --tail 30 "$EXAKIT_NANO_CONTAINER" >> "${EXAKIT_LOG_FILE:-/dev/null}" 2>&1
-            warn "Nano container stopped unexpectedly (see log)"
+            # The container had already said why it was dying. Reading the
+            # tail STRAIGHT INTO THE LOG FILE and printing "(see log)" threw
+            # away an answer the process was holding - and the caller then
+            # called it a timeout, which it was not. Keep the tail, log it,
+            # and put its last lines on screen where the reader is.
+            _nwr_tail="$("$(nano_engine)" logs --tail 30 "$EXAKIT_NANO_CONTAINER" 2>&1)"
+            printf '%s
+' "$_nwr_tail" >> "${EXAKIT_LOG_FILE:-/dev/null}" 2>&1
+            EXAKIT_NANO_EXITED=1
+            error "The database container started and then exited. Its last words:"
+            printf '%s
+' "$_nwr_tail" | grep -v '^[[:space:]]*$' | tail -8 | while IFS= read -r _nwr_line; do
+                printf '      %s%s %s%s
+' "${UI_ERR:-}" "${UI_VB:-|}" "$_nwr_line" "${UI_RESET:-}" >&2
+            done
+            nano_explain_container_exit "$_nwr_tail"
             return 1
         fi
         if nano_ready_in_logs; then
@@ -513,11 +660,25 @@ nano_wait_ready_soft() {
         fi
     done
     ui_spin_end
-    error "Database did not become ready within ${EXAKIT_NANO_READY_TIMEOUT}s."
-    printf '    Inspect the logs:   %s logs %s\n' "$(nano_engine)" "$EXAKIT_NANO_CONTAINER" >&2
-    printf '    If a first install was interrupted, the data volume may be half-initialized.\n' >&2
-    printf '    Reset and retry:    %s rm -f %s && %s volume rm %s\n' \
-        "$(nano_engine)" "$EXAKIT_NANO_CONTAINER" "$(nano_engine)" "$EXAKIT_NANO_VOLUME" >&2
+    error "The database did not report ready within ${EXAKIT_NANO_READY_TIMEOUT}s."
+    printf '    It may still be coming up. Watch it:  %s logs -f %s\n' \
+        "$(nano_engine)" "$EXAKIT_NANO_CONTAINER" >&2
+    printf '    Then check again:                     exakit status\n' >&2
+    # The reset command below DELETES THE DATABASE, and this function is reached
+    # from three places: a first deploy, `exakit start` on an established
+    # database, and an update. Printing it unconditionally handed the user whose
+    # database was merely slow to come back the one command that destroys every
+    # table they ever loaded - framed as a routine remedy, with nothing saying
+    # that the volume IS the database. Only the first deploy has nothing to lose.
+    if [ "${EXAKIT_NANO_FIRST_DEPLOY:-0}" = "1" ]; then
+        printf '    This was a first deployment, so there is no data to lose yet.\n' >&2
+        printf '    If the volume was left half-initialized, start over:\n' >&2
+        printf '      %s rm -f %s && %s volume rm %s\n' \
+            "$(nano_engine)" "$EXAKIT_NANO_CONTAINER" "$(nano_engine)" "$EXAKIT_NANO_VOLUME" >&2
+    else
+        printf '    Do NOT remove the volume %s - it IS your database.\n' "$EXAKIT_NANO_VOLUME" >&2
+        printf '    If the container is genuinely wedged:  exakit repair-runtime\n' >&2
+    fi
     return 1
 }
 

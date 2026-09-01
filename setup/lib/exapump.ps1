@@ -644,6 +644,14 @@ function Invoke-ExapumpUpload {
         }
         Write-ExapumpOutput -Output $result.Output
         Show-ExakitDbErrorRemedy $result.Output
+        # Show-ExakitDbErrorRemedy only knows connection, LIMIT and privilege
+        # faults, so a malformed CSV - the commonest upload failure there is -
+        # matched none of them and arrived as "(see log)". The translator that
+        # does know that fault is the one the soft path above already calls, so
+        # the FATAL outcome was the one getting the worse message. Same reason,
+        # same words, on both paths. Twin of exapump_upload in exapump.sh.
+        $uploadWhy = Get-ExakitUploadFailureReason -Output $result.Output
+        if ($uploadWhy) { Fail "Could not load $(Split-Path $Path -Leaf) into $Target - $uploadWhy" }
         Fail "Upload failed: $Path -> $Target (see log)"
     }
     if (-not $script:ExakitUploadQuiet) { Ok "$(Split-Path $Path -Leaf) loaded" }

@@ -1349,7 +1349,19 @@ lacks "and says nothing extra when they agree" "kit installed" "$agree_out"
 # column is both unreadable and incomparable, and it would make every Nano install
 # claim a phantom update. The status is deliberately NOT pinned here — it is decided
 # by whatever the live versions.json advertises today.
-has "the runtime row shows a bare tag" "nano 2026.2.0-nano.2" "$(row "$agree_out" nano)"
+# The tag itself is NOT pinned here. This row's installed cell is resolved from
+# whatever the live versions.json advertises, so pinning a version made the
+# check fail the day that document moved on - it currently names nano.2 while
+# the manifest advertises nano.3, and whether it passed came down to whether the
+# run had a warm cache. What the comment above actually cares about is the
+# SHAPE: a bare tag, never an image reference.
+_vm_nano_row="$(row "$agree_out" nano)"
+check "the runtime row is a bare tag, not an image reference" "yes" \
+    "$(case "$_vm_nano_row" in
+        *docker.io/*|*exasol/nano:*) echo no ;;
+        nano\ [0-9]*) echo yes ;;
+        *) echo "no ($_vm_nano_row)" ;;
+    esac)"
 lacks "and no image reference reaches the table" "docker.io/exasol/nano" "$agree_out"
 
 echo "a component with no build for this machine is never offered:"
