@@ -1043,6 +1043,19 @@ _ui_table_cell() {
         failed)
             UI_TABLE_CELL="${UI_ERR:-}${UI_CROSS:-[x]}${UI_RESET:-} $7"
             UI_TABLE_CELL_LEN=$(( ${#UI_CROSS} + 1 + ${#7} )) ;;
+        disabled)
+            # No glyph: this is not an outcome of anything that ran, it is a
+            # standing fact about the row. Dim, like the name beside it.
+            #
+            # ONLY when a Status column exists. A disabled row does not count as
+            # a status for width purposes -- that is what lets the selection
+            # screen drop the column entirely -- so filling the cell anyway drew
+            # text into a column of width zero and pushed the row past its own
+            # border. On that screen the same word is in the Description column.
+            if [ "${UI_TABLE_STAT_W:-0}" -gt 0 ]; then
+                UI_TABLE_CELL="${UI_DIM:-}$7${UI_RESET:-}"
+                UI_TABLE_CELL_LEN=${#7}
+            fi ;;
     esac
     return 0
 }
@@ -1118,25 +1131,19 @@ ui_table_frame() {
             corner) _utr_conn="${UI_CORNER:-\`-} "; _utr_spine=0 ;;
             *)      _utr_conn=""; _utr_spine=0 ;;
         esac
-        # A row nobody can pick: no checkbox at all (an empty one invites the
-        # reader to try), and the note reads straight on from the label —
-        # "Cursor · not installed" is one sentence. Putting the note in the
-        # Status column instead would size that column, and the columns would
-        # then be measured for text that is neither a name nor a status. The
-        # 5-space indent is the width of the pointer and checkbox it replaces,
-        # so the tree connectors still line up.
+        # A row nobody can pick: no checkbox at all, because an empty one
+        # invites the reader to try. It keeps its COLUMNS though. It used to
+        # merge into one sentence -- "json-tables · Installed (0.2)" -- which
+        # put a version in the middle of a name while the Version column beside
+        # it sat empty, and left the Status column with nothing to say about the
+        # one row whose status was already known. The 5-space indent is the
+        # width of the pointer and checkbox it replaces, so the tree connectors
+        # still line up.
         if [ "$_utr_state" = "disabled" ]; then
-            _utr_note="${_utr_final# }"
-            _utr_text="$_utr_conn$_utr_label${_utr_note:+ · $_utr_note}"
-            _utr_max=$(( _utr_inner - 5 ))
-            [ "${#_utr_text}" -le "$_utr_max" ] || \
-                _utr_text="${_utr_text:0:$(( _utr_max - 1 ))}…"
-            _utr_f="$_utr_f  ${UI_ACCENT:-}${UI_VB:-|}${UI_RESET:-}     ${UI_DIM:-}${_utr_text}${UI_RESET:-}${_UI_TABLE_SP:0:$(( _utr_inner - 5 - ${#_utr_text} ))}${UI_ACCENT:-}${UI_VB:-|}${UI_RESET:-}
-"
-            _utr_lines=$(( _utr_lines + 1 ))
-            continue
-        fi
-        if [ "$_utr_tick" = "1" ]; then
+            # Three spaces, the width of "[ ]": with two the tree connector
+            # sat a column left of every pickable row above it.
+            _utr_ptr=" "; _utr_box="   "; _utr_boxlen=3
+        elif [ "$_utr_tick" = "1" ]; then
             # A plain "x", not the palette tick, when there is no colour: the
             # plain-palette UI_TICK is the multi-character "[ok]", and a checkbox
             # is already brackets — together they read "[[ok]]".
@@ -1152,9 +1159,18 @@ ui_table_frame() {
         else
             _utr_ptr=" "
         fi
-        _utr_name="$_utr_conn$_utr_label"
-        [ "${#_utr_name}" -le "$UI_TABLE_NAME_W" ] || \
-            _utr_name="${_utr_name:0:$(( UI_TABLE_NAME_W - 1 ))}…"
+        # MEASURED plain, PRINTED possibly dim: a disabled row's name carries
+        # colour escapes, and ${#...} would count those bytes as width and pad
+        # the row short by exactly the length of the escape sequence.
+        _utr_plain="$_utr_conn$_utr_label"
+        [ "${#_utr_plain}" -le "$UI_TABLE_NAME_W" ] || \
+            _utr_plain="${_utr_plain:0:$(( UI_TABLE_NAME_W - 1 ))}…"
+        _utr_namelen=${#_utr_plain}
+        if [ "$_utr_state" = "disabled" ]; then
+            _utr_name="${UI_DIM:-}${_utr_plain}${UI_RESET:-}"
+        else
+            _utr_name="$_utr_plain"
+        fi
         _ui_table_cell "$_utr_state" "${_utr_pct:-0}" "${_utr_ceil:-0}" \
             "${_utr_secs:-0}" "${_utr_t0:-0}" "$_utr_phase" "$_utr_final" "$_utr_now"
         _utr_used=$(( 1 + _utr_boxlen + 1 + UI_TABLE_NAME_W + _utr_statsep_w + UI_TABLE_CELL_LEN ))
@@ -1162,7 +1178,7 @@ ui_table_frame() {
         # expression < 0") printed straight into the frame, and the row then goes
         # out unpadded -- so a width miscalculation would show up as garbage on
         # screen instead of a border a column out of line.
-        _utr_npad=$(( UI_TABLE_NAME_W - ${#_utr_name} )); [ "$_utr_npad" -ge 0 ] || _utr_npad=0
+        _utr_npad=$(( UI_TABLE_NAME_W - _utr_namelen )); [ "$_utr_npad" -ge 0 ] || _utr_npad=0
         # The optional cells, dim so the eye still lands on the name and the
         # status. Truncated to their own column, never measured with
         # _ui_visible_len: every string here is one this file assembled, so its

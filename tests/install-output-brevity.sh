@@ -523,7 +523,10 @@ has "...both columns"               'exakit_version_plain "$(exakit_component_av
 # the one table, resolved by the caller that is already visiting every add-on
 # and handed to the row builder, which looks nothing up itself.
 has "the marketplace table too"     'exakit_version_plain "${_mm_adv:-unknown}"' "$COMMON"
-has "...and for a covered add-on"   'Installed ($(exakit_version_plain "${_mm_cv:-?}"))' "$COMMON"
+# A covered add-on carries its version in the Version COLUMN now, and the word
+# on its own, so the row lines up with every other add-on instead of reading
+# "json-tables · Installed (0.2)" with the Version column empty beside it.
+has "...and a covered add-on fills the column" 'Installed|$(exakit_version_plain "${_mm_cv:-?}")' "$COMMON"
 has "the twin has the helper"       'function Get-ExakitVersionPlain'           "$COMMON_PS1"
 has "...and uses it in its table"   'Get-ExakitVersionPlain $advertised'        "$COMMON_PS1"
 

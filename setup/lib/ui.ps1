@@ -907,6 +907,18 @@ function Get-ExakitTableCell {
             $cell.Text = $script:UiErr + $script:UiCross + $script:UiReset + " " + $Row.Final
             $cell.Len = $script:UiCross.Length + 1 + ("" + $Row.Final).Length
         }
+        "disabled" {
+            # No glyph: not an outcome of anything that ran, a standing fact
+            # about the row. ONLY where a Status column exists - a disabled row
+            # does not count as a status for width purposes, which is what lets
+            # the selection screen drop the column, so filling the cell there
+            # drew into a column of width zero and pushed the row past its own
+            # border. On that screen the same word is in Description.
+            if ($StatusWidth -gt 0) {
+                $cell.Text = $script:UiDim + $Row.Final + $script:UiReset
+                $cell.Len = ("" + $Row.Final).Length
+            }
+        }
     }
     return $cell
 }
@@ -998,26 +1010,10 @@ function Get-ExakitTableFrame {
         # measured for text that is neither a name nor a status. The 5-space
         # indent is the width of the pointer and checkbox it replaces, so the tree
         # connectors still line up. Twin of the same branch in ui_table_frame.
-        if ($row.State -eq "disabled") {
-            $note = ("" + $row.Final).TrimStart()
-            $text = $conn + $row.Label
-            if ($note) { $text = $text + " " + $script:UiMidDot + " " + $note }
-            $dmax = $inner - 5
-            if ($text.Length -gt $dmax) {
-                # Measured from the marker's OWN width, not assumed to be one:
-                # the plain palette spells it "..." and a hard-coded 1 would put
-                # two columns of the note back over the border.
-                $dcut = $dmax - $script:UiEllipsis.Length
-                if ($dcut -lt 1) { $dcut = 1 }
-                $text = $text.Substring(0, $dcut) + $script:UiEllipsis
-            }
-            $dtail = $inner - 5 - $text.Length
-            if ($dtail -lt 0) { $dtail = 0 }
-            [void]$lines.Add("  " + $script:UiAccent + $script:UiVB + $script:UiReset + "     " +
-                $script:UiDim + $text + $script:UiReset + (" " * $dtail) +
-                $script:UiAccent + $script:UiVB + $script:UiReset)
-            continue
-        }
+        # A row nobody can pick keeps its COLUMNS. It used to merge into one
+        # sentence - "json-tables - Installed (0.2)" - which put a version in the
+        # middle of a name while the Version column beside it sat empty. Three
+        # spaces stand in for "[ ]" so the tree connectors still line up.
         if ($row.Tick) {
             # A plain "x", not the palette tick, when there is no colour: the
             # plain-palette tick is itself a marker and a checkbox is already
@@ -1029,14 +1025,22 @@ function Get-ExakitTableFrame {
             $box = "[ ]"
             $boxLen = 3
         }
+        if ($row.State -eq "disabled") { $box = "   "; $boxLen = 3 }
         if ($i -eq $Cursor) {
             if ($script:UiFancy) { $ptr = $script:UiAccent + "❯" + $script:UiReset } else { $ptr = ">" }
         } else {
             $ptr = " "
         }
-        $name = $conn + $row.Label
-        if ($name.Length -gt $nameW) { $name = $name.Substring(0, $nameW - 1) + "…" }
-        $namePad = $nameW - $name.Length
+        # A row nobody can pick never takes the cursor either.
+        if ($row.State -eq "disabled") { $ptr = " " }
+        # MEASURED plain, PRINTED possibly dim: a disabled row's name carries
+        # colour escapes, and .Length would count those as width.
+        $plain = $conn + $row.Label
+        if ($plain.Length -gt $nameW) { $plain = $plain.Substring(0, $nameW - 1) + "…" }
+        $nameLen = $plain.Length
+        if ($row.State -eq "disabled") { $name = $script:UiDim + $plain + $script:UiReset }
+        else { $name = $plain }
+        $namePad = $nameW - $nameLen
         if ($namePad -lt 0) { $namePad = 0 }
         $cell = Get-ExakitTableCell -Row $row -StatusWidth $statW -Now $now
         # The optional cells, dim so the eye still lands on the name and the

@@ -3250,7 +3250,7 @@ _exakit_addon_table_build() {
     # comes after the installable ones the corner is not the last installable.
     # Drawn the other way the tree closed early and then kept going.
     _atb_dn=0
-    while IFS='|' read -r _atb_cid _atb_cwhy; do
+    while IFS='|' read -r _atb_cid _atb_cwhy _atb_cver; do
         [ -n "$_atb_cid" ] || continue
         _atb_dn=$(( _atb_dn + 1 ))
     done <<EXAKIT_ATB_COUNT
@@ -3290,11 +3290,16 @@ EXAKIT_ATB_META
     # offers what cannot be chosen. Each carries why. An empty id line keeps the
     # row-number-to-id mapping intact: the index IS the row.
     _atb_d=0
-    while IFS='|' read -r _atb_did _atb_dwhy; do
+    while IFS='|' read -r _atb_did _atb_dwhy _atb_dver; do
         [ -n "$_atb_did" ] || continue
         _atb_d=$(( _atb_d + 1 ))
         if [ "$_atb_d" -eq "$_atb_dn" ]; then _atb_dkind=corner; else _atb_dkind=tee; fi
-        printf '%s|%s|0|disabled|||||| %s||\n' "$_atb_dkind" "$_atb_did" "$_atb_dwhy" >> "$_atb_f"
+        # The state word goes to BOTH the status cell (field 10) and the
+        # Description column (field 12): the selection screen has Description
+        # and no Status, the install screen has Status and no Description, and
+        # the row should say the same thing on either.
+        printf '%s|%s|0|disabled|||||%s|%s|%s|%s\n' \
+            "$_atb_dkind" "$_atb_did" "" "$_atb_dwhy" "$_atb_dver" "$_atb_dwhy" >> "$_atb_f"
         EXAKIT_ADDON_TABLE_IDS="$EXAKIT_ADDON_TABLE_IDS
 "
     done <<EXAKIT_ATB_DISABLED
@@ -3528,18 +3533,24 @@ exakit_marketplace_menu() {
         # version and a reason for each of these is gone (see below), and the
         # selection only ever listed installable add-ons.
         if exakit_marketplace_addon_installed "$_mm_id"; then
+            # "Installed" and the version travel SEPARATELY now: the version
+            # belongs in the Version column beside every other add-on's, and the
+            # word belongs wherever the table puts a state -- Description on the
+            # selection screen, Status while installing. Bundling them into the
+            # name read as "json-tables · Installed (0.2)" with the Version
+            # column empty right next to it.
             _mm_cv="$(exakit_component_current "$_mm_id" 2>/dev/null || true)"
-            _mm_covered="$_mm_covered$_mm_id|Installed ($(exakit_version_plain "${_mm_cv:-?}"))
+            _mm_covered="$_mm_covered$_mm_id|Installed|$(exakit_version_plain "${_mm_cv:-?}")
 "
             _mm_ids+=("__disabled__")
         elif _exakit_addon_system_present "$_mm_id"; then
             # The user already has the tool from somewhere else: covered, and
             # the kit does not manage it.
-            _mm_covered="$_mm_covered$_mm_id|already on this system, managed outside the kit
+            _mm_covered="$_mm_covered$_mm_id|managed outside the kit|
 "
             _mm_ids+=("__disabled__")
         elif ! exakit_marketplace_addon_available "$_mm_id"; then
-            _mm_covered="$_mm_covered$_mm_id|not in this kit copy. Run: exakit update
+            _mm_covered="$_mm_covered$_mm_id|not in this kit copy|
 "
             _mm_ids+=("__disabled__")
         else
