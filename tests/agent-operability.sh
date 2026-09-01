@@ -256,7 +256,7 @@ mkdir -p "$_surface_home"
 HOME="$_surface_home" exakit_apply_readonly_allowlist >/dev/null
 _allow="$(python3 -c "
 import json; print('\n'.join(json.load(open('$_surface_home/.claude/settings.json'))['permissions']['allow']))")"
-for _cmd in status info version mcp-doctor logs catalog preflight guide mcp-status mcp-validate; do
+for _cmd in status info version mcp-doctor logs catalog preflight guide mcp-status; do
     has "allowlist covers exakit $_cmd" "exakit $_cmd" "$_allow"
 done
 # ...and must NOT auto-allow anything that writes, including the command that

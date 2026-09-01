@@ -27,9 +27,6 @@
 #   mcp-setup             permanently configure MCP in supported AI clients
 #   mcp-doctor [clients]  check MCP config, connectivity, and managed state
 #   mcp-status [clients]  show managed MCP state for the supported AI clients
-#   mcp-validate [clients] validate managed MCP configs and test connectivity
-#   mcp-remove [clients]  remove managed MCP config from the supported clients
-#   mcp-restore [snapshot] restore the latest (or a chosen) MCP snapshot
 #   skills-install        install the kit's AI skills for CLI agents
 #                         (~\.claude\skills, ~\.agents\skills)
 #   marketplace           browse optional add-ons (dash-server, ...) and install
@@ -1933,13 +1930,6 @@ function Invoke-CmdMcpOperation {
     }
 }
 
-function Invoke-CmdMcpRestore {
-    param([string]$SnapshotId = "")
-    Assert-ExakitInstalled
-    Initialize-ExakitLogging
-    if (-not (Invoke-McpRestore -SnapshotId $SnapshotId)) { Fail "Could not restore managed MCP configuration" }
-}
-
 function Invoke-CmdCatalog {
     param([string]$Search = "", [switch]$Json)
     # Rendered from the same help documents every other screen uses
@@ -2136,9 +2126,6 @@ try {
             Invoke-CmdMcpOperation -Operation "doctor" -OpArgs $doctorArgs
         }
         "mcp-status"   { Invoke-CmdMcpOperation -Operation "status" -OpArgs $RestArgs }
-        "mcp-validate" { Invoke-CmdMcpOperation -Operation "validate" -OpArgs $RestArgs }
-        "mcp-remove"   { Invoke-CmdMcpOperation -Operation "uninstall" -OpArgs $RestArgs }
-        "mcp-restore"  { Invoke-CmdMcpRestore -SnapshotId ($RestArgs | Select-Object -First 1) }
         "skills"       {
             if ($RestArgs -contains "--json" -or $RestArgs -contains "-j") {
                 # Same reason as `info --json`: a trailing update notice would
@@ -2185,8 +2172,8 @@ try {
     # where a notice on stdout would stop the output being parseable JSON.
     if (-not $script:JsonOutput -and
         @("status", "info", "guide", "start", "stop", "data-load", "preflight",
-          "skills", "skills-install", "marketplace", "autostart", "logs", "mcp-setup", "mcp-doctor", "mcp-status",
-          "mcp-validate", "mcp-restore", "mcp-remove") -contains $Command) {
+          "skills", "skills-install", "marketplace", "autostart", "logs", "mcp-setup", "mcp-doctor",
+          "mcp-status") -contains $Command) {
         Show-ExakitUpdateNotice
     }
 } catch [ExakitFailException] {

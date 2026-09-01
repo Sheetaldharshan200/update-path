@@ -5772,7 +5772,7 @@ exakit_report_readonly_allowlist() {
         # report that nothing happened. The branch below, where commands really
         # are allowlisted, still says so.
         ADDED\ 0) _exakit_log_file "INFO  Read-only command allowlist already present in ~/.claude/settings.json." ;;
-        ADDED\ *) ok "Read-only exakit commands allowlisted in ~/.claude/settings.json (status, info, version, mcp-doctor, logs, catalog, preflight, guide, mcp-status, mcp-validate, skills; uninstall stays gated)." ;;
+        ADDED\ *) ok "Read-only exakit commands allowlisted in ~/.claude/settings.json (status, info, version, mcp-doctor, logs, catalog, preflight, guide, mcp-status, skills; uninstall stays gated)." ;;
         SKIP*)    warn "~/.claude/settings.json could not be merged safely ($_skills_applied) — the allowlist in skills/reducing-agent-prompts.md shows what to add by hand." ;;
     esac
     return 0
@@ -5807,7 +5807,7 @@ path = sys.argv[1]
 # model.
 READONLY = [
     "status", "info", "version", "mcp-doctor", "logs", "catalog", "preflight",
-    "guide", "mcp-status", "mcp-validate", "help",
+    "guide", "mcp-status", "help",
 ]
 
 # EVERY SPELLING THE AGENT IS TOLD TO USE. A permission rule matches the command
@@ -6824,7 +6824,7 @@ if discovered:
             groups["not installed"].append(name)
     hints = {
         "available": "-> connect with: exakit mcp-setup",
-        "needs attention": "-> managed entry, client missing (exakit mcp-remove)",
+        "needs attention": "-> managed entry, client missing (exakit mcp-doctor)",
     }
     print("")
     print("  Client state:")
@@ -7420,23 +7420,6 @@ EXAKIT_MCP_STAMP_PY
         doctor) info "Connect or re-connect AI clients any time with:  exakit mcp-setup" ;;
     esac
 
-    return "$_operation_status"
-}
-
-exakit_mcp_restore() {
-    _snapshot_id="${1:-}"
-    _result_file="$(mktemp "${TMPDIR:-/tmp}/exakit-mcp-restore.XXXXXX")"
-    _operation_status=0
-    info "Running MCP restore"
-    if exakit_run_mcp_operation_cli "restore" "claude_desktop,claude_code,cursor,codex,vscode_copilot,gemini_cli,opencode,continue" "$_result_file" "$_snapshot_id"; then
-        :
-    else
-        _operation_status=$?
-    fi
-    if [ -s "$_result_file" ]; then
-        exakit_print_mcp_operation_summary "$_result_file"
-    fi
-    rm -f "$_result_file"
     return "$_operation_status"
 }
 

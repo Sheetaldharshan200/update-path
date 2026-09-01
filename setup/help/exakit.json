@@ -33,10 +33,7 @@
       "commands": [
         "mcp-setup",
         "mcp-doctor",
-        "mcp-status",
-        "mcp-validate",
-        "mcp-remove",
-        "mcp-restore"
+        "mcp-status"
       ]
     },
     {
@@ -232,33 +229,6 @@
       "description": "Which clients the kit manages, which config file each one uses, and the current snapshot id.",
       "examples": [
         "exakit mcp-status"
-      ]
-    },
-    {
-      "command": "mcp-validate",
-      "options": "[clients]",
-      "summary": "Validate MCP configs and test connectivity.",
-      "description": "Checks the managed config files parse and the server answers over stdio.",
-      "examples": [
-        "exakit mcp-validate"
-      ]
-    },
-    {
-      "command": "mcp-remove",
-      "options": "[clients]",
-      "summary": "Remove the managed MCP config.",
-      "description": "Takes the kit's MCP entry back out of the selected clients. Anything you configured yourself is left alone.",
-      "examples": [
-        "exakit mcp-remove"
-      ]
-    },
-    {
-      "command": "mcp-restore",
-      "options": "[snapshot]",
-      "summary": "Restore a previous MCP config snapshot.",
-      "description": "Puts back the latest, or a chosen, backup of the client config files.",
-      "examples": [
-        "exakit mcp-restore"
       ]
     },
     {

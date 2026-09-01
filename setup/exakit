@@ -37,9 +37,6 @@
 #   mcp-doctor          check the configured MCP clients, repair what has
 #                       drifted, then re-check (there is no separate repair)
 #   mcp-status          show managed MCP state for the supported AI clients
-#   mcp-validate        validate managed MCP configs and test connectivity
-#   mcp-remove          remove managed MCP config from the supported clients
-#   mcp-restore         restore the latest (or a chosen) MCP snapshot
 #   skills [--json]     list the kit's AI skills and whether each one has
 #                       reached the agents' discovery folders
 #   skills-install      install the kit's AI skills for CLI agents
@@ -933,28 +930,6 @@ cmd_mcp_status() {
     die "Could not read managed MCP state"
 }
 
-cmd_mcp_validate() {
-    _require_install
-    exakit_init_logging
-    exakit_mcp_operation validate "$@"
-    _cmd_rc=$?
-    [ "$_cmd_rc" = 0 ] && return 0
-    [ "$_cmd_rc" = 2 ] && exit 1
-    die "Could not validate managed MCP configuration"
-}
-
-cmd_mcp_remove() {
-    _require_install
-    exakit_init_logging
-    exakit_mcp_operation uninstall "$@" || die "Could not remove managed MCP configuration"
-}
-
-cmd_mcp_restore() {
-    _require_install
-    exakit_init_logging
-    exakit_mcp_restore "${1:-}" || die "Could not restore managed MCP configuration"
-}
-
 cmd_skills_install() {
     exakit_init_logging
     exakit_install_skills || die "Could not install the kit's AI skills"
@@ -1198,9 +1173,6 @@ case "${1:-help}" in
     mcp-setup) _with_notice cmd_mcp_setup ;;
     mcp-doctor) shift; _with_notice cmd_mcp_doctor "$@" ;;
     mcp-status) shift; _with_notice cmd_mcp_status "$@" ;;
-    mcp-validate) shift; _with_notice cmd_mcp_validate "$@" ;;
-    mcp-remove) shift; _with_notice cmd_mcp_remove "$@" ;;
-    mcp-restore) shift; _with_notice cmd_mcp_restore "$@" ;;
     skills)   shift
               case "${1:-}" in
                   --json|-j) cmd_skills --json ;;

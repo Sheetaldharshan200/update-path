@@ -976,7 +976,7 @@ function Show-McpOperationSummary {
             elseif ($managed -contains $entry.client) { $groups["needs attention"] += $name }
             else { $groups["not installed"] += $name }
         }
-        $hints = @{ "available" = "-> connect with: exakit mcp-setup"; "needs attention" = "-> managed entry, client missing (exakit mcp-remove)" }
+        $hints = @{ "available" = "-> connect with: exakit mcp-setup"; "needs attention" = "-> managed entry, client missing (exakit mcp-doctor)" }
         Write-Host ""; Write-Host "  Client state:"
         foreach ($label in $groups.Keys) {
             $names = $groups[$label]
@@ -1318,14 +1318,6 @@ function Invoke-McpOperation {
         Info "Connect or re-connect AI clients any time with:  exakit mcp-setup"
     }
     return $ok
-}
-
-function Invoke-McpRestore {
-    param([string]$SnapshotId = "")
-    Info "Running MCP restore"
-    $resultJson = Invoke-McpOperationCli -Operation "restore" -Clients @("claude_desktop", "claude_code", "cursor", "codex", "vscode_copilot", "gemini_cli", "opencode", "continue") -SnapshotId $SnapshotId
-    if ($resultJson) { Show-McpOperationSummary $resultJson }
-    return [bool]$resultJson
 }
 
 function New-McpUpdateSnapshot {
