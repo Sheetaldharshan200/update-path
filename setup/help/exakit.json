@@ -288,7 +288,7 @@
       "command": "uninstall",
       "options": "[--yes | --dry-run]",
       "summary": "Remove what the kit installed.",
-      "description": "Pick what to remove (Skip, each add-on, or EVERYTHING) with a confirmation summary and a typed gate, or name a single component (exakit uninstall mcp_configs). --dry-run previews the full plan and changes nothing.",
+      "description": "Pick what to remove (Skip, each add-on, or EVERYTHING) with a confirmation summary and a typed gate. --dry-run previews the full plan and changes nothing.",
       "warning": "A full uninstall removes the database AND its data, the MCP configs, the skills and the binaries.",
       "examples": [
         "exakit uninstall --dry-run",

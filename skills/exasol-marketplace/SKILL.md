@@ -85,8 +85,8 @@ exakit logs          # each service's log is listed
 ## Removing one
 
 ```bash
-exakit uninstall     # a selection: Skip (safe default), each component,
-                     # each add-on on its own, or EVERYTHING
+exakit uninstall     # a selection: Skip (safe default), the add-ons as a
+                     # group, each add-on on its own, or EVERYTHING
 ```
 
 Each add-on is individually selectable, the plan is shown back as a summary,

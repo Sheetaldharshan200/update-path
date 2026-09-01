@@ -147,6 +147,28 @@ check "the Windows twin hands back the irm form" "1" "$_psc"
 _psbad="$(grep -c 'Install it again any time: curl' "$ROOT/setup/exakit.ps1" 2>/dev/null; true)"
 check "and Windows is never told to curl into sh" "0" "$_psbad"
 
+# The menu is the WHOLE interface for uninstall: the argument parser takes flags
+# only. A hint above the menu used to name a by-name form -- `exakit uninstall
+# <database|mcp_configs|...>` -- and every one of those forms answers "Unknown
+# option", so the kit documented, one line above the menu, a command that could
+# only fail. Asserted on BEHAVIOUR rather than on the removed wording: a guard
+# that greps for the old string passes the day the same promise is written in
+# different words.
+echo
+echo "uninstall advertises only what it accepts:"
+for _c in database mcp_configs skills exapump pyexasol dash-server; do
+    _uout="$(/bin/bash "$ROOT/setup/exakit" uninstall "$_c" --dry-run 2>&1 | sed 's/\x1b\[[0-9;]*m//g')"
+    case "$_uout" in
+        *"Unknown option"*) check "exakit uninstall $_c is rejected" "rejected" "rejected" ;;
+        *)                  check "exakit uninstall $_c is rejected" "rejected" "ACCEPTED" ;;
+    esac
+done
+_uadv="$(cat "$ROOT/setup/lib/common.sh" "$ROOT/setup/exakit.ps1" "$ROOT/setup/help/exakit.json")"
+case "$_uadv" in
+    *"One component on purpose"*) check "nothing advertises a by-name uninstall" "absent" "PRESENT" ;;
+    *)                            check "nothing advertises a by-name uninstall" "absent" "absent" ;;
+esac
+
 echo
 echo "PASS=$PASS FAIL=$FAIL"
 [ "$FAIL" -eq 0 ]

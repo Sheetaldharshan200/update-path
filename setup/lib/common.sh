@@ -9470,10 +9470,10 @@ exakit_uninstall_menu() {
     # nothing else depends on it, and removing one leaves everything else
     # working. So they are the only individually selectable rows.
     #
-    # A single component can still be removed on purpose, by name, for the rare
-    # case that wants it -- `exakit uninstall mcp_configs` -- and the hint below
-    # the menu says so. That keeps the capability without putting a
-    # half-installed kit one keystroke away.
+    # There is no by-name form. `exakit uninstall` takes flags only, and the
+    # menu is the whole interface: the components below are reachable from it
+    # and from nothing else. The hint that used to sit under this menu claimed
+    # otherwise and named a syntax the parser rejects.
 
     # Kit-managed add-ons, each removable on its own.
     _um_addons="$(exakit_marketplace_installed_addons 2>/dev/null || true)"
@@ -9519,10 +9519,12 @@ exakit_uninstall_menu() {
     _um_keys+=("everything")
     _um_every_idx="${#_um_labels[@]}"
 
-    # Named single-component removal stays available; it is just not one
-    # keystroke away in a menu.
-    printf '\n    %sOne component on purpose: exakit uninstall <database|mcp_configs|skills|exapump|pyexasol>%s\n' \
-        "${UI_DIM:-}" "${UI_RESET:-}"
+    # No hint here. There used to be one naming a by-name form -- `exakit
+    # uninstall <database|mcp_configs|...>` -- that the argument parser has
+    # never accepted: every one of those forms answers "Unknown option". It
+    # described a capability the CLI does not offer, directly above the menu
+    # that does, so a reader who trusted it left the menu to type a command that
+    # could only fail. The menu lists what is on offer; it needs no preamble.
 
     # EVERYTHING is a MASTER toggle over every row above it: picking it ticks
     # them all, and unticking any single row releases it — so the screen can
