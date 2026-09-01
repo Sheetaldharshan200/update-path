@@ -42,7 +42,7 @@ class VSCodeCopilotAdapter(ClientAdapter):
     def describe_capabilities(self) -> AdapterCapabilities:
         return AdapterCapabilities(
             supports_stdio=True,
-            supports_http=False,
+            supports_http=True,
             supports_managed_file=True,
             supports_patch_mode=True,
             supports_env_block=True,
@@ -191,19 +191,9 @@ class VSCodeCopilotAdapter(ClientAdapter):
     def render(
         self, server_definition: ServerDefinition, inspection: AdapterInspection
     ) -> RenderResult:
-        if server_definition.transport != DeploymentMode.STDIO:
-            raise ValueError("VS Code rendering currently supports stdio only.")
-        if not server_definition.command:
-            raise ValueError("VS Code stdio rendering requires a command.")
         document = copy.deepcopy(inspection.document or {"servers": {}})
         servers = document.setdefault("servers", {})
-        entry: dict[str, Any] = {
-            "type": "stdio",
-            "command": server_definition.command,
-            "args": list(server_definition.args),
-        }
-        if server_definition.env:
-            entry["env"] = dict(server_definition.env)
+        entry = self._entry_for(server_definition)
         servers[server_definition.name] = entry
         content = json.dumps(document, indent=2, sort_keys=True) + "\n"
         return RenderResult(
@@ -212,6 +202,30 @@ class VSCodeCopilotAdapter(ClientAdapter):
             managed_hash=sha256_json(entry),
             entry_name=server_definition.name,
         )
+
+    def _entry_for(self, server_definition: ServerDefinition) -> dict[str, Any]:
+        """One server entry, in VS Code's shape.
+
+        VS Code types every entry explicitly — ``stdio`` for a launched server,
+        ``http`` for a remote one — so the type is written in both branches.
+        """
+        if server_definition.transport == DeploymentMode.HTTP:
+            if not server_definition.url:
+                raise ValueError("VS Code HTTP rendering requires a url.")
+            entry: dict[str, Any] = {"type": "http", "url": server_definition.url}
+            if server_definition.headers:
+                entry["headers"] = dict(server_definition.headers)
+            return entry
+        if not server_definition.command:
+            raise ValueError("VS Code stdio rendering requires a command.")
+        entry = {
+            "type": "stdio",
+            "command": server_definition.command,
+            "args": list(server_definition.args),
+        }
+        if server_definition.env:
+            entry["env"] = dict(server_definition.env)
+        return entry
 
     def render_removal(self, inspection: AdapterInspection, server_name: str) -> RenderResult:
         document = copy.deepcopy(inspection.document or {})

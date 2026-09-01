@@ -37,7 +37,7 @@
       "severity": "normal"
     },
     "skills": {
-      "version": "1.4.0",
+      "version": "1.5.0",
       "severity": "normal",
       "note": "the AI skills shipped in this repo's skills/ directory; bump when a skill is added or its guidance changes"
     },

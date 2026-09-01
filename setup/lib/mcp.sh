@@ -99,7 +99,7 @@ mcp_uv_install() {
 mcp_install() {
     EXAKIT_MCP_STEP_T0="$(date +%s 2>/dev/null || echo 0)"
     mcp_uv_install
-    EXAKIT_ACTIVE_LABEL="Priming ${EXAKIT_MCP_PACKAGE}@${EXAKIT_MCP_VERSION}"
+    EXAKIT_ACTIVE_LABEL="Downloading ${EXAKIT_MCP_PACKAGE}@${EXAKIT_MCP_VERSION} — first run only"
     info "Priming ${EXAKIT_MCP_PACKAGE}@${EXAKIT_MCP_VERSION} (downloads on first use)"
     # `--help` exits non-zero on server versions that demand connection env
     # before printing usage — so the exit code can't distinguish "download
@@ -247,6 +247,73 @@ mcp_refresh_client_pins() {
     ok "AI client configs now launch ${EXAKIT_MCP_PACKAGE}@${EXAKIT_MCP_VERSION}"
 }
 
+# mcp_register_addon_servers <label> - put an installed add-on's MCP endpoint
+# into the clients that are already connected.
+#
+# Scoped to already-managed clients for the same reason mcp_refresh_client_pins
+# is: configure would happily create a config for a client the user never chose
+# to connect. Nothing here is fatal - an add-on that installed correctly is
+# installed, whether or not an AI client is wired to it yet, and the endpoint is
+# one `exakit mcp-setup` away in any case.
+mcp_register_addon_servers() {
+    _mras_label="${1:-the add-on}"
+    command -v exakit_run_mcp_addon_cli >/dev/null 2>&1 || return 0
+    exakit_can_run_python || return 0
+    _mras_clients="$(mcp_managed_clients)"
+    if [ -z "$_mras_clients" ]; then
+        info "No AI client is connected yet - connect one any time with: exakit mcp-setup"
+        return 0
+    fi
+    _mras_result="$(mktemp "${TMPDIR:-/tmp}/exakit-mcp-addon.XXXXXX")"
+    if ! exakit_run_mcp_addon_cli "$_mras_clients" "$_mras_result"; then
+        rm -f "$_mras_result"
+        warn "Could not register the $_mras_label MCP endpoint with your AI clients - run: exakit mcp-setup"
+        return 1
+    fi
+    _mras_configured="$(run_python - "$_mras_result" 2>/dev/null <<'PY'
+import json, sys
+
+try:
+    with open(sys.argv[1], encoding="utf-8") as handle:
+        doc = json.load(handle)
+except (OSError, ValueError):
+    raise SystemExit(0)
+dash = doc.get("dash_server") or {}
+print(",".join(dash.get("configured_clients") or []))
+PY
+    )"
+    rm -f "$_mras_result"
+    if [ -n "$_mras_configured" ]; then
+        ok_step "$_mras_label is registered with your AI clients ($_mras_configured) - restart them to pick it up"
+        return 0
+    fi
+    # Every connected client was skipped: the two that cannot express a remote
+    # MCP server (Codex, Claude) are the usual reason, and that is a fact about
+    # the client, not a failure of this install.
+    info "No connected AI client can take a remote MCP endpoint - drive $_mras_label with: exakit help dash-server"
+    return 0
+}
+
+# mcp_unregister_server_entry <server> <label> - the mirror image, for an add-on
+# being removed: drop just that one entry, so the exasol server (and any other
+# add-on) stays where it is.
+mcp_unregister_server_entry() {
+    _muse_server="$1"
+    _muse_label="${2:-$1}"
+    command -v exakit_run_mcp_server_removal_cli >/dev/null 2>&1 || return 0
+    exakit_can_run_python || return 0
+    _muse_clients="$(mcp_managed_clients)"
+    [ -n "$_muse_clients" ] || return 0
+    _muse_result="$(mktemp "${TMPDIR:-/tmp}/exakit-mcp-unregister.XXXXXX")"
+    if ! exakit_run_mcp_server_removal_cli "$_muse_server" "$_muse_clients" "$_muse_result"; then
+        rm -f "$_muse_result"
+        warn "The $_muse_label MCP entry may still be in your AI client configs - check with: exakit mcp-status"
+        return 1
+    fi
+    rm -f "$_muse_result"
+    return 0
+}
+
 mcp_update_snapshot() {
     command -v exakit_run_mcp_operation_cli >/dev/null 2>&1 || return 1
     _result_file="$(mktemp "${TMPDIR:-/tmp}/exakit-mcp-update-backup.XXXXXX")"
@@ -344,7 +411,7 @@ PY
 # initialize handshake. Uses the same env the client configs use.
 mcp_validate() {
     info "Validating the MCP server (stdio handshake)"
-    EXAKIT_ACTIVE_LABEL="Validating the MCP server"
+    EXAKIT_ACTIVE_LABEL="Starting the MCP server and checking it answers"
     _dsn="$(manifest_get runtime.dsn 2>/dev/null)"
     mcp_resolve_creds
     _user="$_mcp_user"
@@ -355,10 +422,17 @@ mcp_validate() {
     require_python3
     _handshake_ok=0
     for _attempt in 1 2; do
+        # The handshake starts the server, and starting it can mean uvx
+        # materialising an environment first. Under the step's one-line quieting
+        # the info above went to the log, so without a spinner this phase is a
+        # blank screen for as long as that takes.
+        ui_spin_begin "${EXAKIT_ACTIVE_LABEL:-working}"
         if mcp_stdio_handshake_once; then
+            ui_spin_end
             _handshake_ok=1
             break
         fi
+        ui_spin_end
         [ "$_attempt" -lt 2 ] && { warn "Handshake attempt $_attempt failed — retrying"; sleep 5; }
     done
     # Faked-SVE self-repair: on aarch64 guests whose hypervisor advertises

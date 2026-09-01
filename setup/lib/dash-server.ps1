@@ -139,6 +139,15 @@ function Install-DashServer {
     Set-ExakitManifestValue "components.dash_server.command" (Get-DashServerLauncherPath)
     Set-ExakitManifestValue "components.dash_server.port" $script:DashServerPort
     Set-ExakitManifestValue "components.dash_server.instance" $instance
+
+    # AFTER the port is recorded, because that record is where the endpoint
+    # URL comes from. Until this ran, dash-server's control plane was
+    # registered nowhere: an agent had to hand-roll an HTTP transport against
+    # /mcp to reach tools that every other MCP server on the machine offers by
+    # name. Twin of the same call in dash_server_install.
+    if (Get-Command Register-ExakitAddonMcpServers -ErrorAction SilentlyContinue) {
+        try { [void](Register-ExakitAddonMcpServers -Label "dash-server") } catch { }
+    }
     return $true
 }
 
@@ -656,6 +665,12 @@ function Uninstall-DashServer {
         }
     }
     if (-not $DryRun) {
+        # Before the manifest block goes: an entry pointing at a port nothing
+        # answers on is worse than no entry at all, because a client reports it
+        # as a broken server every time it starts.
+        if (Get-Command Unregister-ExakitMcpServerEntry -ErrorAction SilentlyContinue) {
+            try { [void](Unregister-ExakitMcpServerEntry -ServerName "dash-server" -Label "dash-server") } catch { }
+        }
         Remove-ExakitManifestValue "components.dash_server"
         Remove-ExakitManifestValue "desired.dash_server"
         OkStep "dash-server removed - reinstall any time with: exakit marketplace"

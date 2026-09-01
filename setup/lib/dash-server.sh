@@ -228,6 +228,14 @@ dash_server_install() {
     manifest_set components.dash_server.command "$EXAKIT_DASH_SERVER_BIN"
     manifest_set components.dash_server.port "$EXAKIT_DASH_SERVER_PORT"
     manifest_set components.dash_server.instance "$EXAKIT_DASH_SERVER_HOME/instance"
+
+    # AFTER the port is recorded, because that record is where the endpoint URL
+    # comes from. Until this ran, dash-server's control plane was registered
+    # nowhere: an agent had to hand-roll an HTTP transport against /mcp to reach
+    # tools that every other MCP server on the machine offers by name.
+    if command -v mcp_register_addon_servers >/dev/null 2>&1; then
+        mcp_register_addon_servers "dash-server" || true
+    fi
 }
 
 # _dash_server_restore_package_data — put back data files the release ships in
@@ -762,6 +770,12 @@ dash_server_uninstall() {
         fi
     done
     if [ "$_dsu_dry" != "1" ]; then
+        # Before the manifest block goes: an entry pointing at a port nothing
+        # answers on is worse than no entry at all, because a client reports it
+        # as a broken server every time it starts.
+        if command -v mcp_unregister_server_entry >/dev/null 2>&1; then
+            mcp_unregister_server_entry "dash-server" "dash-server" || true
+        fi
         manifest_del components.dash_server
         manifest_del desired.dash_server
         ok_step "dash-server removed — reinstall any time with: exakit marketplace"

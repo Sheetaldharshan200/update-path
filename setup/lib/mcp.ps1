@@ -103,7 +103,7 @@ function Get-McpSslCertValidation {
 function Install-Mcp {
     $script:McpStepT0 = Get-Date
     Install-ExakitUv | Out-Null
-    $script:ExakitActiveLabel = "Priming $($script:McpPackage)@$($script:McpVersion)"
+    $script:ExakitActiveLabel = "Downloading $($script:McpPackage)@$($script:McpVersion) - first run only"
     Info "Priming $($script:McpPackage)@$($script:McpVersion) (downloads on first use)"
     # Use the resolved uvx path, not a bare "uvx" - uv was just installed to
     # a dir that isn't on this process's PATH yet.
@@ -114,6 +114,12 @@ function Install-Mcp {
     $primeOut = ""
     $primeCode = 1
     $previousEAP = $ErrorActionPreference
+    # The download itself, and the longest wait in this step on a machine
+    # with a cold uv cache. Under the step's one-line quieting the Info
+    # above goes to the log, so without a spinner the screen sits blank
+    # under the step heading for as long as the download takes - the twin
+    # (ui_spin_begin in mcp.sh) has always animated here.
+    Start-ExakitSpinner $script:ExakitActiveLabel
     try {
         $ErrorActionPreference = "Continue"
         $primeOut = & (Get-UvxPath) "$($script:McpPackage)@$($script:McpVersion)" "--help" 2>&1 | Out-String
@@ -122,6 +128,7 @@ function Install-Mcp {
         $primeOut = "$_"
     } finally {
         $ErrorActionPreference = $previousEAP
+        Stop-ExakitSpinner
     }
     if ($script:LogFile) { "uvx $($script:McpPackage)@$($script:McpVersion) --help" | Add-Content -Path $script:LogFile; $primeOut | Add-Content -Path $script:LogFile }
     if ($primeCode -eq 0 -or $primeOut -match '(?i)usage:|insufficient database connection|exasol[./\\]ai[./\\]mcp|site-packages[/\\]exasol') {
@@ -162,7 +169,7 @@ function Resolve-McpCredentials {
 # initialize handshake. Uses the same env the client configs use.
 function Test-McpServer {
     Info "Validating the MCP server (stdio handshake)"
-    $script:ExakitActiveLabel = "Validating the MCP server"
+    $script:ExakitActiveLabel = "Starting the MCP server and checking it answers"
     $dsn = Get-ExakitManifestValue "runtime.dsn"
     $creds = Resolve-McpCredentials
     $command = Get-McpCommandPath
@@ -207,6 +214,9 @@ sys.exit(1)
 
     $handshakeOk = $false
     for ($attempt = 1; $attempt -le 2; $attempt++) {
+        # Starting the server can still mean uvx materialising an
+        # environment, so this phase is not instant either.
+        Start-ExakitSpinner $script:ExakitActiveLabel
         $env:EXA_DSN = $dsn
         $env:EXA_USER = $creds.User
         $env:EXA_PASSWORD = $creds.Password
@@ -218,9 +228,16 @@ sys.exit(1)
             break
         } catch {
             if ($script:LogFile) { "$_" | Add-Content -Path $script:LogFile }
-            if ($attempt -lt 2) { Warn2 "Handshake attempt $attempt failed - retrying"; Start-Sleep -Seconds 5 }
         } finally {
+            # Before the retry warning, not after: a spinner owns its line
+            # and rewrites it every 90ms, so a warning printed under it
+            # lands in the middle of that line.
+            Stop-ExakitSpinner
             Remove-Item Env:\EXA_DSN, Env:\EXA_USER, Env:\EXA_PASSWORD, Env:\EXA_SSL_CERT_VALIDATION -ErrorAction SilentlyContinue
+        }
+        if (-not $handshakeOk -and $attempt -lt 2) {
+            Warn2 "Handshake attempt $attempt failed - retrying"
+            Start-Sleep -Seconds 5
         }
     }
     if ($handshakeOk) {
@@ -712,7 +729,7 @@ function Invoke-McpSetupCli {
 }
 
 function Invoke-McpOperationCli {
-    param([Parameter(Mandatory)][string]$Operation, [Parameter(Mandatory)][string[]]$Clients, [string]$SnapshotId = "")
+    param([Parameter(Mandatory)][string]$Operation, [Parameter(Mandatory)][string[]]$Clients, [string]$SnapshotId = "", [string]$ServerName = "")
     $repoRoot = Get-ExakitRepoRoot
     if (-not $repoRoot) { Warn2 "Could not find the MCP package source to manage MCP clients."; return $null }
     if ($Operation -in @("validate", "repair", "doctor")) {
@@ -720,12 +737,35 @@ function Invoke-McpOperationCli {
     }
     $args = @("run-runtime-operation", $Operation, "--runtime-root", $script:ExakitHome)
     if ($SnapshotId) { $args += @("--snapshot-id", $SnapshotId) }
+    # One named entry only, so removing an add-on leaves the exasol server
+    # (and any other add-on) in the same config file alone.
+    if ($ServerName) { $args += @("--servers", $ServerName) }
     $args += "--clients"
     $args += $Clients
     $result = Invoke-McpModule $args
     if ($result.ExitCode -ne 0) {
         if ($script:LogFile) { $result.Output | Add-Content -Path $script:LogFile }
         Warn2 "MCP $Operation failed (see log)."
+        return $null
+    }
+    return $result.Output
+}
+
+# Invoke-McpAddonCli - register the MCP endpoints of installed add-ons with the
+# clients that are already connected. Twin of exakit_run_mcp_addon_cli in
+# common.sh.
+#
+# Deliberately NOT Invoke-McpSetupCli: that path prepares the read-only database
+# user first, so an add-on install would have started depending on a running
+# database to finish. An add-on endpoint is a loopback URL with no credential in
+# it, so this touches neither.
+function Invoke-McpAddonCli {
+    param([Parameter(Mandatory)][string[]]$Clients)
+    $repoRoot = Get-ExakitRepoRoot
+    if (-not $repoRoot) { Warn2 "Could not find the MCP package source to register the add-on endpoint."; return $null }
+    $result = Invoke-McpModule (@("register-addon-servers", "--runtime-root", $script:ExakitHome, "--clients") + $Clients)
+    if ($result.ExitCode -ne 0) {
+        if ($script:LogFile) { $result.Output | Add-Content -Path $script:LogFile }
         return $null
     }
     return $result.Output
@@ -1415,6 +1455,63 @@ function Update-McpClientPins {
         return $false
     }
     Ok "AI client configs now launch $($script:McpPackage)@$($script:McpVersion)"
+    return $true
+}
+
+# Register-ExakitAddonMcpServers <label> - put an installed add-on's MCP endpoint
+# into the clients that are already connected. Twin of
+# mcp_register_addon_servers in setup/lib/mcp.sh.
+#
+# Scoped to already-managed clients for the same reason Update-McpClientPins is:
+# configure would happily create a config for a client the user never chose to
+# connect. Nothing here is fatal - an add-on that installed correctly is
+# installed, whether or not an AI client is wired to it yet, and the endpoint is
+# one `exakit mcp-setup` away in any case.
+function Register-ExakitAddonMcpServers {
+    param([string]$Label = "the add-on")
+    $clients = Get-McpManagedClients
+    if (@($clients).Count -eq 0) {
+        Info "No AI client is connected yet - connect one any time with: exakit mcp-setup"
+        return $true
+    }
+    $resultJson = Invoke-McpAddonCli -Clients $clients
+    if (-not $resultJson) {
+        Warn2 "Could not register the $Label MCP endpoint with your AI clients - run: exakit mcp-setup"
+        return $false
+    }
+    $configured = @()
+    try {
+        $doc = $resultJson | ConvertFrom-Json
+        if ($doc.dash_server) { $configured = @($doc.dash_server.configured_clients) }
+    } catch {
+        $configured = @()
+    }
+    $configured = @($configured | Where-Object { $_ })
+    if ($configured.Count -gt 0) {
+        OkStep "$Label is registered with your AI clients ($($configured -join ', ')) - restart them to pick it up"
+        return $true
+    }
+    # Every connected client was skipped: the two that cannot express a remote
+    # MCP server (Codex, Claude) are the usual reason, and that is a fact about
+    # the client, not a failure of this install.
+    Info "No connected AI client can take a remote MCP endpoint - drive $Label with: exakit help dash-server"
+    return $true
+}
+
+# Unregister-ExakitMcpServerEntry <server> <label> - the mirror image, for an
+# add-on being removed: drop just that one entry, so the exasol server (and any
+# other add-on) stays where it is. Twin of mcp_unregister_server_entry in
+# setup/lib/mcp.sh.
+function Unregister-ExakitMcpServerEntry {
+    param([Parameter(Mandatory)][string]$ServerName, [string]$Label = "")
+    if (-not $Label) { $Label = $ServerName }
+    $clients = Get-McpManagedClients
+    if (@($clients).Count -eq 0) { return $true }
+    $resultJson = Invoke-McpOperationCli -Operation "uninstall" -Clients $clients -ServerName $ServerName
+    if (-not $resultJson) {
+        Warn2 "The $Label MCP entry may still be in your AI client configs - check with: exakit mcp-status"
+        return $false
+    }
     return $true
 }
 

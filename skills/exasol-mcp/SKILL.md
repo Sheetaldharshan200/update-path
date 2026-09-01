@@ -60,6 +60,19 @@ backup of each first (backups live under the kit's `mcp/` directory; the live
 configs stay inside each client's own config file — `exakit mcp-status` lists
 where). **The user must restart or reload the client afterwards.**
 
+### Two managed entries, not one
+
+Setup writes an entry per server the kit owns. Always **`exasol`** — the
+read-only database server this skill is about. And, when the **dash-server**
+add-on is installed, a second entry named **`dash-server`** for that add-on's
+MCP control plane (Streamable HTTP on the port dash-server recorded). A second
+managed entry in a client config is expected, not drift.
+
+Codex and Claude Desktop are skipped for the `dash-server` entry — they cannot
+express a remote MCP server in the shape the kit writes — and a skipped client
+never fails the run. Everything about that entry lives in the `dash-server`
+skill; the rest of this page is the database path.
+
 ## What the connection actually is
 
 After setup, the client starts an MCP server named **`exasol`** on demand over
