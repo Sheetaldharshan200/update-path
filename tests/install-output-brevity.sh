@@ -586,6 +586,33 @@ has "...and on Windows"             'Starting the MCP server and checking it ans
 # until the spinner has been stopped.
 lacks "no warning under a spinner"  'Warn2 "Handshake attempt $attempt failed - retrying"; Start-Sleep' "$MCP_VALIDATE_PS"
 
+printf '\n== no question is asked under a live table ==\n'
+
+# There are TWO data-load loops -- the installer's in common.sh and `exakit
+# data-load`'s in exapump.sh -- and they drifted: one was fixed and the other
+# kept running the local file/folder row inside the loop, while the animator
+# repainted the frame every 80ms. The prompt was overwritten mid-question and
+# the typed path landed on top of the words; the install screen reprinted the
+# box twenty-two times.
+#
+# ui_table_detach is not the fix and never was: it stops a subshell's exit from
+# killing the animator, it does not take the frame off the screen. Asserted on
+# BOTH copies, because one of them being right is what hid this.
+COMMON_SRC="$(cat "$ROOT/setup/lib/common.sh")"
+EXAPUMP_SRC="$(cat "$ROOT/setup/lib/exapump.sh")"
+lacks "the installer does not prompt under its table" 'ui_table_detach; exakit_load_local_file' "$COMMON_SRC"
+lacks "...nor does exakit data-load"                  'ui_table_detach; exakit_load_local_file' "$EXAPUMP_SRC"
+has "the installer defers the local row"  '_data_has_local=1' "$COMMON_SRC"
+has "...and runs it after the table ends" 'if [ "$_data_has_local" = 1 ]; then' "$COMMON_SRC"
+has "exakit data-load defers it too"      '_menu_has_local=1' "$EXAPUMP_SRC"
+has "...and runs it after the table ends" 'if [ "$_menu_has_local" = 1 ]; then' "$EXAPUMP_SRC"
+# PowerShell already stopped its table on both paths; keep it that way.
+# The PAIRING, not a bare count: Stop-ExakitDataTableRun also appears in the
+# finally blocks and in its own definition, so counting the name says nothing
+# about whether the table is stopped before the prompt.
+check "both PowerShell paths stop the table before prompting" "2" \
+    "$(grep -A1 'Stop-ExakitDataTableRun$' "$ROOT/setup/lib/exapump.ps1" | grep -c 'Import-ExakitLocalFile')"
+
 printf '\n== the connection panel fits an 80-column terminal ==\n'
 # ui_panel_end sizes to its longest LINE and never consults the terminal width,
 # unlike ui_table_frame and ui_progress_line which both clamp. So the two
