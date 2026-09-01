@@ -144,7 +144,7 @@ has "json goes through the JSON path" "json events.json -> STARTER_KIT.EVENTS"  
 lacks "the skipped duplicate never loads" "sales_copy.csv" "$LOG"
 has "the folder is recorded" "manifest data.last_load.type=local_folder" "$LOG"
 has "the file count is recorded" "manifest data.last_load.files=4" "$LOG"
-has "the summary counts them" "Loaded 4 file(s) into STARTER_KIT" "$OUT"
+has "the summary counts them" "Loaded 4 files into STARTER_KIT" "$OUT"
 
 # This is also the guard for a bash 3.2 trap: filtering the plan with a `case`
 # inside $( ) returns the script's own text instead of the matches on the shell
@@ -161,7 +161,7 @@ RC=$?
 check "a failed file is reported" "1" "$RC"
 check "the other three still loaded" "3" "$(grep -cE '^(upload|json) ' "$LOADED")"
 has "the failure names the file" "orders.parquet not loaded" "$OUT"
-has "and the rest are counted" "Loaded 3 of 4 file(s)" "$OUT"
+has "and the rest are counted" "Loaded 3 of 4 into STARTER_KIT" "$OUT"
 FAIL_ON=""
 
 printf '\n== a file that will not load says why, and the rest still load ==\n'
@@ -207,7 +207,7 @@ OUT="$(EXAKIT_DATA_FORMATS=csv exakit_load_local_folder "$D" 2>&1)"
 check "every non-JSON kind uploads" "3" "$(grep -c '^upload ' "$LOADED")"
 has "parquet is in"  "orders"    "$(cat "$LOADED")"
 has "json is in"     "events"    "$(cat "$LOADED")"
-has "and the old variable no longer narrows anything" "Loaded 4 file(s)" "$OUT"
+has "and the old variable no longer narrows anything" "Loaded 4 files" "$OUT"
 
 printf '\n== a folder with nothing to load says so ==\n'
 
@@ -274,8 +274,14 @@ check "both routes reach the loader"    "2" \
 
 # The install announces itself once, in the words the shell uses, with an ASCII
 # hyphen because every .ps1 but ui.ps1 is ASCII-only.
-has "the shell says an add-on arrived"  'ok_step "JSON Tables installed'       "$EXAPUMP_SH_ALL"
-has "...and so does Windows"            'OkStep "JSON Tables installed - the add-on that loads JSON into Exasol"' "$EXAPUMP_PS1"
+# The announcement is LOGGED, not printed. It fires mid-folder-load, where the
+# one-line progress bar owns the row and rewrites it continuously, so the line
+# landed inside the bar. ok_step could not save it either: its pause looks for a
+# spinner, and a progress bar is a different animator holding the same line.
+lacks "no add-on line prints over the bar" 'ok_step "JSON Tables installed' "$EXAPUMP_SH_ALL"
+lacks "...nor on Windows"                  'OkStep "JSON Tables installed'  "$EXAPUMP_PS1"
+has "the shell logs it instead"   '_exakit_log_file "OK    JSON Tables installed' "$EXAPUMP_SH_ALL"
+has "...and Windows logs it too"  'Write-ExakitLog "OK" "JSON Tables installed'   "$EXAPUMP_PS1"
 
 # The comment that kept the refusal alive after the code outgrew it.
 lacks "the stale claim is gone"         "Windows cannot run the"               "$EXAPUMP_PS1"

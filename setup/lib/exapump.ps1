@@ -1072,7 +1072,10 @@ function Confirm-ExakitJsonTablesReady {
     # OkStep rather than Ok: the load narrates on one line, which gates plain Ok
     # to the logfile, and OkStep also hands the spinner's line back before
     # printing so this lands on a row of its own.
-    OkStep "JSON Tables installed - the add-on that loads JSON into Exasol"
+    # Nothing on screen - twin of the same silence in exapump.sh. This runs in
+    # the middle of a folder load, where the one-line progress bar owns the row
+    # and rewrites it continuously, so the line landed inside the bar.
+    Write-ExakitLog "OK" "JSON Tables installed - the add-on that loads JSON into Exasol"
     return $true
 }
 
@@ -1403,6 +1406,15 @@ function Get-ExakitBulkFolderPlan {
 
 # Get-ExakitBulkKindsPresent <plan> - the loadable kinds in the plan, in the
 # order the format menu shows them.
+# Get-ExakitPlural <n> <noun> - "1 file", "2 files". Twin of exakit_plural in
+# exapump.sh: "file(s)" is a form nobody says out loud, and it read as
+# unfinished on the count that is most common of all.
+function Get-ExakitPlural {
+    param([int]$N, [string]$Noun)
+    if ($N -eq 1) { return "$N $Noun" }
+    return "$N ${Noun}s"
+}
+
 function Get-ExakitBulkKindsPresent {
     param([string[]]$Plan)
     $found = New-Object 'System.Collections.Generic.List[string]'
@@ -1429,11 +1441,14 @@ function Get-ExakitBulkLabel {
 # hundred images should not print two hundred lines.
 function Show-ExakitBulkPlan {
     param([string[]]$Plan, [string[]]$Chosen, [string]$Schema, [string]$Path)
-    Info "From $Path into ${Schema}:"
+    # No header line - the question underneath names the count, the folder and
+    # the schema in one sentence. Twin of exakit_bulk_print_plan in exapump.sh.
     foreach ($row in $Chosen) {
         $parts = $row.Split('|', 3)
-        Write-Host ("      {0}{1}{2} {3} {4}->{5} {6}.{7}" -f $script:UiDim, $script:UiBullet, $script:UiReset,
-            (Split-Path $parts[2] -Leaf), $script:UiDim, $script:UiReset, $Schema, $parts[1])
+        # Table name only: the schema is the same for every row and is said
+        # once, in the question underneath.
+        Write-Host ("      {0}{1}{2} {3} {4}->{5} {6}" -f $script:UiDim, $script:UiBullet, $script:UiReset,
+            (Split-Path $parts[2] -Leaf), $script:UiDim, $script:UiReset, $parts[1])
     }
     foreach ($row in ($Plan | Where-Object { $_.StartsWith("skip|duplicate") })) {
         $parts = $row.Split('|', 4)
@@ -1448,17 +1463,22 @@ function Show-ExakitBulkPlan {
         if (Get-Command Get-JsonTablesApplicableReason -ErrorAction SilentlyContinue) {
             $why = Get-JsonTablesApplicableReason
         }
-        if ($why) { Warn2 "$json JSON file(s) skipped: $why" }
-        else { Warn2 "$json JSON file(s) skipped: no ingest engine is available on this machine." }
+        if ($why) { Warn2 "$(Get-ExakitPlural $json 'JSON file') skipped: $why" }
+        else { Warn2 "$(Get-ExakitPlural $json 'JSON file') skipped: no ingest engine is available on this machine." }
         Info "CSV and Parquet load without it. Load the JSON files from macOS, Linux or WSL."
     }
+    # The two counts on ONE line when both happen, each with its own plural. Two
+    # near-identical sentences stacked under a three-file plan was more lines
+    # about what is NOT being loaded than about what is.
+    $ignored = ""
     $other = @($Plan | Where-Object { $_.StartsWith("skip|unsupported|") }).Count
-    if ($other -gt 0) {
-        Write-Host ("      {0}{1} file(s) of other kinds ignored{2}" -f $script:UiDim, $other, $script:UiReset)
-    }
+    if ($other -gt 0) { $ignored = "$other of other kinds" }
     $empty = @($Plan | Where-Object { $_.StartsWith("skip|empty|") }).Count
     if ($empty -gt 0) {
-        Write-Host ("      {0}{1} empty file(s) ignored{2}" -f $script:UiDim, $empty, $script:UiReset)
+        if ($ignored) { $ignored = "$ignored, $empty empty" } else { $ignored = "$empty empty" }
+    }
+    if ($ignored) {
+        Write-Host ("      {0}ignored: {1}{2}" -f $script:UiDim, $ignored, $script:UiReset)
     }
 }
 
@@ -1496,7 +1516,7 @@ function Import-ExakitLocalFolder {
     # One schema for the whole folder, asked once.
     if ($env:EXAKIT_SCHEMA) { $schema = $env:EXAKIT_SCHEMA } else { $schema = "STARTER_KIT" }
     while ($true) {
-        $schema = Read-ExakitPrompt "Target schema for all $($chosen.Count) file(s) (back to return)" $schema
+        $schema = Read-ExakitPrompt "Target schema (back to return)" $schema
         if ($schema -match '^(b|back)$') {
             Info "Returning to data loading options."
             return "back"
@@ -1509,7 +1529,7 @@ function Import-ExakitLocalFolder {
 
     Show-ExakitBulkPlan -Plan $plan -Chosen $chosen -Schema $schema -Path $Path
     if (-not (Confirm-ExakitEnvPrompt -EnvName "EXAKIT_BULK_CONFIRM" `
-            -Question "Load these $($chosen.Count) file(s) into $schema?" -DefaultYes $true)) {
+            -Question "Load $(Get-ExakitPlural $chosen.Count 'file') from $Dir into $schema?" -DefaultYes $true)) {
         Info "Nothing was loaded."
         return "back"
     }
@@ -1525,7 +1545,7 @@ function Import-ExakitLocalFolder {
     $done = 0
     $failed = 0
     $i = 0
-    [void](Start-ExakitProgress -Pct 0 -Ceiling 1 -Secs 2 -Phase "reading $($chosen.Count) file(s)")
+    [void](Start-ExakitProgress -Pct 0 -Ceiling 1 -Secs 2 -Phase "reading $(Get-ExakitPlural $chosen.Count 'file')")
     try {
         foreach ($row in $chosen) {
             $i++
@@ -1573,10 +1593,10 @@ function Import-ExakitLocalFolder {
     Set-ExakitManifestValue "data.last_load.files" $done
 
     if ($failed -gt 0) {
-        Warn2 "Loaded $done of $($chosen.Count) file(s) into $schema; $failed not loaded (reason above, full detail: exakit logs)."
+        Warn2 "Loaded $done of $($chosen.Count) into $schema; $failed not loaded (reason above, full detail: exakit logs)."
         return "failed"
     }
-    Ok "Loaded $done file(s) into $schema"
+    Ok "Loaded $(Get-ExakitPlural $done 'file') into $schema"
     return ""
 }
 
