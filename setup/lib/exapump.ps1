@@ -925,9 +925,10 @@ function Request-ExakitOptionalVerification {
 }
 
 # Get-ExakitDataFileKind <path> - csv | parquet | json | unknown, from the
-# name. Twin of exakit_data_file_kind in exapump.sh. Windows cannot run the
-# JSON engine (see json-tables.ps1), so this exists to REFUSE a JSON file with
-# its reason rather than hand it to exapump, which would fail obscurely.
+# name. Twin of exakit_data_file_kind in exapump.sh. A JSON file needs the
+# ingest engine rather than exapump, which is why it is named separately:
+# Windows x86_64 runs that engine (see Get-JsonTablesEngineAsset), so the kind
+# routes the file, and only a machine with no published engine refuses it.
 function Get-ExakitDataFileKind {
     param([Parameter(Mandatory)][string]$Path)
     $name = (Split-Path $Path -Leaf).ToLowerInvariant()
@@ -950,24 +951,237 @@ function Show-ExakitJsonUnsupported {
     } else {
         Warn2 "JSON files need an engine that is not available on this machine."
     }
-    Info "CSV and Parquet load without it. Convert the file, or load it from macOS, Linux or WSL."
+    Info "CSV and Parquet load without it. Convert the file, or load it from a supported machine."
+}
+
+# --- JSON loading ------------------------------------------------------------
+# Windows x86_64 CAN run the ingest engine - Get-JsonTablesEngineAsset publishes
+# a build for it, which is why the add-on is offered and installable here - but
+# this side had no twin of the shell's JSON load path at all, so every .json
+# file was refused on every Windows machine. The refusal even contradicted
+# itself, ending "Windows x86_64 is supported; ARM64 is not built yet."
+#
+# These are the twins of _exakit_json_tables_ready, _exakit_json_tables_ensure
+# and exakit_load_local_json in exapump.sh.
+
+# Test-ExakitJsonTablesReady - is the add-on installed AND usable right now?
+# Twin of _exakit_json_tables_ready.
+function Test-ExakitJsonTablesReady {
+    if (-not (Get-Command Get-JsonTablesInstalledVersion -ErrorAction SilentlyContinue)) { return $false }
+    if (-not (Get-JsonTablesInstalledVersion)) { return $false }
+    $bin = Get-JsonTablesBin
+    if (-not $bin) { return $false }
+    return (Test-Path $bin)
+}
+
+# Test-ExakitJsonTablesApplicable - can this machine have the engine at all?
+# Defensive about the module being absent: a kit copy without it cannot install
+# the add-on either, so "no" is the honest answer in both cases.
+function Test-ExakitJsonTablesApplicable {
+    if (-not (Get-Command Test-JsonTablesApplicable -ErrorAction SilentlyContinue)) { return $false }
+    return [bool](Test-JsonTablesApplicable)
+}
+
+# Confirm-ExakitJsonTablesReady - make the JSON engine usable, saying nothing.
+# Twin of _exakit_json_tables_ensure.
+#
+# A JSON file is just data the user asked to load, so the engine it needs is an
+# implementation detail: it installs with its output in the log, under the same
+# "Loading your data" spinner as the load itself. No question is asked and no
+# install STEP is announced - but the fact that an add-on arrived is, on one
+# line, once it has.
+#
+# Returns $true when the engine is ready, $false when this machine cannot have
+# it - that case still speaks up, because a silent failure is worse than a loud
+# one.
+function Confirm-ExakitJsonTablesReady {
+    if (Test-ExakitJsonTablesReady) { return $true }
+
+    # No dot-sourcing fallback here, unlike the shell: a dot-sourced module
+    # inside a function loads into THAT function's scope and is gone on return.
+    # Both entry points (setup/exakit.ps1 and setup-windows-docker.ps1) source
+    # every add-on module at the top, so a missing one means an old kit copy.
+    if (-not (Get-Command Install-JsonTables -ErrorAction SilentlyContinue)) {
+        Warn2 "This kit copy does not carry the JSON engine - update the kit first: exakit update exakit"
+        return $false
+    }
+    if (-not (Test-ExakitJsonTablesApplicable)) {
+        Show-ExakitJsonUnsupported
+        return $false
+    }
+    if (-not (Get-Command Invoke-ExakitMarketplaceApply -ErrorAction SilentlyContinue)) {
+        Warn2 "The marketplace installer is not available in this kit build."
+        return $false
+    }
+    # The marketplace's own installer, so the add-on arrives exactly as it would
+    # from `exakit marketplace`: validated, its skills placed, registered for
+    # boot if that is on. It quiets its own detail into the logfile. The shell
+    # calls the singular _exakit_marketplace_install_one; this side has only the
+    # plural, and one id is the same work.
+    try { Invoke-ExakitMarketplaceApply -Ids @("json-tables") | Out-Null } catch { }
+    if (-not (Test-ExakitJsonTablesReady)) {
+        Warn2 "The JSON engine could not be installed, so this file was not loaded."
+        Info "Everything already in the database is untouched. Details: exakit logs"
+        return $false
+    }
+    # Said once, and only when this run actually installed it - the readiness
+    # check above returns before reaching here, so a machine that already has
+    # the add-on stays quiet.
+    #
+    # OkStep rather than Ok: the load narrates on one line, which gates plain Ok
+    # to the logfile, and OkStep also hands the spinner's line back before
+    # printing so this lands on a row of its own.
+    OkStep "JSON Tables installed - the add-on that loads JSON into Exasol"
+    return $true
+}
+
+# The ingest engine is LINE-ORIENTED: it reads one complete JSON document per
+# line. A pretty-printed file - which is what almost every API, export and
+# hand-written fixture actually looks like - fails on its first line with
+# "EOF while parsing an object", because line 1 is just an opening brace.
+#
+# Re-flowing that onto one line changes whitespace, not data, so the kit does
+# it rather than telling someone to reformat a file it can read perfectly well.
+# A file that is ALREADY line-delimited is passed through untouched; one that is
+# not JSON at all is reported as that, instead of as a parse error pointing at a
+# line number nobody wrote.
+#
+# The shell reads the verdict off the exit code. Invoke-ExakitPython THROWS on a
+# non-zero exit, with the code buried in the message, so this side prints the
+# verdict and always exits 0 - the same three answers, read from stdout.
+$script:ExakitJsonNormaliseScript = @'
+import json, sys
+
+source, target = sys.argv[1], sys.argv[2]
+with open(source, encoding="utf-8-sig") as handle:
+    raw = handle.read()
+
+try:
+    document = json.loads(raw)
+except ValueError:
+    # Not one whole document. It may already be NDJSON - every non-empty line a
+    # document of its own - which is exactly what the engine wants.
+    for line in raw.splitlines():
+        if not line.strip():
+            continue
+        try:
+            json.loads(line)
+        except ValueError:
+            print("invalid")
+            raise SystemExit(0)
+    print("ndjson")
+    raise SystemExit(0)
+
+with open(target, "w", encoding="utf-8") as out:
+    if isinstance(document, list):
+        # A top-level array is a list of records: one per line.
+        for item in document:
+            out.write(json.dumps(item) + "\n")
+    else:
+        out.write(json.dumps(document) + "\n")
+print("normalised")
+'@
+
+# Import-ExakitLocalJson - ingest a JSON file and load what comes out of it.
+# Twin of exakit_load_local_json. The target is decided by the CALLER, before
+# anything runs, so JSON asks exactly what CSV and Parquet ask: one
+# SCHEMA.TABLE, then it loads. Nothing here prompts.
+#
+# Nested JSON legitimately yields SEVERAL tables. One table lands on the target
+# exactly; several keep it as their shared prefix, so the name the user typed
+# still describes every table the document produced.
+function Import-ExakitLocalJson {
+    param([Parameter(Mandatory)][string]$Path, [Parameter(Mandatory)][string]$Target)
+    $schema = Get-ExakitTargetSchema $Target
+    $base = ($Target -split "\.", 2)[1]
+
+    if (-not (Confirm-ExakitJsonTablesReady)) { return $false }
+
+    $tmpDir = Join-Path ([System.IO.Path]::GetTempPath()) "exakit-json-load-$([guid]::NewGuid().ToString("N"))"
+    try {
+        New-Item -ItemType Directory -Force -Path $tmpDir | Out-Null
+    } catch {
+        Warn2 "Could not create a temporary directory for the JSON ingest."
+        return $false
+    }
+    try {
+        $ingestInput = $Path
+        $normalised = Join-Path $tmpDir "normalised.json"
+        $verdict = ""
+        try {
+            $verdict = (Invoke-ExakitPython $script:ExakitJsonNormaliseScript $Path $normalised).Trim()
+        } catch {
+            # No Python, or an unreadable file: let the engine have its say.
+            $verdict = ""
+        }
+        if ($verdict -eq "normalised") { $ingestInput = $normalised }
+        if ($verdict -eq "invalid") {
+            Warn2 "$(Get-ExakitTilde $Path) is not valid JSON."
+            Info "It must be one JSON document, or NDJSON with one document per line."
+            Info "Nothing was loaded; the database is unchanged."
+            return $false
+        }
+
+        $outDir = Join-Path $tmpDir "out"
+        $engine = Get-JsonTablesBin
+        if ((Invoke-ExakitLogged $engine "ingest" "--input" $ingestInput "--output-dir" $outDir) -ne 0) {
+            Warn2 "This JSON file could not be read - see: exakit logs json-tables"
+            Info "It must be one JSON document, or NDJSON with one document per line."
+            Info "Nothing was loaded; the database is unchanged."
+            return $false
+        }
+
+        $files = @()
+        if (Test-Path $outDir) {
+            $files = @(Get-ChildItem -Path $outDir -Filter "*.parquet" -Recurse -File |
+                Sort-Object FullName | ForEach-Object { $_.FullName })
+        }
+        if ($files.Count -eq 0) {
+            Warn2 "No tables came out of $(Get-ExakitTilde $Path)."
+            Info "Check the file is JSON or NDJSON, then retry: exakit data-load"
+            return $false
+        }
+
+        Confirm-ExakitSchemaExists $schema | Out-Null
+        $loaded = @()
+        if ($files.Count -eq 1) {
+            Invoke-ExapumpUpload $files[0] $Target | Out-Null
+            Confirm-ExakitLoadedTable $Target
+            $loaded = @($Target)
+        } else {
+            foreach ($file in $files) {
+                $table = Get-ExakitUpperTableTarget "$schema.$($base)_$(Get-ExakitTableName $file)"
+                Invoke-ExapumpUpload $file $table | Out-Null
+                Confirm-ExakitLoadedTable $table
+                $loaded += $table
+            }
+        }
+
+        Set-ExakitManifestValue "data.last_load.type" "local_json"
+        Set-ExakitManifestValue "data.last_load.target" ($loaded -join ", ")
+        Set-ExakitManifestValue "data.last_load.source" $Path
+        $script:ExakitLastLoadTarget = ($loaded -join ", ")
+        return $true
+    } finally {
+        Remove-Item -Recurse -Force $tmpDir -ErrorAction SilentlyContinue
+    }
 }
 
 function Import-ExakitLocalFile {
     $defaultPath = if ($env:EXAKIT_DATA_FILE) { $env:EXAKIT_DATA_FILE } else { "" }
     while ($true) {
-        $rawPath = Read-ExakitPrompt "Local CSV/Parquet file - or a folder of them (type back to return)" $defaultPath
+        $rawPath = Read-ExakitPrompt "Local CSV / Parquet / JSON file - or a folder of them (type back to return)" $defaultPath
         if ($rawPath -match '^(b|back)$') {
             Info "Returning to data loading options."
             return "back"
         }
         if (-not $rawPath) {
-            Warn2 "Please enter a local CSV/Parquet file, a folder of them, or type back to return."
+            Warn2 "Please enter a local CSV, Parquet or JSON file, a folder of them, or type back to return."
             # No console means Read-ExakitPrompt returns the same default
             # forever, so a bad or missing EXAKIT_DATA_FILE must fail here
             # instead of looping.
             if (-not (Test-ExakitInteractive)) {
-                Fail "No local file to load - set EXAKIT_DATA_FILE to a readable CSV/Parquet file."
+                Fail "No local file to load - set EXAKIT_DATA_FILE to a readable CSV, Parquet or JSON file."
             }
             continue
         }
@@ -982,14 +1196,18 @@ function Import-ExakitLocalFile {
             Fail "File not found or empty: $path"
         }
     }
-    # A JSON file cannot be loaded on Windows at all, so say so here rather
-    # than after the user has picked a table for a load that cannot happen.
-    if ((Get-ExakitDataFileKind $path) -eq "json") {
+    $kind = Get-ExakitDataFileKind $path
+    # A JSON file this machine can never load is refused HERE, before the user
+    # picks a table for a load that cannot happen. What is NOT settled here is
+    # whether the engine is INSTALLED: that is this command's problem, and
+    # Import-ExakitLocalJson installs it once the target is known - so nobody
+    # acquires an add-on for a load they then back out of.
+    if ($kind -eq "json" -and -not (Test-ExakitJsonTablesApplicable)) {
         Show-ExakitJsonUnsupported
         # An unattended run (EXAKIT_DATA_FILE) has nobody to read that advice:
         # it must FAIL, or the agent reads success off a load that never ran.
         if (-not (Test-ExakitInteractive)) {
-            Fail "JSON files cannot be loaded on Windows - convert $path to CSV/Parquet, or load it from macOS, Linux or WSL."
+            Fail "JSON files cannot be loaded on this machine - convert $path to CSV/Parquet, or load it from a supported machine."
         }
         return "back"
     }
@@ -1011,6 +1229,25 @@ function Import-ExakitLocalFile {
         }
     }
     $target = Get-ExakitUpperTableTarget $target
+
+    # Every file kind is asked the same two things, in the same order, before
+    # any work starts: the file, then SCHEMA.TABLE. What has to happen after
+    # that - an engine to install, a conversion to run - is this command's
+    # problem, not the user's, so none of it reaches the screen.
+    if ($kind -eq "json") {
+        $script:ExakitUploadQuiet = $true
+        $script:ExakitActiveLabel = "Loading your data"
+        try {
+            if (-not (Import-ExakitLocalJson -Path $path -Target $target)) { return "back" }
+        } finally {
+            $script:ExakitUploadQuiet = $false
+            $script:ExakitActiveLabel = ""
+        }
+        $into = $target
+        if ($script:ExakitLastLoadTarget) { $into = $script:ExakitLastLoadTarget }
+        Ok "Loaded $path into $into"
+        return
+    }
 
     # One label, one spinner, for the whole job - the twin of what exapump.sh
     # does with EXAKIT_UPLOAD_QUIET and EXAKIT_ACTIVE_LABEL.
@@ -1349,11 +1586,14 @@ function Import-ExakitLocalFolder {
 }
 
 function Import-ExakitRemoteFile {
-    $url = Read-ExakitPrompt "Remote CSV/Parquet URL" ""
+    $url = Read-ExakitPrompt "Remote CSV / Parquet / JSON URL" ""
     if (-not $url) { Fail "Remote URL is required." }
     $name = Split-Path ($url -replace '\?.*$', '') -Leaf
     if (-not $name) { $name = "remote-data.csv" }
-    if ((Get-ExakitDataFileKind $name) -eq "json") {
+    $kind = Get-ExakitDataFileKind $name
+    # Refused only where the engine can never exist. Where it can, the download
+    # is handed to the same JSON path a local file takes.
+    if ($kind -eq "json" -and -not (Test-ExakitJsonTablesApplicable)) {
         Show-ExakitJsonUnsupported
         return
     }
@@ -1382,12 +1622,21 @@ function Import-ExakitRemoteFile {
         } finally {
             Stop-ExakitSpinner
         }
-        Confirm-ExakitSchemaExists (Get-ExakitTargetSchema $target) | Out-Null
-        Invoke-ExapumpUpload $tmpFile $target | Out-Null
-        Set-ExakitManifestValue "data.last_load.type" "remote_file"
-        Set-ExakitManifestValue "data.last_load.target" $target
-        Set-ExakitManifestValue "data.last_load.source" $url
-        Confirm-ExakitLoadedTable $target
+        # The downloaded file decides, not the URL: a link with no extension
+        # is only known for what it is once it is on disk.
+        if ((Get-ExakitDataFileKind $tmpFile) -eq "json") {
+            if (-not (Import-ExakitLocalJson -Path $tmpFile -Target $target)) { return }
+            Set-ExakitManifestValue "data.last_load.type" "remote_file"
+            Set-ExakitManifestValue "data.last_load.source" $url
+            if ($script:ExakitLastLoadTarget) { $target = $script:ExakitLastLoadTarget }
+        } else {
+            Confirm-ExakitSchemaExists (Get-ExakitTargetSchema $target) | Out-Null
+            Invoke-ExapumpUpload $tmpFile $target | Out-Null
+            Set-ExakitManifestValue "data.last_load.type" "remote_file"
+            Set-ExakitManifestValue "data.last_load.target" $target
+            Set-ExakitManifestValue "data.last_load.source" $url
+            Confirm-ExakitLoadedTable $target
+        }
     } finally {
         Remove-Item -Recurse -Force $tmpDir -ErrorAction SilentlyContinue
         $script:ExakitUploadQuiet = $false

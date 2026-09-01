@@ -208,5 +208,49 @@ HELP="$(cat "$ROOT/setup/help/exakit.json")"
 has "the help documents a folder" "or a folder" "$HELP"
 has "the help documents the format variable" "EXAKIT_DATA_FORMATS" "$HELP"
 
+printf '\n== Windows loads JSON where the engine exists ==\n'
+
+# Get-JsonTablesEngineAsset publishes a build for windows/x86_64, so the add-on
+# is applicable, offered and installable there - but exapump.ps1 refused every
+# .json file unconditionally, with a message that contradicted itself by ending
+# "Windows x86_64 is supported; ARM64 is not built yet." The refusal outlived
+# the limitation it was written for, kept alive by a comment asserting it.
+EXAPUMP_PS1="$(cat "$ROOT/setup/lib/exapump.ps1")"
+EXAPUMP_SH_ALL="$(cat "$ROOT/setup/lib/exapump.sh")"
+
+# The three shell helpers, and their twins.
+has "the shell knows when it is ready"  "_exakit_json_tables_ready() {"        "$EXAPUMP_SH_ALL"
+has "...and Windows does too"           "function Test-ExakitJsonTablesReady"  "$EXAPUMP_PS1"
+has "the shell installs on demand"      "_exakit_json_tables_ensure() {"       "$EXAPUMP_SH_ALL"
+has "...and Windows does too"           "function Confirm-ExakitJsonTablesReady" "$EXAPUMP_PS1"
+has "the shell loads a JSON file"       "exakit_load_local_json() {"           "$EXAPUMP_SH_ALL"
+has "...and Windows does too"           "function Import-ExakitLocalJson"      "$EXAPUMP_PS1"
+
+# The refusal survives, but only where the engine can never exist.
+has "the refusal asks first"            'if ($kind -eq "json" -and -not (Test-ExakitJsonTablesApplicable))' "$EXAPUMP_PS1"
+check "both entry points ask"           "2" \
+    "$(printf '%s\n' "$EXAPUMP_PS1" | grep -c 'json" -and -not (Test-ExakitJsonTablesApplicable)')"
+# ...and never unconditionally, which is what shipped.
+lacks "no blanket refusal"              'if ((Get-ExakitDataFileKind $path) -eq "json") {'  "$EXAPUMP_PS1"
+lacks "...on either path"               'if ((Get-ExakitDataFileKind $name) -eq "json") {'  "$EXAPUMP_PS1"
+
+# A local file and a downloaded one take the same path.
+check "both routes reach the loader"    "2" \
+    "$(printf '%s\n' "$EXAPUMP_PS1" | grep -c 'Import-ExakitLocalJson -Path')"
+
+# The install announces itself once, in the words the shell uses, with an ASCII
+# hyphen because every .ps1 but ui.ps1 is ASCII-only.
+has "the shell says an add-on arrived"  'ok_step "JSON Tables installed'       "$EXAPUMP_SH_ALL"
+has "...and so does Windows"            'OkStep "JSON Tables installed - the add-on that loads JSON into Exasol"' "$EXAPUMP_PS1"
+
+# The comment that kept the refusal alive after the code outgrew it.
+lacks "the stale claim is gone"         "Windows cannot run the"               "$EXAPUMP_PS1"
+# ...and the advice no longer names three platforms, one of which is this one.
+lacks "no misleading platform list"     "load it from macOS, Linux or WSL"     "$EXAPUMP_PS1"
+
+# What the prompt offers is what it accepts.
+has "the prompt offers JSON"            "Local CSV / Parquet / JSON file"      "$EXAPUMP_PS1"
+has "...and so does the remote one"     "Remote CSV / Parquet / JSON URL"      "$EXAPUMP_PS1"
+
 printf '\n%s: %d passed, %d failed\n' "$(basename "$0")" "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
