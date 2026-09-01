@@ -3550,6 +3550,16 @@ exakit_marketplace_menu() {
                 # would end the row's line in the state file. The table re-flows
                 # it across as many lines as it needs at draw time -- see
                 # _ui_wrap -- in full and without an ellipsis.
+                # The advertised version. Read from the versions MANIFEST, not
+                # over the network: exakit_component_available only reaches out
+                # under EXAKIT_VERSION_POLICY=latest, so this costs nothing that
+                # the description lookup on the line above has not already paid.
+                #
+                # This assignment went missing when the lookup was moved out of
+                # the row builder: the expansion below kept its :-unknown
+                # fallback, so it read a variable nothing set and every add-on
+                # advertised "unknown" instead of a version.
+                _mm_adv="$(exakit_component_available "$_mm_id" 2>/dev/null || printf 'unknown')"
                 _mm_meta="$_mm_meta$_mm_id|$(exakit_version_plain "${_mm_adv:-unknown}")|$(printf '%s' "$_mm_mdesc" | tr '\n' ' ')
 "
             fi
