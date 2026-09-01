@@ -12,6 +12,7 @@ from mcp.core.models import (
     ArtifactReference,
     ChangeKind,
     ChangeRecord,
+    DeploymentMode,
     DiscoveredClient,
     Finding,
     NextAction,
@@ -569,10 +570,15 @@ class MCPAccessSubsystem:
         del validator
         active_records = self._active_artifacts(manifest_repository)
         target_ids = set(request.target_clients) if request.target_clients else None
+        target_servers = set(request.target_servers) if request.target_servers else None
         target_artifacts = [
             artifact
             for artifact in active_records
-            if target_ids is None or artifact.client in target_ids
+            if (target_ids is None or artifact.client in target_ids)
+            and (
+                target_servers is None
+                or str(artifact.metadata.get("entry_name", "exasol")) in target_servers
+            )
         ]
         if not target_artifacts:
             return OperationResult(
@@ -731,7 +737,40 @@ class MCPAccessSubsystem:
         """
 
         findings: list[Finding] = []
-        location = adapter.locate(self._environment)
+        if request.server_definition is None:  # pragma: no cover - guarded by the caller
+            raise BlockingOperationError(
+                "missing_server_definition",
+                "Server definition is required for configure.",
+            )
+        server_definition = request.server_definition
+        capabilities = adapter.describe_capabilities()
+        if server_definition.transport is DeploymentMode.HTTP and not capabilities.supports_http:
+            # Not every client can express a remote server, and the ones that
+            # cannot are skipped rather than half-configured: an entry this
+            # adapter cannot render is an entry the user would have to clean up.
+            # The URL is in the message so it can be added by hand.
+            findings.append(
+                Finding(
+                    code="client_transport_unsupported",
+                    severity=Severity.INFO,
+                    message=(
+                        f"{adapter.display_name()} cannot be configured for the "
+                        f"'{server_definition.name}' server over HTTP (skipped)."
+                    ),
+                    scope={
+                        "client": adapter.adapter_id(),
+                        "server": server_definition.name,
+                        "transport": server_definition.transport.value,
+                    },
+                    evidence=[f"Endpoint: {server_definition.url}"],
+                    recommended_action=(
+                        f"Add {server_definition.url} to {adapter.display_name()} by hand "
+                        "if its release supports remote MCP servers."
+                    ),
+                )
+            )
+            return None, None, findings
+        location = adapter.locate_for_server(self._environment, server_definition.name)
         if not location.available or location.path is None:
             # Not blocking, and not an error for the run: "this client is not
             # supported on this platform" is a fact about this one client. As a
@@ -748,16 +787,11 @@ class MCPAccessSubsystem:
                 )
             )
             return None, None, findings
-        if request.server_definition is None:  # pragma: no cover - guarded by the caller
-            raise BlockingOperationError(
-                "missing_server_definition",
-                "Server definition is required for configure.",
-            )
-        inspection = adapter.inspect(location.path, request.server_definition.name)
+        inspection = adapter.inspect(location.path, server_definition.name)
         findings.extend(inspection.findings)
         if any(finding.blocking for finding in findings):
             return None, location.path, findings
-        rendered = adapter.render(request.server_definition, inspection)
+        rendered = adapter.render(server_definition, inspection)
         findings.extend(adapter.validate_render(rendered))
         if any(finding.blocking for finding in findings):
             return None, location.path, findings

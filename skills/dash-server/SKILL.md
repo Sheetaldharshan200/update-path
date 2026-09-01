@@ -1,7 +1,7 @@
 ---
 name: dash-server
 addon: dash-server
-description: Build and operate live dashboards on the local Exasol database with the dash-server add-on — an agent-operated Dash hosting server the AI drives through its MCP control plane while the user opens a browser URL. Covers installing it from the marketplace, starting and stopping it as a kit service, the port it serves on, and diagnosing a control plane that answers while the dashboards page does not. Triggers — "build me a dashboard", "visualize this Exasol data", "install dash-server", "dash-server is not running", "port 5100", "my dashboard page is blank or 500", "deploy a dashboard on my database".
+description: Build and operate live dashboards on the local Exasol database with the dash-server add-on — an agent-operated Dash hosting server the AI drives through its MCP control plane while the user opens a browser URL. Covers installing it from the marketplace, starting and stopping it as a kit service, the port it serves on, how the control plane is registered with AI clients as an MCP server named dash-server, and diagnosing a control plane that answers while the dashboards page does not. Triggers — "build me a dashboard", "visualize this Exasol data", "install dash-server", "dash-server is not running", "port 5100", "my dashboard page is blank or 500", "deploy a dashboard on my database", "I do not see the dash-server MCP tools", "register dash-server with my AI client".
 ---
 
 # dash-server — agent-built dashboards
@@ -25,7 +25,7 @@ install. Nothing in the kit's setup flow installs it for you.
 | Endpoint | For | Default |
 |---|---|---|
 | Dashboards UI | the **user**, in a browser | `http://127.0.0.1:5100` |
-| MCP control plane | **you**, the agent (Streamable HTTP) | `http://127.0.0.1:5100/mcp` |
+| MCP control plane | **you**, the agent (Streamable HTTP) | `http://127.0.0.1:5100/mcp`, registered as `dash-server` |
 
 `5100` is only the default. If something else already holds that port, the
 install **moves to the next free one and records it** — so read the real port
@@ -41,6 +41,29 @@ Move it deliberately with:
 ```bash
 EXAKIT_DASH_SERVER_PORT=<port> exakit update dash-server
 ```
+
+## The control plane is a registered MCP server
+
+You do not hand-roll a transport over `/mcp`. Whenever the add-on is installed,
+`exakit mcp-setup` registers the control plane as a normal MCP server named
+**`dash-server`** — Streamable HTTP at `http://127.0.0.1:<port>/mcp`, the port
+read from the same recorded value every other dash-server command uses. Its
+tools then appear in your session alongside the `exasol` ones.
+
+```bash
+exakit mcp-setup     # writes the exasol entry, and the dash-server one
+```
+
+Which clients get it: **Cursor**, **Claude Code**, **GitHub Copilot (VS Code)**,
+**Gemini CLI**, **OpenCode** and **Continue**. **Codex and Claude Desktop are
+skipped** — neither can express a remote MCP server in the config shape this kit
+writes, so setup reports them as skipped and names the URL, which a user can add
+by hand if their release supports it. A skipped client never fails the run.
+
+**The client must restart or reload before the tools appear.** The same rule as
+the `exasol` server, and the same trap: if *you* just ran `exakit mcp-setup`,
+your own process has no `dash-server` tools this session. Drive the endpoint over
+HTTP for the rest of it, and expect the tools next session.
 
 ## Running it
 

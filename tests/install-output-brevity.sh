@@ -525,6 +525,65 @@ has "...and for a covered add-on"   'Installed ($(exakit_version_plain "${_mm_cv
 has "the twin has the helper"       'function Get-ExakitVersionPlain'           "$COMMON_PS1"
 has "...and uses it in its table"   'Get-ExakitVersionPlain $advertised'        "$COMMON_PS1"
 
+printf '\n== a quieted step still shows it is working ==\n'
+
+# The brevity pass routed info/ok to the logfile while a step runs and moved the
+# phase names onto the spinner instead -- "the phases live on the spinner", as
+# Install-Mcp's own comment puts it. On the PowerShell side no spinner was ever
+# started, so step 3 printed its heading and then nothing at all for as long as
+# uvx took: 87 seconds of blank screen on a machine with a cold uv cache, with
+# nothing to tell it apart from a hang.
+#
+# Asserted per function rather than per file, because both phases of the step
+# can be slow and each has to spin on its own: a file-wide count would stay
+# green with one function spinning twice and the other not at all.
+sh_fn() { # sh_fn <file> <name> - one shell function, which closes at column 0
+    awk -v start="$2" 'index($0, start) == 1, /^\}/' "$1"
+}
+
+# PowerShell needs its own slicer: Test-McpServer embeds a Python here-string
+# whose json.dumps({...}) closes with "})" at column 0, so a range ending at the
+# first ^} stops halfway through the function and reports a spinner that is
+# there as missing. Ending at the NEXT top-level function has no such ambiguity.
+ps_fn() { # ps_fn <file> <name>
+    awk -v start="function $2 {" '
+        index($0, start) == 1 { inside = 1; print; next }
+        inside && /^function / { exit }
+        inside { print }
+    ' "$1"
+}
+
+MCP_INSTALL_SH="$(sh_fn "$ROOT/setup/lib/mcp.sh" "mcp_install() {")"
+MCP_VALIDATE_SH="$(sh_fn "$ROOT/setup/lib/mcp.sh" "mcp_validate() {")"
+MCP_INSTALL_PS="$(ps_fn "$ROOT/setup/lib/mcp.ps1" "Install-Mcp")"
+MCP_VALIDATE_PS="$(ps_fn "$ROOT/setup/lib/mcp.ps1" "Test-McpServer")"
+
+spins() { # spins <text> <begin-needle> <end-needle> -> "N/M"
+    printf '%s/%s' \
+        "$(printf '%s\n' "$1" | grep -c "$2")" \
+        "$(printf '%s\n' "$1" | grep -c "$3")"
+}
+
+# The download: the longest wait in the step, and the one that was silent.
+check "the download spins"       "1/1" "$(spins "$MCP_INSTALL_SH" 'ui_spin_begin' 'ui_spin_end')"
+check "...and its twin does too" "1/1" "$(spins "$MCP_INSTALL_PS" 'Start-ExakitSpinner' 'Stop-ExakitSpinner')"
+# The handshake: starting the server can still mean uvx materialising an
+# environment. Two ends to one begin here -- the loop closes the spinner on the
+# way out and before a retry, because a spinner owns its line.
+check "the handshake spins"      "1/2" "$(spins "$MCP_VALIDATE_SH" 'ui_spin_begin' 'ui_spin_end')"
+check "...and its twin does too" "1/1" "$(spins "$MCP_VALIDATE_PS" 'Start-ExakitSpinner' 'Stop-ExakitSpinner')"
+
+# The label is what the reader looks at for the whole wait, so it names the
+# phase and says the download happens once per machine.
+has "the label names the download"  'Downloading ${EXAKIT_MCP_PACKAGE}@${EXAKIT_MCP_VERSION} — first run only' "$MCP_INSTALL_SH"
+has "the twin's download label"     'Downloading $($script:McpPackage)@$($script:McpVersion) - first run only' "$MCP_INSTALL_PS"
+has "the handshake names itself"    'Starting the MCP server and checking it answers' "$MCP_VALIDATE_SH"
+has "...and on Windows"             'Starting the MCP server and checking it answers' "$MCP_VALIDATE_PS"
+
+# A spinner owns its line and rewrites it every 90ms, so the retry warning waits
+# until the spinner has been stopped.
+lacks "no warning under a spinner"  'Warn2 "Handshake attempt $attempt failed - retrying"; Start-Sleep' "$MCP_VALIDATE_PS"
+
 printf '\n== the connection panel fits an 80-column terminal ==\n'
 # ui_panel_end sizes to its longest LINE and never consults the terminal width,
 # unlike ui_table_frame and ui_progress_line which both clamp. So the two

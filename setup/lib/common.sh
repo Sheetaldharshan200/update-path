@@ -6670,6 +6670,62 @@ exakit_run_mcp_setup_cli() {
     return 0
 }
 
+# exakit_run_mcp_addon_cli <clients_csv> <output_file> — register the MCP
+# endpoints of installed add-ons with clients that are already connected.
+#
+# Deliberately NOT exakit_run_mcp_setup_cli: that path prepares the read-only
+# database user first, so an add-on install would have started depending on a
+# running database to finish. An add-on endpoint is a loopback URL with no
+# credential in it, so this touches neither.
+exakit_run_mcp_addon_cli() {
+    _clients_csv="$1"
+    _output_file="$2"
+    require_python3
+    _repo_root="$(exakit_repo_root)" || {
+        warn "Could not find the MCP package source to register the add-on endpoint."
+        return 1
+    }
+    _old_ifs="$IFS"
+    IFS=','
+    set -- $_clients_csv
+    IFS="$_old_ifs"
+    if ! (
+        cd "$_repo_root" &&
+        PYTHONPATH="$_repo_root${PYTHONPATH:+:$PYTHONPATH}"             run_python -m mcp register-addon-servers                 --runtime-root "$EXAKIT_HOME"                 --clients "$@"
+    ) > "$_output_file" 2>> "${EXAKIT_LOG_FILE:-/dev/null}"; then
+        _exakit_log_mcp_result_failure "$_output_file"
+        return 1
+    fi
+    return 0
+}
+
+# exakit_run_mcp_server_removal_cli <server> <clients_csv> <output_file> — drop
+# ONE managed server entry from the client configs, leaving every other entry in
+# the same file alone. The plain uninstall operation removes every managed entry
+# for a client, which would take the exasol server with it.
+exakit_run_mcp_server_removal_cli() {
+    _server_name="$1"
+    _clients_csv="$2"
+    _output_file="$3"
+    require_python3
+    _repo_root="$(exakit_repo_root)" || {
+        warn "Could not find the MCP package source to remove the add-on endpoint."
+        return 1
+    }
+    _old_ifs="$IFS"
+    IFS=','
+    set -- $_clients_csv
+    IFS="$_old_ifs"
+    if ! (
+        cd "$_repo_root" &&
+        PYTHONPATH="$_repo_root${PYTHONPATH:+:$PYTHONPATH}"             run_python -m mcp run-runtime-operation uninstall                 --runtime-root "$EXAKIT_HOME"                 --servers "$_server_name"                 --clients "$@"
+    ) > "$_output_file" 2>> "${EXAKIT_LOG_FILE:-/dev/null}"; then
+        _exakit_log_mcp_result_failure "$_output_file"
+        return 1
+    fi
+    return 0
+}
+
 exakit_run_mcp_operation_cli() {
     _operation="$1"
     _clients_csv="$2"

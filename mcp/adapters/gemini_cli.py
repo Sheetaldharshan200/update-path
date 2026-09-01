@@ -43,7 +43,7 @@ class GeminiCliAdapter(ClientAdapter):
     def describe_capabilities(self) -> AdapterCapabilities:
         return AdapterCapabilities(
             supports_stdio=True,
-            supports_http=False,
+            supports_http=True,
             supports_managed_file=True,
             supports_patch_mode=True,
             supports_env_block=True,
@@ -177,18 +177,9 @@ class GeminiCliAdapter(ClientAdapter):
     def render(
         self, server_definition: ServerDefinition, inspection: AdapterInspection
     ) -> RenderResult:
-        if server_definition.transport != DeploymentMode.STDIO:
-            raise ValueError("Gemini CLI rendering currently supports stdio only.")
-        if not server_definition.command:
-            raise ValueError("Gemini CLI stdio rendering requires a command.")
         document = copy.deepcopy(inspection.document or {})
         mcp_servers = document.setdefault("mcpServers", {})
-        entry: dict[str, Any] = {
-            "command": server_definition.command,
-            "args": list(server_definition.args),
-        }
-        if server_definition.env:
-            entry["env"] = dict(server_definition.env)
+        entry = self._entry_for(server_definition)
         mcp_servers[server_definition.name] = entry
         # No sort_keys: settings.json is the CLI's own settings file, so the
         # managed edit is kept minimally invasive (insertion-order preserved).
@@ -199,6 +190,30 @@ class GeminiCliAdapter(ClientAdapter):
             managed_hash=sha256_json(entry),
             entry_name=server_definition.name,
         )
+
+    def _entry_for(self, server_definition: ServerDefinition) -> dict[str, Any]:
+        """One server entry, in Gemini CLI's shape.
+
+        Gemini CLI keys the transport off WHICH field is present rather than a
+        ``type``: ``httpUrl`` is streamable HTTP, a plain ``url`` would be SSE,
+        and a ``command`` is a launched server.
+        """
+        if server_definition.transport == DeploymentMode.HTTP:
+            if not server_definition.url:
+                raise ValueError("Gemini CLI HTTP rendering requires a url.")
+            entry: dict[str, Any] = {"httpUrl": server_definition.url}
+            if server_definition.headers:
+                entry["headers"] = dict(server_definition.headers)
+            return entry
+        if not server_definition.command:
+            raise ValueError("Gemini CLI stdio rendering requires a command.")
+        entry = {
+            "command": server_definition.command,
+            "args": list(server_definition.args),
+        }
+        if server_definition.env:
+            entry["env"] = dict(server_definition.env)
+        return entry
 
     def render_removal(self, inspection: AdapterInspection, server_name: str) -> RenderResult:
         document = copy.deepcopy(inspection.document or {})

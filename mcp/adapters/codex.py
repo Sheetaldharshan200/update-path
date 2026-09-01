@@ -38,7 +38,11 @@ class CodexAdapter(ClientAdapter):
     def describe_capabilities(self) -> AdapterCapabilities:
         return AdapterCapabilities(
             supports_stdio=True,
-            supports_http=True,
+            # Codex's remote-server support is gated behind an experimental
+            # client flag and its own TOML shape, neither of which this adapter
+            # writes. Claiming HTTP here would put an entry into config.toml
+            # that Codex may refuse to parse.
+            supports_http=False,
             supports_managed_file=True,
             supports_patch_mode=True,
             supports_env_block=True,
