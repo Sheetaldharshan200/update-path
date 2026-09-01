@@ -352,6 +352,26 @@ nano_install() {
     _engine="$(nano_engine)"
     _image="$(nano_image_ref)"
 
+    # EXAKIT_REUSE_DB=0 means REPLACE, not adopt.
+    #
+    # `exakit repair-runtime` sets it, having just told the user the data is not
+    # recoverable and taken a yes for it. Without this the two early returns
+    # below adopt the very container that repair promised to rebuild, report
+    # "already running and healthy", and the command repairs nothing -- and
+    # unlike the macOS path there is not even a question to notice it by.
+    #
+    # The volume goes with the container: it holds /exa, so leaving it would
+    # rebuild the container around the same database the repair was called to
+    # replace. Order matters -- the engine refuses to remove a volume that a
+    # container still uses. ⇄ twin: Install-Nano in nano.ps1.
+    if [ "${EXAKIT_REUSE_DB:-1}" = "0" ] && nano_container_exists; then
+        info "Replacing the existing Nano container and its data"
+        run_logged "$_engine" rm -f "$EXAKIT_NANO_CONTAINER" || \
+            warn "Could not remove the existing Nano container; the rebuild may adopt it."
+        run_logged "$_engine" volume rm "$EXAKIT_NANO_VOLUME" || \
+            warn "Could not remove the existing Nano data volume; the rebuild may reuse its data."
+    fi
+
     if nano_container_running && nano_ready_in_logs; then
         ok "Nano container already running and healthy"
         nano_record_manifest

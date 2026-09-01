@@ -599,7 +599,7 @@ cmd_repair_runtime() {
     warn "Repairing the runtime REPLACES the database. Its data is not recoverable."
     info "Bundled datasets are reloaded afterwards; anything you loaded yourself is not."
     if [ "$_rr_yes" -ne 1 ]; then
-        confirm "Replace the database and rebuild it now?" n || \
+        confirm "Delete the database and rebuild it now?" n || \
             die "Nothing was changed. Re-run with --yes (or EXAKIT_CONFIRM_RUNTIME_REPAIR=1) when you are ready."
     fi
 
@@ -609,6 +609,16 @@ cmd_repair_runtime() {
     exakit_unmark_step runtime
     info "Re-running $_rr_setup to rebuild the database"
     export EXAKIT_BANNER_SHOWN=1
+    # The deployment step must NOT offer to reuse what is there. Its reuse
+    # question defaults to YES, so a repair that the user had just confirmed as
+    # destructive ("its data is not recoverable") answered itself with "keep the
+    # existing database" and reported "Reusing the existing Exasol deployment".
+    # The command did not repair anything, and the second question contradicted
+    # the first one it had just been given.
+    #
+    # EXAKIT_REUSE_DB=0 is the documented way to force a fresh deployment, and
+    # it is what this command has meant all along.
+    export EXAKIT_REUSE_DB=0
     exec bash "$_rr_kit/$_rr_setup"
 }
 
@@ -689,8 +699,9 @@ cmd_version() {
     [ -f "$EXAKIT_MANIFEST" ] || { echo "Not installed (no manifest at $EXAKIT_MANIFEST)"; exit 4; }
     ui_panel_begin "Kit"
     ui_panel_line "$(printf '%-14s %s' Version "$(exakit_component_current exakit 2>/dev/null || printf 'unknown')")"
-    ui_panel_line "$(printf '%-14s %s' Level "$(manifest_get kit_level 2>/dev/null)")"
-    ui_panel_line "$(printf '%-14s %s' Source "$(manifest_get kit.source 2>/dev/null)")"
+    # No "Level" row: an internal schema number, meaningless to the reader.
+    # No "Source" row either: an absolute path to the kit's own copy of itself,
+    # which answers a question nobody asks of a version screen.
     ui_panel_line "$(printf '%-14s %s' Installed "$(exakit_format_local_time "$(manifest_get installed_at 2>/dev/null)")")"
     ui_panel_end
     printf '\n'
@@ -1161,8 +1172,10 @@ case "${1:-help}" in
                   # in connection_panel because the install ends with that same
                   # panel, and someone finishing an install is not looking for a
                   # JSON dump.
-                  *) _with_notice connection_panel
-                     printf '  %sMachine-readable: exakit info --json%s\n\n' "${UI_DIM:-}" "${UI_RESET:-}" ;;
+                  # No trailing "Machine-readable:" sentence -- the Manifest
+                  # row inside the panel names `exakit info --json` where the
+                  # reader is already looking.
+                  *) _with_notice connection_panel ;;
               esac ;;
     guide)    _with_notice exakit_guide ;;
     start)    _with_notice cmd_start ;;

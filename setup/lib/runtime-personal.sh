@@ -504,8 +504,8 @@ personal_deploy_local() {
     # (reuse), which is the safe, idempotent choice for automation. Set
     # EXAKIT_REUSE_DB=0 to force a fresh deployment, =1 to reuse without asking.
     if personal_deployment_running; then
-        info "An Exasol database is already running and reachable on port $EXAKIT_PERSONAL_PORT."
-        if confirm_env EXAKIT_REUSE_DB "Use the running database instead of deploying a new one?" y; then
+        info "An Exasol database is already running on port $EXAKIT_PERSONAL_PORT."
+        if confirm_env EXAKIT_REUSE_DB "Use it instead of deploying a new one?" y; then
             ok "Reusing the existing Exasol deployment"
             personal_record_manifest
             return 0
@@ -522,8 +522,8 @@ personal_deploy_local() {
     # the old deployment's data. A deployment that will not start (a crashed
     # VM) is replaced — announced, never silently.
     if personal_deployment_exists; then
-        info "An existing Exasol deployment was found (not running)."
-        if confirm_env EXAKIT_REUSE_DB "Start and reuse the existing database instead of deploying a new one?" y; then
+        info "An Exasol deployment was found, not running."
+        if confirm_env EXAKIT_REUSE_DB "Start it and use it instead of deploying a new one?" y; then
             if personal_launcher_supports start && run_logged "$(personal_cli)" start; then
                 ok "Reusing the existing Exasol deployment (started)"
                 personal_wait_ready

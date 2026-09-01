@@ -2922,11 +2922,27 @@ function Show-ExakitSkills {
     foreach ($entry in $entries) {
         Write-ExakitPanelLine ("{0,-26} {1,-10} {2}" -f $entry.name, $entry.state, $entry.summary)
     }
-    if ($pending -gt 0) {
+    # Stale beats pending in the advice: copies that exist but predate a kit
+    # update are the case a user cannot see for themselves, and the remedy is
+    # the same command either way.
+    #
+    # This branch existed only in the shell twin. On Windows a kit update that
+    # left the installed copies behind said nothing at all -- the skills read
+    # "installed", which was true and useless, and the reader had no way to know
+    # the kit had moved underneath them. It matters more now that the skill set
+    # has a version that actually changes.
+    # Twin of the same block in exakit_skills_list (common.sh).
+    $skillsHave = Get-ExakitManifestValue "components.skills.version"
+    $skillsWant = Get-ExakitVersionsValue -Path "components.skills.version"
+    if ($skillsHave -and $skillsWant -and ("$skillsHave" -ne "$skillsWant")) {
+        Write-ExakitPanelLine "Installed from skill set $skillsHave; this kit carries $skillsWant."
+        Write-ExakitPanelLine "Refresh them:  exakit skills-install"
+    } elseif ($pending -gt 0) {
         Write-ExakitPanelLine "Install or refresh every skill:  exakit skills-install"
-    } else {
-        Write-ExakitPanelLine "All installed. Refresh after a kit update:  exakit skills-install"
     }
+    # Nothing when everything is installed and current. "All installed. Refresh
+    # after a kit update: exakit skills-install" stood here, telling the reader
+    # to watch for a condition this panel now watches for them.
     Write-ExakitPanelLine "Agents load a skill only when its triggers match your request."
     Complete-ExakitPanel
     Write-Host ""
@@ -4029,7 +4045,11 @@ function Show-ExakitConnectionPanel {
         Write-ExakitPanelLine "MCP configs:  in each AI client's config (list: exakit mcp-status)"
         Write-ExakitPanelLine "MCP backups:  $(Get-ExakitTilde $script:McpDir)"
     }
-    Write-ExakitPanelLine "Manifest:     $(Get-ExakitTilde $script:ManifestPath)"
+    # The JSON form rides on the Manifest row rather than trailing the panel as
+    # a sentence of its own: it is the same fact, and a reader who wants the
+    # file usually wants the parseable version of it. "|" not the middot,
+    # because every .ps1 but ui.ps1 stays pure ASCII.
+    Write-ExakitPanelLine "Manifest:     $(Get-ExakitTilde $script:ManifestPath)   |  exakit info --json"
     Write-ExakitPanelLine "Logs:         $(Get-ExakitTilde $script:LogDir)"
     # The two downloads are always true: anyone can fetch them. The VS Code
     # extension is a marketplace add-on, so it is named only when it is actually
@@ -4045,6 +4065,10 @@ function Show-ExakitConnectionPanel {
     # One line, only while something is still on offer: the marketplace is the
     # optional layer on top of a finished install, so this is where it is
     # discovered - never during the install itself. Mirrors connection_panel.
+    # The guide row was missing from this panel entirely -- the shell twin has
+    # carried it since the panel existed, so a Windows reader was never pointed
+    # at `exakit guide` from the one screen that lists everything else.
+    Write-ExakitPanelLine "Guide:        exakit guide"
     if (Test-ExakitMarketplaceHasPending) {
         Write-ExakitPanelLine "Add-ons:      optional tools (dashboards & more): exakit marketplace"
     }

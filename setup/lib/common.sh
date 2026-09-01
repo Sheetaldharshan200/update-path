@@ -3907,9 +3907,16 @@ exakit_print_versions_source_line() {
         _vsl_updated="$(exakit_format_manifest_date "$_vsl_updated")"
         _vsl_text="$_vsl_text (updated $_vsl_updated)"
     fi
-    # Kept inside 80 columns: this sits directly under the version card,
-    # and a line that wraps there undoes the alignment the card just bought.
+    # Where the version numbers came from is provenance, not news: it belongs in
+    # the logfile and, while the lookup is running, in the spinner's label --
+    # not as a sentence left under the card once the card has answered.
+    # exakit_version_source_label sets EXAKIT_VERSIONS_SOURCE_LABEL for the
+    # caller to spin on; the line itself is logged either way.
+    EXAKIT_VERSIONS_SOURCE_LABEL="Versions: $_vsl_text"
+    _vsl_prev_quiet="${EXAKIT_QUIET_DETAIL:-0}"
+    [ -t 1 ] && EXAKIT_QUIET_DETAIL=1
     info "Versions: $_vsl_text"
+    EXAKIT_QUIET_DETAIL="$_vsl_prev_quiet"
     if exakit_versions_schema_ahead; then
         info "This kit is older than the published manifest — update it first: exakit update exakit"
     fi
@@ -5675,9 +5682,11 @@ EXAKIT_SKL_EOF
         ui_panel_line "Refresh them:  exakit skills-install"
     elif [ "$_skl_pending" -gt 0 ]; then
         ui_panel_line "Install or refresh every skill:  exakit skills-install"
-    else
-        ui_panel_line "All installed. Refresh after a kit update:  exakit skills-install"
     fi
+    # Nothing when everything is installed and current. "All installed. Refresh
+    # after a kit update: exakit skills-install" stood here, telling the reader
+    # to watch for a condition this panel already watches for them -- the branch
+    # above detects a stale skill set and names both versions.
     ui_panel_line "Agents load a skill only when its triggers match your request."
     ui_panel_end
     printf '\n'
@@ -6696,7 +6705,20 @@ exakit_print_mcp_ready_panel() {
 exakit_print_mcp_operation_summary() {
     _result_file="$1"
     require_python3
-    run_python - "$_result_file" <<'PY'
+    # The python prints "panel|<text>" for rows that belong INSIDE a box and
+    # plain text for everything else. Drawing the box HERE, not there, is what
+    # lets this screen wear the same rounded panel as `exakit info` and the
+    # closing summary instead of the hand-drawn dashes it had -- ui_panel_* owns
+    # the glyphs, so it degrades to ASCII on a plain terminal with nothing here
+    # spelling a box character.
+    #
+    # Through a FILE, not a command substitution: this heredoc has to stay at
+    # statement level. Wrapped in "$( ... )" so the rows could be walked, bash
+    # stopped being able to parse the rest of this file. With no temp file the
+    # rows go straight to the screen unboxed, which is a worse screen but never
+    # a broken one.
+    _mos_out="$(mktemp "${TMPDIR:-/tmp}/exakit-mcp-summary.XXXXXX" 2>/dev/null)" || _mos_out=""
+    run_python - "$_result_file" > "${_mos_out:-/dev/stdout}" <<'PY'
 import json, os, sys
 
 LABELS = {
@@ -6771,18 +6793,23 @@ if doc.get("operation") == "status" and clients_detail:
                 note = ".../" + parts[-1]
         trimmed.append((name, state, note))
     rows = trimmed
-    print("")
-    print("  MCP clients")
-    print("  " + "-" * 74)
-    print(f"  {'Client'.ljust(width)}  {'State'.ljust(state_w)}  Config")
+    # ROWS, not a drawn table: the shell renders them through ui_panel_*, so this
+    # screen wears the same rounded box as every other panel in the kit instead
+    # of hand-drawn dashes. "panel|" marks a line that belongs inside the box.
+    #
+    # Only the clients that ARE configured. Five rows of "not installed" answered
+    # what this machine does not have, which is not what a status screen is for;
+    # `exakit mcp-setup` is where the full roster belongs, because there the list
+    # IS the choice.
+    print("panel|" + f"{'Client'.ljust(width)}  {'State'.ljust(state_w)}  Config")
+    shown = 0
     for name, state, note in rows:
-        print(f"  {name.ljust(width)}  {state.ljust(state_w)}  {note}".rstrip())
-    print("")
-    configured = sum(1 for e in clients_detail if e.get("state") == "configured")
-    if configured:
-        print("  Not working? Check it end to end with: exakit mcp-doctor")
-    else:
-        print("  Nothing configured yet. Connect a client with: exakit mcp-setup")
+        if state != "configured":
+            continue
+        print("panel|" + f"{name.ljust(width)}  {state.ljust(state_w)}  {note}".rstrip())
+        shown += 1
+    if not shown:
+        print("panel|Nothing configured yet. Connect a client with: exakit mcp-setup")
 else:
     clients = ", ".join(LABELS.get(item, item) for item in doc.get("selected_clients", []))
     print("")
@@ -6860,6 +6887,22 @@ if actions:
     for action in actions:
         print(f"  - {action.get('message', '')}")
 PY
+    [ -n "$_mos_out" ] || return 0
+    _mos_open=0
+    while IFS= read -r _mos_line; do
+        case "$_mos_line" in
+            panel\|*)
+                [ "$_mos_open" = 1 ] || { printf '\n'; ui_panel_begin "MCP clients"; _mos_open=1; }
+                ui_panel_line "${_mos_line#panel|}"
+                ;;
+            *)
+                [ "$_mos_open" = 0 ] || { ui_panel_end; _mos_open=0; }
+                printf '%s\n' "$_mos_line"
+                ;;
+        esac
+    done < "$_mos_out"
+    [ "$_mos_open" = 0 ] || { ui_panel_end; printf '\n'; }
+    rm -f "$_mos_out"
 }
 
 exakit_mcp_clients_from_args() {
@@ -7396,12 +7439,24 @@ EXAKIT_MCP_STAMP_PY
         esac
         return "$_operation_status"
     fi
+    # The spinner says it, rather than a line that stays on screen after the
+    # thing it announced has finished. The CLI below is silent for a second or
+    # two, so without an animation the screen would simply sit there.
+    # Quieted BEFORE the info, or the line prints and the spinner then says the
+    # same thing underneath it. On a terminal the animation is the narration and
+    # the logfile keeps the record; piped or redirected there is no spinner, so
+    # the line stays and nothing is lost.
+    _mos_prev_quiet="${EXAKIT_QUIET_DETAIL:-0}"
+    [ -t 1 ] && EXAKIT_QUIET_DETAIL=1
     info "Running MCP $_operation"
+    ui_spin_begin "Running MCP $_operation"
     if exakit_run_mcp_operation_cli "$_operation" "$_clients_csv" "$_result_file"; then
         :
     else
         _operation_status=$?
     fi
+    ui_spin_end
+    EXAKIT_QUIET_DETAIL="$_mos_prev_quiet"
     if [ -s "$_result_file" ]; then
         exakit_print_mcp_operation_summary "$_result_file"
     fi
@@ -8315,7 +8370,10 @@ _EXAKIT_CONN_EOF
         ui_panel_line "MCP backups:  $(ui_tilde "$EXAKIT_MCP_DIR")"
     fi
 
-    ui_panel_line "Manifest:     $(ui_tilde "$EXAKIT_MANIFEST")"
+    # The JSON form rides on the Manifest row rather than trailing the panel as
+    # a sentence of its own: it is the same fact -- where this screen's contents
+    # live -- and a reader who wants the file usually wants the parseable one.
+    ui_panel_line "Manifest:     $(ui_tilde "$EXAKIT_MANIFEST")   ·  exakit info --json"
     ui_panel_line "Logs:         $(ui_tilde "$EXAKIT_LOG_DIR")"
     # The two download links are always true: anyone can fetch them. The VS Code
     # extension is a marketplace add-on, so it is named only when it is actually
@@ -8330,7 +8388,7 @@ _EXAKIT_CONN_EOF
     else
         ui_panel_line "SQL client:   $(ui_link https://dbeaver.io/download/ "DBeaver") or $(ui_link https://www.dbvis.com/download/ "DbVisualizer")"
     fi
-    ui_panel_line "More info:    exakit guide"
+    ui_panel_line "Guide:        exakit guide"
     # One line, only while something is still on offer: the marketplace is the
     # optional layer on top of a finished install, so this is where it is
     # discovered — never during the install itself.

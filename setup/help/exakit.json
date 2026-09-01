@@ -9,14 +9,6 @@
   "state_dir": "~/.exasol-starter-kit",
   "groups": [
     {
-      "title": "Get started",
-      "commands": [
-        "guide",
-        "mcp-setup",
-        "data-load"
-      ]
-    },
-    {
       "title": "Everyday",
       "commands": [
         "status",
@@ -24,6 +16,7 @@
         "start",
         "stop",
         "sql",
+        "data-load",
         "logs",
         "autostart"
       ]
@@ -66,6 +59,7 @@
     {
       "title": "Reference",
       "commands": [
+        "guide",
         "help",
         "catalog"
       ]
