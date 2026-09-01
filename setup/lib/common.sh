@@ -3858,7 +3858,7 @@ _exakit_marketplace_apply() {
                 ui_table_set "$EXAKIT_ADDON_TABLE_STATE" "$EXAKIT_ADDON_TABLE_ROW" \
                     failed "" "" "" "" "did not finish — see the log"
             _exakit_addon_note warn \
-                "$_mp_id did not finish installing — retry with: exakit marketplace (or exakit update $_mp_id)"
+                "$_mp_id did not finish installing — retry with: exakit marketplace"
             _mp_status=1
         fi
         EXAKIT_ADDON_TABLE_ROW=""
