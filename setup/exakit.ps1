@@ -19,7 +19,8 @@
 #                         clients (DBeaver, DbVisualizer), and Python (pyexasol)
 #   start                 start the local database and every add-on service
 #   stop                  stop them again
-#   autostart [on|off]    whether everything comes back after a restart
+#   autostart             whether everything comes back after a restart; shows
+#                         the current state and asks whether to change it
 #   data-load [-Force|<path>]
 #                         open focused data loading options; a file path loads that
 #                         file, a FOLDER path bulk-loads every CSV/Parquet file in
@@ -229,7 +230,7 @@ function Invoke-CmdStatus {
     Write-StatusPanelRow "Database" "$dsn - $reach"
     # "enabled"/"disabled", not "on"/"off": this row reports a STATE, and on/off
     # reads as the switch you flip rather than the position it is in. The
-    # `exakit autostart on|off` command keeps its verbs - those are commands.
+    # The command itself takes no verb: it shows this state and asks.
     if ((Get-ExakitManifestValue "autostart.enabled") -eq $true) {
         Write-StatusPanelRow "Autostart" "enabled"
     } else {
