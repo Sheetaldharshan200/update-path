@@ -953,6 +953,10 @@ rm -f "$EXAKIT_HOME/dash-server-venv/bin/python"
 printf '#!/bin/sh\necho 0.1.0\n' > "$EXAKIT_HOME/dash-server-venv/bin/python"
 chmod +x "$EXAKIT_HOME/dash-server-venv/bin/python"
 manifest_set components.dash_server.python "$EXAKIT_HOME/dash-server-venv/bin/python"
+# The version RECORD too: a real install writes it, and presence now asks
+# for it, because a venv whose metadata answers a version is not evidence
+# that the install ever finished.
+manifest_set components.dash_server.version "0.1.0"
 check "an installed add-on with a log hook is a target" "dash-server" \
     "$(exakit_log_targets | cut -d'|' -f1 | grep -x dash-server)"
 check "--path prints the file, nothing else" "$EXAKIT_HOME/logs/dash-server.log" \
@@ -1087,6 +1091,10 @@ rm -f "$EXAKIT_HOME/dash-server-venv/bin/python"
 printf '#!/bin/sh\necho 0.1.0\n' > "$EXAKIT_HOME/dash-server-venv/bin/python"
 chmod +x "$EXAKIT_HOME/dash-server-venv/bin/python"
 manifest_set components.dash_server.python "$EXAKIT_HOME/dash-server-venv/bin/python"
+# The version RECORD too: a real install writes it, and presence now asks
+# for it, because a venv whose metadata answers a version is not evidence
+# that the install ever finished.
+manifest_set components.dash_server.version "0.1.0"
 check "the registry lists the database and the service add-on" "database dash-server" \
     "$(exakit_service_ids | tr '\n' ' ' | sed 's/ $//')"
 # An add-on with no service hooks must not appear as a service.
@@ -1726,6 +1734,42 @@ if command -v python3 >/dev/null 2>&1; then
 else
     check "exactly one add-ons table survives" "skipped" "skipped"
 fi
+
+echo "== a half-installed add-on can be retried, and Windows can extract =="
+
+DS_PS1="$(cat "$ROOT/setup/lib/dash-server.ps1")"
+DS_SH="$(cat "$ROOT/setup/lib/dash-server.sh")"
+
+# A full Windows install ended with "dash-server installer reported: tar
+# (child): Cannot connect to C: resolve failed". Two stacked causes:
+#
+# 1. `tar` off PATH is Git's GNU tar on a developer machine, ahead of Windows'
+#    own bsdtar, and GNU tar reads "C:\..." as host:path rsh syntax.
+# 2. $ErrorActionPreference is Stop module-wide, so that stderr became a
+#    TERMINATING error - which 2>$null does not prevent - and a best-effort
+#    data-file top-up took the whole add-on install down with it.
+lacks "tar is not taken off PATH"   '& tar -xzf'                        "$DS_PS1"
+has   "...it is asked for by name"  'Join-Path $env:SystemRoot "System32\tar.exe"' "$DS_PS1"
+has   "...and cannot terminate"     '$ErrorActionPreference = "Continue"'  "$DS_PS1"
+has   "...with the code inspected"  '$tarCode = $LASTEXITCODE'             "$DS_PS1"
+
+# That failure left the venv behind but no launcher, and the version check read
+# ONLY the venv - so every caller believed the add-on was fully installed:
+# the marketplace answered "already present - nothing to install", `exakit
+# update dash-server` answered "everything is already current", and starting it
+# answered "not installed". No documented command could recover it.
+#
+# Presence now means USABLE, on both sides. json-tables already took this line.
+has "presence needs the record"     'if (-not (Get-ExakitManifestValue "components.dash_server.version")) { return $null }' "$DS_PS1"
+has "...and the twin agrees"        '_dsv_recorded="$(manifest_get components.dash_server.version' "$DS_SH"
+# ...and the venv is still asked, because neither half alone is evidence.
+has "the venv answers the version"  'return (Get-DashServerPackageVersion)'  "$DS_PS1"
+has "...and on the shell side"      '    dash_server_package_version'        "$DS_SH"
+# The installer asks the venv-only question, because it runs before the
+# record exists - asking the strict one there made a good install report
+# "the venv cannot report a dash-server version after the install".
+has "the installer asks the venv"   'if (-not (Get-DashServerPackageVersion)) {' "$DS_PS1"
+has "...and on the shell side"      '_ds_now="$(dash_server_package_version'   "$DS_SH"
 
 echo "passed: $PASS, failed: $FAIL"
 [ "$FAIL" -eq 0 ]
