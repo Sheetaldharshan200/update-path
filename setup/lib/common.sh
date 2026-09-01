@@ -9439,7 +9439,14 @@ exakit_autostart_default_on() {
     case "$(manifest_get autostart.enabled 2>/dev/null || true)" in
         true|false) return 0 ;;
     esac
+    # Quiet: a default the INSTALLER chose is not news, and the line was landing
+    # directly under "Your starter kit is ready to use." `exakit autostart` still
+    # says it, because there the reader asked a question and deserves an answer.
+    # The logfile keeps it either way, and `exakit status` reports the state.
+    _ado_prev_quiet="${EXAKIT_QUIET_DETAIL:-0}"
+    EXAKIT_QUIET_DETAIL=1
     exakit_autostart_enable
+    EXAKIT_QUIET_DETAIL="$_ado_prev_quiet"
     return 0
 }
 

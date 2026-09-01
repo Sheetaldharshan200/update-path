@@ -161,8 +161,7 @@
         "EXAKIT_DATASETS=tpch,energy,weather names exactly which bundled datasets to load",
         "EXAKIT_DATA_FILE=/path/file.json or /path/folder answers the local-data question, so a run without a terminal loads that file or folder",
         "EXAKIT_DATA_TABLE=SCHEMA.TABLE answers the target-table question for a single EXAKIT_DATA_FILE (default: STARTER_KIT.<filename>)",
-        "EXAKIT_SCHEMA sets the default target schema",
-        "EXAKIT_BULK_CONFIRM=1 answers the confirmation before a folder load (default: yes without a terminal)"
+        "EXAKIT_SCHEMA sets the default target schema"
       ],
       "examples": [
         "exakit data-load",

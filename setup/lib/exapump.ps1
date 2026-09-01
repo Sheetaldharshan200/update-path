@@ -1527,15 +1527,13 @@ function Import-ExakitLocalFolder {
     }
     $schema = $schema.ToUpperInvariant()
 
+    # No confirmation - twin of the same silence in exapump.sh. The folder and
+    # the schema are the two answers; the plan above is what they produced.
     Show-ExakitBulkPlan -Plan $plan -Chosen $chosen -Schema $schema -Path $Path
-    if (-not (Confirm-ExakitEnvPrompt -EnvName "EXAKIT_BULK_CONFIRM" `
-            -Question "Load $(Get-ExakitPlural $chosen.Count 'file') from $Dir into $schema?" -DefaultYes $true)) {
-        Info "Nothing was loaded."
-        return "back"
-    }
 
-    Confirm-ExakitSchemaExists $schema | Out-Null
+    # Quiet BEFORE the schema call: creating it is plumbing, not a step.
     $script:ExakitUploadQuiet = $true
+    Confirm-ExakitSchemaExists $schema | Out-Null
     # Weighted by BYTES, like a bundled dataset: a folder is usually one big
     # export and a handful of small ones, and counting files would put the bar at
     # 90% while the only file that matters is still going.
