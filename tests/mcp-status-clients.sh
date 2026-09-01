@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Guard `exakit mcp-status`: it answers "is my client set up?", per client.
+# Guard `exakit mcp-status`: it answers "what is connected?", per client.
 #
 # The screen used to reuse the generic MCP operation summary, which answers a
 # different question. With no client named the selection is every client the kit
@@ -53,8 +53,10 @@ JSON
 
 out="$(exakit_print_mcp_operation_summary "$WORK/status.json" 2>&1)"
 
-# 1. Every client gets its own row, named the way a human knows it.
-for pair in "Claude|claude_desktop" "Claude Code (CLI)|claude_code" "Cursor|cursor" "Codex|codex"; do
+# 1. Every CONFIGURED client gets its own row, named the way a human knows it.
+#    Per-client rows are the whole point -- the screen this replaced collapsed
+#    them into "Tracked 4 managed artifact(s)", which section 4 still guards.
+for pair in "Claude|claude_desktop" "Claude Code (CLI)|claude_code"; do
     label="${pair%%|*}"
     case "$out" in
         *"$label"*) pass "$label has a row" ;;
@@ -62,17 +64,48 @@ for pair in "Claude|claude_desktop" "Claude Code (CLI)|claude_code" "Cursor|curs
     esac
 done
 
-# 2. The three states are distinguishable. "not set up" and "not installed" are
-#    the pair that matters: only the first has an action the reader can take.
-for want in "configured" "not set up" "not installed"; do
+# 2. The table lists WORKING connections, so a client that is not configured is
+#    left out -- whether it is absent from the machine (codex) or installed but
+#    never set up (cursor). The screen answers "what is connected", not "what
+#    does this kit support": the roll-call of all eight supported clients is
+#    what made the old screen unreadable.
+for label in "Cursor" "Codex"; do
     case "$out" in
-        *"$want"*) pass "the state \"$want\" is reported" ;;
-        *)         fail "the state \"$want\" never appears" ;;
+        *"$label"*) fail "$label is listed although it is not configured" ;;
+        *)          pass "$label is filtered out - it is not configured" ;;
     esac
 done
 case "$out" in
-    *"run: exakit mcp-setup"*) pass "an unconfigured but present client is told what to run" ;;
-    *) fail "a client that is present but not set up offers no next step" ;;
+    *"configured"*) pass "a configured client says so" ;;
+    *)              fail "the state \"configured\" never appears" ;;
+esac
+for gone in "not set up" "not installed"; do
+    case "$out" in
+        *"$gone"*) fail "\"$gone\" reached the screen - the filter is not applied" ;;
+        *)         pass "\"$gone\" never reaches the screen" ;;
+    esac
+done
+
+# 2b. The next step did not disappear with those rows, it MOVED. With nothing
+#     configured there is no row to carry it, so the table says so once and names
+#     the command -- otherwise a fresh machine gets an empty box with a heading
+#     and no way out of it. This is the hole the filter opens, so it is guarded
+#     here rather than left to be discovered on a first install.
+cat > "$WORK/none.json" <<'JSON'
+{"operation":"status","summary":"Tracked 0 managed artifact(s).",
+ "selected_clients":["cursor","codex"],
+ "details":{"clients":[
+   {"client":"cursor","state":"not_set_up","path":null},
+   {"client":"codex","state":"not_installed","path":null}]}}
+JSON
+none="$(exakit_print_mcp_operation_summary "$WORK/none.json" 2>&1)"
+case "$none" in
+    *"Nothing configured yet"*) pass "an all-unconfigured result says nothing is set up" ;;
+    *) fail "an all-unconfigured result prints an empty table" ;;
+esac
+case "$none" in
+    *"exakit mcp-setup"*) pass "...and names the command that fixes it" ;;
+    *) fail "an all-unconfigured result offers no next step" ;;
 esac
 
 # 3. The config path is shown for a configured client: "is it set up?" is only
@@ -132,9 +165,9 @@ else
     fail "the PowerShell twin has no status client table - Windows keeps the old screen"
 fi
 if grep -q 'not_set_up' "$PS" && grep -q 'not_installed' "$PS"; then
-    pass "the PowerShell twin knows both not-configured states"
+    pass "the PowerShell twin knows both not-configured states, to filter them"
 else
-    fail "the PowerShell twin does not distinguish not set up from not installed"
+    fail "the PowerShell twin cannot tell which clients to filter out"
 fi
 
 printf '\n%d checks, %d failed\n' "$checks" "$fails"

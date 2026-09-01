@@ -376,12 +376,32 @@ printf '\n== exakit help lists each command once ==\n'
 HELP_OUT="$(NO_COLOR=1 EXAKIT_NO_UPDATE_NOTICE=1 /bin/bash "$ROOT/setup/exakit" help 2>&1)"
 HELP_ROWS="$(printf '%s\n' "$HELP_OUT" | grep -oE '^    exakit [a-z-]+' || true)"
 check "no command is listed twice" "" "$(printf '%s\n' "$HELP_ROWS" | sort | uniq -d)"
-# The catalog still names mcp-setup in two groups, so this proves the RENDERER
-# dedupes rather than the catalog having been edited to hide the overlap.
-check "the catalog still lists it twice" "2" \
-    "$(grep -c '^        "mcp-setup",' "$ROOT/setup/help/exakit.json")"
-has "the first group keeps it" "exakit mcp-setup" "$HELP_OUT"
+has "mcp-setup is listed" "exakit mcp-setup" "$HELP_OUT"
 check "and only once" "1" "$(printf '%s\n' "$HELP_ROWS" | grep -c 'exakit mcp-setup')"
+
+# The dedupe is proved against a FIXTURE, not against the shipped catalog. It
+# used to be proved by asserting the real catalog still named mcp-setup in two
+# groups -- so the day mcp-setup was moved into the MCP group and the overlap
+# disappeared, this failed while the behaviour it guards was perfectly fine. A
+# guard that breaks when unrelated data changes, and that quietly stops guarding
+# anything the moment the data no longer overlaps, is worse than no guard.
+DEDUPE_DIR="$(mktemp -d)"
+cp -R "$ROOT/setup" "$DEDUPE_DIR/setup"
+python3 - "$DEDUPE_DIR/setup/help/exakit.json" <<'EXAKIT_DEDUPE_PY'
+import json, sys
+path = sys.argv[1]
+doc = json.load(open(path))
+# Name a command that already exists in the first group in the LAST group too,
+# so the renderer has a real overlap to collapse and the first group is the one
+# that must keep it.
+doc["groups"][-1]["commands"].append("status")
+json.dump(doc, open(path, "w"), indent=2)
+EXAKIT_DEDUPE_PY
+check "the fixture lists a command twice" "2" "$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(sum(g["commands"].count("status") for g in d["groups"]))' "$DEDUPE_DIR/setup/help/exakit.json")"
+DEDUPE_OUT="$(NO_COLOR=1 EXAKIT_NO_UPDATE_NOTICE=1 /bin/bash "$DEDUPE_DIR/setup/exakit" help 2>&1)"
+check "the renderer collapses it to one row" "1" \
+    "$(printf '%s\n' "$DEDUPE_OUT" | grep -cE '^    exakit status')"
+rm -rf "$DEDUPE_DIR"
 # A group emptied by the dedupe must not leave its heading behind.
 check "no heading with nothing under it" "" "$(printf '%s\n' "$HELP_OUT" | awk '
     /^  [A-Z]/ { if (heading != "" && rows == 0) print heading; heading = $0; rows = 0; next }
