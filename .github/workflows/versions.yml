@@ -432,6 +432,10 @@ jobs:
       - run: bash tests/bulk-folder-load.sh
       - run: bash tests/dataset-load-progress.sh
       - run: bash tests/install-output-brevity.sh
+      # Needs a real pty: ui_spin_begin re-checks `-t 1` at call time, so the
+      # spinner never starts in a captured pipeline and the collision this
+      # guards against cannot be reproduced by running the command normally.
+      - run: bash tests/spinner-line-safety.sh
       # The table component's PowerShell twin is asserted STATICALLY -- there is
       # no pwsh on the machine this kit is developed on, so CI is the only thing
       # that ever reads ui.ps1 at all. It was written and then never wired in
