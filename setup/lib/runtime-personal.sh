@@ -829,9 +829,7 @@ personal_upgrade_plan() {
     warn "Personal keeps runtime and database content together in the local deployment."
     info "No destructive action was taken."
     info "Deployment: $EXAKIT_PERSONAL_DEPLOY_DIR"
-    info "Step 1: exakit update personal --backup"
-    info "Step 2: follow the Exasol Personal $_latest migration/redeployment guidance for your data."
-    info "Step 3: exakit update personal --apply"
+    info "Follow the Exasol Personal $_latest migration/redeployment guidance for your data."
 }
 
 personal_upgrade_backup() {
@@ -878,7 +876,7 @@ personal_update() {
             --plan) _mode="plan" ;;
             --backup) _mode="backup" ;;
             --apply) _mode="apply" ;;
-            *) die "Unknown option '$1' for 'exakit update personal'." ;;
+            *) die "Unknown option '$1' for 'exakit update'." ;;
         esac
         shift
     done
@@ -910,10 +908,10 @@ personal_update() {
                 _backup_from="$(manifest_get backups.personal_upgrade.from 2>/dev/null || true)"
                 _backup_to="$(manifest_get backups.personal_upgrade.to 2>/dev/null || true)"
                 if [ -z "$_last_backup" ] || [ ! -f "$_last_backup" ]; then
-                    die "Create a backup first: exakit update personal --backup"
+                    die "Create a backup first."
                 fi
                 if [ "$_backup_from" != "${_current:-unknown}" ] || [ "$_backup_to" != "$_latest" ]; then
-                    die "The latest recorded Personal backup does not match this upgrade (${_current:-unknown} -> $_latest). Run: exakit update personal --backup"
+                    die "The latest recorded Personal backup does not match this upgrade (${_current:-unknown} -> $_latest)."
                 fi
                 info "Updating Exasol Personal launcher ${_current:-unknown} -> $_latest"
                 EXAKIT_PERSONAL_VERSION="$_latest"

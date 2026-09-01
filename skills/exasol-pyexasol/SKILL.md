@@ -112,9 +112,9 @@ MCP path refused.
 | Connection refused / timeout on `8563` | database not running | `exakit start`, confirm `exakit status` |
 | TLS / certificate verification error | self-signed certificate | pass `websocket_sslopt={"cert_reqs": 0}` |
 | `ImportError` from `export_to_pandas` | pandas not installed | `pip install pandas` into the kit venv |
-| pyexasol reported missing by `exakit status` | the soft install step failed | `exakit update pyexasol` |
+| pyexasol reported missing by `exakit status` | the soft install step failed | `exakit update` |
 
-`exakit update pyexasol` doubles as the repair command — it installs the
+`exakit update` doubles as the repair command — it installs the
 advertised version into the venv.
 
 ## Guardrails

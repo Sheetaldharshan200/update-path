@@ -842,7 +842,7 @@ has "while the light components still run" "APPLIED mcp" "$offer_yes"
 offer_no="$(offer_run n)"
 lacks "no stops nothing" "APPLIED runtime" "$offer_no"
 has "no says so plainly" "Nothing was stopped." "$offer_no"
-has "no keeps the exact command for later" "Apply it when convenient:  exakit update runtime" "$offer_no"
+has "no keeps the exact command for later" "Apply it when convenient:  exakit update" "$offer_no"
 has "and points at the full picture" "including the deferred runtime change" "$offer_no"
 has "the light components are applied either way" "APPLIED mcp" "$offer_no"
 
@@ -897,7 +897,7 @@ offer_major="$(offer_run y '
     exakit_component_current() { [ "$1" = personal ] && printf "1.5.0\n"; return 0; }
     exakit_component_available() { [ "$1" = personal ] && printf "2.0.0\n"; return 0; }')"
 has "a Personal major upgrade is named as such" "is a major upgrade" "$offer_major"
-has "and routes to the staged flow" "exakit update runtime --plan" "$offer_major"
+has "and refuses to start it from a routine update" "a routine update does not start it" "$offer_major"
 lacks "and is never started from a y/N" "APPLIED runtime" "$offer_major"
 lacks "and does not ask the inline question at all" "Stop the database and update the runtime now?" "$offer_major"
 
@@ -1515,9 +1515,9 @@ soft="$( EXAKIT_HOME="$WORK/soft-home"
     printf '%s ' "$(manifest_get steps_completed | tr -d '\" []' )"
     printf '%s\n' "$_out" | grep -q 'OFFERED-DATA-LOAD' && printf 'data-offered' || printf 'data-skipped'
     printf ' '
-    printf '%s\n' "$_out" | grep -q 'exakit update exapump' && printf 'repair-exapump' || printf 'NO-REPAIR-EXAPUMP'
+    printf '%s\n' "$_out" | grep -q 'exakit update' && printf 'repair-exapump' || printf 'NO-REPAIR-EXAPUMP'
     printf ' '
-    printf '%s\n' "$_out" | grep -q 'exakit update pyexasol' && printf 'repair-pyexasol' || printf 'NO-REPAIR-PYEXASOL' )"
+    printf '%s\n' "$_out" | grep -q 'exakit update' && printf 'repair-pyexasol' || printf 'NO-REPAIR-PYEXASOL' )"
 check "a dying component leaves a working CLI, a repair line, and no half-marked step" \
     "cli mcp,exakit_helper data-skipped repair-exapump repair-pyexasol" "$soft"
 

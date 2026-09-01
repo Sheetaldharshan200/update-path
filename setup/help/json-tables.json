@@ -38,11 +38,11 @@
       "examples": []
     },
     {
-      "command": "exakit update json-tables",
+      "command": "exakit update",
       "options": "",
       "summary": "Update the engine and wheel.",
       "examples": [
-        "exakit update json-tables"
+        "exakit update"
       ]
     },
     {

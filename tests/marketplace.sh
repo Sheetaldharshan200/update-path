@@ -465,10 +465,10 @@ _missing_out="$( (
     EXAKIT_MARKETPLACE_ADDONS="dash-server"
     exakit_marketplace_menu 2>&1
 ) )"
-has "env answer with module missing names the fix" "exakit update exakit" "$_missing_out"
+has "env answer with module missing names the fix" "exakit update" "$_missing_out"
 lacks "and does not call the add-on unknown" "Unknown marketplace add-on" "$_missing_out"
 # The generic installer path gives the same answer.
-has "install-one with module missing names the fix" "exakit update exakit" "$( (
+has "install-one with module missing names the fix" "exakit update" "$( (
     unset -f dash_server_install
     _exakit_marketplace_install_one dash-server 2>&1
     :

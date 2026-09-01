@@ -1002,7 +1002,7 @@ function Confirm-ExakitJsonTablesReady {
     # Both entry points (setup/exakit.ps1 and setup-windows-docker.ps1) source
     # every add-on module at the top, so a missing one means an old kit copy.
     if (-not (Get-Command Install-JsonTables -ErrorAction SilentlyContinue)) {
-        Warn2 "This kit copy does not carry the JSON engine - update the kit first: exakit update exakit"
+        Warn2 "This kit copy does not carry the JSON engine - update the kit first: exakit update"
         return $false
     }
     if (-not (Test-ExakitJsonTablesApplicable)) {

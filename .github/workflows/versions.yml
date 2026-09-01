@@ -435,6 +435,10 @@ jobs:
       # Resume-path safety: both bugs it guards only appear on a SECOND run
       # of the installer, which is the run nobody exercises by hand.
       - run: bash tests/install-resume-safety.sh
+      # `exakit update <component>` still works and is deliberately not
+      # advertised. The guard reads the surfaces a reader reads, and also
+      # checks the capability was hidden rather than deleted.
+      - run: bash tests/update-command-surface.sh
       # Needs a real pty: ui_spin_begin re-checks `-t 1` at call time, so the
       # spinner never starts in a captured pipeline and the collision this
       # guards against cannot be reproduced by running the command normally.

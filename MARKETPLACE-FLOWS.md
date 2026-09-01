@@ -164,9 +164,9 @@ flowchart TD
     B -->|Yes| D[Build one row per add-on]
     D --> E{Row state}
     E -->|Not present| F[Selectable, with its<br>one-line description]
-    E -->|Kit-installed| G[Dimmed: installed v0.1.0 -<br>update with: exakit update dash-server]
+    E -->|Kit-installed| G[Dimmed: installed v0.1.0 -<br>update with: exakit update]
     E -->|On the system,<br>outside the kit| H[Dimmed: already on this system -<br>the kit leaves it alone]
-    E -->|Module missing<br>from this kit copy| I[Dimmed: not part of this kit copy -<br>run: exakit update exakit]
+    E -->|Module missing<br>from this kit copy| I[Dimmed: not part of this kit copy -<br>run: exakit update]
     F --> J{User confirms a selection?}
     J -->|Cancel or nothing| K[Marketplace closed -<br>nothing was installed]
     J -->|Yes| L[Install each picked add-on:<br>venv under the kit home,<br>launcher, live validation]
@@ -201,7 +201,7 @@ flowchart TD
     B --> C[dash-server row: installed version,<br>and whether a newer one is advertised]
     C --> D{Newer version advertised?}
     D -->|No| E[current - and exakit update<br>dash-server still repairs the launcher]
-    D -->|Yes| F[exakit update dash-server<br>or plain exakit update]
+    D -->|Yes| F[exakit update]
     F --> G[New version into the venv,<br>revalidated, seconds, no downtime]
     A2[Add-on NOT installed] --> H[Not in exakit update all - the kit<br>never updates what was never picked]
     H --> I[its exakit version row reads<br>exakit marketplace]
@@ -220,7 +220,7 @@ The dynamic rule, in both directions:
 
 ```mermaid
 flowchart TD
-    A{Where does the tool come from?} -->|The kit installed it| B[Menu: installed vX<br>Updates: exakit update dash-server<br>Uninstall: swept by exakit uninstall]
+    A{Where does the tool come from?} -->|The kit installed it| B[Menu: installed vX<br>Updates: exakit update<br>Uninstall: swept by exakit uninstall]
     A -->|Installed outside the kit,<br>found on PATH| C[Menu: already on this system -<br>the kit leaves it alone]
     C --> D[Never offered, never updated,<br>never uninstalled by the kit]
     B --> E[Counted for the offer and the<br>discovery lines: nothing advertises<br>a tool the user already has]
@@ -273,7 +273,7 @@ flowchart TD
 | Kit from before the marketplace | `exakit update` | Kit self-update delivers the command; discovery lines take over |
 | Browse | `exakit marketplace` | One row per add-on with live state; Space and Enter |
 | Install failed | menu output | Reason plus retry command; nothing else breaks |
-| Update one add-on | `exakit update dash-server` | Advertised version installed and revalidated |
+| Update one add-on | `exakit update` | Advertised version installed and revalidated |
 | Update everything | `exakit update` | Installed add-ons included, others never touched |
 | Tool already on the system | any surface | Respected and skipped; the kit does not manage it |
 | Remove one add-on | `exakit uninstall` | Pick it from the selection; its own hook removes it, summary + typed gate first |

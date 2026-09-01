@@ -961,7 +961,7 @@ _exakit_json_tables_ensure() {
     _exakit_json_tables_ready && return 0
 
     _exakit_json_tables_load_module || {
-        warn "This kit copy does not carry the JSON engine - update the kit first: exakit update exakit"
+        warn "This kit copy does not carry the JSON engine - update the kit first: exakit update"
         return 1
     }
     if command -v _exakit_addon_applicable >/dev/null 2>&1 && \

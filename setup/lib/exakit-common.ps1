@@ -3654,7 +3654,7 @@ function Show-ExakitMarketplaceMenu {
                     $why = Get-ExakitAddonApplicableReason $token
                     Fail ("$token is not available on this machine" + $(if ($why) { ": $why" } else { "" }))
                 }
-                elseif ($known -contains $token) { Info "$token is already present - a kit-managed one updates with: exakit update $token" }
+                elseif ($known -contains $token) { Info "$token is already present - a kit-managed one updates with: exakit update" }
                 else { Fail "Unknown marketplace add-on in EXAKIT_MARKETPLACE_ADDONS: '$token' (known: $($known -join ' '))" }
             }
         }

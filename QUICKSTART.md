@@ -76,7 +76,7 @@ exakit uninstall           # remove everything the kit installed
 The quick updates take seconds and no downtime. When a **database** update is
 waiting, `exakit update` asks — `Stop the database and update the runtime now?
 [y/N]` — and on `y` it stops the database, updates it, brings it back up and says
-so. On `n` nothing is stopped and `exakit update runtime` applies it later. Your
+so. On `n` nothing is stopped and `exakit update` applies it later. Your
 data is kept either way. Full detail:
 [Staying up to date](README.md#staying-up-to-date).
 

@@ -60,13 +60,10 @@
       ]
     },
     {
-      "command": "exakit update personal",
-      "options": "[--plan|--backup|--apply]",
-      "summary": "Major-version upgrade, in explicit steps.",
-      "description": "A major upgrade is a real data migration and never starts on its own.",
-      "examples": [
-        "exakit update personal --plan"
-      ]
+      "command": "exakit update",
+      "options": "",
+      "summary": "Applies the tested version set.",
+      "description": "A MAJOR Exasol Personal upgrade is a real data migration, so it never starts on its own: the update reports it, takes no destructive action, and points at the Exasol Personal migration guidance for that version. Your database data is left where it is."
     },
     {
       "command": "exasol info",

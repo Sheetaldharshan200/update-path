@@ -267,7 +267,7 @@
       ],
       "examples": [
         "exakit update",
-        "exakit update exapump",
+        "exakit update",
         "exakit update --yes"
       ]
     },

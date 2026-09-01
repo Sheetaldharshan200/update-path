@@ -263,7 +263,7 @@ manifest_get() {
 }
 exakit_component_available() { printf '%s\n' 3.0.0; }
 personal_update --plan
-" 2>&1 | grep -c 'exakit update personal --backup')"
+" 2>&1 | grep -c 'migration/redeployment guidance')"
 check "personal_major(plan)" "1" "$personal_major_plan"
 
 personal_reuse_guard="$(bash -c "

@@ -140,7 +140,7 @@ Update it like any other component:
 
 ```bash
 exakit version    # the mcp row shows what is installed and what is advertised
-exakit update mcp
+exakit update
 ```
 
 ## Guardrails
