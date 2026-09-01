@@ -33,12 +33,18 @@ printf '\n== no user-visible surface names a component after "exakit update" ==\
 # internals to whoever maintains this, and the component form is exactly what
 # they have to talk about. A Markdown "#" is a heading, not a comment, so those
 # files are read whole.
+#
+# tests/ is skipped entirely, and not just this file. A suite that asserts the
+# form is ABSENT from a screen has to spell the form out to say so -- six such
+# `lacks` needles live in versions-manifest.sh -- so scanning tests counts every
+# check that the form is gone as evidence that it is still there. Tests are not
+# a surface anybody reads for guidance, which is what this guard is about.
 scan() { # scan <component>
     grep -rn "exakit update $1" \
         --include="*.sh" --include="*.ps1" --include="*.json" --include="*.md" --include="exakit" \
         "$ROOT" 2>/dev/null \
         | grep -v '/CHANGELOG.md:' \
-        | grep -v "/tests/update-command-surface.sh:" \
+        | grep -v '/tests/' \
         | grep -v '/.claude/' \
         | grep -vE ':[0-9]+: *#'
 }
@@ -74,11 +80,17 @@ printf '\n== the capability itself is untouched ==\n'
 # The point is to stop ADVERTISING the form, not to remove it. If someone
 # "fixed" this by deleting the targets, every check above would still pass while
 # `exakit update` quietly stopped being able to update anything.
-_targets="$(bash -c ". '$ROOT/setup/lib/common.sh' 2>/dev/null; exakit_update_targets all 2>/dev/null" | tr '\n' ' ' || true)"
+# Each component resolved ON ITS OWN, not via `all`. They are different arms:
+# `all` prints the whole set from one branch, while `exakit update exapump` goes
+# through the per-component branch -- which is the arm being hidden and so the
+# only arm worth guarding. Asserting `all` here passed happily with the
+# per-component arm deleted, which is the exact failure this section exists to
+# catch.
 for _want in exakit runtime exapump mcp pyexasol; do
-    case " $_targets " in
-        *" $_want "*) pass "\"$_want\" is still an update target" ;;
-        *)            fail "\"$_want\" is no longer an update target - the capability was removed, not just hidden" ;;
+    _got="$(bash -c ". '$ROOT/setup/lib/common.sh' 2>/dev/null; exakit_update_targets $_want 2>/dev/null" | tr '\n' ' ' || true)"
+    case " $_got " in
+        *" $_want "*) pass "\"$_want\" still resolves as an update target" ;;
+        *)            fail "\"$_want\" no longer resolves - the capability was removed, not just hidden" ;;
     esac
 done
 
