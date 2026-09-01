@@ -4007,7 +4007,7 @@ function Invoke-ExakitMarketplaceApply {
                 Set-ExakitTableRow -Row $script:ExakitAddonTableRow -State "failed" `
                     -Final "did not finish - see the log" -Table $script:ExakitAddonTable
             }
-            Write-ExakitAddonNote "warn" "$id did not finish installing - retry with: exakit marketplace (or exakit update $id)"
+            Write-ExakitAddonNote "warn" "$id did not finish installing - retry with: exakit marketplace"
             $failed += 1
         }
         $script:ExakitAddonTableRow = 0
