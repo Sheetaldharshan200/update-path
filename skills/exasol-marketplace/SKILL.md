@@ -65,7 +65,7 @@ An installed add-on becomes a **full component** of the kit:
 
 ```bash
 exakit version                     # its version, and whether a newer one is advertised
-exakit update dash-server          # apply it
+exakit update          # apply it
 exakit update                      # covers every INSTALLED add-on
 ```
 

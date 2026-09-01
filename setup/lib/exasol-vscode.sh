@@ -240,7 +240,7 @@ for asset in doc.get("assets", []):
 # caller's run.
 _exasol_vscode_not_installed() {
     warn "Exasol for VS Code was not installed: $1"
-    warn "Everything else in the kit is unaffected. Retry with: exakit update exasol-vscode"
+    warn "Everything else in the kit is unaffected. Retry with: exakit update"
     command -v exakit_note_failure >/dev/null 2>&1 && exakit_note_failure "$1"
     manifest_set components.exasol_vscode.validated false
     return 1
@@ -337,7 +337,7 @@ exasol_vscode_install() {
 exasol_vscode_validate() {
     _evv_live="$(_exasol_vscode_live_version 2>/dev/null || true)"
     if [ -z "$_evv_live" ]; then
-        warn "VS Code does not list ${EXAKIT_EXASOL_VSCODE_EXT_ID}. Recorded validated=false; retry with: exakit update exasol-vscode"
+        warn "VS Code does not list ${EXAKIT_EXASOL_VSCODE_EXT_ID}. Recorded validated=false; retry with: exakit update"
         manifest_set components.exasol_vscode.validated false
         return 0
     fi
@@ -352,7 +352,7 @@ exasol_vscode_validate() {
     ui_panel_begin "Exasol for VS Code"
     ui_panel_line "Open VS Code    the Exasol view appears in the activity bar"
     ui_panel_line "Connect it      DSN and credentials: exakit info"
-    ui_panel_line "Update          exakit update exasol-vscode"
+    ui_panel_line "Update          exakit update"
     ui_panel_end
     return 0
 }

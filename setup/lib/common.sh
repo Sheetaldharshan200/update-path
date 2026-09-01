@@ -3389,7 +3389,7 @@ _exakit_marketplace_install_one() {
     _mi_install="$(_exakit_addon_fn "$1" install)"
     _mi_validate="$(_exakit_addon_fn "$1" validate)"
     command -v "$_mi_install" >/dev/null 2>&1 || {
-        _exakit_addon_note warn "The $1 module is not part of this kit copy — update the kit first: exakit update exakit"
+        _exakit_addon_note warn "The $1 module is not part of this kit copy — update the kit first: exakit update"
         return 1
     }
     # Every silent stretch of an add-on install — creating the venv, resolving
@@ -3539,7 +3539,7 @@ exakit_marketplace_menu() {
 "
             _mm_ids+=("__disabled__")
         elif ! exakit_marketplace_addon_available "$_mm_id"; then
-            _mm_covered="$_mm_covered$_mm_id|not in this kit copy. Run: exakit update exakit
+            _mm_covered="$_mm_covered$_mm_id|not in this kit copy. Run: exakit update
 "
             _mm_ids+=("__disabled__")
         else
@@ -3599,7 +3599,7 @@ EXAKIT_MM_EOF
                     if [ "$_mm_known" -eq 1 ]; then
                         _mm_picked="${_mm_picked:+$_mm_picked,}$_mm_tok"
                     elif exakit_marketplace_addon_installed "$_mm_tok" 2>/dev/null; then
-                        info "$_mm_tok is already installed — update it with: exakit update $_mm_tok"
+                        info "$_mm_tok is already installed — update it with: exakit update"
                     elif _exakit_addon_registered "$_mm_tok" && _exakit_addon_system_present "$_mm_tok"; then
                         info "$_mm_tok is already on this system — the kit leaves it alone"
                     elif _exakit_addon_registered "$_mm_tok" && ! _exakit_addon_applicable "$_mm_tok"; then
@@ -3609,7 +3609,7 @@ EXAKIT_MM_EOF
                         # Registered but no module in this kit copy: a real
                         # add-on the user asked for by name — say what fixes it
                         # instead of calling it unknown.
-                        die "The $_mm_tok module is not part of this kit copy — update the kit first: exakit update exakit"
+                        die "The $_mm_tok module is not part of this kit copy — update the kit first: exakit update"
                     else
                         die "Unknown marketplace add-on in EXAKIT_MARKETPLACE_ADDONS: '$_mm_tok' (known: $(exakit_marketplace_addons | cut -d'|' -f1 | tr '\n' ' ' | sed 's/ $//'))"
                     fi
@@ -3972,7 +3972,7 @@ exakit_print_versions_source_line() {
     info "Versions: $_vsl_text"
     EXAKIT_QUIET_DETAIL="$_vsl_prev_quiet"
     if exakit_versions_schema_ahead; then
-        info "This kit is older than the published manifest — update it first: exakit update exakit"
+        info "This kit is older than the published manifest — update it first: exakit update"
     fi
     _exakit_print_override_line
     return 0
@@ -4329,7 +4329,7 @@ exakit_update_kit2() {
         # The newer bundle is not on this machine yet, and no amount of re-staging
         # will conjure it: the assets arrive with the kit itself.
         warn "Kit 2 $_k2u_advertised is advertised, but this kit copy carries $_k2u_bundled."
-        info "Kit 2 assets travel with the kit — update it first:  exakit update exakit"
+        info "Kit 2 assets travel with the kit — update it first:  exakit update"
         return 0
     fi
     info "Re-staging the Kit 2 assets from $(ui_tilde "$_k2u_root")"
@@ -4952,7 +4952,6 @@ exakit_offer_runtime_update() {
 
     if exakit_runtime_update_is_staged "$_oru_cur" "$_oru_avail"; then
         warn "$_oru_actual $_oru_cur -> $_oru_avail is a major upgrade: it needs a backup and a data migration, so a routine update does not start it."
-        info "See the steps first:  exakit update runtime --plan"
         return 1
     fi
 
@@ -4962,7 +4961,7 @@ exakit_offer_runtime_update() {
             ;;
         no)
             warn "$_oru_actual $_oru_cur -> $_oru_avail was left alone: the runtime update is answered 'no' (EXAKIT_CONFIRM_RUNTIME_UPDATE)."
-            info "Apply it when convenient:  exakit update runtime"
+            info "Apply it when convenient:  exakit update"
             return 1
             ;;
         *)
@@ -4971,13 +4970,13 @@ exakit_offer_runtime_update() {
             # scripted install all get exactly today's safe deferral.
             if ! exakit_stdin_is_tty; then
                 warn "$_oru_actual $_oru_cur -> $_oru_avail needs the database stopped, so it is not part of a routine update."
-                info "Apply it when convenient:  exakit update runtime"
+                info "Apply it when convenient:  exakit update"
                 info "Unattended runs can opt in:  exakit update --yes  (or EXAKIT_CONFIRM_RUNTIME_UPDATE=1)"
                 return 1
             fi
             exakit_runtime_update_explain "$_oru_actual" "$_oru_cur" "$_oru_avail"
             if ! confirm "Stop the database and update the runtime now?" n; then
-                info "Nothing was stopped. Apply it when convenient:  exakit update runtime"
+                info "Nothing was stopped. Apply it when convenient:  exakit update"
                 return 1
             fi
             ;;
@@ -5093,7 +5092,7 @@ exakit_update() {
         # manifest's only hard compatibility lever would be advice nobody applies.
         _upd_min_kit="$(exakit_component_min_kit "$_upd_actual" 2>/dev/null || true)"
         if [ -n "$_upd_min_kit" ] && ! exakit_min_kit_satisfied "$_upd_min_kit"; then
-            warn "$_upd_actual $_avail needs kit >= $_upd_min_kit — update the kit first: exakit update exakit"
+            warn "$_upd_actual $_avail needs kit >= $_upd_min_kit — update the kit first: exakit update"
             [ "$_target" = "all" ] && continue
             die "Refusing to install $_upd_actual $_avail on kit $(exakit_component_current exakit 2>/dev/null || printf unknown)."
         fi
@@ -8332,7 +8331,7 @@ kit_shared_steps() {
 
     if command -v exapump_install >/dev/null 2>&1; then
         if begin_step exapump "Step ${_step_no}/${_total}  exapump (data loading CLI)"; then
-            if exakit_soft_step exapump "exakit update exapump" "exapump" \
+            if exakit_soft_step exapump "exakit update" "exapump" \
                     _exakit_install_exapump; then
                 mark_step exapump
             fi
@@ -8364,7 +8363,7 @@ kit_shared_steps() {
 
     if command -v mcp_install >/dev/null 2>&1; then
         if begin_step mcp "Step ${_step_no}/${_total}  AI bridge (MCP server, clients and skills)"; then
-            if exakit_soft_step mcp "exakit update mcp" "the MCP server" _exakit_install_mcp; then
+            if exakit_soft_step mcp "exakit update" "the MCP server" _exakit_install_mcp; then
                 mark_step mcp
             fi
         fi
@@ -8409,7 +8408,7 @@ kit_shared_steps() {
             # the user is left without the command that fixes everything else. A
             # soft failure explains itself, records validated=false, and leaves
             # the step unmarked so a re-run (or `exakit update pyexasol`) retries.
-            if exakit_soft_step pyexasol "exakit update pyexasol" "pyexasol" _exakit_install_pyexasol; then
+            if exakit_soft_step pyexasol "exakit update" "pyexasol" _exakit_install_pyexasol; then
                 mark_step pyexasol
             fi
         fi
@@ -8923,7 +8922,7 @@ _exakit_uninstall_component() {
                     # the module, so every add-on gets it without writing a line.
                     [ "$_uc_dry" = "1" ] || exakit_remove_addon_skills "$_uc_key" || true
                 else
-                    warn "The $_uc_key module carries no uninstall — update the kit: exakit update exakit"
+                    warn "The $_uc_key module carries no uninstall — update the kit: exakit update"
                 fi
             else
                 warn "Unknown uninstall target: $_uc_key"

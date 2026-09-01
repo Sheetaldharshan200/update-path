@@ -118,7 +118,7 @@ my_tool_installed_version() {
 # Soft-fail helper: marketplace installs must never end the caller's run.
 _my_tool_not_installed() {
     warn "my-tool was not installed: $1"
-    warn "Everything else in the kit is unaffected. Retry with: exakit update my-tool"
+    warn "Everything else in the kit is unaffected. Retry with: exakit update"
     command -v exakit_note_failure >/dev/null 2>&1 && exakit_note_failure "$1"
     manifest_set components.my_tool.validated false
     return 1

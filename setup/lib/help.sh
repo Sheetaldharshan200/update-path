@@ -221,7 +221,7 @@ def render_command_detail(doc, entry, prefix=""):
 def render_overview():
     doc = docs.get("exakit")
     if not doc:
-        out("No help data found. Reinstall the kit or run: exakit update exakit")
+        out("No help data found. Reinstall the kit or run: exakit update")
         return 1
     header(doc.get("title", "exakit"), doc.get("tagline", ""))
     # Both optional, and the blank line belongs to the prose rather than to the

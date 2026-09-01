@@ -616,7 +616,7 @@ printf '\n== a failed soft step is named the way the reader knows it ==\n'
 has "soft_step takes a label"           '_ss_label="$3"' "$COMMON_SRC"
 has "...and warns with it"              'warn "$_ss_label did not finish' "$COMMON_SRC"
 has "...and records it for the summary" 'exakit_take_failure_note)" "$_ss_label"' "$COMMON_SRC"
-lacks "no caller leaves it to the raw id" 'exakit_soft_step mcp "exakit update mcp" _exakit_install_mcp' "$COMMON_SRC"
+lacks "no caller leaves it to the raw id" 'exakit_soft_step mcp "exakit update" _exakit_install_mcp' "$COMMON_SRC"
 
 printf '\n%s: %d passed, %d failed\n' "$(basename "$0")" "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

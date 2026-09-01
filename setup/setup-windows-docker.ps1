@@ -76,7 +76,7 @@ try {
         # and where, the profile name someone types again, and the one fact the
         # next steps depend on - that the database can persist a schema, not
         # merely answer SELECT 1. Twin of _exakit_install_exapump (common.sh).
-        if (Invoke-ExakitSoftStep -Component "exapump" -Repair "exakit update exapump" -Body {
+        if (Invoke-ExakitSoftStep -Component "exapump" -Repair "exakit update" -Body {
                 $prevQuiet = $script:ExakitQuietDetail
                 if ($script:UiFancy) { $script:ExakitQuietDetail = $true }
                 try {
@@ -108,7 +108,7 @@ try {
 
     # --- step 3: AI bridge (server, clients, skills) ----------------------------
     if ($exapumpSupported -and (Begin-ExakitStep "mcp" "Step 3/5  AI bridge (MCP server, clients and skills)")) {
-        if (Invoke-ExakitSoftStep -Component "mcp" -Repair "exakit update mcp" -Body {
+        if (Invoke-ExakitSoftStep -Component "mcp" -Repair "exakit update" -Body {
                 # One line for this step's server work: the spinner narrates
                 # the prime and the handshake, so the Info/Ok pairs beneath
                 # were the second telling. try/finally because the body can
@@ -166,7 +166,7 @@ try {
         # Two lines for this step, not five: the outcome, and the interpreter to
         # run it with. Everything between is in the logfile, and the spinner
         # covered it live. Twin of _exakit_install_pyexasol (common.sh).
-        if (Invoke-ExakitSoftStep -Component "pyexasol" -Repair "exakit update pyexasol" -Body {
+        if (Invoke-ExakitSoftStep -Component "pyexasol" -Repair "exakit update" -Body {
                 $prevQuiet = $script:ExakitQuietDetail
                 if ($script:UiFancy) { $script:ExakitQuietDetail = $true }
                 try {

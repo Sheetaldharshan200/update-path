@@ -94,7 +94,7 @@ reading it.
 **The kit never moves a component backwards.** Lowering the advertised version is
 not a rollback lever: machines already on the higher version show the lower number
 in the `Tagged` column and an action of `none`, and both `exakit update`
-and an explicit `exakit update exapump` leave them alone. There is no
+and an explicit `exakit update` leave them alone. There is no
 confirmation to give and no env override to set. A user who upgraded a component
 themselves keeps what they chose.
 
@@ -129,7 +129,7 @@ kit copies itself from `main`.
 
 1. Merge the script changes.
 2. Bump `kit.version` in `versions.json` in the same pull request, or right after.
-3. `exakit update exakit` then downloads `main`, validates the staged copy
+3. `exakit update` then downloads `main`, validates the staged copy
    (including that `versions.json` is present), keeps a backup, and swaps it in.
 
 Two things to respect:
@@ -151,7 +151,7 @@ update model must be tagged.
 ## Which repository this kit points at
 
 One slug decides where the install command downloads from, where `versions.json`
-is fetched, and where `exakit update exakit` self-updates from. It has a baked
+is fetched, and where `exakit update` self-updates from. It has a baked
 default in four places, because the installers bootstrap before any library is
 available to ask:
 

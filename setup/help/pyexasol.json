@@ -22,17 +22,17 @@
     },
     {
       "step": "Repair it if missing",
-      "run": "exakit update pyexasol"
+      "run": "exakit update"
     }
   ],
   "commands": [
     {
-      "command": "exakit update pyexasol",
+      "command": "exakit update",
       "options": "",
       "summary": "Install or repair the driver.",
       "description": "The same command fixes a component that reports not installed.",
       "examples": [
-        "exakit update pyexasol"
+        "exakit update"
       ]
     }
   ],

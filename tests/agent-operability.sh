@@ -238,7 +238,7 @@ echo "the JSON carries the remedy the prose already had:"
 _rj="$(EXAKIT_HOME="$WORK/stopped" bash "$ROOT/setup/exakit" status --json 2>/dev/null)"
 has "status --json has a remedies map" '"remedies"' "$_rj"
 has "a stopped database names exakit start" 'exakit start' "$_rj"
-has "a missing pyexasol names its repair" 'exakit update pyexasol' "$_rj"
+has "a missing pyexasol names its repair" 'exakit update' "$_rj"
 has "status --json exposes last_failure" '"last_failure"' "$_rj"
 
 echo

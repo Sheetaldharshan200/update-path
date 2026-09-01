@@ -222,7 +222,7 @@ _json_tables_not_installed() {
     # managed-Python cache makes the retry fail identically forever, so
     # "retry with" on its own is a loop, not a remedy.
     command -v exakit_explain_last_log_error >/dev/null 2>&1 && exakit_explain_last_log_error
-    warn "Everything else in the kit is unaffected. Retry with: exakit update json-tables"
+    warn "Everything else in the kit is unaffected. Retry with: exakit update"
     command -v exakit_note_failure >/dev/null 2>&1 && exakit_note_failure "$1"
     manifest_set components.json_tables.validated false
     return 1
@@ -577,7 +577,7 @@ json_tables_validate() {
         return 0
     fi
     rm -rf "$_jtv_tmp"
-    warn "The ingest round trip did not produce Parquet (see: exakit logs json-tables). Recorded validated=false; retry with: exakit update json-tables"
+    warn "The ingest round trip did not produce Parquet (see: exakit logs json-tables). Recorded validated=false; retry with: exakit update"
     manifest_set components.json_tables.validated false
     return 0
 }
@@ -596,7 +596,7 @@ _json_tables_print_usage() {
     ui_panel_line "Run it          exasol-json-tables --help"
     ui_panel_line "Ingest JSON     exasol-json-tables ingest --input <file.json>"
     ui_panel_line "Engine          $(ui_tilde "$(json_tables_engine_path)")"
-    ui_panel_line "Update          exakit update json-tables"
+    ui_panel_line "Update          exakit update"
     ui_panel_end
 }
 

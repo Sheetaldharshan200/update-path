@@ -354,9 +354,9 @@ function Invoke-CmdStatus {
     # Mirrors cmd_status in setup/exakit.
     $softRows = @()
     foreach ($soft in @(
-        @{ Id = "exapump";  Key = "components.exapump.validated";    Fix = "exakit update exapump" },
-        @{ Id = "mcp";      Key = "components.mcp_server.validated"; Fix = "exakit update mcp" },
-        @{ Id = "pyexasol"; Key = "components.pyexasol.validated";   Fix = "exakit update pyexasol" }
+        @{ Id = "exapump";  Key = "components.exapump.validated";    Fix = "exakit update" },
+        @{ Id = "mcp";      Key = "components.mcp_server.validated"; Fix = "exakit update" },
+        @{ Id = "pyexasol"; Key = "components.pyexasol.validated";   Fix = "exakit update" }
     )) {
         # A manifest record is what says "this install attempted the component".
         if ($null -eq (Get-ExakitManifestValue $soft.Key)) { continue }
@@ -990,7 +990,7 @@ function Invoke-ExakitUninstallComponent {
                 # module, so every add-on gets it without writing a line.
                 try { Remove-ExakitAddonSkills $Key } catch { }
             } else {
-                Warn2 "The $Key module carries no uninstall - update the kit: exakit update exakit"
+                Warn2 "The $Key module carries no uninstall - update the kit: exakit update"
             }
         }
     }
@@ -1357,7 +1357,7 @@ function Write-ExakitVersionsSourceLine {
     if ($updated) { $text = "$text, updated $(Format-ExakitManifestDate $updated)" }
     Info "Available versions from $text"
     if (Test-ExakitVersionsSchemaAhead) {
-        Info "This kit is older than the published manifest - update it first: exakit update exakit"
+        Info "This kit is older than the published manifest - update it first: exakit update"
     }
     Write-ExakitOverrideLine
 }
@@ -1548,13 +1548,12 @@ function Invoke-ExakitRuntimeUpdateOffer {
     )
     if (Test-ExakitRuntimeUpdateStaged -Installed $Installed -Advertised $Advertised) {
         Warn2 "$Actual $Installed -> $Advertised is a major upgrade: it needs a backup and a data migration, so a routine update does not start it."
-        Info "See the steps first:  exakit update runtime --plan"
         return $false
     }
     $preanswer = Get-ExakitRuntimeUpdatePreanswer -AssumeYes $AssumeYes
     if ($preanswer -eq "no") {
         Warn2 "$Actual $Installed -> $Advertised was left alone: the runtime update is answered 'no' (EXAKIT_CONFIRM_RUNTIME_UPDATE)."
-        Info "Apply it when convenient:  exakit update runtime"
+        Info "Apply it when convenient:  exakit update"
         return $false
     }
     if ($preanswer -eq "yes") {
@@ -1565,13 +1564,13 @@ function Invoke-ExakitRuntimeUpdateOffer {
         # get exactly today's safe deferral.
         if (-not (Test-ExakitInteractive)) {
             Warn2 "$Actual $Installed -> $Advertised needs the database stopped, so it is not part of a routine update."
-            Info "Apply it when convenient:  exakit update runtime"
+            Info "Apply it when convenient:  exakit update"
             Info "Unattended runs can opt in:  exakit update -Yes  (or EXAKIT_CONFIRM_RUNTIME_UPDATE=1)"
             return $false
         }
         Write-ExakitRuntimeUpdateExplanation -Actual $Actual -Installed $Installed -Advertised $Advertised
         if (-not (Confirm-ExakitPrompt "Stop the database and update the runtime now?" $false)) {
-            Info "Nothing was stopped. Apply it when convenient:  exakit update runtime"
+            Info "Nothing was stopped. Apply it when convenient:  exakit update"
             return $false
         }
     }
@@ -1665,7 +1664,7 @@ function Invoke-CmdUpdate {
         # manifest's only hard compatibility lever would be advice nobody applies.
         $minKit = Get-ExakitComponentMinKit $actual
         if ($minKit -and -not (Test-ExakitMinKitSatisfied -Required $minKit)) {
-            Warn2 "$actual $available needs kit >= $minKit - update the kit first: exakit update exakit"
+            Warn2 "$actual $available needs kit >= $minKit - update the kit first: exakit update"
             if ($Target -eq "all") { continue }
             Fail "Refusing to install $actual $available on kit $(Get-ExakitComponentCurrent 'exakit')."
         }
@@ -1717,7 +1716,7 @@ function Invoke-CmdUpdate {
             "pyexasol" {
                 if ($available) { Update-Pyexasol | Out-Null }
             }
-            "kit2" { Write-ExakitKit2NotAvailable -Command "exakit update kit2" }
+            "kit2" { Write-ExakitKit2NotAvailable }
             default {
                 # Marketplace add-ons dispatch to their module's update function.
                 $addon = Get-ExakitMarketplaceAddon $component
@@ -1743,8 +1742,13 @@ function Invoke-CmdUpdate {
 # rather than to fail with "unknown command" - the same treatment the Windows path
 # gave kit self-update until it was implemented.
 function Write-ExakitKit2NotAvailable {
-    param([string]$Command)
-    Warn2 "Kit 2 is not available on the Windows path yet ($Command)."
+    param([string]$Command = "")
+    # The command is echoed back only when the reader named one that does not
+    # exist here. The update path reaches this with nothing to echo: bare
+    # `exakit update` IS available on Windows, and naming it in this sentence
+    # would say the opposite.
+    if ($Command) { Warn2 "Kit 2 is not available on the Windows path yet ($Command)." }
+    else { Warn2 "Kit 2 is not available on the Windows path yet." }
     Info "The Kit 2 add-on ships with the macOS, Linux and WSL paths; it is planned for Windows."
 }
 

@@ -222,7 +222,7 @@ because that one stops the database for a minute or two:
 
 Answer `y` and it does the whole job — stops the database, updates the runtime,
 brings it back up and tells you it is running again. Answer `n` and nothing is
-stopped; `exakit update runtime` applies it whenever you like. Your data is kept
+stopped; `exakit update` applies it whenever you like. Your data is kept
 either way: the update reuses the same data volume, and the previous version is
 put back if the new one does not come up.
 
@@ -233,8 +233,8 @@ deliberately with `exakit update --yes` (or `EXAKIT_CONFIRM_RUNTIME_UPDATE=1`).
 ```
 Component  Installed         Tagged            Severity    Action
 exakit     0.2.1             0.2.1             -           current
-nano       2026.2.0-nano.2   2026.2.0-nano.3   -           exakit update runtime (heavy)
-exapump    0.11.3            0.12.0            recommended exakit update exapump
+nano       2026.2.0-nano.2   2026.2.0-nano.3   -           exakit update (heavy)
+exapump    0.11.3            0.12.0            recommended exakit update
 mcp        2.1.0             2.1.0             -           current
 pyexasol   2.3.2             2.3.2             -           current
 ```

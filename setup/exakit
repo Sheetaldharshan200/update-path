@@ -270,7 +270,7 @@ running = db.startswith("running")
 # null, and should never have to parse the human screen to find one.
 remedies = {}
 if not pyx:
-    remedies["pyexasol"] = "exakit update pyexasol"
+    remedies["pyexasol"] = "exakit update"
 if not running:
     # "exakit start" is the wrong remedy for an INTERRUPTED deployment: it fails
     # identically every time, which is how an agent ends up looping on it. The
@@ -484,9 +484,9 @@ EXAKIT_CS_CLIENTS
         _cs_missing="${_cs_missing}${_cs_missing:+
 }$(printf '%-9s repair: %s' "$_cs_cid" "$_cs_cfix")"
     done <<EXAKIT_CS_SOFT
-exapump|components.exapump.validated|exakit update exapump
-mcp|components.mcp_server.validated|exakit update mcp
-pyexasol|components.pyexasol.validated|exakit update pyexasol
+exapump|components.exapump.validated|exakit update
+mcp|components.mcp_server.validated|exakit update
+pyexasol|components.pyexasol.validated|exakit update
 EXAKIT_CS_SOFT
     if [ -n "$_cs_missing" ]; then
         _cs_label='Missing:'

@@ -119,16 +119,10 @@ it touches the deployment:
 exakit version    # every component at once: installed, and what is advertised
 ```
 
-On macOS, an Exasol Personal major update has its own explicit, non-destructive
-three-step path:
-
-```bash
-exakit update personal --plan     # what would change; changes nothing
-exakit update personal --backup   # back the deployment up first
-exakit update personal --apply    # apply it
-```
-
-Run them in that order. Database data is preserved.
+On macOS, an Exasol Personal MAJOR update is never applied on its own. The
+update reports that one is available, takes no destructive action, and points at
+the Exasol Personal migration guidance for the new version. Database data is
+left exactly where it is.
 
 ## Guardrails
 

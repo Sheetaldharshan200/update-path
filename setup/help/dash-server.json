@@ -64,18 +64,18 @@
       ]
     },
     {
-      "command": "exakit update dash-server",
+      "command": "exakit update",
       "options": "",
       "summary": "Update it, and regenerate its launcher.",
       "examples": [
-        "exakit update dash-server"
+        "exakit update"
       ]
     }
   ],
   "environment": [
     {
       "name": "EXAKIT_DASH_SERVER_PORT",
-      "effect": "Serve on a different port: EXAKIT_DASH_SERVER_PORT=5200 exakit update dash-server."
+      "effect": "Serve on a different port: EXAKIT_DASH_SERVER_PORT=5200 exakit update."
     }
   ],
   "notes": [

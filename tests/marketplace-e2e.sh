@@ -110,9 +110,9 @@ case "$_version_out" in
 esac
 
 say "5/9 update says already current; a second marketplace run offers nothing"
-_update_out="$(bash "$ROOT/setup/exakit" update dash-server 2>&1)" || fail "exakit update dash-server failed: $_update_out"
+_update_out="$(bash "$ROOT/setup/exakit" update dash-server 2>&1)" || fail "exakit update failed: $_update_out"
 case "$_update_out" in
-    *"already current"*) echo "  ok  exakit update dash-server: already current" ;;
+    *"already current"*) echo "  ok  exakit update: already current" ;;
     *) fail "unexpected update output: $_update_out" ;;
 esac
 _second="$(EXAKIT_MARKETPLACE_ADDONS=dash-server bash "$ROOT/setup/exakit" marketplace 2>&1)" || fail "second marketplace run failed"
@@ -155,9 +155,9 @@ else
     echo "  ok  exasol.exasol-vscode@$_ext_live installed into the sandbox extensions dir"
 
     say "7/9 the extension joins the update flow and a second run offers nothing"
-    _ext_update="$(bash "$ROOT/setup/exakit" update exasol-vscode 2>&1)" || fail "exakit update exasol-vscode failed: $_ext_update"
+    _ext_update="$(bash "$ROOT/setup/exakit" update exasol-vscode 2>&1)" || fail "exakit update failed: $_ext_update"
     case "$_ext_update" in
-        *"already current"*) echo "  ok  exakit update exasol-vscode: already current" ;;
+        *"already current"*) echo "  ok  exakit update: already current" ;;
         *) fail "unexpected update output: $_ext_update" ;;
     esac
     _ext_targets="$(

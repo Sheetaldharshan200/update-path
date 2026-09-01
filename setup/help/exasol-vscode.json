@@ -29,11 +29,11 @@
       ]
     },
     {
-      "command": "exakit update exasol-vscode",
+      "command": "exakit update",
       "options": "",
       "summary": "Update the extension.",
       "examples": [
-        "exakit update exasol-vscode"
+        "exakit update"
       ]
     },
     {

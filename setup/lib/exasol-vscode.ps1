@@ -140,7 +140,7 @@ function Get-ExasolVscodeDigestFromApi {
 function Write-ExasolVscodeNotInstalled {
     param([Parameter(Mandatory)][string]$Reason)
     Warn2 "Exasol for VS Code was not installed: $Reason"
-    Warn2 "Everything else in the kit is unaffected. Retry with: exakit update exasol-vscode"
+    Warn2 "Everything else in the kit is unaffected. Retry with: exakit update"
     if (Get-Command Set-ExakitFailureReason -ErrorAction SilentlyContinue) {
         Set-ExakitFailureReason $Reason
     }
@@ -234,7 +234,7 @@ function Install-ExasolVscode {
 function Test-ExasolVscode {
     $live = Get-ExasolVscodeLiveVersion
     if (-not $live) {
-        Warn2 "VS Code does not list $($script:ExasolVscodeExtId). Recorded validated=false; retry with: exakit update exasol-vscode"
+        Warn2 "VS Code does not list $($script:ExasolVscodeExtId). Recorded validated=false; retry with: exakit update"
         Set-ExakitManifestValue "components.exasol_vscode.validated" $false
         return
     }
@@ -249,7 +249,7 @@ function Test-ExasolVscode {
     Start-ExakitPanel "Exasol for VS Code"
     Write-ExakitPanelLine "Open VS Code    the Exasol view appears in the activity bar"
     Write-ExakitPanelLine "Connect it      DSN and credentials: exakit info"
-    Write-ExakitPanelLine "Update          exakit update exasol-vscode"
+    Write-ExakitPanelLine "Update          exakit update"
     Complete-ExakitPanel
 }
 

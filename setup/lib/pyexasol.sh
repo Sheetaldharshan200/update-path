@@ -38,7 +38,7 @@ _pyexasol_not_installed() {
     # managed-Python cache makes `exakit update pyexasol` fail identically
     # forever, so "retry with" on its own is a loop, not a remedy.
     command -v exakit_explain_last_log_error >/dev/null 2>&1 && exakit_explain_last_log_error
-    warn "Everything else in the kit is unaffected. Retry with: exakit update pyexasol"
+    warn "Everything else in the kit is unaffected. Retry with: exakit update"
     # The reason has to outlive this subshell so the closing summary can print it
     # instead of a generic "did not finish" (see exakit_note_failure in common.sh).
     command -v exakit_note_failure >/dev/null 2>&1 && exakit_note_failure "$1"

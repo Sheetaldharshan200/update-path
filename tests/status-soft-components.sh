@@ -90,17 +90,26 @@ while IFS='|' read -r id fix; do
         *)        fail "a missing $id is named but its repair command ($fix) is not shown" ;;
     esac
 done <<EOF
-exapump|exakit update exapump
-mcp|exakit update mcp
-pyexasol|exakit update pyexasol
+exapump|exakit update
+mcp|exakit update
+pyexasol|exakit update
 EOF
 
 # 2. All three at once must each get their own line, not just the first.
+#
+# Checked on the COMPONENT NAME, not on the repair command. Every component now
+# repairs with the same bare `exakit update`, so counting that string once per
+# loop pass would report three whatever the screen said -- a check that passes
+# without reading anything. The name is what distinguishes the lines.
 out="$(status_with_absent "exapump mcp pyexasol")"
 missing_named=0
 for id in exapump mcp pyexasol; do
-    case "$out" in *"exakit update $id"*) missing_named=$((missing_named + 1)) ;; esac
+    case "$out" in *"$id"*) missing_named=$((missing_named + 1)) ;; esac
 done
+case "$out" in
+    *"exakit update"*) pass "the repair command is shown" ;;
+    *)                 fail "no repair command is shown for the missing components" ;;
+esac
 if [ "$missing_named" -eq 3 ]; then
     pass "all three missing components are listed together"
 else

@@ -39,7 +39,7 @@ exakit status      # running / stopped per service
 Move it deliberately with:
 
 ```bash
-EXAKIT_DASH_SERVER_PORT=<port> exakit update dash-server
+EXAKIT_DASH_SERVER_PORT=<port> exakit update
 ```
 
 ## The control plane is a registered MCP server
@@ -99,9 +99,9 @@ Work these in order:
    the port", and those need different fixes.
 2. **Port held by a foreign process.** The kit will not fight for it and will
    not touch a process it does not own. Either stop that process, or move
-   dash-server: `EXAKIT_DASH_SERVER_PORT=<port> exakit update dash-server`.
+   dash-server: `EXAKIT_DASH_SERVER_PORT=<port> exakit update`.
 3. **`exakit logs dash-server`** — the server's own log.
-4. **`exakit update dash-server`** — doubles as the repair command.
+4. **`exakit update`** — doubles as the repair command.
 
 ### The specific failure worth knowing
 
@@ -115,7 +115,7 @@ Symptom: agents can drive it fine over MCP, the user sees an error page. Fix:
 ```bash
 exakit stop && exakit start        # restart it
 # or
-exakit update dash-server          # the repair path
+exakit update          # the repair path
 ```
 
 If the control plane answers but the page does not, say so plainly rather than

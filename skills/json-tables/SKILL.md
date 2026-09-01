@@ -83,7 +83,7 @@ So a version you see upstream may legitimately not be offered yet.
 
 ```bash
 exakit version                   # its row shows installed vs advertised
-exakit update json-tables        # also the repair command
+exakit update        # also the repair command
 exakit logs json-tables
 exakit uninstall                 # selectable on its own
 ```
@@ -93,14 +93,14 @@ exakit uninstall                 # selectable on its own
 | Symptom | Do |
 |---|---|
 | The add-on is not offered at all | it is already installed, or not applicable on this machine — check `exakit marketplace` output for the reason |
-| Ingest errors | `exakit logs json-tables`, then `exakit update json-tables` to repair |
+| Ingest errors | `exakit logs json-tables`, then `exakit update` to repair |
 | `exasol-json-tables: command not found` | it is not installed — `EXAKIT_MARKETPLACE_ADDONS=json-tables exakit marketplace` |
 | A JSON load did nothing | the prompt was answered `none`, or the run had no TTY and no `EXAKIT_MARKETPLACE_ADDONS` |
 
 ## Guardrails
 
 - **Never tell the user to install Rust** to make this work. If ingest fails,
-  the fix is `exakit update json-tables`, not a toolchain.
+  the fix is `exakit update`, not a toolchain.
 - **Do not bypass the kit's launcher** to run the upstream CLI directly — the
   `cargo` shim it sets up is what lets the CLI find the prebuilt engine.
 - **Loading data writes to the database.** Confirm the target schema and table
