@@ -1408,15 +1408,19 @@ exakit_load_local_folder() {
     done
     _blf_schema="$(printf '%s' "$_blf_schema" | tr '[:lower:]' '[:upper:]')"
 
+    # No confirmation. The reader has already answered twice -- the folder, then
+    # the schema -- and the plan printed above is what those two answers produced.
+    # A third question asking whether they meant it turns a two-answer job into a
+    # three-answer one and adds nothing: `back` at either prompt is the way out,
+    # and nothing is written until the loading starts.
     exakit_bulk_print_plan "$_blf_plan" "$_blf_chosen" "$_blf_schema" "$_blf_dir"
-    confirm_env EXAKIT_BULK_CONFIRM "Load $(exakit_plural "$_blf_n" file) from $(ui_tilde "$_blf_dir") into $_blf_schema?" y || {
-        info "Nothing was loaded."
-        return 2
-    }
 
-    exakit_ensure_schema "$_blf_schema"
+    # Quiet BEFORE the schema call, not after: creating the schema is plumbing
+    # this job needs, not a step the reader is following, and it was the one line
+    # of it that escaped onto the screen.
     EXAKIT_UPLOAD_QUIET=1
     export EXAKIT_UPLOAD_QUIET
+    exakit_ensure_schema "$_blf_schema"
     # Weighted by BYTES, like a bundled dataset: a folder is usually one big
     # export and a handful of small ones, and counting files would put the bar
     # at 90% while the only file that matters is still going.
