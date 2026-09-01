@@ -2234,11 +2234,12 @@ function Request-ExakitDataLoadOffer {
         return
     }
 
+    # No lead-in sentence: the checkbox below names every dataset on offer and
+    # the skip, which is the whole of what this line was explaining.
     # Dynamic dataset checkbox (shared with `exakit data-load`): only bundled
     # datasets that are not loaded yet are offered, pre-selected, plus the
     # local-file option and an explicit skip. Non-interactive installs keep
     # the pre-selected defaults.
-    Info "The database is ready for data. Loading data now lets MCP validate against real tables."
     $chosen = Select-ExakitDataLoad -FinalLabel "Skip"
     if ($chosen -contains "none") {
         Info "Skipping data loading. Run it any time with: exakit data-load"
