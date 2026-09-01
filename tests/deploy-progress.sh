@@ -89,7 +89,7 @@ LAUNCHER_LINES="$(wc -l < "$WORK/launcher.txt" | tr -d ' ')"
 printf '\n== the launcher stream is consumed, not printed ==\n'
 
 STATE="$WORK/state"; TAIL="$WORK/tail"; NOTICE="$WORK/notice"
-printf '0|5|3|0|Preparing the deployment\n' > "$STATE"
+printf '0|5|3|0|Preparing to deploy\n' > "$STATE"
 : > "$TAIL"; : > "$NOTICE"
 # EXAKIT_DEPLOY_LIVE=1 is the animated case: the collector must print NOTHING,
 # because the animator owns the screen.
@@ -115,7 +115,7 @@ check "with the final phase"  "Deployed" "$(cut -d'|' -f5 "$STATE")"
 
 # Out-of-order and repeated milestones must not rewind the bar: a launcher that
 # retries a stage would otherwise walk the percentage backwards on screen.
-printf '0|5|3|0|Preparing the deployment\n' > "$STATE"
+printf '0|5|3|0|Preparing to deploy\n' > "$STATE"
 : > "$TAIL"; : > "$NOTICE"
 printf '%s\n' \
     '{"msg":"validating presets"}' \
@@ -128,7 +128,7 @@ check "...keeping its phase"          "Getting Exasol ready" "$(cut -d'|' -f5 "$
 
 printf '\n== unknown output is harmless ==\n'
 
-printf '10|20|2|0|Preparing the deployment\n' > "$STATE"
+printf '10|20|2|0|Preparing to deploy\n' > "$STATE"
 : > "$TAIL"; : > "$NOTICE"
 NOISE="$(printf '%s\n' 'a line no launcher release ever wrote' '{"msg":"brand new message"}' \
     | _personal_deploy_collect "$STATE" "$TAIL" "$NOTICE")"
@@ -137,11 +137,11 @@ check "unknown lines do not move the bar" "10" "$(cut -d'|' -f1 "$STATE")"
 
 printf '\n== without an animation, each phase gets one plain line ==\n'
 
-printf '0|5|3|0|Preparing the deployment\n' > "$STATE"
+printf '0|5|3|0|Preparing to deploy\n' > "$STATE"
 : > "$TAIL"; : > "$NOTICE"
 EXAKIT_DEPLOY_LIVE=0
 PLAIN="$(_personal_deploy_collect "$STATE" "$TAIL" "$NOTICE" < "$WORK/launcher.txt")"
-has "phase: preparing"  "Preparing the deployment"          "$PLAIN"
+has "phase: preparing"  "Preparing to deploy"          "$PLAIN"
 has "phase: getting ready" "Getting Exasol ready" "$PLAIN"
 # The label has to hold for BOTH launcher messages this arm matches. It said
 # "Fetching the Exasol runtime" for a cache hit too, where nothing is fetched
@@ -151,13 +151,13 @@ check "the cached path says the same" "Getting Exasol ready" \
 check "and so does the download path" "Getting Exasol ready" \
     "$(_personal_deploy_milestone 'fetching resource abc' | cut -d'|' -f4)"
 lacks "nothing still says 'runtime' at the reader" "Fetching the Exasol runtime" "$PLAIN"
-has "phase: waiting"    "Waiting for the database" "$PLAIN"
+has "phase: waiting"    "Waiting for Exasol" "$PLAIN"
 has "phase: finishing"  "Finishing up"                      "$PLAIN"
 has "phase: deployed"   "Deployed"                          "$PLAIN"
 lacks "still no JSON" '"level":"INFO"' "$PLAIN"
-# "Preparing the deployment" is three milestones; it must be said once.
+# "Preparing to deploy" is three milestones; it must be said once.
 check "a repeated phase is said once" "1" \
-    "$(printf '%s\n' "$PLAIN" | grep -c 'Preparing the deployment')"
+    "$(printf '%s\n' "$PLAIN" | grep -c 'Preparing to deploy')"
 
 printf '\n== the EULA notice survives the stream being hidden ==\n'
 
@@ -197,9 +197,9 @@ check "nor does a zero-length segment"     "65"  "$(ui_progress_creep 65 65 10 5
 printf '\n== the progress line carries a bar, a percentage and a clock ==\n'
 
 UI_SPIN_FRAMES=(a b c d e f g h i j)
-BAR="$(ui_progress_line 65 "Waiting for the database" 42 0 100)"
+BAR="$(ui_progress_line 65 "Waiting for Exasol" 42 0 100)"
 has "percentage rendered" "65%" "$BAR"
-has "phase rendered" "Waiting for the database" "$BAR"
+has "phase rendered" "Waiting for Exasol" "$BAR"
 has "elapsed rendered" "(42s)" "$BAR"
 has "bar is filled" "$UI_BAR_FULL" "$BAR"
 has "bar has a remainder" "$UI_BAR_EMPTY" "$BAR"
@@ -261,6 +261,30 @@ has "so is the phase"            "installing"  "$(cut -d'|' -f5 "$ADDON_STATE")"
 _exakit_addon_progress "$ADDON_STATE" dash-server 65 90 8 "validating"
 check "validating starts at 65"  "65" "$(cut -d'|' -f1 "$ADDON_STATE")"
 has "...and says so"             "validating" "$(cut -d'|' -f5 "$ADDON_STATE")"
+
+# Every phase must fit the cell it is drawn in. The phase gets 30% of the
+# progress line, which is 21 columns on an 80-column terminal -- the narrowest
+# the line supports -- so a longer phase is ellipsed for anyone not running a
+# wide window. This has gone wrong twice: once when a phase was reworded to be
+# accurate on both the download and cache-hit paths and grew to 33 characters,
+# and once before that. Measuring the strings is cheaper than noticing on screen.
+echo
+echo "== every phase fits the 21-column cell =="
+PHASE_SRC="$ROOT/setup/lib/runtime-personal.sh"
+LONGEST=0
+for _p in $(grep -ohE "printf '[0-9]+\|[0-9]+\|[0-9]+\|[^']+'" "$PHASE_SRC" \
+            | sed "s/.*|//;s/'$//" | tr ' ' '_' | sort -u); do
+    _phase="$(printf '%s' "$_p" | tr '_' ' ')"
+    _len=${#_phase}
+    [ "$_len" -gt "$LONGEST" ] && LONGEST=$_len
+    if [ "$_len" -le 21 ]; then
+        PASS=$((PASS + 1)); printf '  ok   %-28s fits (%d)\n' "$_phase" "$_len"
+    else
+        FAIL=$((FAIL + 1))
+        printf '  FAIL %-28s is %d chars; the cell is 21 at 80 columns\n' "$_phase" "$_len"
+    fi
+done
+check "a phase was actually measured" "yes" "$([ "$LONGEST" -gt 0 ] && echo yes || echo NONE-FOUND)"
 
 printf '\n%s: %d passed, %d failed\n' "$(basename "$0")" "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

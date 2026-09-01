@@ -395,11 +395,16 @@ personal_reap_orphan_daemon() {
 # the work: the bar moves only when the launcher has actually reached the next
 # stage, and the elapsed counter -- which ticks every second whatever the
 # launcher is doing -- is what says "still alive" in between.
+#
+# KEEP EVERY PHASE TO 21 CHARACTERS OR FEWER. The phase gets 30% of the progress
+# line: 21 columns on an 80-column terminal, 27 on a 100, and never more than 33
+# however wide the window is opened. Anything longer is ellipsed -- and a phrase
+# cut mid-word tells the reader less than a shorter one would have said whole.
 _personal_deploy_milestone() {
     case "$1" in
-        *"validating presets"*)                    printf '5|10|2|Preparing the deployment' ;;
-        *"extracting preset files"*)               printf '10|20|2|Preparing the deployment' ;;
-        *"successfully initialized deployment"*)   printf '20|35|5|Preparing the deployment' ;;
+        *"validating presets"*)                    printf '5|10|2|Preparing to deploy' ;;
+        *"extracting preset files"*)               printf '10|20|2|Preparing to deploy' ;;
+        *"successfully initialized deployment"*)   printf '20|35|5|Preparing to deploy' ;;
         # The long one, and the only label that covers two different situations:
         # the launcher emits one of these whether it DOWNLOADED the resource or
         # found it already cached. It said "Fetching the Exasol runtime" for
@@ -414,16 +419,13 @@ _personal_deploy_milestone() {
         # "starting deployment" one, which a warm run never emits. If it DOES
         # emit it, the line below picks the segment up mid-flight.
         #
-        # SHORT, and deliberately. The phase cell is 30% of the line: 21 columns
-        # on an 80-column terminal, 27 on a 100, and never more than 33. The
-        # first wording here ran to 33 characters and so was ellipsed on every
-        # terminal but the very widest -- a truncated phase is worse than the
-        # imprecision it was written to fix.
+        # It is also short, per the budget above: the first wording here ran to
+        # 33 characters and was ellipsed on every terminal but the very widest.
         *"fetching resource"*|*"found resource in cache"*)
                                                    printf '35|65|25|Getting Exasol ready' ;;
         *"starting deployment"*)                   printf '45|65|15|Starting the database' ;;
-        *"waiting for database to start"*)         printf '65|90|10|Waiting for the database' ;;
-        *"installing script language container"*)  printf '80|90|15|Installing script languages' ;;
+        *"waiting for database to start"*)         printf '65|90|10|Waiting for Exasol' ;;
+        *"installing script language container"*)  printf '80|90|15|Installing languages' ;;
         *"no installation steps defined"*)         printf '90|100|4|Finishing up' ;;
         *"Completed deploying"*)                   printf '100|100|0|Deployed' ;;
     esac
@@ -585,7 +587,7 @@ personal_deploy_local() {
     _deploy_tail="$_deploy_tmp/tail"
     _deploy_notice="$_deploy_tmp/notice"
     _deploy_t0="$(date +%s 2>/dev/null || echo 0)"
-    ui_progress_state "$_deploy_state" 0 5 3 "Preparing the deployment"
+    ui_progress_state "$_deploy_state" 0 5 3 "Preparing to deploy"
     : > "$_deploy_tail"
     : > "$_deploy_notice"
 
