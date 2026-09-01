@@ -277,7 +277,7 @@ try {
     # took it away. Only applied when the manifest has no opinion yet, so
     # `exakit autostart off` survives a re-run. Before the offer, so an add-on
     # installed from it joins the boot set.
-    [void](Invoke-ExakitBestEffort -Component "autostart" -Repair "exakit autostart on" `
+    [void](Invoke-ExakitBestEffort -Component "autostart" -Repair "exakit autostart" `
         -Label "automatic start" `
         -Warning "Automatic start could not be turned on." `
         -Body { Enable-ExakitAutostartDefault })

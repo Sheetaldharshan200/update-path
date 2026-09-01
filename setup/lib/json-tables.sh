@@ -623,7 +623,7 @@ json_tables_uninstall() {
     if [ "$_jtu_dry" != "1" ]; then
         manifest_del components.json_tables
         manifest_del desired.json_tables
-        ok "JSON Tables removed — reinstall any time with: exakit marketplace"
+        ok_step "JSON Tables removed — reinstall any time with: exakit marketplace"
     fi
     return 0
 }

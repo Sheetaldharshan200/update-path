@@ -285,7 +285,7 @@ function Uninstall-ExasolVscode {
     }
     Remove-ExakitManifestValue "components.exasol_vscode"
     Remove-ExakitManifestValue "desired.exasol_vscode"
-    Ok "Exasol for VS Code removed - reinstall any time with: exakit marketplace"
+    OkStep "Exasol for VS Code removed - reinstall any time with: exakit marketplace"
     return $true
 }
 

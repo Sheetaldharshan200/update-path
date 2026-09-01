@@ -84,6 +84,11 @@ function Get-ExakitSkillRoots {
     @((Join-Path $HOME ".claude\skills"), (Join-Path $HOME ".agents\skills"))
 }
 function Write-ExakitLog { param($Level, $Message) }
+# The one-line narration the real run wraps itself in. Stubbed rather than
+# driven: this suite asserts what uninstall REMOVES, and an animation in a
+# harness with no console would only get in the way.
+function Start-ExakitSpinner { param([string]$Label) }
+function Stop-ExakitSpinner { }
 
 function Seed {
     if (Test-Path $sandbox) { Remove-Item -Recurse -Force $sandbox }

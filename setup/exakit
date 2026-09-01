@@ -346,7 +346,7 @@ EXAKIT_SJ_PY
     if [ "$_cs_autostart" = "true" ]; then
         ui_panel_line "$(_cs_pad 'Autostart' 'enabled')"
     else
-        ui_panel_line "$(_cs_pad 'Autostart' 'disabled — enable it with: exakit autostart on')"
+        ui_panel_line "$(_cs_pad 'Autostart' 'disabled — change it with: exakit autostart')"
     fi
     # "Kit level" is an internal schema number. It means nothing to the person
     # reading this screen, and `exakit version` carries what they do want.
@@ -622,17 +622,42 @@ cmd_repair_runtime() {
     exec bash "$_rr_kit/$_rr_setup"
 }
 
-# cmd_autostart [on|off] — whether everything the kit runs comes back after a
-# restart. With no argument it reports the current state.
+# cmd_autostart — one command: show where it stands, then offer to flip it.
+#
+# It was three (`on`, `off`, and a bare form that only reported), which made the
+# reader pick the verb before being told what the current state even was -- and
+# the bare form then closed by explaining the other two. Now the answer comes
+# first and the only decision left is yes or no.
+#
+# EXAKIT_AUTOSTART_CHANGE pre-answers it for automation, the same contract every
+# other prompt in the kit uses; without a terminal the default is NO CHANGE, so
+# a scripted run can never silently flip a boot setting.
 cmd_autostart() {
     _require_install
     exakit_init_logging 2>/dev/null || true
-    case "${1:-}" in
-        on|enable)   exakit_autostart_enable ;;
-        off|disable) exakit_autostart_disable ;;
-        ""|status)   exakit_autostart_print ;;
-        *) reject "Unknown option '$1' for autostart (use: on, off, or no argument to show the state)." ;;
-    esac
+    [ "$#" -eq 0 ] || \
+        reject "autostart takes no arguments — run 'exakit autostart' and answer the question."
+
+    exakit_autostart_print
+
+    _as_total=0
+    _as_on=0
+    for _as_id in $(exakit_service_ids); do
+        _as_total=$(( _as_total + 1 ))
+        if _exakit_autostart_registered "$_as_id"; then _as_on=$(( _as_on + 1 )); fi
+    done
+    [ "$_as_total" -gt 0 ] || return 0
+
+    # "Everything is on" is the only state that offers to turn things off;
+    # anything else -- none of it, or some of it -- offers to turn it all on,
+    # because a partly-registered set is the one a reader wants made whole.
+    if [ "$_as_on" -eq "$_as_total" ]; then
+        confirm_env EXAKIT_AUTOSTART_CHANGE "Turn it off?" n || return 0
+        exakit_autostart_disable
+    else
+        confirm_env EXAKIT_AUTOSTART_CHANGE "Turn it on?" n || return 0
+        exakit_autostart_enable
+    fi
 }
 
 cmd_uninstall() {
@@ -1181,7 +1206,7 @@ case "${1:-help}" in
     start)    _with_notice cmd_start ;;
     stop)     _with_notice cmd_stop ;;
     repair-runtime) shift; cmd_repair_runtime "$@" ;;
-    autostart) shift; _with_notice cmd_autostart "${1:-}" ;;
+    autostart) shift; _with_notice cmd_autostart "$@" ;;
     data-load) shift; _with_notice cmd_data_load "${1:-}" ;;
     mcp-setup) _with_notice cmd_mcp_setup ;;
     mcp-doctor) shift; _with_notice cmd_mcp_doctor "$@" ;;

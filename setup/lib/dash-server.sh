@@ -764,7 +764,7 @@ dash_server_uninstall() {
     if [ "$_dsu_dry" != "1" ]; then
         manifest_del components.dash_server
         manifest_del desired.dash_server
-        ok "dash-server removed — reinstall any time with: exakit marketplace"
+        ok_step "dash-server removed — reinstall any time with: exakit marketplace"
     fi
     return 0
 }

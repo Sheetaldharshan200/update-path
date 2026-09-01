@@ -3,7 +3,7 @@
   "id": "exakit",
   "kind": "cli",
   "title": "exakit",
-  "tagline": "The one command that runs your local Exasol stack.",
+  "tagline": "Your local Exasol database and everything that talks to it.",
   "repo": "krishna-exasol/update-path",
   "docs": "https://github.com/krishna-exasol/update-path#readme",
   "state_dir": "~/.exasol-starter-kit",
@@ -134,12 +134,11 @@
     },
     {
       "command": "autostart",
-      "options": "[on|off]",
+      "options": "",
       "summary": "Come back automatically after a restart?",
-      "description": "Whether the database and add-on services restart at login: launchd on macOS, systemd --user on Linux, the container restart policy for Nano, a Startup entry on Windows. No argument shows the current state.",
+      "description": "Shows whether the kit's services start at login, then offers to change it.",
       "examples": [
-        "exakit autostart",
-        "exakit autostart on"
+        "exakit autostart"
       ]
     },
     {
