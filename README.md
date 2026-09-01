@@ -218,7 +218,6 @@ releases work with each other".
 ```bash
 exakit version         # what is installed vs what is available, and why
 exakit update          # apply everything that is waiting; it asks before it stops the database
-exakit update runtime  # the database itself, on its own — stops it briefly, keeps your data
 ```
 
 `exakit update` applies the quick components (kit scripts, exapump, MCP server,
