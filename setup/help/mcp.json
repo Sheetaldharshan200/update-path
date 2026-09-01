@@ -63,30 +63,6 @@
       ]
     },
     {
-      "command": "exakit mcp-validate",
-      "options": "[clients]",
-      "summary": "Validate configs and test connectivity.",
-      "examples": [
-        "exakit mcp-validate"
-      ]
-    },
-    {
-      "command": "exakit mcp-remove",
-      "options": "[clients]",
-      "summary": "Remove the managed config.",
-      "examples": [
-        "exakit mcp-remove"
-      ]
-    },
-    {
-      "command": "exakit mcp-restore",
-      "options": "[snapshot]",
-      "summary": "Restore a config snapshot.",
-      "examples": [
-        "exakit mcp-restore"
-      ]
-    },
-    {
       "command": "exasol-mcp-server",
       "options": "uvx exasol-mcp-server@<ver>",
       "summary": "The server itself, over stdio.",

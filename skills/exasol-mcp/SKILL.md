@@ -15,10 +15,7 @@ gives you diagnostics for when it drifts.
 exakit mcp-setup              # configure MCP in supported clients (the main one)
 exakit mcp-doctor             # diagnose problems; --json for raw per-client results
 exakit mcp-status [clients]   # managed MCP state for every supported client
-exakit mcp-validate [clients] # validate configs and test connectivity
 exakit mcp-doctor [clients]   # check the configured clients and repair what drifted
-exakit mcp-remove [clients]   # remove the managed config
-exakit mcp-restore [snapshot] # restore the latest (or a chosen) config snapshot
 ```
 
 Start with `mcp-doctor`. It checks the **database is running first**, so a
@@ -113,8 +110,8 @@ In this order:
    applies to you: your own MCP tools appear only after your process restarts.
    Use `exakit sql` in the meantime.
 4. **Has the config drifted?** `exakit mcp-doctor` puts it back to the
-   known-good state. `exakit mcp-restore` recovers from a snapshot if a repair
-   is not enough.
+   known-good state; it repairs what it finds, so there is nothing else to
+   reach for.
 5. Still stuck → `exakit logs`, then re-run the installer (safe and resumable).
 
 For scripted checks, `exakit mcp-doctor --json` prints the raw per-client

@@ -2707,7 +2707,7 @@ function Set-ExakitReadonlyAllowlist {
     # trust model.
     $readonly = @(
         "status", "info", "version", "mcp-doctor", "logs", "catalog", "preflight",
-        "guide", "mcp-status", "mcp-validate", "help"
+        "guide", "mcp-status", "help"
     )
     # EVERY SPELLING THE AGENT IS TOLD TO USE. A permission rule matches the
     # command text, and AGENTS.md tells agents in as many words that
