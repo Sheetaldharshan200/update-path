@@ -197,13 +197,19 @@ ok() {
 ok_step() {
     _oks_prev="${EXAKIT_QUIET_DETAIL:-0}"
     EXAKIT_QUIET_DETAIL=0
+    # The step these survive is usually a SPINNER, which owns its line -- so the
+    # line has to be given back before printing or the outcome lands inside it.
+    ui_spin_pause
     ok "$@"
+    ui_spin_resume
     EXAKIT_QUIET_DETAIL="$_oks_prev"
 }
 info_step() {
     _ifs_prev="${EXAKIT_QUIET_DETAIL:-0}"
     EXAKIT_QUIET_DETAIL=0
+    ui_spin_pause
     info "$@"
+    ui_spin_resume
     EXAKIT_QUIET_DETAIL="$_ifs_prev"
 }
 # heading <text> — a green ▸ at the STEP indent (two spaces).

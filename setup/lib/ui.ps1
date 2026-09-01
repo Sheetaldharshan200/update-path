@@ -309,6 +309,40 @@ function Stop-ExakitSpinner {
     try { [Console]::Write("`r$($script:UiEsc)[K$($script:UiEsc)[?25h") } catch { }  # clear line, restore cursor
 }
 
+# Suspend-ExakitSpinner / Resume-ExakitSpinner - print a line without losing the
+# spinner. Twins of ui_spin_pause / ui_spin_resume in ui.sh.
+#
+# A spinner OWNS its line and rewrites it every 90ms, so anything printed while
+# it runs lands in the middle of that line rather than on a row of its own. The
+# uninstall showed it plainly: three add-on outcomes appended themselves to
+# "Removing the kit (4s)" instead of standing under it.
+#
+# Resuming restores the ORIGINAL start time, so the elapsed counter carries on
+# instead of restarting at (0s) every time something prints. The runspace reads
+# Label and T0 out of the synchronized hashtable while it runs, so putting T0
+# back after the restart is enough. Only the owner pauses, and only when nothing
+# else holds a reference -- a nested caller is not this one's to stop.
+$script:UiSpinPaused = $false
+$script:UiSpinPausedLabel = ""
+$script:UiSpinPausedT0 = $null
+function Suspend-ExakitSpinner {
+    $script:UiSpinPaused = $false
+    if ($script:UiSpinNested -gt 0) { return }
+    if ($null -eq $script:UiSpinFlag) { return }
+    $script:UiSpinPausedLabel = [string]$script:UiSpinFlag.Label
+    $script:UiSpinPausedT0 = $script:UiSpinFlag.T0
+    $script:UiSpinPaused = $true
+    Stop-ExakitSpinner
+}
+function Resume-ExakitSpinner {
+    if (-not $script:UiSpinPaused) { return }
+    $script:UiSpinPaused = $false
+    Start-ExakitSpinner $script:UiSpinPausedLabel
+    if ($null -ne $script:UiSpinFlag -and $null -ne $script:UiSpinPausedT0) {
+        try { $script:UiSpinFlag.T0 = $script:UiSpinPausedT0 } catch { }
+    }
+}
+
 function Restore-ExakitCursor { if ($script:UiFancy) { try { [Console]::Write("$($script:UiEsc)[?25h") } catch { } } }
 
 # --- progress bar (determinate) ---------------------------------------------

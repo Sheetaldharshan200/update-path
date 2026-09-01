@@ -291,7 +291,10 @@ ui_spin_begin() {
     [ -t 1 ] || return 0
     _UI_SPIN_OWNER="$$"
     _UI_STEP_LABEL="$1"
-    _UI_STEP_T0="$(date +%s 2>/dev/null || echo 0)"
+    # $2 is an ORIGINAL start time, passed only by ui_spin_resume: a spinner that
+    # was paused so a line could be printed under it has to carry on counting
+    # from where it was, not restart at (0s) every time something prints.
+    _UI_STEP_T0="${2:-$(date +%s 2>/dev/null || echo 0)}"
     printf '\033[?25l'                          # hide cursor
     (
         _i=0
@@ -323,6 +326,34 @@ ui_spin_end() {
         return 0
     fi
     _ui_step_stop_spinner
+}
+
+# ui_spin_pause / ui_spin_resume — print a line without losing the spinner.
+#
+# A spinner OWNS its line and rewrites it every 80ms, so anything printed while
+# it runs lands in the middle of that line rather than on a row of its own. The
+# uninstall showed it plainly: three add-on outcomes appended themselves to
+# "Removing the kit (4s)" instead of standing under it.
+#
+# Pausing stops the animation and clears the line; resuming restarts it with the
+# same label AND the same start time, so the elapsed counter carries on. Only
+# the shell that owns the animation may pause it, and only when nothing else
+# holds a reference -- a nested caller is not this one's to stop.
+_UI_SPIN_PAUSED=0
+ui_spin_pause() {
+    _UI_SPIN_PAUSED=0
+    [ -n "${_UI_SPIN_PID:-}" ] || return 0
+    [ "${_UI_SPIN_OWNER:-}" = "$$" ] || return 0
+    [ "${_UI_SPIN_NESTED:-0}" -eq 0 ] || return 0
+    _UI_SPIN_PAUSED=1
+    _UI_SPIN_PAUSE_LABEL="$_UI_STEP_LABEL"
+    _UI_SPIN_PAUSE_T0="$_UI_STEP_T0"
+    _ui_step_stop_spinner
+}
+ui_spin_resume() {
+    [ "${_UI_SPIN_PAUSED:-0}" = 1 ] || return 0
+    _UI_SPIN_PAUSED=0
+    ui_spin_begin "$_UI_SPIN_PAUSE_LABEL" "$_UI_SPIN_PAUSE_T0"
 }
 
 # ui_step_start <label> — begin a visible step: an animated spinner in fancy

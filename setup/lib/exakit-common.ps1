@@ -231,13 +231,19 @@ function Ok([string]$Msg) {
 function OkStep([string]$Msg) {
     $prev = $script:ExakitQuietDetail
     $script:ExakitQuietDetail = $false
+    # The step these survive is usually a SPINNER, which owns its line -- so the
+    # line has to be given back before printing or the outcome lands inside it.
+    Suspend-ExakitSpinner
     Ok $Msg
+    Resume-ExakitSpinner
     $script:ExakitQuietDetail = $prev
 }
 function InfoStep([string]$Msg) {
     $prev = $script:ExakitQuietDetail
     $script:ExakitQuietDetail = $false
+    Suspend-ExakitSpinner
     Info $Msg
+    Resume-ExakitSpinner
     $script:ExakitQuietDetail = $prev
 }
 # Write-ExakitHeading <text> - a green arrow at the STEP indent (two spaces).
