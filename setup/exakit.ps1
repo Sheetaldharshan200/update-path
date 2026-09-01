@@ -823,8 +823,11 @@ function Show-ExakitUninstallMenu {
     # one of them leaves a kit that looks installed and does not work. The two
     # honest choices for the core are keep it (Skip) or remove it (EVERYTHING).
     # Add-ons are optional by construction and nothing depends on them, so they
-    # are the only individually selectable rows. A single component can still be
-    # removed by name -- exakit uninstall mcp_configs -- as the hint below says.
+    # are the only individually selectable rows. There is no by-name form: this
+    # menu is the whole interface. The hint that used to sit under it named a
+    # syntax neither side accepts -- and where the shell at least answered
+    # "Unknown option", this dispatch tests only for flags, so a component name
+    # was silently ignored and the menu opened as if nothing had been typed.
 
     # Kit-managed add-ons, each removable on its own (registry-driven).
     $addons = @(Get-ExakitMarketplaceInstalledAddons)
@@ -848,7 +851,6 @@ function Show-ExakitUninstallMenu {
     $everyIdx = $labels.Count
 
     Write-Host ""
-    Write-Host "    One component on purpose: exakit uninstall <database|mcp_configs|skills|exapump|pyexasol>" -ForegroundColor DarkGray
 
     # EVERYTHING is a MASTER toggle over every row above it: picking it ticks
     # them all, and unticking any single row releases it - so the screen can
