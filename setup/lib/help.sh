@@ -506,11 +506,22 @@ def render_catalog(search):
         tools.insert(0, "exakit")
     for tool in tools:
         section(tool)
-        for row in grouped[tool]:
-            cmd_line("", row["command"], row["options"], row["description"], pad=26)
+        entries = grouped[tool]
+        # NAME AND PURPOSE ONLY, sorted, with the column sized to this section.
+        #
+        # The option syntax used to ride along in the label, and a third of the
+        # rows were then too long for a fixed 26-column gutter -- so they broke
+        # onto a second line and the descriptions stopped lining up. A catalog
+        # is for scanning down; a ragged one is the one thing it must not be.
+        # The full signature is one command away (`exakit help <component>`),
+        # and SEARCH still matches on the option text -- only the display drops
+        # it. Sorted because the rows arrive in help-document order, which put
+        # `update dash-server` between `logs` and `version`.
+        pad = max([len(r["command"]) for r in entries] + [12])
+        pad = min(pad, 30)
+        for row in sorted(entries, key=lambda r: r["command"]):
+            cmd_line("", row["command"], "", row["description"], pad=pad)
     out()
-    para("Tip: exakit catalog <search>, or exakit <component> --help for the full page.",
-         indent="  %s" % DIM)
     if color:
         sys.stdout.write(R)
     out()

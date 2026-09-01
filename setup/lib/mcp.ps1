@@ -921,20 +921,29 @@ function Show-McpOperationSummary {
                 $r.Note = $short
             }
         }
+        # The kit's own panel, not hand-drawn dashes: Start-ExakitPanel owns the
+        # glyphs, so this screen matches every other box and degrades to ASCII on
+        # a plain console with nothing here spelling a border character.
+        #
+        # Only the clients that ARE configured. Rows of "not installed" answered
+        # what this machine does not have, which is not what a status screen is
+        # for; `exakit mcp-setup` is where the full roster belongs, because there
+        # the list IS the choice.
+        # Twin of the same block in exakit_print_mcp_operation_summary.
         Write-Host ""
-        Write-Host "  MCP clients"
-        Write-Host ("  " + ("-" * 74))
-        Write-Host ("  " + "Client".PadRight($width) + "  " + "State".PadRight($stateW) + "  Config")
+        Start-ExakitPanel "MCP clients"
+        Write-ExakitPanelLine ("Client".PadRight($width) + "  " + "State".PadRight($stateW) + "  Config")
+        $shown = 0
         foreach ($r in $rows) {
-            Write-Host (("  " + $r.Name.PadRight($width) + "  " + $r.State.PadRight($stateW) + "  " + $r.Note).TrimEnd())
+            if ($r.State -ne "configured") { continue }
+            Write-ExakitPanelLine (($r.Name.PadRight($width) + "  " + $r.State.PadRight($stateW) + "  " + $r.Note).TrimEnd())
+            $shown++
         }
+        if ($shown -eq 0) {
+            Write-ExakitPanelLine "Nothing configured yet. Connect a client with: exakit mcp-setup"
+        }
+        Complete-ExakitPanel
         Write-Host ""
-        $configured = @($statusClients | Where-Object { $_.state -eq "configured" }).Count
-        if ($configured -gt 0) {
-            Write-Host "  Not working? Check it end to end with: exakit mcp-doctor"
-        } else {
-            Write-Host "  Nothing configured yet. Connect a client with: exakit mcp-setup"
-        }
         return
     }
 
@@ -1304,8 +1313,20 @@ function Invoke-McpOperation {
         }
         return $ok
     }
+    # Quieted BEFORE the Info, or the line prints and the spinner then says the
+    # same thing underneath it. On a console the animation is the narration and
+    # the logfile keeps the record; redirected there is no spinner, so the line
+    # stays and nothing is lost.
+    $mcpPrevQuiet = $script:ExakitQuietDetail
+    if ($script:UiFancy) { $script:ExakitQuietDetail = $true }
     Info "Running MCP $Operation"
-    $resultJson = Invoke-McpOperationCli -Operation $Operation -Clients $clients
+    Start-ExakitSpinner "Running MCP $Operation"
+    try {
+        $resultJson = Invoke-McpOperationCli -Operation $Operation -Clients $clients
+    } finally {
+        Stop-ExakitSpinner
+        $script:ExakitQuietDetail = $mcpPrevQuiet
+    }
     if ($resultJson) { Show-McpOperationSummary $resultJson }
     $ok = [bool]$resultJson
     if ($Operation -in @("doctor", "validate")) {

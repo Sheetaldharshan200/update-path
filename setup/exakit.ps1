@@ -552,7 +552,7 @@ function Invoke-CmdRepairRuntime {
     Warn2 "Repairing the runtime REPLACES the database. Its data is not recoverable."
     Info "Bundled datasets are reloaded afterwards; anything you loaded yourself is not."
     if (-not $confirmed) {
-        if (-not (Confirm-ExakitPrompt "Replace the database and rebuild it now?" $false)) {
+        if (-not (Confirm-ExakitPrompt "Delete the database and rebuild it now?" $false)) {
             Fail "Nothing was changed. Re-run with -Yes (or EXAKIT_CONFIRM_RUNTIME_REPAIR=1) when you are ready."
         }
     }
@@ -563,6 +563,11 @@ function Invoke-CmdRepairRuntime {
     Remove-ExakitStepDone "runtime"
     Info "Re-running setup\setup-windows-docker.ps1 to rebuild the database"
     $env:EXAKIT_BANNER_SHOWN = "1"
+    # The deployment step must NOT offer to reuse what is there: its reuse
+    # question defaults to YES, so a repair the user had just confirmed as
+    # destructive answered itself with "keep the existing database".
+    # Twin of the same export in cmd_repair_runtime (setup/exakit).
+    $env:EXAKIT_REUSE_DB = "0"
     & $setup
     exit $LASTEXITCODE
 }
@@ -955,8 +960,9 @@ function Invoke-CmdVersion {
 
     Start-ExakitPanel "Kit"
     Write-ExakitPanelLine ("{0,-14} {1}" -f "Version",   "$(Get-ExakitComponentCurrent 'exakit')")
-    Write-ExakitPanelLine ("{0,-14} {1}" -f "Level",     "$(Get-ExakitManifestValue 'kit_level')")
-    Write-ExakitPanelLine ("{0,-14} {1}" -f "Source",    "$(Get-ExakitManifestValue 'kit.source')")
+    # No "Level" row: an internal schema number, meaningless to the reader.
+    # No "Source" row either: an absolute path to the kit's own copy of itself,
+    # which answers a question nobody asks of a version screen.
     Write-ExakitPanelLine ("{0,-14} {1}" -f "Installed", "$(Format-ExakitLocalTime (Get-ExakitManifestValue 'installed_at'))")
     Complete-ExakitPanel
     Write-Host ""
@@ -2081,7 +2087,6 @@ try {
                 # lives here rather than in Show-ExakitConnectionPanel because the
                 # install ends with that same panel, and someone finishing an
                 # install is not looking for a JSON dump.
-                Write-Host "  Machine-readable: exakit info --json"
                 Write-Host ""
             }
         }

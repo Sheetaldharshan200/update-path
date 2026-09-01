@@ -821,5 +821,32 @@ check "without it, the lookup fails again" "MISSING" \
         _exakit_addon_doc dash-server >/dev/null 2>&1 && printf found || printf MISSING
     ' )"
 
+printf '\n== repair-runtime actually replaces the database ==\n'
+
+# It warns "REPLACES the database. Its data is not recoverable", takes a yes for
+# it, and then re-runs setup -- whose deployment step asks whether to reuse what
+# is already there, defaulting to YES. So the command answered its own second
+# question with "keep it", reported "Reusing the existing Exasol deployment",
+# and repaired nothing. On WSL and Windows there was not even a question:
+# nano_install adopts a running container outright.
+#
+# EXAKIT_REUSE_DB=0 is what makes the deployment step replace instead of adopt,
+# and every runtime has to honour it or the command lies on that platform.
+EXAKIT_SH="$(cat "$ROOT/setup/exakit")"
+has "repair-runtime forces a fresh deployment" 'export EXAKIT_REUSE_DB=0' "$EXAKIT_SH"
+has "...and the Windows twin does too" '$env:EXAKIT_REUSE_DB = "0"' "$(cat "$ROOT/setup/exakit.ps1")"
+# Honoured by BOTH runtimes: the macOS one asks and takes the flag as the
+# answer, the Nano one has no question at all and must be told outright.
+has "the personal runtime honours it" 'confirm_env EXAKIT_REUSE_DB' \
+    "$(cat "$ROOT/setup/lib/runtime-personal.sh")"
+has "the nano runtime honours it too" '[ "${EXAKIT_REUSE_DB:-1}" = "0" ] && nano_container_exists' \
+    "$(cat "$ROOT/setup/lib/runtime-nano.sh")"
+has "...and its twin"                 '$env:EXAKIT_REUSE_DB -eq "0" -and (Test-NanoContainerExists)' \
+    "$(cat "$ROOT/setup/lib/nano.ps1")"
+# The data volume goes with the container, or the rebuild wraps the same
+# database the repair was called to destroy.
+has "nano drops the data volume as well" 'volume" "rm' "$(cat "$ROOT/setup/lib/nano.ps1")"
+has "...on the shell side too" 'volume rm "$EXAKIT_NANO_VOLUME"' "$(cat "$ROOT/setup/lib/runtime-nano.sh")"
+
 echo "passed: $PASS, failed: $FAIL"
 [ "$FAIL" -eq 0 ]

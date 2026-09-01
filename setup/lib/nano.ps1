@@ -528,6 +528,27 @@ function Install-Nano {
     $engine = Get-NanoEngine
     $image = Get-NanoImageRef
 
+    # EXAKIT_REUSE_DB=0 means REPLACE, not adopt.
+    #
+    # `exakit repair-runtime` sets it, having just told the user the data is not
+    # recoverable and taken a yes for it. Without this the two early returns
+    # below adopt the very container that repair promised to rebuild, report
+    # "already running and healthy", and the command repairs nothing.
+    #
+    # The volume goes with the container: it holds /exa, so leaving it would
+    # rebuild around the same database. Order matters - the engine refuses to
+    # remove a volume a container still uses.
+    # Twin of the same block in nano_install (runtime-nano.sh).
+    if ($env:EXAKIT_REUSE_DB -eq "0" -and (Test-NanoContainerExists)) {
+        Info "Replacing the existing Nano container and its data"
+        if ((Invoke-ExakitLogged $engine "rm" "-f" $script:NanoContainer) -ne 0) {
+            Warn2 "Could not remove the existing Nano container; the rebuild may adopt it."
+        }
+        if ((Invoke-ExakitLogged $engine "volume" "rm" $script:NanoVolume) -ne 0) {
+            Warn2 "Could not remove the existing Nano data volume; the rebuild may reuse its data."
+        }
+    }
+
     if ((Test-NanoContainerRunning) -and (Test-NanoReadyInLogs)) {
         Ok "Nano container already running and healthy"
         Set-NanoManifest

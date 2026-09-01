@@ -258,6 +258,32 @@ for _dir in "$ROOT"/skills/*/; do
     has "skills/README.md lists $_id" "$_id" "$README"
 done
 
+printf '\n== the skills panel says the same three things on both platforms ==\n'
+
+# The stale branch existed only in the shell. On Windows a kit update that left
+# the installed copies behind said NOTHING: the skills read "installed", which
+# was true and useless, and the reader had no way to know the kit had moved
+# underneath them. It matters more now that the skill set has a version that
+# actually changes -- it moved to 1.3.0 in the same round this was found.
+SH_COMMON="$(cat "$ROOT/setup/lib/common.sh")"
+has "the shell detects a stale skill set" \
+    'ui_panel_line "Installed from skill set $_skl_have; this kit carries $_skl_want."' "$SH_COMMON"
+has "...and the twin does too" \
+    'Write-ExakitPanelLine "Installed from skill set $skillsHave; this kit carries $skillsWant."' "$PS_COMMON"
+has "the shell offers the refresh"  'ui_panel_line "Refresh them:  exakit skills-install"' "$SH_COMMON"
+has "...and so does the twin"       'Write-ExakitPanelLine "Refresh them:  exakit skills-install"' "$PS_COMMON"
+# Both read the same two values to decide, or they can disagree about staleness.
+has "the shell compares installed against advertised" \
+    'exakit_versions_value components.skills.version' "$SH_COMMON"
+has "...and the twin compares the same pair" \
+    'Get-ExakitVersionsValue -Path "components.skills.version"' "$PS_COMMON"
+# Nothing is said when everything is installed AND current: the panel watches
+# for staleness itself, so telling the reader to watch for it was one more line.
+lacks "the shell offers no command when there is nothing to do" \
+    "All installed. Refresh after a kit update" "$SH_COMMON"
+lacks "...nor does the twin" \
+    "All installed. Refresh after a kit update" "$PS_COMMON"
+
 echo
 printf 'passed: %d, failed: %d\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ] || exit 1
