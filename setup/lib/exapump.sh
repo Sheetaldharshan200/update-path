@@ -500,6 +500,35 @@ exapump_run_sql_file() {
     [ "${EXAKIT_UPLOAD_QUIET:-0}" = 1 ] || ok "${2:-$(basename "$1")} done"
 }
 
+# exakit_upload_failure_reason — why the last upload failed, in one short line.
+#
+# The engine says something genuinely useful and says it in the logfile, where a
+# reader has to go and find it. "could not be loaded (see log)" is the kit
+# refusing to pass on an answer it already has: for a folder of three, one line
+# said nothing and the reason sat four directories away.
+#
+# Only the shapes worth translating are translated; anything else is passed
+# through trimmed, because a slightly long engine message beats no message.
+exakit_upload_failure_reason() {
+    [ -n "${EXAKIT_LOG_FILE:-}" ] || return 1
+    _ufr_line="$(grep -a '^Error: ' "$EXAKIT_LOG_FILE" 2>/dev/null | tail -1)"
+    [ -n "$_ufr_line" ] || return 1
+    _ufr_row="$(printf '%s' "$_ufr_line" | sed -n 's/.*row=\([0-9][0-9]*\).*/\1/p')"
+    case "$_ufr_line" in
+        *"not enclosed field"*)
+            # The commonest CSV fault by far, and the message for it is dense:
+            # a delimiter the parser met outside quotes. A line break inside a
+            # quoted field arrives here too, because the parser ends the row at
+            # the newline and then finds the fragment malformed.
+            printf 'row %s has a line break or an unescaped %s inside a quoted field\n' \
+                "${_ufr_row:-?}" "${EXAKIT_CSV_DELIM_NAME:-comma}" ;;
+        *"ETL-"*)
+            printf '%s\n' "$(printf '%s' "$_ufr_line" | sed -n 's/.*\(ETL-[0-9]*\): *\([^[]*\).*/\1 \2/p' | cut -c1-100)" ;;
+        *)
+            printf '%s\n' "$(printf '%s' "$_ufr_line" | sed 's/^Error: //' | cut -c1-100)" ;;
+    esac
+}
+
 # exapump_upload <file> <schema.table> — load a CSV/Parquet file, logged.
 exapump_upload() {
     [ -s "$1" ] || { warn "Data file missing or empty: $1"; return 1; }
@@ -508,6 +537,14 @@ exapump_upload() {
     # The installer leaves it unset and keeps its step-by-step narration.
     [ "${EXAKIT_UPLOAD_QUIET:-0}" = 1 ] || info "Loading $(basename "$1") into $2"
     if ! run_logged "$(exapump_cli)" upload "$1" --table "$2" -p "$EXAKIT_EXAPUMP_PROFILE"; then
+        # EXAKIT_UPLOAD_SOFT: the caller is loading MANY files, reports each one
+        # itself and carries on. Dying here announced a whole-job failure for one
+        # file out of three -- a red "Upload failed" and a log path, directly
+        # above the caller's own line saying the same thing more calmly. One
+        # unreadable file in a folder is not the job failing.
+        if [ "${EXAKIT_UPLOAD_SOFT:-0}" = 1 ]; then
+            return 1
+        fi
         # The engine's message is in the log; translate the common faults into
         # their remedy before dying, so "Connection refused" arrives WITH
         # "exakit start" instead of leaving the user to map one to the other.
@@ -1408,19 +1445,23 @@ EXAKIT_BULK_WEIGH_EOF
                 _blf_done=$((_blf_done + 1))
                 _blf_done_w=$(( _blf_done_w + _blf_w ))
             else
-                warn "$(basename "$_blf_path") could not be loaded (see log) — the rest of the folder continues."
+                _blf_why="$(exakit_upload_failure_reason 2>/dev/null || true)"
+                warn "$(basename "$_blf_path") not loaded${_blf_why:+ — $_blf_why}"
                 _blf_failed=$((_blf_failed + 1))
             fi
             continue
         fi
-        # exapump_upload dies on failure; the subshell keeps that soft, so one
-        # bad file in forty does not end the job.
-        if ( exapump_upload "$_blf_path" "$_blf_target" ); then
+        # EXAKIT_UPLOAD_SOFT keeps one unreadable file from announcing itself as
+        # a failed job: this loop reports each file and carries on, so the
+        # engine's own "Upload failed" banner would be the same news twice, in a
+        # louder voice than the truth deserves.
+        if ( EXAKIT_UPLOAD_SOFT=1 exapump_upload "$_blf_path" "$_blf_target" ); then
             _exakit_log_file "OK    $(basename "$_blf_path") -> $_blf_target"
             _blf_done=$((_blf_done + 1))
             _blf_done_w=$(( _blf_done_w + _blf_w ))
         else
-            warn "$(basename "$_blf_path") could not be loaded (see log) — the rest of the folder continues."
+            _blf_why="$(exakit_upload_failure_reason 2>/dev/null || true)"
+            warn "$(basename "$_blf_path") not loaded${_blf_why:+ — $_blf_why}"
             _blf_failed=$((_blf_failed + 1))
         fi
     done <<EXAKIT_BULK_LOAD_EOF
@@ -1437,7 +1478,7 @@ EXAKIT_BULK_LOAD_EOF
     manifest_set data.last_load.files "$_blf_done"
 
     if [ "$_blf_failed" -gt 0 ]; then
-        warn "Loaded $_blf_done of $_blf_n file(s) into $_blf_schema; $_blf_failed failed (see log)."
+        warn "Loaded $_blf_done of $_blf_n file(s) into $_blf_schema; $_blf_failed not loaded (reason above, full detail: exakit logs)."
         return 1
     fi
     ok "Loaded $_blf_done file(s) into $_blf_schema"
