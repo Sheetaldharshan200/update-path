@@ -432,6 +432,9 @@ jobs:
       - run: bash tests/bulk-folder-load.sh
       - run: bash tests/dataset-load-progress.sh
       - run: bash tests/install-output-brevity.sh
+      # Resume-path safety: both bugs it guards only appear on a SECOND run
+      # of the installer, which is the run nobody exercises by hand.
+      - run: bash tests/install-resume-safety.sh
       # Needs a real pty: ui_spin_begin re-checks `-t 1` at call time, so the
       # spinner never starts in a captured pipeline and the collision this
       # guards against cannot be reproduced by running the command normally.

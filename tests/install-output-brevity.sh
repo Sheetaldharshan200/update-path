@@ -584,5 +584,39 @@ has "...and on Windows"             'Starting the MCP server and checking it ans
 # until the spinner has been stopped.
 lacks "no warning under a spinner"  'Warn2 "Handshake attempt $attempt failed - retrying"; Start-Sleep' "$MCP_VALIDATE_PS"
 
+printf '\n== the connection panel fits an 80-column terminal ==\n'
+# ui_panel_end sizes to its longest LINE and never consults the terminal width,
+# unlike ui_table_frame and ui_progress_line which both clamp. So the two
+# credential rows decide whether the whole panel fits, and with "stored in " in
+# them it came to 85 -- five past the default width of Terminal.app, where the
+# box breaks. Measured by RENDERING it, because the arithmetic is the thing at
+# issue; a grep for the wording would pass the day a longer path replaces it.
+PANEL_W="$(/bin/bash -c '. '"$ROOT"'/setup/lib/ui.sh; ui_detect >/dev/null 2>&1
+ui_panel_begin "Setup details"
+ui_panel_line "Admin pass:   ~/.exasol-starter-kit/credentials/personal_sys_password"
+ui_panel_line "MCP pass:     ~/.exasol-starter-kit/credentials/mcp_readonly_password"
+ui_panel_end' 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g' | awk '{ if (length($0) > m) m = length($0) } END { print m + 0 }')"
+if [ "${PANEL_W:-0}" -gt 0 ] && [ "$PANEL_W" -le 80 ]; then
+    check "the credential panel fits 80 columns" "$PANEL_W" "$PANEL_W"
+else
+    check "the credential panel fits 80 columns" "<=80" "$PANEL_W"
+fi
+# has/lacks in this suite take a HAYSTACK STRING, not a path: passing a filename
+# makes the check trivially true and it reports green having tested nothing.
+COMMON_SRC="$(cat "$ROOT/setup/lib/common.sh")"
+PSCOMMON_SRC="$(cat "$ROOT/setup/lib/exakit-common.ps1")"
+lacks "no 'stored in' padding the credential rows" 'Admin pass:   stored in' "$COMMON_SRC"
+lacks "...nor on the PowerShell side"              'Admin pass:   stored in' "$PSCOMMON_SRC"
+
+printf '\n== a failed soft step is named the way the reader knows it ==\n'
+# Both the mid-run warning and the closing summary print a LABEL, falling back
+# to the raw component id. exakit_soft_step passed none, so the screen said
+# "mcp did not finish" and then "mcp is not installed" -- an internal key, in a
+# sentence addressed to someone who sees keys nowhere else in the install.
+has "soft_step takes a label"           '_ss_label="$3"' "$COMMON_SRC"
+has "...and warns with it"              'warn "$_ss_label did not finish' "$COMMON_SRC"
+has "...and records it for the summary" 'exakit_take_failure_note)" "$_ss_label"' "$COMMON_SRC"
+lacks "no caller leaves it to the raw id" 'exakit_soft_step mcp "exakit update mcp" _exakit_install_mcp' "$COMMON_SRC"
+
 printf '\n%s: %d passed, %d failed\n' "$(basename "$0")" "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

@@ -5324,6 +5324,26 @@ rollback_discard() {
     EXAKIT_ROLLBACK_FILE=""
 }
 
+# rollback_clear — forget the undo commands registered so far, keeping the stack
+# itself live for the steps still to come.
+#
+# mark_step already does this as a side effect, which is right for a step that
+# COMPLETED: its changes are permanent, and a failure three steps later must not
+# reach back and undo them. A RESUME branch re-does that same work without a
+# mark_step -- the step is already recorded as done, so there is nothing to
+# record -- and the undo commands it registers therefore stay armed for the rest
+# of the run. The database deploy registers `destroy --remove --auto-approve`,
+# so a later die would offer to delete the database and everything loaded into
+# it, under a prompt that calls it "the failed step's changes" when it belongs
+# to a step that finished minutes ago.
+#
+# NOT rollback_discard: that drops the file and leaves the remainder of the run
+# with no rollback at all.
+rollback_clear() {
+    [ -n "$EXAKIT_ROLLBACK_FILE" ] && : > "$EXAKIT_ROLLBACK_FILE"
+    return 0
+}
+
 # begin_step <name> <description> — announce a step; skips if already done AND
 # what it installed is still there. Returns 1 when the step can be skipped
 # (caller should honor it).
@@ -7867,8 +7887,15 @@ EXAKIT_DATA_NOTES_EOF
 # client setup offer. Data is loaded before MCP so the read-only user is
 # provisioned against a populated schema. One implementation so the per-OS
 # setup scripts cannot drift apart.
-# exakit_soft_step <component> <repair-command> <function...> — run one
+# exakit_soft_step <component> <repair-command> <label> <function...> — run one
 # component's install without letting it end the run.
+#
+# <label> is what the reader is shown, in both the mid-run warning and the
+# closing summary. Without it both fell back to the raw component id, so the
+# screen said "mcp did not finish" and then "mcp is not installed" -- an
+# internal key, in a sentence addressed to someone who never sees one anywhere
+# else in the install. The other soft-failure callers already pass a label
+# ("sample data", "AI client (MCP) setup", "AI skills"); this one had no way to.
 #
 # The component installers die() on failure, and die() exits. exapump alone has 32
 # of them, and it runs three steps before the `exakit` command is installed: a
@@ -7882,7 +7909,9 @@ EXAKIT_DATA_NOTES_EOF
 exakit_soft_step() {
     _ss_component="$1"
     _ss_repair="$2"
-    shift 2
+    _ss_label="$3"
+    [ -n "$_ss_label" ] || _ss_label="$_ss_component"
+    shift 3
     # Start from a clean slate so a reason left by an earlier step cannot be
     # attributed to this one.
     exakit_clear_failure_note
@@ -7890,8 +7919,8 @@ exakit_soft_step() {
         exakit_clear_failure_note
         return 0
     fi
-    exakit_record_soft_failure "$_ss_component" "$_ss_repair" "$(exakit_take_failure_note)"
-    warn "$_ss_component did not finish — carrying on so the rest of the install completes"
+    exakit_record_soft_failure "$_ss_component" "$_ss_repair" "$(exakit_take_failure_note)" "$_ss_label"
+    warn "$_ss_label did not finish — carrying on so the rest of the install completes"
     return 1
 }
 
@@ -8303,7 +8332,7 @@ kit_shared_steps() {
 
     if command -v exapump_install >/dev/null 2>&1; then
         if begin_step exapump "Step ${_step_no}/${_total}  exapump (data loading CLI)"; then
-            if exakit_soft_step exapump "exakit update exapump" \
+            if exakit_soft_step exapump "exakit update exapump" "exapump" \
                     _exakit_install_exapump; then
                 mark_step exapump
             fi
@@ -8335,7 +8364,7 @@ kit_shared_steps() {
 
     if command -v mcp_install >/dev/null 2>&1; then
         if begin_step mcp "Step ${_step_no}/${_total}  AI bridge (MCP server, clients and skills)"; then
-            if exakit_soft_step mcp "exakit update mcp" _exakit_install_mcp; then
+            if exakit_soft_step mcp "exakit update mcp" "the MCP server" _exakit_install_mcp; then
                 mark_step mcp
             fi
         fi
@@ -8380,7 +8409,7 @@ kit_shared_steps() {
             # the user is left without the command that fixes everything else. A
             # soft failure explains itself, records validated=false, and leaves
             # the step unmarked so a re-run (or `exakit update pyexasol`) retries.
-            if exakit_soft_step pyexasol "exakit update pyexasol" _exakit_install_pyexasol; then
+            if exakit_soft_step pyexasol "exakit update pyexasol" "pyexasol" _exakit_install_pyexasol; then
                 mark_step pyexasol
             fi
         fi
@@ -8473,15 +8502,19 @@ kit_shared_steps() {
         ok_step "exakit installed ($(ui_tilde "$EXAKIT_BIN_DIR/exakit"))"
     fi
 
-    # The database should be there after a reboot without anyone thinking about
-    # it, the way a system service is. Best-effort, and now reported to the
-    # LOGFILE rather than the screen: the step leaves one line, and the plist
-    # path was never something to act on -- `exakit autostart off` reverses it
-    # and `exakit status` reports it.
-    _eah_prev_quiet="${EXAKIT_QUIET_DETAIL:-0}"
-    [ -t 1 ] && EXAKIT_QUIET_DETAIL=1
-    exakit_autostart_enable || true
-    EXAKIT_QUIET_DETAIL="$_eah_prev_quiet"
+    # Autostart is NOT decided here. It used to be: an unconditional
+    # exakit_autostart_enable, which unconditionally writes
+    # autostart.enabled=true -- so a user who had run `exakit autostart off` got
+    # it switched back on, and the LaunchAgent re-registered, by the mere act of
+    # re-running the installer. Silently, because this sits inside a quiet
+    # bracket.
+    #
+    # exakit_autostart_default_on is the function that exists to get this right,
+    # and its own comment says the recorded answer "must survive every later run
+    # of the installer" -- but it runs AFTER this did, saw the true this wrote,
+    # and returned. It was dead code on this path. The setup scripts call it near
+    # the end of the run, where a fresh install still defaults to on and a
+    # recorded choice is left alone. PowerShell already worked this way.
 
     # The upgrade news (exakit_print_whats_new_box) and the closing summary
     # (exakit_print_soft_failures) are printed by the setup scripts after the
@@ -8566,9 +8599,14 @@ _EXAKIT_CONN_EOF
     ui_panel_line "Runtime:      ${_type:-unknown}"
     ui_panel_line "DSN:          ${_dsn:-unknown}"
     ui_panel_line "Admin user:   ${_user:-sys}"
-    [ -n "$_pwfile" ]    && ui_panel_line "Admin pass:   stored in $(ui_tilde "$_pwfile")"
+    # No "stored in": the path IS the answer, and those two words were what
+    # pushed this panel to 85 columns -- five past the 80-column default of
+    # Terminal.app, where the box then breaks. ui_panel_end sizes to its longest
+    # line and never consults the terminal, unlike the table and the progress
+    # line, so the two longest rows here decide whether the panel fits at all.
+    [ -n "$_pwfile" ]    && ui_panel_line "Admin pass:   $(ui_tilde "$_pwfile")"
     [ -n "$_mcp_user" ]  && ui_panel_line "MCP user:     $_mcp_user"
-    [ -n "$_mcp_pwfile" ] && ui_panel_line "MCP pass:     stored in $(ui_tilde "$_mcp_pwfile")"
+    [ -n "$_mcp_pwfile" ] && ui_panel_line "MCP pass:     $(ui_tilde "$_mcp_pwfile")"
     ui_panel_line "TLS:          enabled (self-signed certificate)"
 
     _exapump="$(manifest_get components.exapump.path 2>/dev/null)"

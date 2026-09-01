@@ -67,6 +67,12 @@ else
     if [ "$(nano_status)" != "running" ]; then
         info "Runtime marked done but not running — starting it"
         nano_install
+        # Same as the macOS resume: nano_install registers `volume rm` as its
+        # undo, and with no mark_step here it would stay armed. Worse than the
+        # macOS case, because that volume is armed whenever the CONTAINER is
+        # missing even if the volume already held data -- so the rollback could
+        # delete data this run never created.
+        rollback_clear
     fi
 fi
 
