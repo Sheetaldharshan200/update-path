@@ -1320,68 +1320,6 @@ exakit_bulk_label() {
     esac
 }
 
-# exakit_bulk_select_formats <plan> — which formats to load.
-#
-# Only asked when the folder actually holds more than one loadable format:
-# with a single format there is nothing to choose, and a menu whose every answer
-# is the same answer is just a keystroke. EXAKIT_DATA_FORMATS pre-answers it for
-# an unattended run, the same way EXAKIT_DATASETS pre-answers the dataset menu.
-# Sets EXAKIT_BULK_FORMATS to a comma-separated list, or "none" to cancel.
-exakit_bulk_select_formats() {
-    _bsl_kinds="$(exakit_bulk_kinds_present "$1")"
-    _bsl_n=0
-    for _bsl_k in $_bsl_kinds; do _bsl_n=$((_bsl_n + 1)); done
-
-    if [ -n "${EXAKIT_DATA_FORMATS:-}" ]; then
-        EXAKIT_BULK_FORMATS=""
-        for _bsl_want in $(printf '%s' "$EXAKIT_DATA_FORMATS" | tr ',' ' ' | tr '[:upper:]' '[:lower:]'); do
-            case "$_bsl_want" in
-                pq) _bsl_want=parquet ;;
-                ndjson|jsonl) _bsl_want=json ;;
-            esac
-            case " $(printf '%s' "$_bsl_kinds" | tr '\n' ' ') " in
-                *" $_bsl_want "*) EXAKIT_BULK_FORMATS="${EXAKIT_BULK_FORMATS:+$EXAKIT_BULK_FORMATS,}$_bsl_want" ;;
-                *) warn "No $(exakit_bulk_label "$_bsl_want") files in this folder (EXAKIT_DATA_FORMATS)." ;;
-            esac
-        done
-        [ -n "$EXAKIT_BULK_FORMATS" ] || EXAKIT_BULK_FORMATS="none"
-        return 0
-    fi
-
-    if [ "$_bsl_n" -le 1 ]; then
-        EXAKIT_BULK_FORMATS="$(printf '%s' "$_bsl_kinds" | tr '\n' ',' | sed 's/,$//')"
-        [ -n "$EXAKIT_BULK_FORMATS" ] || EXAKIT_BULK_FORMATS="none"
-        return 0
-    fi
-
-    _bsl_labels=()
-    _bsl_ids=()
-    _bsl_defaults=""
-    _bsl_i=0
-    for _bsl_k in $_bsl_kinds; do
-        _bsl_i=$((_bsl_i + 1))
-        _bsl_count="$(printf '%s\n' "$1" | grep -c "^load|$_bsl_k|")"
-        _bsl_labels+=("$(exakit_bulk_label "$_bsl_k") ($_bsl_count file$([ "$_bsl_count" = 1 ] || printf 's'))")
-        _bsl_ids+=("$_bsl_k")
-        _bsl_defaults="${_bsl_defaults:+$_bsl_defaults,}$_bsl_i"
-    done
-    _bsl_labels+=("Skip")
-    _bsl_final=$((_bsl_i + 1))
-    EXAKIT_CHECKBOX_EXCLUSIVE="$_bsl_final"
-    ui_checkbox_menu "This folder has more than one format — which do you want to load?" \
-        "$_bsl_defaults" "${_bsl_labels[@]}"
-    case ",$EXAKIT_CHECKBOX_SELECTION," in
-        *",$_bsl_final,"*) EXAKIT_BULK_FORMATS="none"; return 0 ;;
-    esac
-    EXAKIT_BULK_FORMATS=""
-    for _bsl_idx in $(printf '%s' "$EXAKIT_CHECKBOX_SELECTION" | tr ',' ' '); do
-        [ "$_bsl_idx" -ge 1 ] && [ "$_bsl_idx" -lt "$_bsl_final" ] || continue
-        EXAKIT_BULK_FORMATS="${EXAKIT_BULK_FORMATS:+$EXAKIT_BULK_FORMATS,}${_bsl_ids[$((_bsl_idx - 1))]}"
-    done
-    [ -n "$EXAKIT_BULK_FORMATS" ] || EXAKIT_BULK_FORMATS="none"
-    return 0
-}
-
 # exakit_load_local_folder <dir> — load every data file in one folder.
 #
 # The schema is asked once, not once per file: a folder is one job, and its
@@ -1398,18 +1336,12 @@ exakit_load_local_folder() {
         return 1
     fi
 
-    exakit_bulk_select_formats "$_blf_plan"
-    if [ "$EXAKIT_BULK_FORMATS" = "none" ]; then
-        info "Nothing selected — no files were loaded."
-        return 2
-    fi
-    # One grep, not a case inside $( ): bash 3.2 -- the shell every macOS user
-    # runs this with -- mis-parses a case pattern inside a command substitution
-    # and silently returns the script text instead of the output. `bash -n` does
-    # not catch it, because the substitution is only parsed when it expands.
-    # The alternation is built from a fixed set of kinds, never from user input.
-    _blf_re="^load\\|($(printf '%s' "$EXAKIT_BULK_FORMATS" | tr ',' '|'))\\|"
-    _blf_chosen="$(printf '%s\n' "$_blf_plan" | grep -E "$_blf_re" | cut -d'|' -f2-)"
+    # EVERY loadable file, whatever its kind. A folder means "here is my data",
+    # and asking which of CSV, Parquet and JSON to take is asking the reader to
+    # do the sorting the kit exists to do -- for an answer that is almost always
+    # "all of them". Anything unreadable is already listed as skipped with its
+    # reason, so nothing disappears silently by not being asked about.
+    _blf_chosen="$(printf '%s\n' "$_blf_plan" | grep '^load|' | cut -d'|' -f2-)"
     _blf_n="$(printf '%s\n' "$_blf_chosen" | grep -c '.' || true)"
     [ "$_blf_n" -gt 0 ] || { info "Nothing selected — no files were loaded."; return 2; }
 
@@ -2321,6 +2253,7 @@ exakit_data_load_menu() {
     # no explanation. ui_table_detach is what keeps the subshell's exit from
     # taking this shell's animation with it.
     _menu_notes=""
+    _menu_has_local=0
     EXAKIT_DEFER_ERRORS=""
     if [ "$EXAKIT_TABLE_LIVE" = 1 ]; then
         EXAKIT_DEFER_ERRORS="$EXAKIT_TABLE_STATE.fatal"
@@ -2329,14 +2262,10 @@ exakit_data_load_menu() {
     for _menu_id in $(printf '%s' "$EXAKIT_DATA_LOAD_SELECTION" | tr ',' ' '); do
         case "$_menu_id" in
             local)
-                ( ui_table_detach; exakit_load_local_file )
-                _local_status=$?
-                if [ "$_local_status" -eq 2 ]; then
-                    _menu_notes="${_menu_notes}info|Local file load skipped. Run it any time with: exakit data-load
-"
-                elif [ "$_local_status" -ne 0 ]; then
-                    _menu_status="$_local_status"
-                fi
+                # Deferred until the table has closed - see below. Everything
+                # this row does is a QUESTION, and a question cannot be asked
+                # under a frame that is still repainting itself.
+                _menu_has_local=1
                 ;;
             *)
                 _kit_root="$(exakit_repo_root)" || _kit_root=""
@@ -2374,6 +2303,28 @@ exakit_data_load_menu() {
         rm -f "$EXAKIT_DEFER_ERRORS"
     fi
     EXAKIT_DEFER_ERRORS=""
+    # The local file / folder load, now that the box is closed.
+    #
+    # It is the one selection made entirely of QUESTIONS -- the path, then the
+    # schema -- and they were being asked while the selection table was still on
+    # screen as the progress display. A prompt printed into a frame that is
+    # still repainting duplicates its borders and strands it: the folder load
+    # showed "Datasets to load" twice, then a third time after the question.
+    #
+    # Nothing is lost by closing first. This row has no per-file progress to
+    # show in that table anyway: the folder load draws its own one-line bar, and
+    # the datasets above have already finished and been drawn.
+    if [ "$_menu_has_local" = 1 ]; then
+        printf '\n'
+        ( exakit_load_local_file )
+        _local_status=$?
+        if [ "$_local_status" -eq 2 ]; then
+            _menu_notes="${_menu_notes}info|Local file load skipped. Run it any time with: exakit data-load
+"
+        elif [ "$_local_status" -ne 0 ]; then
+            _menu_status="$_local_status"
+        fi
+    fi
     while IFS='|' read -r _mn_kind _mn_text; do
         [ -n "$_mn_text" ] || continue
         case "$_mn_kind" in

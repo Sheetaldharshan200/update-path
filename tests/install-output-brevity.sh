@@ -228,7 +228,9 @@ lacks "no 'Skip for now (no MCP client changes)'" "Skip for now (no MCP client c
 # table's own last row rather than an entry in a label array. Still one word.
 has "the MCP menu opts out with Skip"  'printf '"'"'plain|Skip|0|idle|||||| \n'"'"' >> "$EXAKIT_MCP_TABLE_STATE"' "$COMMON"
 has "...and its twin"                  'Add-ExakitTableRow -Kind "plain" -Label "Skip" -Table $script:McpTable' "$MCP_PS1_ALL"
-has "the bulk-format menu too"         '_bsl_labels+=("Skip")'             "$EXAPUMP_SH"
+# The bulk-format menu is gone entirely, so it has no opt-out to check: a folder
+# is the answer, and every loadable file in it is taken without a question.
+lacks "and the bulk-format menu is gone" '_bsl_labels' "$EXAPUMP_SH"
 
 printf '\n== the closing offer is two words and a question ==\n'
 
