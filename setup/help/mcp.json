@@ -41,7 +41,7 @@
       "command": "exakit mcp-setup",
       "options": "",
       "summary": "Configure MCP in supported AI clients.",
-      "description": "Backs up each config first, then writes the managed entry.",
+      "description": "Backs up each config first, then writes the managed entries: exasol always, plus dash-server when that add-on is installed.",
       "examples": [
         "exakit mcp-setup"
       ]

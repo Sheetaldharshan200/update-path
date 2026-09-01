@@ -77,6 +77,19 @@ class ClientAdapter(ABC):
     def locate(self, environment: ExecutionEnvironment) -> LocationResult:
         raise NotImplementedError
 
+    def locate_for_server(
+        self, environment: ExecutionEnvironment, server_name: str
+    ) -> LocationResult:
+        """Where THIS server's configuration lives for this client.
+
+        Every client but one keeps all of its MCP servers in a single file, so
+        the default ignores the name. Continue is the exception: it loads one
+        block file per server, and a second server written into the first
+        server's file would replace it.
+        """
+        del server_name
+        return self.locate(environment)
+
     @abstractmethod
     def detect(self, environment: ExecutionEnvironment) -> DetectionResult:
         raise NotImplementedError

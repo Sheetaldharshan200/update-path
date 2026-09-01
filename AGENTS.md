@@ -113,7 +113,7 @@ Optional tools live behind `exakit marketplace`, never in the install flow. Inte
 EXAKIT_MARKETPLACE_ADDONS=dash-server exakit marketplace   # ids csv, or all / none
 ```
 
-- **dash-server** — agent-operated Dash hosting: build live dashboards on the local database through its MCP control plane (`http://127.0.0.1:5100/mcp`; start it with `dash-server`).
+- **dash-server** — agent-operated Dash hosting: build live dashboards on the local database through its MCP control plane (`http://127.0.0.1:5100/mcp`; start it with `dash-server`). Once it is installed, `exakit mcp-setup` registers that control plane as an MCP server named `dash-server` for Cursor, Claude Code, GitHub Copilot, Gemini CLI, OpenCode and Continue — Codex and Claude Desktop are reported as skipped, since neither takes a remote server in the shape the kit writes — so after the client restarts you drive it with tools rather than raw HTTP.
 - **exasol-vscode** — the Exasol extension for VS Code (SQL editing and schema browsing); installed into VS Code itself, so a copy the user already has from the VS Code Marketplace is respected and never touched.
 - **json-tables** — ingest, query and reshape JSON-shaped data (`exasol-json-tables ingest --input <file.json>`). `exapump` loads CSV and Parquet only, so `exakit data-load` installs this add-on silently when handed a `.json` file and finishes the load itself — it asks nothing beyond the schema and table every file kind is asked for. Not available on Windows (the ingest engine cannot be wired in there); macOS, Linux and WSL are supported. The ingest engine ships **prebuilt** — never tell a user to install Rust.
 - Once installed, an add-on updates through the normal flow (`exakit update dash-server`, and `exakit update` covers it). Add-ons that were never picked are never touched, and one already on the system outside the kit is respected, not managed.
@@ -145,7 +145,7 @@ exasol-json-tables ingest-and-wrap --input <file.json> --dsn 127.0.0.1:8563 \
 
 The `--json` summary names the source schema it created (`EJT_<NAME>_SRC`). Explore it with read-only SQL; every ingested column is a string, so `CAST(... AS DOUBLE)` numerics before aggregating.
 
-3. **Build the dashboard through dash-server's MCP control plane** — plain JSON-RPC over HTTP to `http://127.0.0.1:5100/mcp` (read the real port from `exakit info`; no MCP client registration or restart is needed):
+3. **Build the dashboard through dash-server's MCP control plane** — plain JSON-RPC over HTTP to `http://127.0.0.1:5100/mcp` (read the real port from `exakit info`). The install just registered this endpoint with your clients as an MCP server named `dash-server`, but a client only reads its server list at startup, so the session that ran the install does not have those tools yet. Inside this run, call the endpoint over HTTP; from the next session, use the registered tools instead:
 
 ```bash
 curl -s -X POST http://127.0.0.1:5100/mcp \
