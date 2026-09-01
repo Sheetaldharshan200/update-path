@@ -247,6 +247,38 @@ mcp_refresh_client_pins() {
     ok "AI client configs now launch ${EXAKIT_MCP_PACKAGE}@${EXAKIT_MCP_VERSION}"
 }
 
+# _exakit_mcp_addon_say <info|warn|ok> <text> - say something that may be
+# happening UNDER A LIVE TABLE.
+#
+# The marketplace paints its add-ons as an animated table: it redraws the frame
+# in place by moving the cursor up by the frame height. A line printed straight
+# to the terminal in the middle of that lands inside the box and throws the
+# cursor arithmetic off, so the frame is stranded exactly where it was -- which
+# is what the registration line did on a real install: dash-server frozen at
+# 14%, the two rows below it never drawn, and the message sitting under a table
+# that had stopped moving.
+#
+# _exakit_addon_note is the mechanism that already exists for this: it holds a
+# line back while the table is live and the apply loop drains it the moment the
+# table stops. ok_step was the wrong tool -- it exists to survive the QUIETING a
+# one-line step turns on, which is a different problem, and surviving the
+# quieting is precisely how it punched through the protection.
+#
+# The fallback keeps this module usable on its own: the exakit CLI sources
+# common.sh, a bare `. mcp.sh` does not, and there is no table in that case
+# anyway.
+_exakit_mcp_addon_say() {
+    if command -v _exakit_addon_note >/dev/null 2>&1; then
+        _exakit_addon_note "$1" "$2"
+        return 0
+    fi
+    case "$1" in
+        warn) warn "$2" ;;
+        ok)   ok "$2" ;;
+        *)    info "$2" ;;
+    esac
+}
+
 # mcp_register_addon_servers <label> - put an installed add-on's MCP endpoint
 # into the clients that are already connected.
 #
@@ -267,7 +299,7 @@ mcp_register_addon_servers() {
     _mras_result="$(mktemp "${TMPDIR:-/tmp}/exakit-mcp-addon.XXXXXX")"
     if ! exakit_run_mcp_addon_cli "$_mras_clients" "$_mras_result"; then
         rm -f "$_mras_result"
-        warn "Could not register the $_mras_label MCP endpoint with your AI clients - run: exakit mcp-setup"
+        _exakit_mcp_addon_say warn "Could not register the $_mras_label MCP endpoint with your AI clients - run: exakit mcp-setup"
         return 1
     fi
     _mras_configured="$(run_python - "$_mras_result" 2>/dev/null <<'PY'
@@ -284,13 +316,13 @@ PY
     )"
     rm -f "$_mras_result"
     if [ -n "$_mras_configured" ]; then
-        ok_step "$_mras_label is registered with your AI clients ($_mras_configured) - restart them to pick it up"
+        _exakit_mcp_addon_say ok "$_mras_label is registered with your AI clients ($_mras_configured) - restart them to pick it up"
         return 0
     fi
     # Every connected client was skipped: the two that cannot express a remote
     # MCP server (Codex, Claude) are the usual reason, and that is a fact about
     # the client, not a failure of this install.
-    info "No connected AI client can take a remote MCP endpoint - drive $_mras_label with: exakit help dash-server"
+    _exakit_mcp_addon_say info "No connected AI client can take a remote MCP endpoint - drive $_mras_label with: exakit help dash-server"
     return 0
 }
 
