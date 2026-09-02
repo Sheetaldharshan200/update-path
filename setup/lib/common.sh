@@ -4007,14 +4007,19 @@ _exakit_marketplace_apply() {
             [ -n "$EXAKIT_ADDON_TABLE_ROW" ] && \
                 ui_table_set "$EXAKIT_ADDON_TABLE_STATE" "$EXAKIT_ADDON_TABLE_ROW" \
                     failed "" "" "" "" "did not finish — see the log"
-            # NO REMEDY HERE. The module that failed has just printed its own,
-            # specific to what went wrong; adding a generic "retry with: exakit
-            # marketplace" underneath it gave one failure two competing answers
-            # and made the reader choose - and the generic one was the wrong
-            # choice, because marketplace declines to act on an add-on that is
-            # already present and answers "Nothing to install".
-            _exakit_addon_note warn \
-                "$_mp_id did not finish installing — the reason is above, and in the log"
+            # NOTHING HERE. Two reasons, and they compound.
+            #
+            # The module that failed has already printed its own reason, specific
+            # to what went wrong. A generic "retry with: exakit marketplace"
+            # underneath gave one failure two competing answers and the generic
+            # one was wrong anyway -- marketplace declines to act on an add-on
+            # that is already present and answers "Nothing to install".
+            #
+            # And the row above already says "did not finish - see the log", so
+            # even a corrected sentence is the third telling of one fact. Printed
+            # under a frame the animator has only just stopped repainting, it is
+            # where the table visibly came apart on a real install.
+            _exakit_log_file "WARN  $_mp_id did not finish installing"
             _mp_status=1
         fi
         EXAKIT_ADDON_TABLE_ROW=""

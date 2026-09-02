@@ -1771,5 +1771,31 @@ has "...and on the shell side"      '    dash_server_package_version'        "$D
 has "the installer asks the venv"   'if (-not (Get-DashServerPackageVersion)) {' "$DS_PS1"
 has "...and on the shell side"      '_ds_now="$(dash_server_package_version'   "$DS_SH"
 
+echo
+echo "a refused lookup is not a missing release:"
+# On a real install json-tables failed with "the prebuilt mirror release was not
+# found ... run the pkg workflow once to publish it". That release had existed
+# since August and held the exact asset that machine needed. GitHub had answered
+# 403: its API allows 60 calls an hour unauthenticated, and a full install spends
+# them. `curl -f` turns any 4xx into an empty body, so a refusal and an absence
+# were indistinguishable, and the remedy named was work that changes nothing.
+JT_SH="$(cat "$ROOT/setup/lib/json-tables.sh")"
+JT_PS="$(cat "$ROOT/setup/lib/json-tables.ps1")"
+CO_SH="$(cat "$ROOT/setup/lib/common.sh")"
+has "the shell records the HTTP status"  'EXAKIT_JSON_TABLES_MIRROR_HTTP=' "$JT_SH"
+has "...and no longer uses curl -f"      'set -- -sSL --retry 3'          "$JT_SH"
+has "...and answers 403 differently"     '403|429)'                       "$JT_SH"
+has "...while keeping the 404 remedy"    'pkg / json-tables'              "$JT_SH"
+has "the twin records it too"            'JsonTablesMirrorHttp'           "$JT_PS"
+has "...and branches on 403"             '-eq "403"'                      "$JT_PS"
+has "a token is honoured on the shell"   'Bearer $GITHUB_TOKEN'           "$JT_SH"
+has "...and on Windows"                  'Bearer $($env:GITHUB_TOKEN)'    "$JT_PS"
+# The failure is said ONCE: the row says it, the module's own reason said why,
+# and the note under the table is gone. Asserted on what replaced it, not on the
+# wording that was removed -- that wording had already been changed once by
+# another hand, so a needle aimed at it tests nothing.
+has "the add-on failure is only logged"  '_exakit_log_file "WARN  $_mp_id did not finish installing"' "$CO_SH"
+lacks "no note is printed under the frame" '_exakit_addon_note warn \\' "$CO_SH"
+
 echo "passed: $PASS, failed: $FAIL"
 [ "$FAIL" -eq 0 ]
