@@ -236,36 +236,75 @@ _json_tables_mirror_asset_url() {
 
 # _json_tables_mirror_wheel_name — the wheel's real filename, read from the
 # release API (its version comes from upstream's pyproject, not from ours).
-# EXAKIT_JSON_TABLES_MIRROR_HTTP — the status GitHub answered with, so the
-# caller can tell "this release does not exist" from "GitHub would not say".
-# Without it a 403 read exactly like a 404: `curl -f` fails either way, the body
-# is empty either way, and the install then told the user the release was
-# missing and to run a workflow to publish it. On the run that prompted this the
-# release had existed since August, held the very asset that machine needed, and
-# the real answer was that the unauthenticated API allows 60 calls an hour and a
-# full install had spent all sixty.
+# _json_tables_mirror_release — the release document, fetched ONCE per process.
+#
+# Three callers wanted this same document — the wheel name, the asset digest and
+# the version in the release body — and each fetched it again. GitHub allows
+# sixty API requests an hour without a token, so one json-tables install spent
+# three of them on one answer, and a full install that had already used the rest
+# then reported the release as missing. PowerShell has cached this in
+# $script:JsonTablesMirrorCache all along; the shell never did.
+#
+# The status is written to a FILE for the same reason the document is: every
+# caller reaches this through $( ), and two levels of subshell separate the curl
+# from the code that has to choose a message. A variable would be set and thrown
+# away, and the caller would read the empty string on every path -- which is the
+# shape of the original bug, not a fix for it.
+#
+# EXAKIT_JSON_TABLES_MIRROR_HTTP is the status GitHub answered with, so a caller
+# can tell "this release does not exist" from "GitHub would not say". Without it
+# a 403 read exactly like a 404: curl -f prints nothing and exits non-zero on
+# either, so a refusal and an absence arrived as the same empty string.
 EXAKIT_JSON_TABLES_MIRROR_HTTP=""
-_json_tables_mirror_wheel_name() {
-    # -H with a token when one is present: it lifts the same limit from 60 an
-    # hour to 5000, and install.sh already takes GITHUB_TOKEN for the same
-    # reason. Unauthenticated stays the default; nothing here requires a token.
-    EXAKIT_JSON_TABLES_HTTP_BODY="$(mktemp "${TMPDIR:-/tmp}/exakit-jt.XXXXXX")" || return 1
-    # -f is deliberately NOT used: it makes curl exit non-zero and print nothing
-    # on 4xx, which is exactly how a rate-limit came to look like a missing
-    # release. The status is what decides the message now.
-    set -- -sSL --retry 3 --connect-timeout 15 -w '%{http_code}' -o "$EXAKIT_JSON_TABLES_HTTP_BODY"
+# A FILE, not a variable. Every caller reaches this through $( ), which is a
+# subshell, so a variable cache would be discarded the moment it was filled and
+# the next caller would fetch again -- the exact bug this exists to fix, wearing
+# a cache. The About text is cached the same way and for the same reason.
+EXAKIT_JSON_TABLES_MIRROR_CACHE="${EXAKIT_JSON_TABLES_MIRROR_CACHE:-$EXAKIT_CACHE_DIR/json-tables-mirror.json}"
+# Short: long enough to serve the three callers of one install from one request,
+# short enough that a freshly published release is picked up on a retry a minute
+# later. EXAKIT_JSON_TABLES_MIRROR_TTL=0 forces the fetch, which is what a test
+# wanting the network path sets.
+EXAKIT_JSON_TABLES_MIRROR_TTL="${EXAKIT_JSON_TABLES_MIRROR_TTL:-300}"
+
+_json_tables_mirror_release() {
+    _jmr_c="$EXAKIT_JSON_TABLES_MIRROR_CACHE"
+    if [ -s "$_jmr_c" ] && [ "$EXAKIT_JSON_TABLES_MIRROR_TTL" != "0" ]; then
+        _jmr_m="$(_exakit_file_mtime "$_jmr_c" 2>/dev/null || true)"
+        case "$_jmr_m" in
+            ''|*[!0-9]*) ;;
+            *) if [ "$(( $(date +%s) - _jmr_m ))" -lt "$EXAKIT_JSON_TABLES_MIRROR_TTL" ]; then
+                   printf '200' > "$_jmr_c.http" 2>/dev/null || true
+                   cat "$_jmr_c"
+                   return 0
+               fi ;;
+        esac
+    fi
+    mkdir -p "$(dirname "$_jmr_c")" 2>/dev/null || true
+    _jmr_tmp="$(mktemp "${TMPDIR:-/tmp}/exakit-jt.XXXXXX")" || return 1
+    # -f is deliberately NOT used: it throws the body away exactly when the body
+    # says why. A token when present lifts the limit from 60 an hour to 5000,
+    # which is what install.sh already does with GITHUB_TOKEN.
+    set -- -sSL --retry 3 --connect-timeout 15 -w '%{http_code}' -o "$_jmr_tmp"
     [ -n "${GITHUB_TOKEN:-}" ] && set -- "$@" -H "Authorization: Bearer $GITHUB_TOKEN"
-    EXAKIT_JSON_TABLES_MIRROR_HTTP="$(curl "$@" \
+    _jmr_http="$(curl "$@" \
         "https://api.github.com/repos/$(json_tables_mirror_repo)/releases/tags/$EXAKIT_JSON_TABLES_MIRROR_TAG" \
         2>/dev/null || true)"
-    _jmw_json="$(cat "$EXAKIT_JSON_TABLES_HTTP_BODY" 2>/dev/null || true)"
-    rm -f "$EXAKIT_JSON_TABLES_HTTP_BODY"
-    EXAKIT_JSON_TABLES_HTTP_BODY=""
-    # A 403 body is an error document, not a release: parsing it would find no
-    # wheels and return empty anyway, but refusing it here keeps the status the
-    # single thing the caller reasons about.
-    [ "$EXAKIT_JSON_TABLES_MIRROR_HTTP" = "200" ] || return 1
-    [ -n "$_jmw_json" ] || return 1
+    printf '%s' "$_jmr_http" > "$_jmr_c.http" 2>/dev/null || true
+    if [ "$_jmr_http" = "200" ] && [ -s "$_jmr_tmp" ]; then
+        mv -f "$_jmr_tmp" "$_jmr_c" 2>/dev/null || cp -f "$_jmr_tmp" "$_jmr_c" 2>/dev/null || true
+        rm -f "$_jmr_tmp"
+        cat "$_jmr_c"
+        return 0
+    fi
+    # A refusal must NOT be cached: the next run a minute later, or the same run
+    # with a token, has to be allowed to ask again.
+    rm -f "$_jmr_tmp"
+    return 1
+}
+
+_json_tables_mirror_wheel_name() {
+    _jmw_json="$(_json_tables_mirror_release)" || return 1
     if exakit_can_run_python; then
         printf '%s' "$_jmw_json" | run_python -c '
 import json, sys
@@ -289,10 +328,7 @@ if wheels:
 # so a digest pinned in versions.json would go stale by design: the release API
 # is the right authority here, and an unverifiable download is still refused.
 _json_tables_mirror_digest() {
-    _jmd_json="$(curl -fsSL --retry 3 --connect-timeout 15 \
-        "https://api.github.com/repos/$(json_tables_mirror_repo)/releases/tags/$EXAKIT_JSON_TABLES_MIRROR_TAG" \
-        2>/dev/null || true)"
-    [ -n "$_jmd_json" ] || return 1
+    _jmd_json="$(_json_tables_mirror_release)" || return 1
     if exakit_can_run_python; then
         printf '%s' "$_jmd_json" | run_python -c '
 import json, sys
@@ -351,10 +387,7 @@ _json_tables_fetch_verified() {
 # release body. This is the ONLY version that can be installed: the artifacts
 # for it are the ones sitting on that release.
 _json_tables_mirror_version() {
-    _jmv_json="$(curl -fsSL --retry 3 --connect-timeout 15 \
-        "https://api.github.com/repos/$(json_tables_mirror_repo)/releases/tags/$EXAKIT_JSON_TABLES_MIRROR_TAG" \
-        2>/dev/null || true)"
-    [ -n "$_jmv_json" ] || return 1
+    _jmv_json="$(_json_tables_mirror_release)" || return 1
     if exakit_can_run_python; then
         printf '%s' "$_jmv_json" | run_python -c '
 import json, re, sys
@@ -415,7 +448,8 @@ json_tables_install() {
     if [ -z "$_jti_wheel_name" ]; then
         # The status decides the sentence. Reporting "not found" for every
         # failure sent a reader off to publish a release that already existed.
-        case "${EXAKIT_JSON_TABLES_MIRROR_HTTP:-}" in
+        _jti_http="$(cat "$EXAKIT_JSON_TABLES_MIRROR_CACHE.http" 2>/dev/null || true)"
+        case "$_jti_http" in
             403|429)
                 _jti_tok=""
                 [ -n "${GITHUB_TOKEN:-}" ] || _jti_tok=" (or set GITHUB_TOKEN, which raises the limit to 5000)"
@@ -425,7 +459,7 @@ json_tables_install() {
                 _json_tables_not_installed "the prebuilt mirror release '$EXAKIT_JSON_TABLES_MIRROR_TAG' was not found in $(json_tables_mirror_repo). Run the 'pkg / json-tables' workflow once to publish it (it builds the engine for every platform so nobody needs Rust)."
                 ;;
             *)
-                _json_tables_not_installed "GitHub could not be reached to find the prebuilt engine${EXAKIT_JSON_TABLES_MIRROR_HTTP:+ (HTTP $EXAKIT_JSON_TABLES_MIRROR_HTTP)}. Check the network, then run: exakit marketplace"
+                _json_tables_not_installed "GitHub could not be reached to find the prebuilt engine${_jti_http:+ (HTTP $_jti_http)}. Check the network, then run: exakit marketplace"
                 ;;
         esac
         return 1

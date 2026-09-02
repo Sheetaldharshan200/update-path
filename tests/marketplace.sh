@@ -1784,6 +1784,15 @@ JT_PS="$(cat "$ROOT/setup/lib/json-tables.ps1")"
 CO_SH="$(cat "$ROOT/setup/lib/common.sh")"
 has "the shell records the HTTP status"  'EXAKIT_JSON_TABLES_MIRROR_HTTP=' "$JT_SH"
 has "...and no longer uses curl -f"      'set -- -sSL --retry 3'          "$JT_SH"
+# ONE request serves all three callers. Each reaches the release through $( ),
+# so the cache and the status both have to be FILES: a variable would be set in
+# a subshell and thrown away, which is the original bug wearing a cache.
+check "the release is fetched from one place only" "1" \
+    "$(grep -c 'api.github.com' "$ROOT/setup/lib/json-tables.sh")"
+has "the document is cached in a file"   'EXAKIT_JSON_TABLES_MIRROR_CACHE=' "$JT_SH"
+has "...and so is the status"            '> "$_jmr_c.http"'                 "$JT_SH"
+has "...which the caller reads back"     'cat "$EXAKIT_JSON_TABLES_MIRROR_CACHE.http"' "$JT_SH"
+lacks "a refusal is never cached"        'printf %s "$_jmr_http" > "$_jmr_c" ' "$JT_SH"
 has "...and answers 403 differently"     '403|429)'                       "$JT_SH"
 has "...while keeping the 404 remedy"    'pkg / json-tables'              "$JT_SH"
 has "the twin records it too"            'JsonTablesMirrorHttp'           "$JT_PS"
