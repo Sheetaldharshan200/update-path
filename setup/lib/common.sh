@@ -1053,15 +1053,59 @@ manifest_init() {
     # runs on every install AND every re-run, so an older install grows the
     # directory the moment the installer touches it again.
     mkdir -p "$EXAKIT_WORKFLOWS_DIR" 2>/dev/null || true
+    _mi_steps=""
     if [ -f "$EXAKIT_MANIFEST" ]; then
         # Self-heal after an interrupted run: a manifest that no longer
         # parses is quarantined and rebuilt. Each install step re-verifies
         # what actually exists on disk, so nothing is reinstalled blindly.
+        #
+        # "CANNOT CHECK" IS NOT "CORRUPT". The probe below runs through
+        # run_python, which on a machine with no system Python >= 3.11 tries to
+        # bootstrap uv over the network first — so an offline machine failed
+        # this test for want of an INTERPRETER and a perfectly good manifest was
+        # renamed .corrupt-<ts> under a message blaming the file. Ask first
+        # whether a Python can be had at all, and when it cannot, leave the
+        # manifest exactly where it is.
+        if ! exakit_can_run_python; then
+            _exakit_log_file "INFO  Skipped the manifest parse check: no Python runtime is available, so the existing manifest is kept as-is"
+            return 0
+        fi
         if run_python -c 'import json,sys; json.load(open(sys.argv[1]))' "$EXAKIT_MANIFEST" 2>/dev/null; then
             return 0
         fi
-        warn "The install manifest is corrupted (interrupted run?) — rebuilding it; existing components will be re-detected"
-        mv "$EXAKIT_MANIFEST" "$EXAKIT_MANIFEST.corrupt-$(date +%s)"
+        # Name what actually failed, and where the evidence went: "the install
+        # manifest is corrupted" told a reader neither which file nor that a
+        # copy of it still exists to look at.
+        _mi_quarantine="$EXAKIT_MANIFEST.corrupt-$(date +%s)"
+        warn "The install manifest at $EXAKIT_MANIFEST does not parse as JSON (interrupted run?) — kept as $_mi_quarantine and rebuilt; existing components will be re-detected"
+        mv "$EXAKIT_MANIFEST" "$_mi_quarantine"
+        # Salvage the step ticks where the damage did not reach them. Nothing
+        # else is worth recovering: every other key records something whose
+        # presence each install step re-verifies on disk anyway, while a lost
+        # step tick costs a re-run of work that had already finished.
+        _mi_steps="$(run_python - "$_mi_quarantine" 2>/dev/null <<'PY' || true
+import json, re, sys
+try:
+    with open(sys.argv[1]) as handle:
+        text = handle.read()
+except OSError:
+    sys.exit(0)
+# A regex, not a parser: the document is already known not to parse, and the
+# array is being lifted out of whatever is left of it.
+match = re.search(r'"steps_completed"\s*:\s*(\[[^]]*\])', text)
+if not match:
+    sys.exit(0)
+try:
+    steps = json.loads(match.group(1))
+except ValueError:
+    sys.exit(0)
+if isinstance(steps, list) and steps and all(isinstance(s, str) for s in steps):
+    print(json.dumps(steps))
+PY
+        )"
+        if [ -n "$_mi_steps" ]; then
+            info "Recovered the completed-step list from the quarantined manifest — finished steps are still skipped"
+        fi
     fi
     cat > "$EXAKIT_MANIFEST" <<EOF
 {
@@ -1075,7 +1119,7 @@ manifest_init() {
   "data": {
     "loaded": false
   },
-  "steps_completed": [],
+  "steps_completed": ${_mi_steps:-[]},
   "log_dir": "$EXAKIT_LOG_DIR"
 }
 EOF
@@ -1083,11 +1127,54 @@ EOF
     _exakit_log_file "INFO  Initialized manifest at $EXAKIT_MANIFEST"
 }
 
+# _exakit_manifest_write_error <exit-code> <what> — the sentence a failed
+# manifest WRITE is reported with.
+#
+# The three writers below (manifest_set, manifest_del, mark_step) used to let
+# the interpreter report a failure itself: an install interrupted before the
+# manifest was created printed a Python traceback at the top of the terminal
+# ("FileNotFoundError: [Errno 2] ... manifest.json") and then a kit message
+# underneath it that explained nothing — two lines about one fault, neither
+# actionable. Every sibling READER (manifest_get, manifest_get_many) has always
+# caught the same two exceptions; the writers had not.
+#
+# They now exit with a small code instead, and the traceback goes to the log
+# where a maintainer can still read it. Only two of the cases are things a
+# reader can act on, so only those two carry a remedy:
+#
+#   3  no manifest at all          -> re-run the installer to rebuild it
+#   4  present but does not parse  -> re-run the installer to rebuild it
+#   5  present but not writable    -> fix its permissions
+_exakit_manifest_write_error() {
+    case "$1" in
+        3) printf 'No install manifest at %s, so %s could not be recorded — re-run the installer to rebuild it\n' "$EXAKIT_MANIFEST" "$2" ;;
+        4) printf 'The install manifest at %s could not be read, so %s could not be recorded — re-run the installer to rebuild it\n' "$EXAKIT_MANIFEST" "$2" ;;
+        5) printf 'The install manifest at %s is not writable, so %s could not be recorded — fix its permissions and retry\n' "$EXAKIT_MANIFEST" "$2" ;;
+        *) printf 'Failed to update the install manifest (%s) — the interpreter error is in the log%s\n' "$2" "${EXAKIT_LOG_FILE:+: $EXAKIT_LOG_FILE}" ;;
+    esac
+}
+
+# _exakit_manifest_log_stderr <text> — keep an interpreter error, off screen.
+# Appended a line at a time so the log stays one-record-per-line, and silent
+# when there is nothing to say.
+_exakit_manifest_log_stderr() {
+    [ -n "$1" ] || return 0
+    printf '%s\n' "$1" | while IFS= read -r _mls_line; do
+        [ -n "$_mls_line" ] && _exakit_log_file "PYERR $_mls_line"
+    done
+    return 0
+}
+
 # manifest_set <dot.path> <value>
 # Value is stored as JSON if it parses as JSON, otherwise as a string.
 manifest_set() {
     require_python3
-    run_python - "$EXAKIT_MANIFEST" "$1" "$2" <<'PY' || die "Failed to update manifest ($1)"
+    # stdout is discarded and stderr is captured rather than redirected with
+    # `2>>`: the log directory can already be gone (uninstall removes the kit
+    # home while later steps still write), and a redirection onto a missing
+    # path fails the command itself — which would turn a manifest write that
+    # worked into one that reports failure.
+    _ms_err="$(run_python - "$EXAKIT_MANIFEST" "$1" "$2" 2>&1 >/dev/null <<'PY'
 import fcntl, json, os, sys, tempfile
 
 def _exakit_locked(path):
@@ -1120,9 +1207,23 @@ def _exakit_write(path, doc):
         raise
 
 path, key, value = sys.argv[1], sys.argv[2], sys.argv[3]
-_lock = _exakit_locked(path)
-with open(path) as f:
-    doc = json.load(f)
+# Small exit codes instead of an interpreter traceback; the shell wrapper turns
+# each one into a sentence (see _exakit_manifest_write_error). The existence
+# check comes first so a missing manifest is named as such AND no stray .lock
+# file is created beside a manifest that is not there.
+if not os.path.exists(path):
+    sys.exit(3)
+try:
+    _lock = _exakit_locked(path)
+except OSError:
+    sys.exit(5)
+try:
+    with open(path) as f:
+        doc = json.load(f)
+except FileNotFoundError:
+    sys.exit(3)
+except (OSError, ValueError):
+    sys.exit(4)
 node = doc
 parts = key.split(".")
 for part in parts[:-1]:
@@ -1131,8 +1232,15 @@ try:
     node[parts[-1]] = json.loads(value)
 except json.JSONDecodeError:
     node[parts[-1]] = value
-_exakit_write(path, doc)
+try:
+    _exakit_write(path, doc)
+except OSError:
+    sys.exit(5)
 PY
+    )"
+    _ms_rc=$?
+    _exakit_manifest_log_stderr "$_ms_err"
+    [ "$_ms_rc" -eq 0 ] || die "$(_exakit_manifest_write_error "$_ms_rc" "$1")"
 }
 
 # manifest_set_many — apply several boolean flags in ONE locked read-modify-write,
@@ -1273,7 +1381,10 @@ PY
 manifest_del() {
     [ -f "$EXAKIT_MANIFEST" ] || return 0
     require_python3
-    run_python - "$EXAKIT_MANIFEST" "$1" <<'PY' || warn "Could not update the manifest ($1)"
+    # Same treatment as manifest_set: the interpreter reports to the log, the
+    # reader gets one sentence. Still a warn rather than a die — a partial
+    # uninstall must not fail over bookkeeping.
+    _md_err="$(run_python - "$EXAKIT_MANIFEST" "$1" 2>&1 >/dev/null <<'PY'
 import fcntl, json, os, sys, tempfile
 
 # Same lock + atomic-write pair as manifest_set (see there for the measurements):
@@ -1298,9 +1409,21 @@ def _exakit_write(path, doc):
         raise
 
 path, key = sys.argv[1], sys.argv[2]
-_lock = _exakit_locked(path)
-with open(path) as f:
-    doc = json.load(f)
+# Exit codes, not a traceback (see _exakit_manifest_write_error): 3 no manifest,
+# 4 unreadable, 5 not writable.
+if not os.path.exists(path):
+    sys.exit(3)
+try:
+    _lock = _exakit_locked(path)
+except OSError:
+    sys.exit(5)
+try:
+    with open(path) as f:
+        doc = json.load(f)
+except FileNotFoundError:
+    sys.exit(3)
+except (OSError, ValueError):
+    sys.exit(4)
 node = doc
 parts = key.split(".")
 for part in parts[:-1]:
@@ -1309,8 +1432,16 @@ for part in parts[:-1]:
     node = node[part]
 if isinstance(node, dict):
     node.pop(parts[-1], None)
-_exakit_write(path, doc)
+try:
+    _exakit_write(path, doc)
+except OSError:
+    sys.exit(5)
 PY
+    )"
+    _md_rc=$?
+    _exakit_manifest_log_stderr "$_md_err"
+    [ "$_md_rc" -eq 0 ] || warn "$(_exakit_manifest_write_error "$_md_rc" "$1")"
+    return 0
 }
 
 # exakit_unmark_step <step> — drop a step flag so a re-run of the installer
@@ -3627,7 +3758,15 @@ EXAKIT_MM_EOF
                 done
                 ;;
         esac
-        [ -n "$_mm_picked" ] || { info "Nothing to install — every requested add-on is already present."; return 0; }
+        if [ -z "$_mm_picked" ]; then
+            # Say WHY this is a refusal and not a failure. A reader who arrives
+            # here straight after an add-on failed to install reads "nothing to
+            # install" as a contradiction of what they just saw; the repair
+            # command is what turns it back into an answer.
+            info "Nothing to install — every requested add-on is already present."
+            info "If one of them is present but not working, repair it with: exakit update <id>"
+            return 0
+        fi
         _exakit_marketplace_apply "$_mm_picked"
         return $?
     fi
@@ -3868,11 +4007,18 @@ _exakit_marketplace_apply() {
             [ -n "$EXAKIT_ADDON_TABLE_ROW" ] && \
                 ui_table_set "$EXAKIT_ADDON_TABLE_STATE" "$EXAKIT_ADDON_TABLE_ROW" \
                     failed "" "" "" "" "did not finish — see the log"
-            # No note. The row above already says "did not finish — see the
-            # log", and the reason the add-on itself gave was printed before the
-            # table started. A third sentence repeating both, printed under a
-            # frame the animator has only just stopped repainting, is where the
-            # table came apart on a real install.
+            # NOTHING HERE. Two reasons, and they compound.
+            #
+            # The module that failed has already printed its own reason, specific
+            # to what went wrong. A generic "retry with: exakit marketplace"
+            # underneath gave one failure two competing answers and the generic
+            # one was wrong anyway -- marketplace declines to act on an add-on
+            # that is already present and answers "Nothing to install".
+            #
+            # And the row above already says "did not finish - see the log", so
+            # even a corrected sentence is the third telling of one fact. Printed
+            # under a frame the animator has only just stopped repainting, it is
+            # where the table visibly came apart on a real install.
             _exakit_log_file "WARN  $_mp_id did not finish installing"
             _mp_status=1
         fi
@@ -5281,19 +5427,62 @@ step_artifact_state() {
 # transient failure must not undo an earlier successful deployment).
 mark_step() {
     require_python3
-    run_python - "$EXAKIT_MANIFEST" "$1" <<'PY' || die "Failed to record step $1"
-import json, os, sys
-with open(sys.argv[1]) as f:
-    doc = json.load(f)
+    _mks_err="$(run_python - "$EXAKIT_MANIFEST" "$1" 2>&1 >/dev/null <<'PY'
+import fcntl, json, os, sys, tempfile
+
+# Same lock + atomic-write pair as manifest_set (see there for the measurements).
+# This writer had neither, and it is the one whose loss is felt most: a dropped
+# step tick makes a re-run repeat work it had already finished, which is the
+# whole promise of "completed steps are skipped". A shared "<path>.tmp" also let
+# two writers interleave inside it. The PowerShell twin (Set-ExakitStepDone)
+# takes the lock for the same reason.
+def _exakit_locked(path):
+    handle = open(path + ".lock", "a+")
+    fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+    return handle
+
+def _exakit_write(path, doc):
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path) or ".",
+                               prefix=os.path.basename(path) + ".")
+    try:
+        with os.fdopen(fd, "w") as handle:
+            json.dump(doc, handle, indent=2)
+            handle.write("\n")
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, path)
+    except BaseException:
+        try: os.unlink(tmp)
+        except OSError: pass
+        raise
+
+path, step = sys.argv[1], sys.argv[2]
+# Exit codes, not a traceback (see _exakit_manifest_write_error): 3 no manifest,
+# 4 unreadable, 5 not writable.
+if not os.path.exists(path):
+    sys.exit(3)
+try:
+    _lock = _exakit_locked(path)
+except OSError:
+    sys.exit(5)
+try:
+    with open(path) as f:
+        doc = json.load(f)
+except FileNotFoundError:
+    sys.exit(3)
+except (OSError, ValueError):
+    sys.exit(4)
 steps = doc.setdefault("steps_completed", [])
-if sys.argv[2] not in steps:
-    steps.append(sys.argv[2])
-tmp = sys.argv[1] + ".tmp"
-with open(tmp, "w") as f:
-    json.dump(doc, f, indent=2)
-    f.write("\n")
-os.replace(tmp, sys.argv[1])
+if step not in steps:
+    steps.append(step)
+try:
+    _exakit_write(path, doc)
+except OSError:
+    sys.exit(5)
 PY
+    )"
+    _mks_rc=$?
+    _exakit_manifest_log_stderr "$_mks_err"
+    [ "$_mks_rc" -eq 0 ] || die "$(_exakit_manifest_write_error "$_mks_rc" "step $1")"
     [ -n "$EXAKIT_ROLLBACK_FILE" ] && : > "$EXAKIT_ROLLBACK_FILE"
     _exakit_log_file "STEP  completed: $1"
 }
@@ -9690,8 +9879,18 @@ exakit_uninstall_run() {
     # configs, the kit home and one per CLI binary -- around twenty lines of
     # "Removing <absolute path>" for a command whose whole result is "it is
     # gone". The paths go to the LOGFILE, which is the right place for an
-    # account of what a destructive command touched, and the outcomes stay on
-    # screen through ok_step.
+    # account of what a destructive command touched.
+    #
+    # THE OUTCOMES DO NOT GO WITH THEM. Quieting the paths through
+    # EXAKIT_QUIET_DETAIL also quieted every info() that named WHAT was gone, so
+    # a run that removed a database, a container, a volume, three add-ons, five
+    # AI-client configs, two virtual environments and the launcher printed six
+    # lines and named none of them. And step 5 below deletes the logfile the
+    # detail was routed into, so afterwards there was no record anywhere, on
+    # screen or on disk. Each area therefore promotes ONE durable line through
+    # _done (ok_step, which survives the quiet bracket), naming what it removed;
+    # the closing line says that those lines are the whole record, because by
+    # then they are.
     #
     # NOT in a dry run: there, listing every path IS the output. That is the
     # only thing --dry-run produces and the reason anyone asks for it.
@@ -9705,6 +9904,11 @@ exakit_uninstall_run() {
     }
     _rm() { # _rm <path> — remove a path unless dry-run
         [ "$_dry" = "1" ] || rm -rf "$1"
+    }
+    _done() { # _done <message> — the record line for one area of the removal.
+        # Real runs only: a dry run removed nothing, so a line in the past tense
+        # would be a lie, and the plan lines above already say what it would do.
+        [ "$_dry" = "1" ] || ok_step "$1"
     }
 
     # 0a) Boot entries first: a LaunchAgent or systemd unit left behind would
@@ -9725,13 +9929,19 @@ exakit_uninstall_run() {
     #    VS Code extension). Anything under the kit home or the bin dir is
     #    swept by steps 5-6 regardless; a system-installed copy the kit never
     #    managed is not touched (each hook enforces that itself).
+    _un_addons_gone=""
     if command -v exakit_marketplace_installed_addons >/dev/null 2>&1; then
         for _un_id in $(exakit_marketplace_installed_addons 2>/dev/null); do
             _un_fn="$(_exakit_addon_fn "$_un_id" uninstall)"
             command -v "$_un_fn" >/dev/null 2>&1 || continue
-            "$_un_fn" "$_dry" || warn "Removing the $_un_id add-on reported issues (continuing uninstall)"
+            if "$_un_fn" "$_dry"; then
+                _un_addons_gone="${_un_addons_gone:+$_un_addons_gone, }$_un_id"
+            else
+                warn "Removing the $_un_id add-on reported issues (continuing uninstall)"
+            fi
         done
     fi
+    [ -n "$_un_addons_gone" ] && _done "Add-ons removed: $_un_addons_gone"
 
     # 1) Database + all data. Uses the runtime removal helper (always --data),
     #    which for Personal also reaps any orphaned runner daemon on the DB port.
@@ -9745,16 +9955,32 @@ exakit_uninstall_run() {
                 *)        warn "Unknown runtime type '$_type'; skipping database removal" ;;
             esac
         fi
+        # BY NAME. "The database was removed" leaves the reader to guess which
+        # container and which volume that was, and those are exactly the two
+        # names they need if the engine kept one of them: a container the engine
+        # refused to remove is found again by name, and nothing else on screen
+        # ever says what it was called.
+        case "$_type" in
+            nano)     _done "Database removed: Nano container ${EXAKIT_NANO_CONTAINER:-exasol-nano}, data volume ${EXAKIT_NANO_VOLUME:-exasol-nano-data}" ;;
+            personal) _done "Database removed: the local Exasol Personal deployment and all its data" ;;
+            *)        : ;;
+        esac
     fi
 
-    # 2) Managed MCP configuration in the AI clients (Claude, Cursor,
-    #    Codex). Best-effort: a failure here must not block the rest.
+    # 2) Managed MCP configuration in every AI client the kit configures.
+    #    Best-effort: a failure here must not block the rest.
     if command -v exakit_mcp_operation >/dev/null 2>&1; then
-        _step "managed MCP configuration in Claude (desktop + Claude Code CLI), Cursor, and Codex"
+        # The client list comes from the one function that owns it rather than
+        # being spelled out here: this line named three clients while the
+        # operation covered eight, so five configs were edited that nothing on
+        # screen ever mentioned.
+        _un_mcp_clients="$(exakit_mcp_clients_from_args 2>/dev/null | tr ',' ' ')"
+        _step "managed MCP configuration in the AI clients (${_un_mcp_clients:-all managed clients})"
         if [ "$_dry" != "1" ]; then
             exakit_mcp_operation uninstall >/dev/null 2>&1 || \
                 warn "Removing the managed MCP client config reported issues (continuing uninstall)"
         fi
+        _done "MCP entry removed from the AI clients the kit manages: ${_un_mcp_clients:-all managed clients}"
     fi
 
     # 3) Installed AI skills (shared with the selectable uninstall menu).
@@ -9772,6 +9998,7 @@ exakit_uninstall_run() {
     if [ -e "$EXAKIT_HOME" ]; then
         _step "kit home $EXAKIT_HOME (credentials, logs, manifest, snapshots, pyexasol venv, add-ons)"
         _rm "$EXAKIT_HOME"
+        _done "Kit home removed: $EXAKIT_HOME (credentials, logs, manifest, snapshots, pyexasol venv, add-on state)"
     fi
 
     # 6) CLI binaries. Removed last so earlier steps can still call the launcher.
@@ -9783,12 +10010,26 @@ exakit_uninstall_run() {
     if command -v exakit_marketplace_addons >/dev/null 2>&1; then
         _bins="$_bins $(exakit_marketplace_addons | cut -d'|' -f1 | tr '\n' ' ')"
     fi
+    _un_bins_gone=""
     for _bin in $_bins; do
         if [ -e "$EXAKIT_BIN_DIR/$_bin" ]; then
             _step "CLI binary $EXAKIT_BIN_DIR/$_bin"
             _rm "$EXAKIT_BIN_DIR/$_bin"
+            _un_bins_gone="${_un_bins_gone:+$_un_bins_gone, }$_bin"
         fi
     done
+    [ -n "$_un_bins_gone" ] && _done "Commands removed from $EXAKIT_BIN_DIR: $_un_bins_gone"
     ui_spin_end
     EXAKIT_QUIET_DETAIL="$_un_prev_quiet"
+    # Said last, and said plainly, because it is the one thing the reader cannot
+    # find out afterwards: the logfile that held the per-path detail lived inside
+    # the kit home this run has just deleted, so the lines above are the only
+    # account of what was removed that still exists anywhere.
+    if [ "$_dry" != "1" ]; then
+        info_step "The lines above are the whole record of this uninstall — the install log lived in the kit home and went with it."
+    fi
+    # Explicit, because every step here is best-effort: each failure warns and
+    # carries on, so the function has always succeeded, and leaving the status to
+    # whatever the last line happened to be made that an accident of ordering.
+    return 0
 }

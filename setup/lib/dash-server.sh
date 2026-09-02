@@ -115,12 +115,31 @@ dash_server_venv_python() {
     printf '%s\n' "$EXAKIT_DASH_SERVER_VENV/bin/python"
 }
 
+# dash_server_package_version — what the VENV alone says, with no opinion on
+# whether the add-on is usable yet. The installer asks this immediately after
+# pip, before the launcher exists; dash_server_installed_version below is the
+# stricter question every other caller wants.
+# ⇄ twin: Get-DashServerPackageVersion in dash-server.ps1.
+dash_server_package_version() {
+    _dsp_python="$(dash_server_venv_python)"
+    [ -x "$_dsp_python" ] || return 1
+    ( "$_dsp_python" -c 'from importlib.metadata import version; print(version("dash-server"))' && : ) 2>/dev/null
+}
+
 dash_server_installed_version() {
-    _dsv_python="$(dash_server_venv_python)"
-    [ -x "$_dsv_python" ] || return 1
-    # dash-server exposes no __version__; the distribution metadata written by
-    # the install is the authority. ⇄ twin: Get-DashServerInstalledVersion.
-    ( "$_dsv_python" -c 'from importlib.metadata import version; print(version("dash-server"))' && : ) 2>/dev/null
+    # The manifest RECORD as well as the venv. The record is written at the END
+    # of a successful install, so an install that died earlier leaves a venv and
+    # nothing else, and no longer reports a version for something no command can
+    # start. Every caller believed the old answer: the marketplace said "already
+    # present - nothing to install", `exakit update dash-server` said
+    # "everything is already current", and starting it said "not installed" -
+    # with no documented command able to recover.
+    #
+    # Both halves, because neither alone is evidence. json_tables_installed_version
+    # already takes exactly this line.
+    _dsv_recorded="$(manifest_get components.dash_server.version 2>/dev/null || true)"
+    [ -n "$_dsv_recorded" ] || return 1
+    dash_server_package_version
 }
 
 # dash_server_release_url <version> — the source tarball of the tagged release.
@@ -203,7 +222,7 @@ dash_server_install() {
         # The install is not done until the venv can actually answer for the
         # version: a tarball that unpacked but failed to build would otherwise
         # be reported as installed and only fail at first launch.
-        _ds_now="$(dash_server_installed_version || true)"
+        _ds_now="$(dash_server_package_version || true)"
         if [ -z "$_ds_now" ]; then
             _dash_server_not_installed "the venv cannot report a dash-server version after the install (see log)"
             return 1

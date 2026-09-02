@@ -445,6 +445,38 @@ sys.exit(1)
 PY
 }
 
+# mcp_print_handshake_detail — show what the failed handshake actually said.
+#
+# mcp_stdio_handshake_once deliberately captures the server's stderr and prints
+# it, and the whole call is redirected into the log file — so the process was
+# already holding the reason (an authentication failure, a bad DSN, a missing
+# package) when the old wording said "see log" and sent the reader into a
+# different program to look for it. On this step above all — the one a user
+# reaches BECAUSE their assistant cannot see the database — the cause belongs on
+# screen.
+#
+# Only this validation's own slice of the log is read, from the mark taken
+# before the first attempt, so noise from an earlier step can never be presented
+# as this failure's cause. Only the tail of that slice is shown: uvx narrates
+# its own environment build first and the reason is always last.
+#
+# The text is redacted before printing. It comes from a process that was handed
+# the database password in its environment, and a driver traceback can echo its
+# connection arguments back out.
+mcp_print_handshake_detail() {
+    [ -n "${EXAKIT_LOG_FILE:-}" ] && [ -f "$EXAKIT_LOG_FILE" ] || return 1
+    _mphd_text="$(tail -n "+$(( ${_mcp_handshake_log_mark:-0} + 1 ))" "$EXAKIT_LOG_FILE" 2>/dev/null \
+        | grep -av '^[[:space:]]*$' | tail -8)"
+    [ -n "$_mphd_text" ] || return 1
+    _mphd_text="$(_exakit_redact_mcp_secret_output "$_mphd_text" "${_password:-}")"
+    # Same dim-gutter containment every other piece of foreign output gets, in
+    # the error colour because that is what this is.
+    printf '%s\n' "$_mphd_text" | while IFS= read -r _mphd_line; do
+        printf '      %s%s %s%s\n' "${UI_ERR:-}" "${UI_VB:-|}" "$_mphd_line" "${UI_RESET:-}" >&2
+    done
+    return 0
+}
+
 # mcp_validate — start the server over stdio and check it answers an MCP
 # initialize handshake. Uses the same env the client configs use.
 mcp_validate() {
@@ -458,6 +490,12 @@ mcp_validate() {
     _ssl_cert_validation="$(mcp_ssl_cert_validation)"
 
     require_python3
+    # Where this validation's output starts in the log, so a failure can quote
+    # its own handshake and nothing else.
+    _mcp_handshake_log_mark=0
+    [ -n "${EXAKIT_LOG_FILE:-}" ] && [ -f "$EXAKIT_LOG_FILE" ] && \
+        _mcp_handshake_log_mark="$(wc -l < "$EXAKIT_LOG_FILE" 2>/dev/null | tr -d ' ')"
+    case "$_mcp_handshake_log_mark" in ''|*[!0-9]*) _mcp_handshake_log_mark=0 ;; esac
     _handshake_ok=0
     for _attempt in 1 2; do
         # The handshake starts the server, and starting it can mean uvx
@@ -496,7 +534,11 @@ mcp_validate() {
         manifest_set components.mcp_server.mode "stdio"
         manifest_set components.mcp_server.validated true
     else
-        warn "MCP stdio validation failed (see log). The configs are still in place; clients may show more detail."
+        error "The MCP server did not answer the stdio handshake. What it said:"
+        mcp_print_handshake_detail || \
+            printf '      %s%s (the handshake produced no output)%s\n' \
+                "${UI_ERR:-}" "${UI_VB:-|}" "${UI_RESET:-}" >&2
+        warn "Your database and the client configs are unchanged — clients will still start the server. For a deeper check, run: exakit mcp-doctor"
         manifest_set components.mcp_server.validated false
     fi
 

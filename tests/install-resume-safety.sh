@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
-# Guard two ways a RE-RUN of the installer could undo what the user already had.
+# Guard the ways an installer run can undo - or fail to explain - what the user
+# already had.
 #
-# Both are resume-path bugs: the first run is fine, and the damage only appears
-# on the second run, which is the run nobody tests by hand.
+# The first two are resume-path bugs: the first run is fine, and the damage only
+# appears on the second run, which is the run nobody tests by hand. The Windows
+# findings after them have the same shape: not one of them shows up on a first
+# install, on the machine the developer happens to be sitting at.
 #
 #   1. A resumed runtime step leaves its destroy/volume-rm armed. mark_step is
 #      the only thing that clears the rollback stack, and a resume branch has no
@@ -15,6 +18,23 @@
 #      unconditional exakit_autostart_enable wrote autostart.enabled=true before
 #      exakit_autostart_default_on -- the function whose whole job is to leave a
 #      recorded answer alone -- ever looked at it.
+#
+#   3. The Windows installer replaces a named failure with a number. install.ps1
+#      re-threw the setup script's exit code, so its trap printed "Setup failed
+#      with exit code 1" over the cause and remedy the setup script had just
+#      named, and then blamed the network for it.
+#
+#   4. The Windows installer writes to the machine before it checks it: the
+#      download, the replaced kit directory and the setup script's logfile all
+#      landed before a single requirement was looked at.
+#
+#   5. A failed re-install destroys the working kit: the old copy was deleted
+#      before the replacement existed, and the installed exakit shim points
+#      into it by absolute path.
+#
+#   6. Windows-on-ARM skips two steps without printing them - the step counter
+#      jumps 1/5 to 4/5 - and then offers to connect AI clients to the bridge
+#      it just skipped.
 #
 #   bash tests/install-resume-safety.sh
 set -u
@@ -152,6 +172,251 @@ if [ "$(exakit_autostart_default_on 2>&1)" = "ENABLE-CALLED" ]; then
 else
     fail "a fresh install no longer turns autostart on"
 fi
+
+# --- the Windows installer -------------------------------------------------
+#
+# Everything below guards install.ps1 and setup/setup-windows-docker.ps1. They
+# belong with the resume-path checks above for the same reason: none of these
+# bugs shows up on the run that installs a kit for the first time. They show up
+# on the second run, on the machine that cannot run the kit at all, and on the
+# architecture nobody has on their desk.
+_IPS="$ROOT/install.ps1"
+_SWD="$ROOT/setup/setup-windows-docker.ps1"
+_NANO="$ROOT/setup/lib/nano.ps1"
+
+# Line number of the first line holding a fixed string, or "" when absent.
+_line_of() { grep -n -m1 -F "$2" "$1" | cut -d: -f1; }
+# One guard for "this file still contains this exact text".
+_has() {
+    if grep -qF "$2" "$1"; then pass "$3"; else fail "$4"; fi
+}
+
+printf '\n== a failed Windows install ends with the reason, not with a number ==\n'
+
+# install.sh execs its setup script, so on macOS/Linux/WSL the setup script's
+# own last line IS the installer's last line. install.ps1 re-threw the child's
+# exit code as "Setup failed with exit code 1", which the trap printed as THE
+# reason -- over the top of the named cause and remedy the setup script had
+# printed one line earlier -- and then added a network hypothesis to a failure
+# that was, twice in the field, a stopped Docker Desktop.
+_handoff="$(sed -n '/& powershell -ExecutionPolicy Bypass -File/,$p' "$_IPS")"
+if printf '%s\n' "$_handoff" | grep -qF 'if ($setupExitCode -ne 0) { exit $setupExitCode }'; then
+    pass "install.ps1 exits with the setup script's own exit code"
+else
+    fail "install.ps1 no longer passes the setup script's exit code through"
+fi
+# An invariant on the whole tail of the file, not on the one string that was
+# removed: ANY throw after the handoff lands in the trap, and the trap's
+# message is the last thing the user reads.
+if printf '%s\n' "$_handoff" | grep -qE '^[[:space:]]*throw '; then
+    fail "install.ps1 throws after the handoff again - the trap prints that instead of the cause the setup script named"
+else
+    pass "...and throws nothing after the handoff, so the setup script keeps the last word"
+fi
+
+# The range ends on /^}/ rather than /^}$/ so it still bounds the block in a
+# Windows working tree, where the .ps1 files are CRLF and the "$" would not
+# match. No line inside the trap starts in column 1.
+_trap="$(sed -n '/^trap {/,/^}/p' "$_IPS")"
+if printf '%s\n' "$_trap" | grep -qF 'check your network or proxy'; then
+    if printf '%s\n' "$_trap" | grep -qF '$InstallPhase -eq "download"'; then
+        pass "the network advice is limited to the phase that uses the network"
+    else
+        fail "the trap sends every failure off to check the network again, including the ones with a named cause"
+    fi
+else
+    pass "the trap does not mention the network at all"
+fi
+if printf '%s\n' "$_trap" | grep -qF 'Fix the issue above and re-run." -ForegroundColor'; then
+    pass "...and every other phase still gets a plain 'fix it and re-run'"
+else
+    fail "the trap lost its plain second line, so a non-download failure ends with no advice at all"
+fi
+
+# The phase has to be entered before the fetch and left behind after it, or
+# every later failure inherits the download's advice.
+_dl="$(_line_of "$_IPS" 'Invoke-WebRequest -Uri $url -OutFile $tmpZip')"
+_phase_dl="$(_line_of "$_IPS" '$InstallPhase = "download"')"
+_phase_plan="$(_line_of "$_IPS" '$InstallPhase = "plan"')"
+_plan_render="$(_line_of "$_IPS" 'Write-ExakitInstallPlan')"
+if [ -n "$_dl" ] && [ -n "$_phase_dl" ] && [ -n "$_phase_plan" ] && [ -n "$_plan_render" ] && \
+   [ "$_phase_dl" -lt "$_dl" ] && [ "$_phase_plan" -gt "$_dl" ] && [ "$_phase_plan" -lt "$_plan_render" ]; then
+    pass "the download phase is entered before the fetch and left before the plan"
+else
+    fail "the install phase no longer tracks the fetch (phase set at ${_phase_dl:-none}, fetch at ${_dl:-none}, plan phase at ${_phase_plan:-none}, plan render at ${_plan_render:-none})"
+fi
+
+printf '\n== the Windows installer checks the machine before it writes to it ==\n'
+
+# install.ps1 checked only "is this Windows" before downloading the kit,
+# replacing ~/.exasol-starter-kit/kit and handing off to a setup script that
+# opens a logfile and writes five manifest entries -- all before
+# Test-NanoRequirements looked at Docker, memory or disk. Verified in the
+# field: with Docker stopped, the refused install still left an install log.
+_gate="$(_line_of "$_IPS" '$RequirementChecks = Get-ExakitRequirementChecks')"
+_enforce="$(_line_of "$_IPS" 'throw $check.Reason')"
+if [ -n "$_gate" ] && [ -n "$_enforce" ] && [ -n "$_dl" ] && \
+   [ "$_gate" -lt "$_dl" ] && [ "$_enforce" -lt "$_dl" ]; then
+    pass "the requirements gate runs, and refuses, before the download"
+else
+    fail "the requirements gate no longer runs before the download (gate at ${_gate:-none}, refusal at ${_enforce:-none}, fetch at ${_dl:-none})"
+fi
+# Each probe has to be CALLED by the check builder, not merely defined: a gate
+# that quietly stopped asking about Docker would still have the function
+# sitting in the file for a grep to find.
+_builder="$(sed -n '/^function Get-ExakitRequirementChecks {/,/^}/p' "$_IPS")"
+for _probe in 'Get-ExakitDockerEvidence' 'Get-ExakitTotalRamGb' 'Get-ExakitFreeGb'; do
+    if printf '%s
+' "$_builder" | grep -qF "$_probe"; then
+        pass "...and the gate asks $_probe"
+    else
+        fail "the pre-download gate no longer asks $_probe"
+    fi
+done
+# ...and everything those probes read is read before the download writes anything.
+for _probe in 'Get-Command docker' 'TotalPhysicalMemory' 'AvailableFreeSpace'; do
+    _l="$(_line_of "$_IPS" "$_probe")"
+    if [ -n "$_l" ] && [ -n "$_dl" ] && [ "$_l" -lt "$_dl" ]; then
+        pass "...reading $_probe while the machine is still untouched"
+    else
+        fail "the pre-download gate no longer reads $_probe"
+    fi
+done
+
+# The gate borrows its refusals word for word from the library that owns them,
+# so nobody meets two spellings of the same message. BOTH sides are checked:
+# rewording nano.ps1 alone is exactly how they would drift apart in silence.
+for _msg in \
+    'No container runtime found. Install Docker Desktop (https://docs.docker.com/desktop/), then re-run.' \
+    'This machine is not compatible: Exasol Nano needs at least' \
+    'This machine is not compatible right now:' \
+    'Insufficient memory: ' \
+    'Insufficient free disk space on '
+do
+    if grep -qF "$_msg" "$_IPS" && grep -qF "$_msg" "$_NANO"; then
+        pass "the gate and nano.ps1 both say: $_msg"
+    else
+        fail "install.ps1 and setup/lib/nano.ps1 no longer share this refusal, so the same machine gets two spellings of it: $_msg"
+    fi
+done
+
+# Permissive by design: this gate works from less information than the check it
+# runs ahead of, so anything it cannot read has to pass.
+if grep -A2 -F 'if ($ramGb -lt 0) {' "$_IPS" | grep -qF -e '-State "note"'; then
+    pass "an unreadable memory reading is a note, not a refusal"
+else
+    fail "the gate now refuses a machine whose memory it merely could not read"
+fi
+if grep -A2 -F 'if ($freeGb -lt 0) {' "$_IPS" | grep -qF -e '-State "note"'; then
+    pass "an unreadable disk reading is a note, not a refusal"
+else
+    fail "the gate now refuses a machine whose free disk it merely could not read"
+fi
+
+printf '\n== EXAKIT_PREFLIGHT exists on both installers ==\n'
+
+# QUICKSTART.md and README.md offer "check first, it installs nothing" under a
+# requirements table that includes Windows, and the only spelling of it was the
+# sh one. install.ps1 answers to it at the same point in its own flow, and can
+# do it before the download because -- unlike install.sh, whose checker lives
+# in the kit -- it has everything it needs already.
+_has "$ROOT/install.sh" 'EXAKIT_PREFLIGHT' \
+    "install.sh supports EXAKIT_PREFLIGHT" \
+    "install.sh lost EXAKIT_PREFLIGHT"
+_pf="$(_line_of "$_IPS" '$env:EXAKIT_PREFLIGHT -eq "1"')"
+if [ -n "$_pf" ] && [ -n "$_dl" ] && [ "$_pf" -lt "$_dl" ]; then
+    pass "install.ps1 answers \$env:EXAKIT_PREFLIGHT, before it downloads anything"
+else
+    fail "install.ps1 has no \$env:EXAKIT_PREFLIGHT check ahead of the download - the docs offer Windows a check-only run that does not exist"
+fi
+_has "$_IPS" 'exit (Write-ExakitRequirementReport' \
+    "...and a preflight run stops at the report instead of installing" \
+    "a preflight run on Windows no longer stops at the report"
+
+printf '\n== a failed re-install never leaves the user without a kit ==\n'
+
+# install.ps1 deleted ~/.exasol-starter-kit/kit and then moved the archive's
+# entries in one at a time, so a corrupt archive, a full disk or antivirus
+# holding a single file open left an empty or half-populated kit directory --
+# and the installed exakit.cmd shim points into it by absolute path, so the
+# user's working `exakit` command died with a re-install they had only run to
+# get a newer version.
+_sentinels="$(_line_of "$_IPS" 'foreach ($sentinel in')"
+_aside="$(_line_of "$_IPS" 'Move-Item -LiteralPath $KitDir -Destination $kitBackup')"
+if [ -n "$_sentinels" ] && [ -n "$_aside" ] && [ "$_sentinels" -lt "$_aside" ]; then
+    pass "the incoming kit is verified before the working one is touched"
+else
+    fail "the working kit is moved or removed before the replacement is verified (verify at ${_sentinels:-none}, move at ${_aside:-none})"
+fi
+if [ -n "$_sentinels" ]; then
+    _sent_line="$(sed -n "${_sentinels}p" "$_IPS")"
+    for _sentinel in 'setup\exakit.ps1' 'setup\lib\exakit-common.ps1' 'versions.json'; do
+        case "$_sent_line" in
+            *"$_sentinel"*) pass "...checking it for $_sentinel" ;;
+            *) fail "the incoming kit is no longer checked for $_sentinel - an archive without it would replace a working kit" ;;
+        esac
+    done
+fi
+_has "$_IPS" 'Move-Item -LiteralPath $kitBackup -Destination $KitDir' \
+    "a failed swap puts the previous kit back" \
+    "a failed swap leaves the user with no kit directory at all"
+_has "$_IPS" 'your previous kit was put back' \
+    "...and the message says so, so the user knows the exakit command still works" \
+    "...and says nothing about it, so the user finds out by typing exakit"
+_has "$_IPS" 'Join-Path $ExakitHome "kit.incoming-' \
+    "the new tree is staged beside the kit, where a rename can reach it" \
+    "the new tree is staged where Move-Item may not be able to rename it from (a %TEMP% on another volume)"
+# The old shape was: delete first, ask questions later.
+_kitrm="$(_line_of "$_IPS" 'Remove-Item -Recurse -Force $KitDir')"
+if [ -z "$_kitrm" ] || { [ -n "$_sentinels" ] && [ "$_kitrm" -gt "$_sentinels" ]; }; then
+    pass "nothing deletes the kit directory before the replacement is proven"
+else
+    fail "install.ps1 deletes the kit directory at line $_kitrm, before the archive is verified"
+fi
+
+printf '\n== the Windows-on-ARM install says what it is skipping ==\n'
+
+# $exapumpSupported gates the exapump and AI bridge steps, and Begin-ExakitStep
+# is the only thing that prints a step label -- so the screen jumped from
+# "Step 1/5" to "Step 4/5", which reads as output that got lost rather than as
+# two steps this machine does not need. bash names the step it is not running.
+_has "$ROOT/setup/lib/common.sh" 'not part of this installation, skipping' \
+    "bash names a step it is not running" \
+    "bash no longer names a skipped step - the wording the Windows twin copies is gone"
+_has "$_SWD" 'Info "Step 2/5  exapump - not part of this installation, skipping"' \
+    "the Windows path names the skipped exapump step" \
+    "Windows-on-ARM jumps from Step 1/5 to Step 4/5 again"
+_has "$_SWD" 'Info "Step 3/5  AI bridge (MCP server, clients and skills) - not part of this installation, skipping"' \
+    "...and the skipped AI bridge step" \
+    "Windows-on-ARM skips the AI bridge step without printing it"
+
+# The note said "MCP client setup" while the whole bridge was being skipped:
+# step 3 installs and validates the MCP SERVER too, because the read-only
+# database user it connects as is provisioned through exapump.
+_has "$_SWD" 'the whole AI bridge' \
+    "the skip note names the whole AI bridge, not just the clients" \
+    "the skip note understates the skip again - the MCP server goes with it"
+if grep -qF 'Skipping exapump, sample-data loading and MCP client setup' "$_SWD"; then
+    fail "the old note is back: it implies an MCP server that this install never builds"
+else
+    pass "...and the old, narrower note is gone"
+fi
+
+# And the offer that points AI clients at the bridge has to be gated on the
+# same condition as the step that builds it.
+if grep -B6 -F 'Request-ExakitMcpSetupOffer' "$_SWD" | grep -qF 'if ($exapumpSupported)'; then
+    pass "the MCP client offer is gated on the same condition as the bridge"
+else
+    fail "the installer skips building the AI bridge and then offers to connect clients to it"
+fi
+# The skills offer is not gated: skills are documents an AI client reads, and
+# they are just as useful with the database alone.
+if grep -B4 -F 'Request-ExakitSkillsInstallOffer' "$_SWD" | grep -qF 'exapumpSupported'; then
+    fail "the skills offer got gated too - skills do not need exapump"
+else
+    pass "...and the skills offer stays unconditional"
+fi
+
 
 printf '\n%s: %d passed, %d failed\n' "$(basename "$0")" "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

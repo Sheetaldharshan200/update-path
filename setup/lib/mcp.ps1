@@ -165,6 +165,46 @@ function Resolve-McpCredentials {
     return @{ User = $creds.User; Password = $password }
 }
 
+# Show-McpHandshakeDetail <text> - show what the failed handshake actually said.
+#
+# The reason is already in this process's hands: Invoke-ExakitPython raises the
+# interpreter's combined output as its exception message, and Test-McpServer
+# catches that and writes it to the logfile. So the old "(see log)" wording sent
+# the reader into a different program to look for an answer this run was holding
+# - an authentication failure, a bad DSN, a missing package. On this step above
+# all - the one a user reaches BECAUSE their assistant cannot see the database -
+# the cause belongs on screen.
+#
+# Only the tail is shown: uvx narrates its own environment build first and the
+# reason is always last. The per-line cap is there because Invoke-ExakitPython
+# builds its message by interpolating the output ARRAY, which PowerShell joins
+# with spaces - so a multi-line traceback can reach here as one very long line,
+# and the end of it is still the part that matters.
+#
+# The text is redacted before it is printed. It comes from a process that was
+# handed the database password in EXA_PASSWORD, and a driver traceback can echo
+# its connection arguments back out.
+# Twin of mcp_print_handshake_detail in setup/lib/mcp.sh.
+function Show-McpHandshakeDetail {
+    param([AllowEmptyString()][string]$Text, [AllowEmptyString()][string]$Password = "")
+    if ([string]::IsNullOrWhiteSpace($Text)) { return $false }
+    $detail = ConvertTo-McpRedactedText -Text $Text -Secrets @($Password)
+    # The prefix is Invoke-ExakitPython's own plumbing, not something the server
+    # said, and it would otherwise be the first thing the reader sees.
+    $detail = $detail -replace '^Python exited with code \d+:\s*', ''
+    $lines = @($detail -split "`r?`n" | Where-Object { "$_".Trim() -ne "" } | Select-Object -Last 8)
+    if ($lines.Count -eq 0) { return $false }
+    foreach ($line in $lines) {
+        $shown = "$line".TrimEnd()
+        if ($shown.Length -gt 300) { $shown = "..." + $shown.Substring($shown.Length - 300) }
+        # The same contained gutter every other piece of foreign output gets, in
+        # the error colour because that is what this is.
+        if ($script:UiFancy) { Write-Host ("      {0}{1} {2}{3}" -f $script:UiErr, $script:UiVB, $shown, $script:UiReset) }
+        else { Write-Host ("      | {0}" -f $shown) -ForegroundColor Red }
+    }
+    return $true
+}
+
 # Test-McpServer - start the server over stdio and check it answers an MCP
 # initialize handshake. Uses the same env the client configs use.
 function Test-McpServer {
@@ -213,6 +253,10 @@ sys.exit(1)
 '@
 
     $handshakeOk = $false
+    # What the handshake said, kept for the failure branch below. The retry
+    # overwrites it on purpose: what is reported has to be the attempt that was
+    # actually the last word, never an earlier one.
+    $handshakeDetail = ""
     for ($attempt = 1; $attempt -le 2; $attempt++) {
         # Starting the server can still mean uvx materialising an
         # environment, so this phase is not instant either.
@@ -227,7 +271,10 @@ sys.exit(1)
             if ($script:LogFile) { $out | Add-Content -Path $script:LogFile }
             break
         } catch {
-            if ($script:LogFile) { "$_" | Add-Content -Path $script:LogFile }
+            # Invoke-ExakitPython throws with the interpreter's own output in
+            # the message, which is the only copy of the reason there is.
+            $handshakeDetail = "$_"
+            if ($script:LogFile) { $handshakeDetail | Add-Content -Path $script:LogFile }
         } finally {
             # Before the retry warning, not after: a spinner owns its line
             # and rewrites it every 90ms, so a warning printed under it
@@ -249,7 +296,12 @@ sys.exit(1)
         Set-ExakitManifestValue "components.mcp_server.mode" "stdio"
         Set-ExakitManifestValue "components.mcp_server.validated" $true
     } else {
-        Warn2 "MCP stdio validation failed (see log). The configs are still in place; clients may show more detail."
+        Write-ExakitError "The MCP server did not answer the stdio handshake. What it said:"
+        if (-not (Show-McpHandshakeDetail -Text $handshakeDetail -Password $creds.Password)) {
+            if ($script:UiFancy) { Write-Host ("      {0}{1} (the handshake produced no output){2}" -f $script:UiErr, $script:UiVB, $script:UiReset) }
+            else { Write-Host "      | (the handshake produced no output)" -ForegroundColor Red }
+        }
+        Warn2 "Your database and the client configs are unchanged - clients will still start the server. For a deeper check, run: exakit mcp-doctor"
         Set-ExakitManifestValue "components.mcp_server.validated" $false
     }
 }

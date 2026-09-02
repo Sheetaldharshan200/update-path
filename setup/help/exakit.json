@@ -265,7 +265,7 @@
       ],
       "examples": [
         "exakit update",
-        "exakit update",
+        "exakit update runtime",
         "exakit update --yes"
       ]
     },
@@ -339,7 +339,7 @@
     },
     {
       "name": "EXAKIT_REUSE_DB",
-      "effect": "macOS: 1 adopts an existing database (default), 0 destroys it and deploys fresh."
+      "effect": "1 adopts an existing database (default), 0 destroys it and deploys fresh. Both runtimes: on the container path 0 removes the Nano container and its data volume, which is the database."
     },
     {
       "name": "EXAKIT_DB_PORT",

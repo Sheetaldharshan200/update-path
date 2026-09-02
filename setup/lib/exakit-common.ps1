@@ -80,7 +80,57 @@ if (-not (Get-Command Start-ExakitSpinner -ErrorAction SilentlyContinue)) {
 # ---------------------------------------------------------------------------
 # State locations
 # ---------------------------------------------------------------------------
-$script:ExakitHome   = if ($env:EXAKIT_HOME) { $env:EXAKIT_HOME } else { Join-Path $HOME ".exasol-starter-kit" }
+# Test-ExakitLocalPath <path> - is this path on a local drive of THIS machine?
+# A UNC path never is, and neither is a mapped network drive. Used to decide
+# whether a home can host the kit at all, so "cannot tell" answers $true: an
+# unclassifiable drive is left alone rather than declared unusable.
+function Test-ExakitLocalPath {
+    param([string]$Path)
+    if (-not $Path) { return $false }
+    if ($Path.StartsWith("\\")) { return $false }
+    if ($Path -notmatch '^[A-Za-z]:') { return $false }
+    try {
+        $drive = New-Object System.IO.DriveInfo($Path.Substring(0, 2) + "\")
+        if ($drive.DriveType -eq [System.IO.DriveType]::Network) { return $false }
+        # A drive letter with no root directory is a mapping that is not
+        # currently connected - nothing can be installed into it either.
+        if ($drive.DriveType -eq [System.IO.DriveType]::NoRootDirectory) { return $false }
+        return $true
+    } catch {
+        return $true
+    }
+}
+
+# Get-ExakitHomeBase - the directory the kit's own state hangs off.
+#
+# PowerShell's $HOME comes from the account's home-directory attribute, which on
+# a domain-joined machine is routinely a mapped drive (H:\) or a UNC share
+# (\\server\share\user). Neither can host this kit: Docker Desktop cannot
+# bind-mount a network path into the Nano container, and the free-space probe
+# answers -1 for anything that is not a local X: drive - so the install failed
+# before it had done anything, on a machine where nothing was actually wrong.
+# $env:USERPROFILE is the local profile on this machine and is what every other
+# Windows tool means by "home".
+#
+# THE CATCH is that changing the default MOVES where an existing install is
+# found. A kit deployed by an earlier version of this file sits under $HOME, and
+# quietly looking somewhere else would report a healthy machine as not installed
+# and then build a second copy beside the first. So an install that is already
+# there keeps winning, and USERPROFILE is the default only where there is
+# nothing to find.
+function Get-ExakitHomeBase {
+    $base = $env:USERPROFILE
+    if (-not $base) { return $HOME }
+    if ($base -eq $HOME) { return $base }
+    if (Test-Path (Join-Path $base ".exasol-starter-kit\manifest.json")) { return $base }
+    # $HOME is probed only when it is somewhere we can reach quickly: Test-Path
+    # on a disconnected share blocks for seconds, and this runs on every command.
+    if ((Test-ExakitLocalPath $HOME) -and
+        (Test-Path (Join-Path $HOME ".exasol-starter-kit\manifest.json"))) { return $HOME }
+    return $base
+}
+$script:ExakitHomeBase = Get-ExakitHomeBase
+$script:ExakitHome   = if ($env:EXAKIT_HOME) { $env:EXAKIT_HOME } else { Join-Path $script:ExakitHomeBase ".exasol-starter-kit" }
 $script:LogDir       = Join-Path $script:ExakitHome "logs"
 $script:CacheDir     = Join-Path $script:ExakitHome "cache"
 $script:CredsDir     = Join-Path $script:ExakitHome "credentials"
@@ -91,7 +141,21 @@ $script:McpDir       = Join-Path $script:ExakitHome "mcp"
 # exist: telling an agent to write into a path nothing creates turns the last
 # step of the trust loop into a mkdir it has to guess at.
 $script:WorkflowsDir = Join-Path $script:ExakitHome "workflows"
-$script:BinDir       = if ($env:EXAKIT_BIN_DIR) { $env:EXAKIT_BIN_DIR } else { Join-Path $HOME ".local\bin" }
+$script:BinDir       = if ($env:EXAKIT_BIN_DIR) { $env:EXAKIT_BIN_DIR } else { Join-Path $script:ExakitHomeBase ".local\bin" }
+# Where the reason an install died is left for the NEXT process to find. Twin of
+# exakit_failure_note_file in common.sh, including the file name, so the two
+# platforms describe the same install the same way.
+$script:FailureNotePath = if ($env:EXAKIT_FAILURE_NOTE) { $env:EXAKIT_FAILURE_NOTE } else { Join-Path $script:ExakitHome ".last-failure" }
+
+# A home the kit cannot use, said out loud. Not a matter of taste: the install
+# cannot complete on a network or redirected home, and the one thing that fixes
+# it is telling the kit where to live instead. Recorded here and printed by
+# Show-ExakitHomeNotice, because Warn2 is not defined yet at this point in the
+# file and the very first thing an install does is start its log.
+$script:ExakitHomeNotice = ""
+if (-not $env:EXAKIT_HOME -and -not (Test-ExakitLocalPath $script:ExakitHome)) {
+    $script:ExakitHomeNotice = "Your Windows home ($script:ExakitHomeBase) is not on a local drive. Docker cannot bind-mount a network or redirected home, so the database cannot be deployed there. Set EXAKIT_HOME to a folder on a local drive (for example C:\exasol-starter-kit) and run the installer again."
+}
 $script:ManagedPythonVersion = if ($env:EXAKIT_MANAGED_PYTHON_VERSION) { $env:EXAKIT_MANAGED_PYTHON_VERSION } else { "3.12" }
 $script:McpReadonlyUser    = if ($env:EXAKIT_MCP_READONLY_USER) { $env:EXAKIT_MCP_READONLY_USER } else { "mcp_readonly" }
 $script:McpReadonlySchemas = if ($env:EXAKIT_MCP_READONLY_SCHEMAS) { $env:EXAKIT_MCP_READONLY_SCHEMAS } else { "STARTER_KIT" }
@@ -168,7 +232,20 @@ New-Item -ItemType Directory -Force -Path $script:ExakitHome, $script:LogDir, $s
 # One log file per process by default (mirrors bash's exakit_init_logging);
 # callers that want a distinct log (load-data, exakit CLI) set $script:LogFile
 # themselves before calling Initialize-ExakitLogging.
+# Show-ExakitHomeNotice - say once, at the start of a logged command, that this
+# machine's home cannot host the kit. Once per process: the fact does not change
+# while the process runs, and repeating it under every step would bury it.
+function Show-ExakitHomeNotice {
+    if (-not $script:ExakitHomeNotice) { return }
+    $notice = $script:ExakitHomeNotice
+    $script:ExakitHomeNotice = ""
+    Warn2 $notice
+}
+
 function Initialize-ExakitLogging {
+    # Before the log file is created, because creating it is the first thing a
+    # non-local home makes fail.
+    Show-ExakitHomeNotice
     if (-not $script:LogFile) {
         $script:LogFile = Join-Path $script:LogDir ("install-{0}.log" -f (Get-Date -Format "yyyyMMdd-HHmmss"))
     }
@@ -272,6 +349,36 @@ function Warn2([string]$Msg) {
     if ($script:UiFancy) { Write-Host ("      {0}!{1} {2}" -f $script:UiWarn, $script:UiReset, $Msg) }
     else { Write-Host "      ! $Msg" -ForegroundColor Yellow }
     Write-ExakitLog "WARN" $Msg
+}
+
+# Write-ExakitError <text> - a red error line that PRINTS AND RETURNS.
+#
+# Twin of error() in common.sh, and the gap that let calls to a function nobody
+# had written ship: this side had Fail() (which throws and ends the command) and
+# Warn2() (yellow, "this is not fatal") and nothing between them. A step that
+# wants to say "this failed, and here is what the engine said" before printing
+# its own remedy and deciding what to do had no way to say it - Fail() is not a
+# substitute, because it never comes back.
+#
+# Never gated by ExakitQuietDetail, for exactly the reason Warn2 is not: a job
+# that says nothing while it works must still say something when it goes wrong.
+# The note on ExakitQuietDetail above has always claimed that of this function;
+# now there is a function for it to be true of.
+#
+# The spinner's line is handed back before printing. A spinner owns its line and
+# rewrites it every 90ms, so a message printed underneath one lands inside a
+# frame that is still being repainted and the next redraw takes it away again -
+# the same reason OkStep pauses it. Six-space indent and the shared palette, so
+# an error sits in the same gutter as the ok and the warning it replaces.
+function Write-ExakitError([string]$Msg) {
+    Suspend-ExakitSpinner
+    if ($script:UiFancy) {
+        Write-Host ("      {0}{1}{2} {3}" -f $script:UiErr, $script:UiCross, $script:UiReset, $Msg)
+    } else {
+        Write-Host ("      {0} {1}" -f $script:UiCross, $Msg) -ForegroundColor Red
+    }
+    Resume-ExakitSpinner
+    Write-ExakitLog "ERROR" $Msg
 }
 
 # Show-ExakitDbErrorRemedy <text> - the error-translation layer for the database
@@ -619,6 +726,13 @@ function Fail([string]$Msg) {
     if (Get-Command Set-ExakitFailureReason -ErrorAction SilentlyContinue) {
         Set-ExakitFailureReason $Msg
     }
+    # And on disk, so the NEXT process can still say why this one stopped -
+    # `exakit status --json` reports it as last_failure. Twin of bash die()
+    # calling exakit_note_failure. Guarded the same way: this can run while the
+    # library is still being dot-sourced.
+    if (Get-Command Write-ExakitFailureNote -ErrorAction SilentlyContinue) {
+        Write-ExakitFailureNote $Msg
+    }
     # Rendered as a small "card": prominent cross header, then a dim gutter
     # line to the log - the same shape as ui.sh's die().
     Write-Host ""
@@ -775,9 +889,52 @@ function Test-ExakitPortInUse {
 # fall back to a uv-managed one so the kit never hard-requires a system
 # Python install)
 # ---------------------------------------------------------------------------
+# Test-ExakitSystemPython - is there a system `python` this kit can actually use?
+#
+# A bare Get-Command is not that test on Windows. Windows 10 and 11 ship an "App
+# execution alias" stub at %LOCALAPPDATA%\Microsoft\WindowsApps\python.exe that
+# is on PATH by default and is NOT an interpreter: it advertises the Microsoft
+# Store and exits 9009. Accepting it meant Assert-ExakitPython saw a Python,
+# never bootstrapped uv, and every Invoke-ExakitPython afterwards threw "Python
+# exited with code 9009" - which is what failed the MCP handshake at step 3 of 5
+# on a machine that simply had no Python.
+#
+# The floor is the same 3.11 the bash twin enforces (_exakit_has_system_python3),
+# so a real-but-too-old interpreter is treated exactly like an absent one and the
+# uv-managed runtime takes over automatically. That is what makes the parity the
+# comment on EXAKIT_MIN_PYTHON in common.sh claims actually true.
+#
+# The probe spawns a process, so its verdict is cached for the life of the
+# process, exactly as the bash twin caches _EXAKIT_SYSTEM_PY_OK.
+$script:SystemPythonOk = $null
+
 function Test-ExakitSystemPython {
     if ($env:EXAKIT_DISABLE_SYSTEM_PYTHON -eq "1") { return $false }
-    return [bool](Get-Command python -ErrorAction SilentlyContinue)
+    if ($null -ne $script:SystemPythonOk) { return $script:SystemPythonOk }
+    $script:SystemPythonOk = $false
+    if (-not (Get-Command python -ErrorAction SilentlyContinue)) { return $false }
+    $previousErrorActionPreference = $ErrorActionPreference
+    try {
+        # Under the module-global $ErrorActionPreference = 'Stop', a native
+        # command writing to stderr can surface as a terminating error before the
+        # exit code is ever read - and the Store stub writes to stderr. 'Continue'
+        # keeps this a plain exit-code check.
+        $ErrorActionPreference = "Continue"
+        $out = & python -c "import sys; print(sys.version_info[:2] >= (3, 11))" 2>$null
+        $code = $LASTEXITCODE
+        # Three ways to be "no system Python", and the stub uses all of them: a
+        # non-zero exit (9009), no output at all, and an answer that is not True.
+        if ($code -eq 0 -and ("$out").Trim() -eq "True") {
+            $script:SystemPythonOk = $true
+        } else {
+            Write-ExakitLog "INFO" "the 'python' on PATH is not a usable interpreter (exit $code, output '$out') - using the uv-managed Python runtime instead"
+        }
+    } catch {
+        $script:SystemPythonOk = $false
+    } finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
+    return $script:SystemPythonOk
 }
 
 function Get-ExakitUvBin {
@@ -927,7 +1084,16 @@ function Save-ExakitManifest($Manifest) {
     # interleave inside it, and the loser's move can publish a half-written file.
     $tmp = "$script:ManifestPath." + [System.Guid]::NewGuid().ToString("N") + ".tmp"
     try {
-        $Manifest | ConvertTo-Json -Depth 12 | Set-Content -Path $tmp
+        # WriteAllText with a BOM-less UTF-8 encoder, NOT Set-Content. On
+        # PowerShell 5.1 Set-Content with no -Encoding writes the ANSI code page,
+        # so a manifest holding a path such as C:\Users\Mueller\... landed on
+        # disk as CP1252 bytes - and mcp/runtime/filesystem.py opens the manifest
+        # with encoding="utf-8", so every MCP read of it then raised. `-Encoding
+        # UTF8` is not the fix either: on 5.1 that emits a BOM, which a strict
+        # JSON parser rejects. Set-ExakitCredential writes the same way, and the
+        # bash side is immune because json.dump ASCII-escapes everything.
+        $json = $Manifest | ConvertTo-Json -Depth 12
+        [System.IO.File]::WriteAllText($tmp, $json, (New-Object System.Text.UTF8Encoding($false)))
         Move-Item -Force $tmp $script:ManifestPath
     } catch {
         if (Test-Path $tmp) { Remove-Item -Force -ErrorAction SilentlyContinue $tmp }
@@ -995,16 +1161,25 @@ function Set-ExakitManifestValue {
 # Twin of manifest_del in common.sh.
 function Remove-ExakitManifestValue {
     param([Parameter(Mandatory)][string]$Path)
-    $doc = Read-ExakitManifest
-    if ($null -eq $doc) { return }
-    $parts = $Path -split "\."
-    $node = $doc
-    foreach ($part in $parts[0..($parts.Count - 2)]) {
-        if ($node.PSObject.Properties[$part]) { $node = $node.$part } else { return }
-    }
-    if ($node.PSObject.Properties[$parts[-1]]) {
-        $node.PSObject.Properties.Remove($parts[-1])
-        Save-ExakitManifest $doc
+    # The lock has to span read AND write, for the reason Set-ExakitManifestValue
+    # spells out: a concurrent writer reads the same document and the last save
+    # wins, silently discarding this one. The bash twin (manifest_del) takes it
+    # too; this writer was simply missed.
+    $lock = Enter-ExakitManifestLock
+    try {
+        $doc = Read-ExakitManifest
+        if ($null -eq $doc) { return }
+        $parts = $Path -split "\."
+        $node = $doc
+        foreach ($part in $parts[0..($parts.Count - 2)]) {
+            if ($node.PSObject.Properties[$part]) { $node = $node.$part } else { return }
+        }
+        if ($node.PSObject.Properties[$parts[-1]]) {
+            $node.PSObject.Properties.Remove($parts[-1])
+            Save-ExakitManifest $doc
+        }
+    } finally {
+        Exit-ExakitManifestLock $lock
     }
 }
 
@@ -1166,6 +1341,55 @@ function Get-ExakitFailureReason {
     $reason = $script:ExakitLastFailureReason
     $script:ExakitLastFailureReason = ""
     return $reason
+}
+
+# Write-ExakitFailureNote / Read-ExakitFailureNote - the reason an install died,
+# on disk, for the NEXT process to find. Twin of exakit_note_failure and the
+# .last-failure reader in setup/exakit.
+#
+# Bash records this in a file, so `exakit status --json` can answer last_failure
+# / last_failure_at afterwards. PowerShell recorded it only in a script variable,
+# which dies with the process - so on Windows nothing survived to say why an
+# install stopped, and the one command an agent runs next answered as though
+# nothing had happened.
+#
+# Line 1 is the reason, byte for byte, because every reader takes the first line.
+# Line 2 is when it happened: a note with no date cannot be told from a current
+# one, and an undated note that outlived its cause is exactly how a healthy
+# machine comes to look broken. LF endings, like the bash twin, so the same kit
+# home read from WSL parses identically.
+function Write-ExakitFailureNote {
+    param([string]$Reason)
+    # Never fails. A note is a nicety, and losing it must not turn a soft failure
+    # into a hard one - least of all inside Fail(), which is already reporting
+    # one.
+    try {
+        if (-not $Reason) { return }
+        $dir = Split-Path -Parent $script:FailureNotePath
+        if (-not $dir -or -not (Test-Path $dir)) { return }
+        $stamp = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
+        [System.IO.File]::WriteAllText($script:FailureNotePath,
+            ($Reason + "`n" + $stamp + "`n"),
+            (New-Object System.Text.UTF8Encoding($false)))
+        try { Protect-ExakitFile $script:FailureNotePath } catch { }
+    } catch { }
+}
+
+# Read, not consumed: `status` reports the note without clearing it, exactly as
+# the bash status does. Both fields are empty when there is no note.
+function Read-ExakitFailureNote {
+    $empty = [pscustomobject]@{ reason = ""; at = "" }
+    try {
+        if (-not (Test-Path $script:FailureNotePath)) { return $empty }
+        $lines = @(Get-Content -Path $script:FailureNotePath -ErrorAction Stop)
+        $reason = ""
+        $at = ""
+        if ($lines.Count -ge 1) { $reason = "$($lines[0])".Trim() }
+        if ($lines.Count -ge 2) { $at = "$($lines[1])".Trim() }
+        return [pscustomobject]@{ reason = $reason; at = $at }
+    } catch {
+        return $empty
+    }
 }
 
 # Register-ExakitSoftFailure - book a step as "did not complete" without the
@@ -1988,13 +2212,23 @@ function Test-ExakitStepDone {
 # path has no equivalent to bash's rollback registration).
 function Set-ExakitStepDone {
     param([Parameter(Mandatory)][string]$Step)
-    $doc = Read-ExakitManifest
-    if ($null -eq $doc) { Fail "Failed to record step ${Step}: no manifest at $script:ManifestPath" }
-    $steps = Get-ManifestValue -Manifest $doc -Path "steps_completed"
-    $steps = [array]$steps
-    if ($steps -notcontains $Step) { $steps += $Step }
-    Set-ManifestValue -Manifest $doc -Path "steps_completed" -Value $steps
-    Save-ExakitManifest $doc
+    # The lock has to span read AND write, for the reason Set-ExakitManifestValue
+    # spells out. THIS is the write whose loss is felt: a dropped step tick makes
+    # the next run repeat work it had already finished, which is the whole
+    # promise of "completed steps are skipped". The bash twin (mark_step) takes
+    # it too.
+    $lock = Enter-ExakitManifestLock
+    try {
+        $doc = Read-ExakitManifest
+        if ($null -eq $doc) { Fail "Failed to record step ${Step}: no manifest at $script:ManifestPath" }
+        $steps = Get-ManifestValue -Manifest $doc -Path "steps_completed"
+        $steps = [array]$steps
+        if ($steps -notcontains $Step) { $steps += $Step }
+        Set-ManifestValue -Manifest $doc -Path "steps_completed" -Value $steps
+        Save-ExakitManifest $doc
+    } finally {
+        Exit-ExakitManifestLock $lock
+    }
     Write-ExakitLog "STEP" "completed: $Step"
 }
 
@@ -2089,7 +2323,23 @@ function Begin-ExakitStep {
 # self-update write it, so the content lives here rather than in two places.
 function Get-ExakitCmdShimContent {
     param([Parameter(Mandatory)][string]$PsTarget)
-    return "@echo off`r`npowershell -NoProfile -ExecutionPolicy Bypass -File `"$PsTarget`" %*`r`n"
+    # %USERPROFILE% rather than the expanded path, whenever the target sits under
+    # it. cmd.exe reads a .cmd in the console's OEM code page while PowerShell
+    # 5.1 writes one in the ANSI code page, so a home such as
+    # C:\Users\Mueller\... crossed two different code pages on the way to
+    # cmd.exe and the shim ended up pointing at a path that does not exist - an
+    # `exakit` command that cannot find its own target. cmd expands the variable
+    # itself at run time, which keeps the bytes on disk pure ASCII and takes both
+    # code pages out of the question.
+    $target = $PsTarget
+    $profileDir = $env:USERPROFILE
+    if ($profileDir) {
+        $profileDir = $profileDir.TrimEnd([char]92)
+        if ($target.StartsWith($profileDir + [string][char]92, [System.StringComparison]::OrdinalIgnoreCase)) {
+            $target = "%USERPROFILE%" + $target.Substring($profileDir.Length)
+        }
+    }
+    return "@echo off`r`npowershell -NoProfile -ExecutionPolicy Bypass -File `"$target`" %*`r`n"
 }
 
 function Set-ExakitCmdShim {
@@ -2097,7 +2347,17 @@ function Set-ExakitCmdShim {
     New-Item -ItemType Directory -Force -Path $script:BinDir | Out-Null
     Remove-Item -Force (Join-Path $script:BinDir "exakit.ps1") -ErrorAction SilentlyContinue
     $shimPath = Join-Path $script:BinDir "exakit.cmd"
-    Set-Content -Path $shimPath -Value (Get-ExakitCmdShimContent -PsTarget $PsTarget) -NoNewline
+    $content = Get-ExakitCmdShimContent -PsTarget $PsTarget
+    # Written in the code page cmd.exe itself reads a batch file in. It only
+    # matters for a target the %USERPROFILE% substitution could not fold away - a
+    # kit installed outside the user profile under a non-ASCII path - but
+    # Set-Content's 5.1 default is the ANSI code page, which is the one code page
+    # cmd.exe will not be using. A machine whose OEM code page cannot be resolved
+    # falls back to the old behaviour rather than losing the shim.
+    $oem = $null
+    try { $oem = [System.Text.Encoding]::GetEncoding([System.Globalization.CultureInfo]::CurrentCulture.TextInfo.OEMCodePage) } catch { }
+    if ($oem) { [System.IO.File]::WriteAllText($shimPath, $content, $oem) }
+    else { Set-Content -Path $shimPath -Value $content -NoNewline }
     return $shimPath
 }
 
@@ -3658,7 +3918,15 @@ function Show-ExakitMarketplaceMenu {
                 else { Fail "Unknown marketplace add-on in EXAKIT_MARKETPLACE_ADDONS: '$token' (known: $($known -join ' '))" }
             }
         }
-        if ($picked.Count -eq 0) { Info "Nothing to install - every requested add-on is already present."; return }
+        if ($picked.Count -eq 0) {
+            # Say WHY this is a refusal and not a failure. A reader who arrives
+            # here straight after an add-on failed to install reads "nothing to
+            # install" as a contradiction of what they just saw; the repair
+            # command is what turns it back into an answer.
+            Info "Nothing to install - every requested add-on is already present."
+            Info "If one of them is present but not working, repair it with: exakit update <id>"
+            return
+        }
         Invoke-ExakitMarketplaceApply -Ids $picked
         return
     }
@@ -4007,7 +4275,13 @@ function Invoke-ExakitMarketplaceApply {
                 Set-ExakitTableRow -Row $script:ExakitAddonTableRow -State "failed" `
                     -Final "did not finish - see the log" -Table $script:ExakitAddonTable
             }
-            Write-ExakitAddonNote "warn" "$id did not finish installing - retry with: exakit marketplace"
+            # NO REMEDY HERE. The module that failed has just printed its own,
+            # specific to what went wrong; adding a generic "retry with: exakit
+            # marketplace" underneath it gave one failure two competing answers
+            # and made the reader choose - and the generic one was the wrong
+            # choice, because marketplace declines to act on an add-on that is
+            # already present and answers "Nothing to install".
+            Write-ExakitAddonNote "warn" "$id did not finish installing - the reason is above, and in the log"
             $failed += 1
         }
         $script:ExakitAddonTableRow = 0

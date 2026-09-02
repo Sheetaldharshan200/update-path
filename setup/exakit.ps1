@@ -163,6 +163,10 @@ function Invoke-CmdStatus {
         ,@(Get-ExakitLoadedDatasets)
     })
     $pyexasol = Get-ExakitComponentCurrent "pyexasol"
+    # Why the last run stopped, read off disk rather than out of this process:
+    # the install that failed was a different process, and its reason is the one
+    # an agent needs here. Twin of the .last-failure read in cmd_status.
+    $failureNote = Read-ExakitFailureNote
     $services = @{}
     Invoke-ExakitWithSpinner -Quiet:$Json -Label "Checking the add-on services" -Body {
         foreach ($svcId in (Get-ExakitServiceIds)) {
@@ -182,6 +186,12 @@ function Invoke-CmdStatus {
             datasets_loaded = $datasets
             steps_completed = $steps
             pyexasol        = $(if ($pyexasol) { "$pyexasol" } else { $null })
+            # Both keys, always. A reason with no date cannot be told from a
+            # current one, and an undated note that outlived its cause is exactly
+            # how a healthy machine comes to look broken - which is why the note
+            # carries the timestamp on its second line.
+            last_failure    = $(if ($failureNote.reason) { $failureNote.reason } else { $null })
+            last_failure_at = $(if ($failureNote.at) { $failureNote.at } else { $null })
             manifest        = $script:ManifestPath
         } | ConvertTo-Json -Depth 4
         if ($running) { exit 0 } else { exit 3 }
@@ -586,7 +596,15 @@ function Invoke-CmdRepairRuntime {
     Info "Bundled datasets are reloaded afterwards; anything you loaded yourself is not."
     if (-not $confirmed) {
         if (-not (Confirm-ExakitPrompt "Delete the database and rebuild it now?" $false)) {
-            Fail "Nothing was changed. Re-run with -Yes (or EXAKIT_CONFIRM_RUNTIME_REPAIR=1) when you are ready."
+            # DECLINING A DESTRUCTIVE PROMPT IS THE SAFE ANSWER, not an error.
+            # Fail() rendered it as a red error card and exited 1 - and it
+            # records the reason as the last failure, so `exakit status --json`
+            # then reported one on a machine where nothing had gone wrong. "No,
+            # not now" is a successful outcome of this command. Twin of the same
+            # branch in cmd_repair_runtime (setup/exakit).
+            Info "Repair cancelled - nothing was changed."
+            Info "When you are ready: exakit repair-runtime --yes (or set EXAKIT_CONFIRM_RUNTIME_REPAIR=1)"
+            return
         }
     }
 
@@ -617,13 +635,36 @@ function Invoke-ExakitUninstallRun {
     # A real run narrates itself on ONE line. Every path it touches was printed
     # as its own bullet, around twenty lines for a command whose whole result is
     # "it is gone". The paths go to the LOGFILE, which is the right place for an
-    # account of what a destructive command touched, and the outcomes stay on
-    # screen through OkStep. NOT in a dry run: there, listing every path IS the
-    # output. Twin of exakit_uninstall_run in common.sh.
+    # account of what a destructive command touched.
+    #
+    # THE OUTCOMES DO NOT GO WITH THEM. Quieting the paths through
+    # ExakitQuietDetail also quieted every Info() that named WHAT was gone, so a
+    # run that removed a database, a container, a volume, three add-ons, five
+    # AI-client configs, two virtual environments and the launcher printed six
+    # lines and named none of them. And step 5 below deletes the logfile the
+    # detail was routed into, so afterwards there was no record anywhere, on
+    # screen or on disk. Each area therefore promotes ONE durable line through
+    # RecordRemoved (OkStep, which survives the quiet bracket), naming
+    # what it removed; the closing line says that those lines are the whole
+    # record, because by then they are.
+    #
+    # NOT in a dry run: there, listing every path IS the output. Twin of
+    # exakit_uninstall_run in common.sh.
     $unPrevQuiet = $script:ExakitQuietDetail
     if (-not $DryRun -and $script:UiFancy) {
         $script:ExakitQuietDetail = $true
         Start-ExakitSpinner "Removing the kit"
+    }
+    # Real runs only: a dry run removed nothing, so a line in the past tense
+    # would be a lie, and the plan lines above already say what it would do.
+    #
+    # No Verb-Noun hyphen, and not by accident: this helper is nested inside the
+    # function that uses it, and tests/lib/ps-uninstall-calls.sh resolves every
+    # Verb-Noun call in here against the file's TOP-LEVEL definitions - a nested
+    # one is invisible to it, so a hyphenated name would read as a call to a
+    # helper that does not exist. OkStep and Warn2 are spelled the same way.
+    function RecordRemoved([string]$Message) {
+        if (-not $DryRun) { OkStep $Message }
     }
     try {
 
@@ -640,14 +681,16 @@ function Invoke-ExakitUninstallRun {
     #    VS Code extension). Registry-driven: a new add-on ships its own
     #    UninstallFn and appears here with no edits. A system-installed copy
     #    the kit never managed is not touched (each hook enforces that).
+    $addonsGone = @()
     foreach ($addonId in (Get-ExakitMarketplaceInstalledAddons)) {
         $addonEntry = Get-ExakitMarketplaceAddon $addonId
         if ($addonEntry -and $addonEntry.PSObject.Properties["UninstallFn"] -and
             (Get-Command $addonEntry.UninstallFn -ErrorAction SilentlyContinue)) {
-            try { [void](& $addonEntry.UninstallFn -DryRun:$DryRun) }
+            try { [void](& $addonEntry.UninstallFn -DryRun:$DryRun); $addonsGone += $addonId }
             catch { Warn2 "Removing the $addonId add-on reported issues (continuing uninstall)" }
         }
     }
+    if ($addonsGone.Count -gt 0) { RecordRemoved "Add-ons removed: $($addonsGone -join ', ')" }
 
     # 1) Database + all data (the Windows runtime is Nano).
     $type = Get-RuntimeType
@@ -661,17 +704,33 @@ function Invoke-ExakitUninstallRun {
                 default { Warn2 "Unknown runtime type '$type'; skipping database removal" }
             }
         }
+        # BY NAME. "The database was removed" leaves the reader to guess which
+        # container and which volume that was, and those are exactly the two
+        # names they need if the engine kept one of them: a container the engine
+        # refused to remove is found again by name, and nothing else on screen
+        # ever says what it was called.
+        if ($type -eq "nano") {
+            RecordRemoved "Database removed: Nano container $script:NanoContainer, data volume $script:NanoVolume"
+        }
     }
 
     # 2) Managed MCP configuration in the AI clients. Best-effort.
     if (Get-Command Invoke-McpOperation -ErrorAction SilentlyContinue) {
+        # The client list comes from the table that owns it (mcp.ps1) rather than
+        # being spelled out here: the dry-run line named three clients while the
+        # operation covered eight, so five configs were edited that nothing on
+        # screen ever mentioned. Twin of the exakit_mcp_clients_from_args call in
+        # exakit_uninstall_run.
+        $mcpClientList = "all managed clients"
+        if ($script:McpClientLabels) { $mcpClientList = (@($script:McpClientLabels.Keys) | Sort-Object) -join ' ' }
         if ($DryRun) {
-            Info "  will remove: managed MCP configuration in Claude (desktop + Claude Code CLI), Cursor, and Codex"
+            Info "  will remove: managed MCP configuration in the AI clients ($mcpClientList)"
         } else {
             Info "Removing managed MCP configuration from AI clients"
             try { [void](Invoke-McpOperation -Operation "uninstall" -InputArgs @()) }
             catch { Warn2 "Removing the managed MCP client config reported issues (continuing uninstall)" }
         }
+        RecordRemoved "MCP entry removed from the AI clients the kit manages: $mcpClientList"
     }
 
     # 3) Installed AI skills: the live kit list, or what the install recorded
@@ -709,6 +768,7 @@ function Invoke-ExakitUninstallRun {
     if (Test-Path $script:ExakitHome) {
         if ($DryRun) { Info "  will remove: kit home $script:ExakitHome (credentials, logs, manifest, snapshots)" }
         else { Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $script:ExakitHome }
+        RecordRemoved "Kit home removed: $script:ExakitHome (credentials, logs, manifest, snapshots, pyexasol venv, add-on state)"
     }
 
     # 6) CLI binaries. Removed last so earlier steps can still call them.
@@ -732,10 +792,19 @@ function Invoke-ExakitUninstallRun {
     }
     if (-not $DryRun -and $binPaths.Count -gt 0) {
         Remove-ExakitBinariesDeferred -Paths $binPaths
+        $binNamesGone = @($binPaths | ForEach-Object { Split-Path -Leaf $_ })
+        RecordRemoved "Commands removed from $($script:BinDir): $($binNamesGone -join ', ')"
     }
     } finally {
         Stop-ExakitSpinner
         $script:ExakitQuietDetail = $unPrevQuiet
+    }
+    # Said last, and said plainly, because it is the one thing the reader cannot
+    # find out afterwards: the logfile that held the per-path detail lived inside
+    # the kit home this run has just deleted, so the lines above are the only
+    # account of what was removed that still exists anywhere.
+    if (-not $DryRun) {
+        InfoStep "The lines above are the whole record of this uninstall - the install log lived in the kit home and went with it."
     }
 }
 

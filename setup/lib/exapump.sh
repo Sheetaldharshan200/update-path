@@ -549,6 +549,17 @@ exapump_upload() {
         # their remedy before dying, so "Connection refused" arrives WITH
         # "exakit start" instead of leaving the user to map one to the other.
         [ -n "${EXAKIT_LOG_FILE:-}" ] && exakit_explain_db_error "$(tail -8 "$EXAKIT_LOG_FILE" 2>/dev/null)"
+        # exakit_explain_db_error only knows connection, LIMIT and privilege
+        # faults, so a malformed CSV -- the commonest upload failure there is --
+        # matched none of them and arrived as "(see log)". The translator that
+        # does know that fault was already written and already used one line
+        # above (the soft path) and in the folder loop, which means the FATAL
+        # outcome was the one getting the worse message. Same reason, same
+        # words, on both paths.
+        _upl_why="$(exakit_upload_failure_reason 2>/dev/null || true)"
+        if [ -n "$_upl_why" ]; then
+            die "Could not load $(basename "$1") into $2 — $_upl_why"
+        fi
         die "Upload failed: $1 -> $2 (see log)"
     fi
     [ "${EXAKIT_UPLOAD_QUIET:-0}" = 1 ] || ok "$(basename "$1") loaded"

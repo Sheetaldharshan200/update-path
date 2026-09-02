@@ -286,5 +286,89 @@ for _p in $(grep -ohE "printf '[0-9]+\|[0-9]+\|[0-9]+\|[^']+'" "$PHASE_SRC" \
 done
 check "a phase was actually measured" "yes" "$([ "$LONGEST" -gt 0 ] && echo yes || echo NONE-FOUND)"
 
+printf '\n== a failing deploy tells the truth, and never offers to delete a database ==\n'
+
+NANO_SH="$(cat "$ROOT/setup/lib/runtime-nano.sh")"
+NANO_PS1="$(cat "$ROOT/setup/lib/nano.ps1")"
+DETECT_SH="$(cat "$ROOT/setup/lib/detect.sh")"
+
+# C1: the branch knew only that the CONTAINER was absent, and deployed over an
+# existing data volume with a freshly minted password and single-use init args
+# the image refuses on an initialised /exa. Worse, it registered a `volume rm`
+# rollback unconditionally, so "undo the failed step?" deleted a database this
+# run had merely adopted.
+has   "the volume is probed first"     'volume inspect "$EXAKIT_NANO_VOLUME"'     "$NANO_SH"
+has   "...and on Windows"              'volume inspect $script:NanoVolume'        "$NANO_PS1"
+has   "an adopted volume is adopted"   'Adopting the existing database volume'    "$NANO_SH"
+has   "...and on Windows"              'Adopting the existing database volume'    "$NANO_PS1"
+# The rollback that can delete a database is registered once, inside the branch
+# that created the volume - never beside the adopt path.
+check "one volume rollback only"       "1" \
+    "$(printf '%s\n' "$NANO_SH" | grep -c 'push_rollback "\$_engine volume rm')"
+
+# C3: the container's own last words were read straight into the log file and
+# the caller then called the exit a timeout, which it never was.
+lacks "no log-only container tail"     'logs --tail 30 "$EXAKIT_NANO_CONTAINER" >> '  "$NANO_SH"
+has   "the tail is kept and shown"     'The database container started and then exited'  "$NANO_SH"
+has   "...and on Windows"              'The database container started and then exited'  "$NANO_PS1"
+has   "an exit is not a timeout"       'EXAKIT_NANO_EXITED'                       "$NANO_SH"
+has   "known causes are explained"     'nano_explain_container_exit'              "$NANO_SH"
+has   "...and on Windows"              'Show-NanoContainerExitRemedy'             "$NANO_PS1"
+
+# C4: the readiness timeout is reached from a first deploy, from `exakit start`
+# on an established database, and from an update - and it printed `volume rm`
+# to all three.
+has   "the destructive remedy is gated" 'if [ "${EXAKIT_NANO_FIRST_DEPLOY:-0}" = "1" ]' "$NANO_SH"
+has   "...and on Windows"               'if ($script:NanoFirstDeploy)'            "$NANO_PS1"
+has   "an established database is warned" 'it IS your database'                   "$NANO_SH"
+has   "...and on Windows"                 'it IS your database'                   "$NANO_PS1"
+
+# C5: -f is true for a zero-byte file, and an empty secret makes the image
+# refuse to deploy - which surfaces minutes later as C3's container exit.
+has   "an empty secret is refused"     '[ -s "${EXAKIT_CREDS_DIR}/nano_sys_password" ]' "$NANO_SH"
+lacks "...not merely an existing one"  '[ -f "${EXAKIT_CREDS_DIR}/nano_sys_password" ]' "$NANO_SH"
+has   "Windows checks it too"          'Test-Path $pwFile -PathType Leaf'         "$NANO_PS1"
+has   "...including the empty case"    '(Get-Item $pwFile).Length -eq 0'          "$NANO_PS1"
+
+# H1: "Stop it" is unactionable when "it" is never named. On a machine with WSL
+# the holder is often wslrelay, which only `wsl --shutdown` releases.
+has   "the shell can name a holder"    'port_holder_desc()'                       "$DETECT_SH"
+has   "...and Windows can"             'function Get-ExakitPortHolder'            "$NANO_PS1"
+lacks "no unnamed culprit"             'already in use by another application'    "$NANO_SH"
+lacks "...on Windows either"           'already in use by another application'    "$NANO_PS1"
+has   "the WSL relay case is named"    'wsl --shutdown'                           "$NANO_PS1"
+
+# MEDIUM: a one-line engine error was replaced with "(see log)".
+has   "a start failure is quoted"      'nano_die_container_start'                 "$NANO_SH"
+has   "...and on Windows"              'Show-NanoContainerStartFailure'           "$NANO_PS1"
+lacks "no bare see-log on start"       'die "Container failed to start (see log)"' "$NANO_SH"
+
+printf '\n== no function is defined twice ==\n'
+
+# A duplicated definition is invisible to every check the repo already runs: the
+# file parses, the encoding guard passes, and the LAST definition silently wins.
+# It happened for real - a patch to Install-Nano in nano.ps1 computed its end
+# offset from an anchor that occurs twice, re-included the region instead of
+# replacing it, and left the PRE-FIX body as the effective one. Windows kept the
+# old behaviour while every test went green.
+for _dup_file in "$ROOT"/setup/lib/*.ps1 "$ROOT"/setup/*.ps1 "$ROOT"/install.ps1; do
+    [ -f "$_dup_file" ] || continue
+    _dup_names="$(grep -oE '^function [A-Za-z][A-Za-z0-9-]*' "$_dup_file" 2>/dev/null | sort | uniq -d | tr '\n' ' ')"
+    check "$(basename "$_dup_file") defines each function once" "" "$(printf '%s' "$_dup_names" | sed 's/ *$//')"
+done
+
+# The shell side has the same hazard, and one real instance predates this guard:
+# ui_rule is defined twice in ui.sh. It is listed here so the count cannot grow
+# without someone noticing, rather than being quietly tolerated.
+for _dup_sh in "$ROOT"/setup/lib/*.sh; do
+    [ -f "$_dup_sh" ] || continue
+    _dup_shnames="$(grep -oE '^[a-z_][a-z0-9_]*\(\) \{' "$_dup_sh" 2>/dev/null | sort | uniq -d | tr '\n' ' ')"
+    _dup_shnames="$(printf '%s' "$_dup_shnames" | sed 's/ *$//')"
+    case "$(basename "$_dup_sh")" in
+        ui.sh) check "ui.sh has exactly the one known duplicate" "ui_rule() {" "$_dup_shnames" ;;
+        *)     check "$(basename "$_dup_sh") defines each function once" "" "$_dup_shnames" ;;
+    esac
+done
+
 printf '\n%s: %d passed, %d failed\n' "$(basename "$0")" "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

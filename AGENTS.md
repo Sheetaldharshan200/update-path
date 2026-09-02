@@ -33,8 +33,8 @@ Flags do not travel through a pipe, so choices are env vars. They work on all pl
 | `EXAKIT_DATA_FILE=/abs/path/data.json` | Load this local CSV / Parquet / JSON file (skips the data menu; also works standalone: `EXAKIT_DATA_FILE=... exakit data-load`) |
 | `EXAKIT_DATA_TABLE=SCHEMA.TABLE` | Target table for `EXAKIT_DATA_FILE` (default `STARTER_KIT.<FILENAME>`; a nested JSON file fans out to `<TABLE>_*` tables) |
 | `EXAKIT_MARKETPLACE_ADDONS=dash-server` | Answer the closing marketplace offer: ids csv, `all`, or `none`. Unset, a non-interactive install skips the offer with a hint |
-| `EXAKIT_REUSE_DB=0\|1` | macOS: adopt an existing database (`1`, the default) or destroy it and deploy fresh (`0`) |
-| `EXAKIT_PREFLIGHT=1` | Check machine requirements only, installs nothing (sh installer only) |
+| `EXAKIT_REUSE_DB=0\|1` | Adopt an existing database (`1`, the default) or destroy it and deploy fresh (`0`). Honoured on **both** runtimes: on macOS it pre-answers the adoption question; on the container path (Linux, WSL, Windows) `=0` removes the Nano container **and its data volume**, and that volume is the database — its data is deleted and cannot be recovered |
+| `EXAKIT_PREFLIGHT=1` | Check machine requirements only, installs nothing. Both installers: `... \| EXAKIT_PREFLIGHT=1 sh`, or `$env:EXAKIT_PREFLIGHT = '1'` before `irm ... \| iex` |
 | `EXAKIT_DRY_RUN=1` | Download the kit for inspection, installs nothing |
 | `EXAKIT_DB_PORT=8564` | Alternate DB port (Linux and Windows container path only) |
 
@@ -55,6 +55,23 @@ Example:
 curl -fsSL .../install.sh | EXAKIT_MCP_CLIENTS=claude EXAKIT_DATASETS=tpch sh
 ```
 
+## Troubleshooting and advanced overrides
+
+None of these are needed on a normal machine, and none are set by default. They exist because when one of them is the answer, nothing else is.
+
+| Variable | Effect |
+|---|---|
+| `EXAKIT_HOME=/abs/path` | Where the kit keeps everything — state, credentials, logs, the kit copy (default `~/.exasol-starter-kit`). The only fix for a redirected, cloud-synced (OneDrive) or UNC home directory. Set it for the install **and** keep it set for later `exakit` commands (on Windows as a user environment variable, not just in one shell): the CLI reads it each time and otherwise looks in the default location |
+| `EXAKIT_NANO_CONTAINER=exasol-nano-win` | Name of the Nano container (default `exasol-nano`). The install records the name it used, so that machine's later `exakit` commands keep acting on the right one |
+| `EXAKIT_NANO_VOLUME=exasol-nano-win-data` | Name of the Nano data volume (default `exasol-nano-data`). That volume **is** the database. Set both of these to keep a Windows and a WSL install apart — see the adoption note under Timing |
+| `EXAKIT_NANO_READY_TIMEOUT=1200` | Seconds to wait for the database to report ready (default `600`). Raise it on a slow or heavily loaded machine rather than treating the timeout as a failure |
+| `EXAKIT_NANO_MIN_RAM_GB=4` | RAM floor for the container path (default `4`) |
+| `EXAKIT_NANO_MIN_DISK_GB=10` | Free-disk floor where the container engine stores its data — the image and the database volume (default `10`) |
+| `EXAKIT_NANO_MIN_SYSTEM_DISK_GB=5` | Free-disk floor on the Windows system drive when Docker's data root is on another volume (default `5`, Windows path only) |
+| `EXAKIT_NANO_MIN_KIT_DISK_GB=3` | Free-disk floor at the kit's own home when the engine's data is on another volume (default `3`) |
+| `EXAKIT_FORCE=1` | Install even though a RAM or free-disk check failed, or could not read the number at all. It lowers no requirement — the deploy can still fail on the real limit |
+| `EXAKIT_AUTO_ROLLBACK=1` | On a failed install, undo the failed step's changes without asking. The question defaults to no, so an unattended run otherwise keeps partial progress and resumes on the next run (sh installer only) |
+
 ## Timing: read this before you run it
 
 - The first install deploys a database, **usually in under 2 minutes** on every platform.
@@ -66,6 +83,7 @@ exakit status        # until it reports running
 
 - **Re-running the installer is safe and resumes.** Completed steps are skipped, failed steps retry. When in doubt, re-run rather than diagnose.
 - An existing database is **adopted**, running or stopped. Only a database that cannot start is replaced, and the installer announces it. To restart a stopped database, prefer `exakit start` over re-installing.
+- **On Windows, adoption crosses runtimes, because Windows and WSL share one Docker engine.** Docker Desktop with WSL integration is a single engine reachable from both PowerShell and the distro, and both installs default to the container `exasol-nano` on the volume `exasol-nano-data` — so a WSL install adopts and takes over the container a Windows install created (and the other way round), and `exakit uninstall` in either one removes the container the other is using. If both have to exist on one machine, give one of them `EXAKIT_NANO_CONTAINER` and `EXAKIT_NANO_VOLUME` of its own **before** installing it; there is no way to separate them afterwards.
 - **A database that cannot be started at all is a distinct state, and it has its own command.** After a crash (SIGKILL, a hard power loss) the launcher can mark the deployment `interrupted`, after which every `exakit start` fails the same way. `exakit status` reports `interrupted` rather than `stopped` and names `exakit repair-runtime` as the remedy; `status --json` puts that same command in `remedies.database`. **Do not loop on `exakit start`, and do not expect a plain installer re-run to fix it** — `repair-runtime` rebuilds the deployment, which **destroys its data** (bundled datasets are reloaded afterwards; anything the user loaded themselves is not). Ask the user before running it, and pass `--yes` only once they have agreed.
 
 ## Verify the install
