@@ -304,6 +304,22 @@ _json_tables_mirror_release() {
 }
 
 _json_tables_mirror_wheel_name() {
+    # PINNED FIRST, network second. exapump and exasol-vscode both carry their
+    # artefact digests in versions.json and never ask an API for them; this one
+    # asked, and so every install depended on GitHub answering three separate
+    # times. It allows sixty requests an hour per IP without a token, which one
+    # install nearly spends: the run that prompted this resolved the wheel on
+    # call one and was refused on call two, so a release with a digest for every
+    # asset was reported as having no checksum.
+    #
+    # The download itself is a plain release URL and needs no API budget, so a
+    # pinned name and a pinned digest take the API off the install path
+    # entirely. The API stays as the fallback for a wheel newer than the pin.
+    _jmw_pin="$(exakit_versions_value components.json-tables.wheel 2>/dev/null || true)"
+    if [ -n "$_jmw_pin" ]; then
+        printf '%s\n' "$_jmw_pin"
+        return 0
+    fi
     _jmw_json="$(_json_tables_mirror_release)" || return 1
     if exakit_can_run_python; then
         printf '%s' "$_jmw_json" | run_python -c '
@@ -328,6 +344,26 @@ if wheels:
 # so a digest pinned in versions.json would go stale by design: the release API
 # is the right authority here, and an unverifiable download is still refused.
 _json_tables_mirror_digest() {
+    # Pinned first, for the reason given on the wheel lookup above: this was the
+    # call that failed, and a digest in versions.json cannot be rate limited.
+    #
+    # Keyed by PLATFORM, not by asset name. exakit_versions_value walks a dotted
+    # path, and an asset name carries a version -- "...-0.2.0-..." -- whose dots
+    # split into path segments that do not exist, so a name-keyed lookup silently
+    # returned nothing and fell through to the network it was meant to avoid.
+    case "$1" in
+        *.whl)                            _jmd_key=wheel ;;
+        exakit-json-tables-cargo-*)        _jmd_key="cargo-$(printf '%s' "${1#exakit-json-tables-cargo-}" | sed 's/\.exe$//')" ;;
+        exasol-json-tables-ingest-*)       _jmd_key="$(printf '%s' "${1#exasol-json-tables-ingest-}" | sed 's/\.exe$//')" ;;
+        *)                                 _jmd_key="" ;;
+    esac
+    if [ -n "$_jmd_key" ]; then
+        _jmd_pin="$(exakit_versions_value "components.json-tables.sha256.$_jmd_key" 2>/dev/null || true)"
+        if [ -n "$_jmd_pin" ]; then
+            printf '%s\n' "$_jmd_pin"
+            return 0
+        fi
+    fi
     _jmd_json="$(_json_tables_mirror_release)" || return 1
     if exakit_can_run_python; then
         printf '%s' "$_jmd_json" | run_python -c '

@@ -179,6 +179,15 @@ function Get-JsonTablesMirrorAssetUrl {
 # The wheel's real filename: its version comes from upstream's pyproject, not
 # from ours, so it is read off the release rather than constructed.
 function Get-JsonTablesMirrorWheelName {
+    # PINNED FIRST, network second - twin of the same order in json-tables.sh.
+    # exapump and exasol-vscode both carry their artefact digests in
+    # versions.json and never ask an API for them; this one asked, so every
+    # install depended on GitHub answering, and GitHub allows sixty requests an
+    # hour per IP without a token. The download is a plain release URL needing
+    # no API budget, so a pinned name and digest take the API off the install
+    # path entirely. The API remains the fallback for a newer wheel.
+    $pin = Get-ExakitVersionsValue "components.json-tables.wheel"
+    if ($pin) { return $pin }
     $release = Get-JsonTablesMirrorRelease
     if (-not $release) { return "" }
     # NEWEST wheel, not the first one listed. The mirror release is rolling and
@@ -192,11 +201,26 @@ function Get-JsonTablesMirrorWheelName {
     return $newest.name
 }
 
-# The sha256 GitHub publishes for a release asset. The mirror tag is rolling
-# (it moves whenever upstream does), so a digest pinned in versions.json would
-# go stale by design: the release API is the right authority here.
+# The sha256 for a release asset: from versions.json when it is pinned there,
+# and from the release API otherwise.
+#
+# Keyed by PLATFORM, not by asset name. The versions lookup walks a DOTTED path
+# and an asset name carries a version - "...-0.2.0-..." - whose dots split into
+# path segments that do not exist, so a name-keyed lookup returns nothing and
+# falls through to the network it was meant to avoid.
 function Get-JsonTablesMirrorDigest {
     param([Parameter(Mandatory)][string]$Asset)
+    $key = ""
+    if ($Asset.EndsWith(".whl")) { $key = "wheel" }
+    elseif ($Asset.StartsWith("exakit-json-tables-cargo-")) {
+        $key = "cargo-" + ($Asset.Substring("exakit-json-tables-cargo-".Length) -replace "\.exe$", "")
+    } elseif ($Asset.StartsWith("exasol-json-tables-ingest-")) {
+        $key = ($Asset.Substring("exasol-json-tables-ingest-".Length) -replace "\.exe$", "")
+    }
+    if ($key) {
+        $pin = Get-ExakitVersionsValue "components.json-tables.sha256.$key"
+        if ($pin) { return $pin }
+    }
     $release = Get-JsonTablesMirrorRelease
     if (-not $release) { return "" }
     # The loop variable must NOT be spelled $asset: PowerShell identifiers are

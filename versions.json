@@ -57,7 +57,16 @@
     },
     "json-tables": {
       "version": "v0.2",
-      "severity": "normal"
+      "severity": "normal",
+      "wheel": "exasol_json_tables-0.2.0-py3-none-any.whl",
+      "sha256": {
+        "cargo-windows-x86_64": "c914eca51fca1397993aa43e8afb3a6a84c2cb43e6bdaf269220307a309a6ca6",
+        "linux-aarch64": "d8b42e9a161160717c0a51a92e81fde34d2da806ba5c3b38a1785548122a2e98",
+        "linux-x86_64": "f5a410bde8940a565a9972801bdb4592283665a94594ce0bae708c3ffc6d702e",
+        "macos-aarch64": "925b4177af6e7b2dd233176f9414111540cb76c4aaa14fd454beb6912944beae",
+        "wheel": "6efd481f1532e8b0e2dd6994386116097655aa6907d5130aebe64da02be85ffd",
+        "windows-x86_64": "f4f3e3dec6fed2011ca0a512b910f433fc35174cf78725a325ee0d60aaece4c9"
+      }
     }
   }
 }
