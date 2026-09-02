@@ -32,7 +32,7 @@
 #   - shim:     $EXAKIT_HOME\json-tables\shim\cargo.exe
 #   - launcher: $BinDir\exasol-json-tables.cmd
 
-$script:JsonTablesVersionFallback = if ($env:EXAKIT_JSON_TABLES_VERSION_FALLBACK) { $env:EXAKIT_JSON_TABLES_VERSION_FALLBACK } else { "v0.2" }
+$script:JsonTablesVersionFallback = if ($env:EXAKIT_JSON_TABLES_VERSION_FALLBACK) { $env:EXAKIT_JSON_TABLES_VERSION_FALLBACK } else { "v0.3" }
 $script:JsonTablesVersion = if ($env:EXAKIT_JSON_TABLES_VERSION) { $env:EXAKIT_JSON_TABLES_VERSION } else { "" }
 $script:JsonTablesMirrorTag = if ($env:EXAKIT_JSON_TABLES_MIRROR_TAG) { $env:EXAKIT_JSON_TABLES_MIRROR_TAG } else { "mirror-json-tables" }
 $script:JsonTablesPackage = if ($env:EXAKIT_JSON_TABLES_PACKAGE) { $env:EXAKIT_JSON_TABLES_PACKAGE } else { "exasol-json-tables" }
