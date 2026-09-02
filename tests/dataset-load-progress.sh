@@ -536,8 +536,14 @@ ui_table_disable "$MTBL" 4 "already connected"
 ui_table_frame "$MTBL" 0
 MFRAME="$UI_TABLE_FRAME"
 has "the first column is named by its caller" "Client" "$MFRAME"
-has "a client this machine lacks says so"     "Cursor · not installed"      "$MFRAME"
-has "and one already connected too"           "Continue · already connected" "$MFRAME"
+# The reason lives in the STATUS COLUMN now, not glued to the name with a
+# separator. A disabled row keeps its columns like every other row -- the change
+# that stopped an installed add-on reading "json-tables · Installed (0.2)" with
+# the Version column empty beside it. So the two halves are asserted apart.
+has "a client this machine lacks says so"     "Cursor"          "$MFRAME"
+has "...with the reason in its own column"    "not installed"   "$MFRAME"
+has "and one already connected too"           "already connected" "$MFRAME"
+lacks "the reason is not glued to the name"   "Cursor · not installed" "$MFRAME"
 # The checkbox is what invites a keypress, so a row that cannot take one must
 # not draw an empty box for the reader to aim at.
 lacks "no checkbox on a row nobody can pick" "[ ]" \
@@ -584,7 +590,10 @@ if command -v python3 >/dev/null 2>&1; then
     check "each client row says what happened to it" "yes" \
         "$(printf '%s\n' "$MSCREEN" | grep '├─ Claude' | grep -q '✓ configured' \
             && echo yes || echo no)"
-    has "the rows that cannot be picked keep their reason" "Cursor · not installed" "$MSCREEN"
+    # Same split as above: the reason is a Status cell, not part of the name.
+    check "the rows that cannot be picked keep their reason" "yes" \
+        "$(printf '%s\n' "$MSCREEN" | grep 'Cursor' | grep -q 'not installed' \
+            && echo yes || echo no)"
     lacks "and no bar is left half-drawn" "writing client configs" "$MSCREEN"
     has "the shell announced no dying job" "job announcements: 0" "$(cat "$WORK/tty3.out")"
 
