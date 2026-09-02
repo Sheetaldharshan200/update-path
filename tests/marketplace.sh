@@ -1727,5 +1727,26 @@ else
     check "exactly one add-ons table survives" "skipped" "skipped"
 fi
 
+echo
+echo "a refused lookup is not a missing release:"
+# On a real install json-tables failed with "the prebuilt mirror release was not
+# found ... run the pkg workflow once to publish it". That release had existed
+# since August and held the exact asset that machine needed. GitHub had answered
+# 403: its API allows 60 calls an hour unauthenticated, and a full install spends
+# them. `curl -f` turns any 4xx into an empty body, so a refusal and an absence
+# were indistinguishable, and the remedy named was work that changes nothing.
+JT_SH="$(cat "$ROOT/setup/lib/json-tables.sh")"
+JT_PS="$(cat "$ROOT/setup/lib/json-tables.ps1")"
+CO_SH="$(cat "$ROOT/setup/lib/common.sh")"
+has "the shell records the HTTP status"  'EXAKIT_JSON_TABLES_MIRROR_HTTP=' "$JT_SH"
+has "...and no longer uses curl -f"      'set -- -sSL --retry 3'          "$JT_SH"
+has "...and answers 403 differently"     '403|429)'                       "$JT_SH"
+has "...while keeping the 404 remedy"    'pkg / json-tables'              "$JT_SH"
+has "the twin records it too"            'JsonTablesMirrorHttp'           "$JT_PS"
+has "...and branches on 403"             '-eq "403"'                      "$JT_PS"
+has "a token is honoured on the shell"   'Bearer $GITHUB_TOKEN'           "$JT_SH"
+has "...and on Windows"                  'Bearer $($env:GITHUB_TOKEN)'    "$JT_PS"
+lacks "the add-on failure says it once"  'did not finish installing — retry with' "$CO_SH"
+
 echo "passed: $PASS, failed: $FAIL"
 [ "$FAIL" -eq 0 ]

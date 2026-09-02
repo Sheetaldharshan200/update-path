@@ -3868,8 +3868,12 @@ _exakit_marketplace_apply() {
             [ -n "$EXAKIT_ADDON_TABLE_ROW" ] && \
                 ui_table_set "$EXAKIT_ADDON_TABLE_STATE" "$EXAKIT_ADDON_TABLE_ROW" \
                     failed "" "" "" "" "did not finish — see the log"
-            _exakit_addon_note warn \
-                "$_mp_id did not finish installing — retry with: exakit marketplace"
+            # No note. The row above already says "did not finish — see the
+            # log", and the reason the add-on itself gave was printed before the
+            # table started. A third sentence repeating both, printed under a
+            # frame the animator has only just stopped repainting, is where the
+            # table came apart on a real install.
+            _exakit_log_file "WARN  $_mp_id did not finish installing"
             _mp_status=1
         fi
         EXAKIT_ADDON_TABLE_ROW=""

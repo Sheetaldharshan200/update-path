@@ -142,13 +142,31 @@ function Write-JsonTablesNotInstalled {
 # ---------------------------------------------------------------------------
 # The mirror release - twins of the _json_tables_mirror_* helpers
 # ---------------------------------------------------------------------------
+# $script:JsonTablesMirrorHttp - the status GitHub answered with, so the caller
+# can tell "this release does not exist" from "GitHub would not say". Without it
+# a 403 read exactly like a 404 and the install told the reader to publish a
+# release that already existed; the real answer was that the unauthenticated API
+# allows 60 calls an hour and a full install had spent all sixty. Twin of
+# EXAKIT_JSON_TABLES_MIRROR_HTTP in json-tables.sh.
+$script:JsonTablesMirrorHttp = ""
 function Get-JsonTablesMirrorRelease {
     if ($script:JsonTablesMirrorCache) { return $script:JsonTablesMirrorCache }
     try {
         $uri = "https://api.github.com/repos/$(Get-JsonTablesMirrorRepo)/releases/tags/$($script:JsonTablesMirrorTag)"
-        $script:JsonTablesMirrorCache = Invoke-RestMethod -Uri $uri -UseBasicParsing -TimeoutSec 20
+        # A token when one is present lifts the same limit from 60 an hour to
+        # 5000. Unauthenticated stays the default; nothing here requires a token.
+        $headers = @{}
+        if ($env:GITHUB_TOKEN) { $headers["Authorization"] = "Bearer $($env:GITHUB_TOKEN)" }
+        $script:JsonTablesMirrorCache = Invoke-RestMethod -Uri $uri -UseBasicParsing -TimeoutSec 20 -Headers $headers
+        $script:JsonTablesMirrorHttp = "200"
         return $script:JsonTablesMirrorCache
     } catch {
+        $script:JsonTablesMirrorHttp = ""
+        try {
+            if ($_.Exception.Response) {
+                $script:JsonTablesMirrorHttp = [string][int]$_.Exception.Response.StatusCode
+            }
+        } catch { }
         return $null
     }
 }
@@ -296,7 +314,19 @@ function Install-JsonTables {
 
     $wheelName = Get-JsonTablesMirrorWheelName
     if (-not $wheelName) {
-        return (Write-JsonTablesNotInstalled "the prebuilt mirror release '$($script:JsonTablesMirrorTag)' was not found in $(Get-JsonTablesMirrorRepo). Run the 'pkg / json-tables' workflow once to publish it (it builds the engine and the cargo shim for every platform so nobody needs Rust).")
+        # The status decides the sentence. Reporting "not found" for every
+        # failure sent a reader off to publish a release that already existed.
+        if ($script:JsonTablesMirrorHttp -eq "403" -or $script:JsonTablesMirrorHttp -eq "429") {
+            $tok = ""
+            if (-not $env:GITHUB_TOKEN) { $tok = " (or set GITHUB_TOKEN, which raises the limit to 5000)" }
+            return (Write-JsonTablesNotInstalled "GitHub refused the lookup - its API allows 60 requests an hour without a token and this install has used them. Wait for the hour to turn over, then run: exakit marketplace$tok")
+        }
+        if ($script:JsonTablesMirrorHttp -eq "404") {
+            return (Write-JsonTablesNotInstalled "the prebuilt mirror release '$($script:JsonTablesMirrorTag)' was not found in $(Get-JsonTablesMirrorRepo). Run the 'pkg / json-tables' workflow once to publish it (it builds the engine and the cargo shim for every platform so nobody needs Rust).")
+        }
+        $extra = ""
+        if ($script:JsonTablesMirrorHttp) { $extra = " (HTTP $($script:JsonTablesMirrorHttp))" }
+        return (Write-JsonTablesNotInstalled "GitHub could not be reached to find the prebuilt engine$extra. Check the network, then run: exakit marketplace")
     }
 
     try {
