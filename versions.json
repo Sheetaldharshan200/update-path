@@ -60,12 +60,12 @@
       "severity": "normal",
       "wheel": "exasol_json_tables-0.3.0-py3-none-any.whl",
       "sha256": {
-        "cargo-windows-x86_64": "aeb2349e92de86c3da76af487737b7b3c2959ce34b3ce7b08b70d20ae5718bac",
+        "cargo-windows-x86_64": "4def3ef331e6224d75cd6e7bace5ca5ae94807cd0797af96b38c41f4b80692b6",
         "linux-aarch64": "c6e8bffd8a7f2b10397ed83a069a1db96ee0813da907de769adbce224a8bf121",
-        "linux-x86_64": "115229b1e99feef70342d87d60c6dfe815691965c624f200078edbd644ca2493",
-        "macos-aarch64": "6a19027fb455769e1c1f2915309bbd4f4ca3d77f05a35e6574d18bc2d5b8018e",
-        "wheel": "e8c2468b321d1bc8f57ac124ceb06a68ba80a8f5b7830d74dc75b581980b0f81",
-        "windows-x86_64": "acd0e1742864457019fe8963b8c8f429d12d7021dcab491def11870d73c93ff6"
+        "linux-x86_64": "dca948607d7326797a98f046ed6218927696782dbf0774b53b36ea28205e17de",
+        "macos-aarch64": "5ffa07134cd269993144d2914a74d31d16337e2a40a6999ee0e9e61a3722aff1",
+        "wheel": "bb071b7a96d7a79fae61ee4c827b7ab3e3f758d8282d1b8623f74a904fe5c0d6",
+        "windows-x86_64": "445b26e67295a634dad4bf050874f0bf2b102ccf4039a47d37d5a2e2e243aacd"
       }
     }
   }
