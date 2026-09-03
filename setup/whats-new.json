@@ -33,5 +33,9 @@
     "exakit version --json and mcp-status --json return objects.",
     "EXAKIT_MCP_CLIENTS=all now means the clients installed here.",
     "A busy database port is reported as a conflict, not running."
+  ],
+  "0.2.3": [
+    "EXAKIT_MCP_CLIENTS=all skips clients the kit only wrote a file for.",
+    "A client counts as installed by its program or app, not its config."
   ]
 }
