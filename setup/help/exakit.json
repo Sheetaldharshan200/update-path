@@ -227,7 +227,7 @@
       "command": "skills",
       "options": "[--json | -j]",
       "summary": "List the AI skills the kit carries.",
-      "description": "One skill per component and add-on, with a one-line summary and whether each has reached the agents' discovery folders.",
+      "description": "One skill per component and add-on, with a one-line summary and whether each has reached the agents' discovery folders. When the maintainers advertise a newer skill set, the panel says so and names exakit update, which fetches it.",
       "examples": [
         "exakit skills",
         "exakit skills --json"
@@ -237,7 +237,7 @@
       "command": "skills-install",
       "options": "",
       "summary": "Install the AI skills for CLI agents.",
-      "description": "Installs the kit's skills into ~/.claude/skills and ~/.agents/skills so agent sessions can drive the kit. Restart or reload the agent afterwards.",
+      "description": "Places the skills the kit copy carries into ~/.claude/skills and ~/.agents/skills so agent sessions can drive the kit. Restart or reload the agent afterwards. To pick up a NEWER skill set the maintainers advertise, run exakit update instead: it fetches the set, then places it.",
       "examples": [
         "exakit skills-install"
       ]
@@ -257,9 +257,9 @@
     },
     {
       "command": "update",
-      "options": "[all|runtime|exakit|exapump|mcp|pyexasol|<add-on>|nano|personal]",
+      "options": "[all|runtime|exakit|exapump|mcp|pyexasol|skills|<add-on>|nano|personal]",
       "summary": "Apply the updates that are waiting.",
-      "description": "Applies the quick components (kit scripts, exapump, MCP server, pyexasol, installed add-ons) in seconds. A database change stops the database, so it is only applied for an answer the run was actually given: on a terminal you are asked, and an unattended run defers it with the exact command. Your data is kept either way.",
+      "description": "Applies the quick components (kit scripts, exapump, MCP server, pyexasol, the AI skills, installed add-ons) in seconds. A newer skill set published by the maintainers is fetched and installed here too, with no kit release needed. A database change stops the database, so it is only applied for an answer the run was actually given: on a terminal you are asked, and an unattended run defers it with the exact command. Your data is kept either way.",
       "environment": [
         "EXAKIT_CONFIRM_RUNTIME_UPDATE=1 pre-answers yes to the runtime change",
         "EXAKIT_<COMPONENT>_VERSION pins one component by hand"

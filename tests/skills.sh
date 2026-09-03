@@ -377,6 +377,108 @@ for _dir in "$ROOT"/skills/*/; do
     has "skills/README.md lists $_id" "$_id" "$README"
 done
 
+printf '\n== the skill set is a component exakit update can fetch ==\n'
+# THE GAP THIS CLOSES: skills reached a machine only inside a kit update. Bump
+# components.skills.version alone and `exakit skills` said "stale" while
+# pointing at skills-install -- which copied the OLD local files and recorded
+# the NEW number. A maintainer who edits skills/<name>/SKILL.md and bumps the
+# version, with no kit release, must reach every installed kit through
+# `exakit update`, the way an exapump bump does.
+SH_UPD="$(cat "$ROOT/setup/lib/common.sh")"
+# An earlier section removes the marketplace probe to test the skills registry
+# in isolation; the update-target list asks it which add-ons are installed, so
+# give it back a "none" answer here.
+command -v exakit_marketplace_addon_installed >/dev/null 2>&1 || exakit_marketplace_addon_installed() { return 1; }
+check "skills is a routine update target" "1" "$(exakit_update_targets all | grep -c '^skills$')"
+check "...and an explicit one" "skills" "$(exakit_update_targets skills)"
+check "it lives at components.skills" "components.skills" "$(_exakit_component_block skills)"
+has "the twin lists it too" 'if (Get-ExakitSkillsDir) { $targets += "skills" }' "$PS_COMMON"
+has "the shell updater exists" "exakit_update_skills()" "$SH_UPD"
+has "...and dispatches to it" "skills) exakit_update_skills ;;" "$SH_UPD"
+has "the twin updater exists" "function Update-ExakitSkills" "$PS_COMMON"
+has "...and the Windows CLI dispatches to it" 'Update-ExakitSkills -Advertised $available -Installed $current' "$(cat "$ROOT/setup/exakit.ps1")"
+has "the twin records what it placed" "function Set-ExakitSkillsRecord" "$PS_COMMON"
+
+# A kit copy under EXAKIT_HOME, so the updater takes the real path rather than
+# the source-checkout shortcut. The registry section above pinned
+# exakit_repo_root to its fake kit; point it back at this one.
+KIT="$EXAKIT_HOME/kit"
+exakit_repo_root() { printf '%s\n' "$KIT"; }
+rm -rf "$KIT"; mkdir -p "$KIT/mcp"
+cp -R "$ROOT/skills" "$KIT/skills"
+cp "$ROOT/versions.json" "$KIT/versions.json"
+manifest_set components.skills.version "1.0.0" >/dev/null 2>&1
+check "the installed version is the recorded one" "1.0.0" "$(exakit_component_current skills)"
+
+# The archive `exakit update` would download: the repository's skills plus one
+# new skill, and a versions.json naming 9.8.7 -- while the ADVERTISED document
+# says 9.9.9, the shape of the raw endpoint running ahead of the branch.
+FIX="$WORK/fixture/update-path-main"
+mkdir -p "$FIX"
+cp -R "$ROOT/skills" "$FIX/skills"
+mkdir -p "$FIX/skills/zz-fetched-skill"
+printf -- '---\nname: zz-fetched-skill\ndescription: Fetched by the test. Triggers — "zz fetched".\n---\n\n# fetched\n' > "$FIX/skills/zz-fetched-skill/SKILL.md"
+python3 - "$ROOT/versions.json" "$FIX/versions.json" "$WORK/advertised.json" <<'PYFIX'
+import json, sys, collections
+doc = json.load(open(sys.argv[1]), object_pairs_hook=collections.OrderedDict)
+doc["components"]["skills"]["version"] = "9.8.7"
+json.dump(doc, open(sys.argv[2], "w"), indent=2)
+doc["components"]["skills"]["version"] = "9.9.9"
+json.dump(doc, open(sys.argv[3], "w"), indent=2)
+PYFIX
+( cd "$WORK/fixture" && tar -czf "$WORK/main.tar.gz" update-path-main )
+_upd_out="$( (
+    EXAKIT_VERSIONS_CACHE="$WORK/advertised.json"; _EXAKIT_VERSIONS_DOC=""
+    curl() { # the only network call: hand over the fixture archive
+        while [ "$#" -gt 0 ]; do [ "$1" = "-o" ] && { cp "$WORK/main.tar.gz" "$2"; return 0; }; shift; done
+        return 1
+    }
+    exakit_update_skills 2>&1
+    printf 'recorded=%s current=%s marker=%s\n' \
+        "$(manifest_get components.skills.version)" "$(exakit_component_current skills)" \
+        "$(cat "$KIT/skills/.version" 2>/dev/null)"
+    [ -f "$WORK/claude/zz-fetched-skill/SKILL.md" ] && printf 'placed-claude ' || printf 'MISSING-claude '
+    [ -f "$WORK/agents/zz-fetched-skill/SKILL.md" ] && printf 'placed-agents ' || printf 'MISSING-agents '
+    [ -f "$KIT/skills/zz-fetched-skill/SKILL.md" ] && printf 'in-kit-copy' || printf 'NOT-in-kit-copy'
+    ls -d "$KIT"/skills.backup-* >/dev/null 2>&1 && printf ' BACKUP-LEFT' || printf ' backup-cleaned'
+) )"
+has "the update fetches and places the new skill" "placed-claude placed-agents in-kit-copy" "$_upd_out"
+has "it records the version the ARCHIVE names, not the advertised one" "recorded=9.8.7 current=9.8.7 marker=9.8.7" "$_upd_out"
+has "...and says the manifest is ahead" "not the advertised 9.9.9" "$_upd_out"
+has "the backup of the previous set is removed on success" "backup-cleaned" "$_upd_out"
+has "it tells the reader to reload the client" "Restart or reload your AI client" "$_upd_out"
+# A later skills-install must keep recording the fetched set, not the kit
+# copy's older versions.json: the marker beside the skills is what it reads.
+check "skills-install re-records the fetched set" "9.8.7" "$( (
+    EXAKIT_VERSIONS_CACHE="$WORK/advertised.json"; _EXAKIT_VERSIONS_DOC=""
+    exakit_install_skills >/dev/null 2>&1; manifest_get components.skills.version
+) )"
+check "the fallback tier reads the same marker" "9.8.7" "$(_exakit_component_fallback skills)"
+
+# An unreachable repository must never fail `exakit update`: skills are
+# best-effort, like the refresh inside the kit self-update.
+_fail_out="$( (
+    EXAKIT_VERSIONS_CACHE="$WORK/advertised.json"; _EXAKIT_VERSIONS_DOC=""
+    curl() { return 7; }
+    exakit_update_skills 2>&1; printf 'rc=%s\n' "$?"
+    printf 'recorded=%s\n' "$(manifest_get components.skills.version)"
+) )"
+has "an unreachable repository warns" "Could not download the skill set" "$_fail_out"
+has "...and does not fail the run" "rc=0" "$_fail_out"
+has "...and leaves the record alone" "recorded=9.8.7" "$_fail_out"
+check "a current set is left alone" "already current (9.8.7)" "$( (
+    EXAKIT_VERSIONS_CACHE="$KIT/versions.json"; _EXAKIT_VERSIONS_DOC=""
+    printf '9.8.7\n' > "$KIT/skills/.version"
+    python3 - "$KIT/versions.json" <<'PYCUR'
+import json, sys, collections
+p = sys.argv[1]; d = json.load(open(p), object_pairs_hook=collections.OrderedDict)
+d["components"]["skills"]["version"] = "9.8.7"; json.dump(d, open(p, "w"), indent=2)
+PYCUR
+    curl() { printf 'NETWORK\n' >&2; return 7; }
+    exakit_update_skills 2>&1 | grep -o 'already current (9.8.7)'
+) )"
+rm -rf "$KIT"
+
 printf '\n== the skills panel says the same three things on both platforms ==\n'
 
 # The stale branch existed only in the shell. On Windows a kit update that left
@@ -386,11 +488,15 @@ printf '\n== the skills panel says the same three things on both platforms ==\n'
 # actually changes -- it moved to 1.3.0 in the same round this was found.
 SH_COMMON="$(cat "$ROOT/setup/lib/common.sh")"
 has "the shell detects a stale skill set" \
-    'ui_panel_line "Installed from skill set $_skl_have; this kit carries $_skl_want."' "$SH_COMMON"
+    'ui_panel_line "Installed skill set $_skl_have; the kit advertises $_skl_want."' "$SH_COMMON"
 has "...and the twin does too" \
-    'Write-ExakitPanelLine "Installed from skill set $skillsHave; this kit carries $skillsWant."' "$PS_COMMON"
-has "the shell offers the refresh"  'ui_panel_line "Refresh them:  exakit skills-install"' "$SH_COMMON"
-has "...and so does the twin"       'Write-ExakitPanelLine "Refresh them:  exakit skills-install"' "$PS_COMMON"
+    'Write-ExakitPanelLine "Installed skill set $skillsHave; the kit advertises $skillsWant."' "$PS_COMMON"
+# The remedy is `exakit update`, which FETCHES the advertised set. It used to be
+# skills-install, which copies the local kit copy's files -- the old set -- and
+# then recorded the advertised number over them, hiding the drift for good.
+has "the shell offers the fetch"    'ui_panel_line "Fetch and install them:  exakit update"' "$SH_COMMON"
+has "...and so does the twin"       'Write-ExakitPanelLine "Fetch and install them:  exakit update"' "$PS_COMMON"
+lacks "and neither points a stale set at skills-install" 'Refresh them:  exakit skills-install' "$SH_COMMON$PS_COMMON"
 # Both read the same two values to decide, or they can disagree about staleness.
 has "the shell compares installed against advertised" \
     'exakit_versions_value components.skills.version' "$SH_COMMON"

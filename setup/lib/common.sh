@@ -2439,7 +2439,7 @@ _exakit_component_block() {
     case "$1" in
         exakit) printf '%s\n' kit ;;
         kit2)   printf '%s\n' kit2 ;;
-        exapump|mcp|pyexasol|nano|personal) printf 'components.%s\n' "$1" ;;
+        exapump|mcp|pyexasol|nano|personal|skills) printf 'components.%s\n' "$1" ;;
         runtime)
             case "$(exakit_installation_runtime_type 2>/dev/null)" in
                 nano)     printf '%s\n' components.nano ;;
@@ -2546,6 +2546,13 @@ exakit_component_available() {
         _exakit_component_fallback "$1"
         return $?
     fi
+    # The skill set likewise: a document with no skills block advertises
+    # nothing newer than what the kit copy carries, so that is the answer --
+    # not "unknown", which would park the row on "inspect" for good.
+    if [ "$1" = "skills" ]; then
+        _exakit_component_fallback skills
+        return $?
+    fi
     return 1
 }
 
@@ -2564,6 +2571,10 @@ _exakit_component_fallback() {
                 *) return 1 ;;
             esac
             ;;
+        # The skill set has no constant either: the kit copy on disk says which
+        # set it carries (its versions.json, or the marker a skills-only update
+        # left beside the skills).
+        skills)   exakit_skills_local_version ;;
         # The kit's own version is not one of the constants: it comes from the
         # copy on disk, which is exactly what is installed.
         exakit) exakit_kit_bundled_version ;;
@@ -2784,6 +2795,15 @@ exakit_component_current() {
             else
                 manifest_get components.pyexasol.version 2>/dev/null
             fi
+            ;;
+        skills)
+            # What the manifest recorded when the skills were placed. Nothing
+            # recorded means the skills step never ran here (a Windows install
+            # from before it recorded, a hand-edited manifest): "not installed",
+            # which makes `exakit update` place them -- a repair, not a lie.
+            _cur_skills="$(manifest_get components.skills.version 2>/dev/null || true)"
+            [ -n "$_cur_skills" ] || return 1
+            printf '%s\n' "$_cur_skills"
             ;;
         kit2)     manifest_get kit2.version 2>/dev/null ;;
         nano)
@@ -4067,7 +4087,14 @@ _exakit_marketplace_apply() {
 exakit_update_targets() {
     case "${1:-all}" in
         all)
+            # skills is a light component like exapump: the skill set has its
+            # own version in versions.json, and `exakit update` fetches a newer
+            # set from the kit repository without a kit release (see
+            # exakit_update_skills). Before it joined this list, bumping that
+            # version reached nobody. A kit copy that carries no skills/ at all
+            # has no skill set to keep current, so it gets no row either.
             printf '%s\n' exakit runtime exapump mcp pyexasol
+            exakit_skills_dir >/dev/null 2>&1 && printf '%s\n' skills
             # Marketplace add-ons join the routine update set only once they
             # are installed: `exakit update all` must never install a tool the
             # user did not pick from `exakit marketplace`.
@@ -4081,7 +4108,7 @@ exakit_update_targets() {
             fi
             ;;
         runtime|database|db) printf '%s\n' runtime ;;
-        nano|personal|exakit|exapump|mcp|pyexasol|kit2) printf '%s\n' "$1" ;;
+        nano|personal|exakit|exapump|mcp|pyexasol|skills|kit2) printf '%s\n' "$1" ;;
         *)
             # Any registered marketplace add-on is a valid explicit target.
             _exakit_addon_registered "$1" || return 1
@@ -4920,6 +4947,123 @@ exakit_update_self() {
     exakit_print_whats_new "$_staged_version" "What's new in $_staged_version" || true
 }
 
+# exakit_skills_local_version — the version of the skill set sitting in the kit
+# copy on disk. Two sources, in order: the marker a skills-only update leaves
+# beside the skills (skills/.version), because that update replaces the skills
+# and NOT the kit copy's versions.json; then that versions.json, which describes
+# the skills that shipped inside the same tarball. This is what skills-install
+# records, so the record names the files that were copied — never the
+# advertised version, which is what used to be written and which the copied
+# files did not have to match. ⇄ twin: Get-ExakitSkillsLocalVersion.
+exakit_skills_local_version() {
+    _slv_root="$(exakit_repo_root 2>/dev/null)" || return 1
+    if [ -s "$_slv_root/skills/.version" ]; then
+        _slv_v="$(head -1 "$_slv_root/skills/.version" | tr -d '\r\n')"
+        case "$_slv_v" in
+            ''|*[!A-Za-z0-9._+-]*) ;;
+            *) printf '%s\n' "$_slv_v"; return 0 ;;
+        esac
+    fi
+    exakit_kit_version_at "$_slv_root" components.skills.version
+}
+
+# exakit_update_skills — bring the AI skills to the advertised set, without a
+# kit release.
+#
+# The skills are files under skills/ in the kit repository, and they used to
+# reach a machine only inside a kit update: bump components.skills.version on
+# its own and `exakit skills` said "stale" while pointing at skills-install,
+# which copied the OLD local files and recorded the NEW number. So the skill
+# set is a light component now, like exapump. This fetches the kit repository's
+# main branch (the same tarball, URL and trust the kit self-update uses), moves
+# its skills/ directory into the kit copy, places the skills, and records the
+# version the TARBALL's versions.json names — not the advertised one, because
+# the raw endpoint can run minutes ahead of the branch archive, and a record
+# that runs ahead of the files hides the drift for good.
+#
+# Best-effort, like the skills refresh inside the kit self-update: a skill set
+# that could not be fetched must not fail an otherwise complete `exakit
+# update`. Every failure warns, names the retry, and returns 0.
+# ⇄ twin: Update-ExakitSkills.
+exakit_update_skills() {
+    _us_latest="$(exakit_component_available skills 2>/dev/null || true)"
+    if [ -z "$_us_latest" ]; then
+        warn "Could not resolve the advertised skill set; the skills were left as they are."
+        return 0
+    fi
+    _us_current="$(exakit_component_current skills 2>/dev/null || true)"
+    if [ "$_us_latest" = "$_us_current" ]; then
+        ok "skills are already current ($_us_current)"
+        return 0
+    fi
+    _us_kit="$(exakit_repo_root 2>/dev/null || true)"
+    if [ -z "$_us_kit" ] || [ "$_us_kit" != "$EXAKIT_HOME/kit" ]; then
+        # A source checkout is updated by git, not by this: place what it has.
+        info "This kit runs from a source checkout; placing the skills it carries."
+        exakit_install_skills >/dev/null 2>&1 || warn "The skills could not be placed — run: exakit skills-install"
+        return 0
+    fi
+    _us_tmp="$(mktemp "${TMPDIR:-/tmp}/exakit-skills.XXXXXX")" || {
+        warn "Could not create a temporary file; the skills were left as they are."
+        return 0
+    }
+    _us_stage="$(mktemp -d "${TMPDIR:-/tmp}/exakit-skills-stage.XXXXXX")" || {
+        rm -f "$_us_tmp"
+        warn "Could not create a temporary directory; the skills were left as they are."
+        return 0
+    }
+    info "Updating AI skills ${_us_current:-not installed} -> $_us_latest"
+    if ! curl -fL --proto '=https' --retry 3 --connect-timeout 15 -sS -o "$_us_tmp" \
+            "https://github.com/${EXAKIT_KIT_REPO}/archive/refs/heads/main.tar.gz"; then
+        rm -f "$_us_tmp"; rm -rf "$_us_stage"
+        warn "Could not download the skill set from $EXAKIT_KIT_REPO; the skills were left as they are. Retry: exakit update"
+        return 0
+    fi
+    if ! tar -xzf "$_us_tmp" -C "$_us_stage" --strip-components 1 2>>"${EXAKIT_LOG_FILE:-/dev/null}"; then
+        rm -f "$_us_tmp"; rm -rf "$_us_stage"
+        warn "Could not unpack the skill set; the skills were left as they are. Retry: exakit update"
+        return 0
+    fi
+    rm -f "$_us_tmp"
+    if ! ls "$_us_stage"/skills/*/SKILL.md >/dev/null 2>&1; then
+        rm -rf "$_us_stage"
+        warn "The downloaded kit carries no skills; the skills were left as they are."
+        return 0
+    fi
+    # The version the files actually ARE, read from the document that travelled
+    # with them. Recorded as such, so the table keeps offering the rest if the
+    # branch archive has not caught up with the published manifest yet.
+    _us_staged="$(exakit_kit_version_at "$_us_stage" components.skills.version 2>/dev/null || true)"
+    if [ -z "$_us_staged" ]; then
+        _us_staged="$_us_latest"
+    elif [ "$_us_staged" != "$_us_latest" ] && exakit_version_newer "$_us_latest" "$_us_staged"; then
+        warn "The downloaded skill set is $_us_staged, not the advertised $_us_latest — the published manifest is a few minutes ahead of main. Recording $_us_staged; the next update picks up the rest."
+    fi
+    printf '%s\n' "$_us_staged" > "$_us_stage/skills/.version"
+    _us_backup="$_us_kit/skills.backup-$(date +%Y%m%d-%H%M%S)"
+    if [ -d "$_us_kit/skills" ] && ! mv "$_us_kit/skills" "$_us_backup"; then
+        rm -rf "$_us_stage"
+        warn "Could not set the current skills aside; the skills were left as they are."
+        return 0
+    fi
+    if ! mv "$_us_stage/skills" "$_us_kit/skills"; then
+        [ -d "$_us_backup" ] && mv "$_us_backup" "$_us_kit/skills"
+        rm -rf "$_us_stage"
+        warn "Could not install the downloaded skills; the previous set was put back."
+        return 0
+    fi
+    rm -rf "$_us_stage"
+    # Place them. skills-install records components.skills.version from the
+    # marker just written, so the record and the files agree.
+    if exakit_install_skills >/dev/null 2>&1; then
+        rm -rf "$_us_backup"
+        ok "AI skills updated to $_us_staged. Restart or reload your AI client to pick them up."
+    else
+        warn "The new skills are in the kit copy but could not be placed — run: exakit skills-install"
+    fi
+    return 0
+}
+
 exakit_update_component() {
     _component="$1"
     shift || true
@@ -4955,6 +5099,7 @@ exakit_update_component() {
             pyexasol_update
             ;;
         kit2) exakit_update_kit2 ;;
+        skills) exakit_update_skills ;;
         runtime)
             case "$(exakit_installation_runtime_type 2>/dev/null)" in
                 nano)
@@ -5945,8 +6090,12 @@ _exakit_skills_record_installed() {
         [ "$(exakit_skill_state "$_sri_name")" = "available" ] && continue
         _sri_json="${_sri_json:+$_sri_json,}\"$_sri_name\""
     done
+    # The version of the files that were COPIED, read from the kit copy they
+    # came from -- not the advertised version. Recording the advertised one is
+    # how skills-install came to write the new number over the old files it had
+    # just placed, after which `exakit skills` saw no drift at all.
     manifest_set components.skills.version \
-        "$(exakit_versions_value components.skills.version 2>/dev/null || printf 'unknown')"
+        "$(exakit_skills_local_version 2>/dev/null || exakit_versions_value components.skills.version 2>/dev/null || printf 'unknown')"
     manifest_set components.skills.installed "[$_sri_json]"
 }
 
@@ -6093,8 +6242,8 @@ EXAKIT_SKL_EOF
     _skl_have="$(manifest_get components.skills.version 2>/dev/null || true)"
     _skl_want="$(exakit_versions_value components.skills.version 2>/dev/null || true)"
     if [ -n "$_skl_have" ] && [ -n "$_skl_want" ] && [ "$_skl_have" != "$_skl_want" ]; then
-        ui_panel_line "Installed from skill set $_skl_have; this kit carries $_skl_want."
-        ui_panel_line "Refresh them:  exakit skills-install"
+        ui_panel_line "Installed skill set $_skl_have; the kit advertises $_skl_want."
+        ui_panel_line "Fetch and install them:  exakit update"
     elif [ "$_skl_pending" -gt 0 ]; then
         ui_panel_line "Install or refresh every skill:  exakit skills-install"
     fi

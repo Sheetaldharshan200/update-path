@@ -57,8 +57,11 @@ tool that is not on the machine is worse than not shipping the skill at all.
 | [`exasol-vscode`](exasol-vscode/SKILL.md) | SQL editing and schema browsing inside VS Code; why the kit refuses to manage a copy the user installed themselves. |
 
 The set is versioned as one component (`components.skills` in `versions.json`),
-and `exakit skills` reports when the copies in your agent's folders predate the
-kit you have.
+and it updates like one: when the maintainers change a skill and bump that
+version, `exakit version` shows a `skills` row with the newer number and
+`exakit update` fetches the new set from the kit repository and installs it —
+no kit release involved. `exakit skills` reports when the copies in your
+agent's folders are behind the advertised set.
 
 Each skill is a directory containing a `SKILL.md`: `name` + `description`
 frontmatter, then the instructions. A skill that belongs to a marketplace add-on
@@ -93,8 +96,10 @@ finds it automatically:
 - **Claude Code** → `~/.claude/skills/<name>/`
 - **Codex / Cursor / other open-standard agents** → `~/.agents/skills/<name>/`
 
-Re-running is safe — it refreshes the installed copy. The kit setup also offers
-to do this once at the end of an install.
+Re-running is safe — it places the set the local kit copy carries. The kit
+setup also offers to do this once at the end of an install. To move to a
+**newer** set the maintainers have published, run `exakit update`: it fetches
+the set first, then places it.
 
 > **Chat-only clients (Claude, Cursor GUI over MCP):** these do not read
 > filesystem skills the same way. There, the skill still works as guidance you
