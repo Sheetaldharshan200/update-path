@@ -35,8 +35,10 @@ Two rules follow, and they are not negotiable:
 
 ```bash
 exakit sql 'SELECT CURRENT_TIMESTAMP'                      # prefer this
-exapump sql -p starter-kit 'SELECT CURRENT_TIMESTAMP'      # one statement
-exapump sql -p starter-kit < script.sql                    # a script file
+exakit sql --file ~/.exasol-starter-kit/workflows/q.sql    # a saved statement (or: exakit sql < q.sql)
+exakit sql --json 'SELECT COUNT(*) AS c FROM TPCH.NATION'  # one JSON object: {"ok": true, "rows": [...]}
+exapump sql -p starter-kit 'SELECT CURRENT_TIMESTAMP'      # one statement, raw
+exapump sql -p starter-kit < script.sql                    # a multi-statement script
 exapump interactive -p starter-kit                         # interactive shell
 ```
 
@@ -45,8 +47,26 @@ anything that is not a single read statement unless you pass `--write`, and — 
 reason it exists — it turns a failure into its remedy. Raw exapump gives you the
 engine's text and a generic hint, so `FETCH FIRST` comes back as "check your SQL
 syntax" rather than "Exasol pages with `LIMIT`", and a refused connection never
-mentions `exakit start`. Drop to `exapump` for script files, bulk loads and the
-interactive shell, which `exakit sql` does not do.
+mentions `exakit start`. A saved single statement reruns with `exakit sql --file
+<path>` (comment lines and a trailing `;` are dropped). Drop to `exapump` only
+for multi-statement scripts, bulk loads and the interactive shell.
+
+**Parsing results.** `exakit sql --json` prints exactly one JSON object on stdout
+and nothing else there: `{"ok": true, "rows": [{col: value, ...}]}` on success,
+`{"ok": false, "error": "<engine text>", "remedy": "<what to do>" | null}` on
+failure (exit code unchanged). Prefer it over scraping the CSV form, whose
+`[1/1] ... N rows` header and `1 statement executed` footer share stdout with
+the data.
+
+**Discovering the data without MCP** (always the case in the session that ran
+the install): the system tables answer in well under a second.
+
+```sql
+SELECT TABLE_SCHEMA, TABLE_NAME, TABLE_ROW_COUNT FROM SYS.EXA_ALL_TABLES WHERE TABLE_SCHEMA NOT LIKE 'SYS%' ORDER BY 1, 2;
+SELECT COLUMN_NAME, COLUMN_TYPE, COLUMN_COMMENT FROM SYS.EXA_ALL_COLUMNS WHERE COLUMN_SCHEMA = 'ENERGY' AND COLUMN_TABLE = 'ENERGY_READINGS' ORDER BY COLUMN_ORDINAL_POSITION;
+```
+
+Each bundled dataset is also described in `~/.exasol-starter-kit/kit/data/data-dictionary.md`.
 
 `exakit sql` is **not** a sandbox: it is the same admin connection, and its
 statement gate is a seatbelt against a typo. The enforced read-only boundary is

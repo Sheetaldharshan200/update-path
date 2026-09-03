@@ -42,12 +42,22 @@ class DiscoverClientsTests(unittest.TestCase):
             self.assertIn("configured", client)
             self.assertIn("display_name", client)
 
+    def _managed_claude_file(self) -> Path:
+        # A file that still carries the entry the kit wrote: the case the
+        # manifest record is a truthful summary of.
+        path = self._temp_dir / "claude_desktop_config.json"
+        path.write_text(
+            json.dumps({"mcpServers": {"exasol": {"command": "uvx", "args": ["exasol-mcp-server"]}}}),
+            encoding="utf-8",
+        )
+        return path
+
     def test_configured_reflects_managed_artifacts(self) -> None:
         manifest = {
             "artifacts": [
                 {
                     "artifact_id": "a0",
-                    "path": "/tmp/claude_desktop_config.json",
+                    "path": str(self._managed_claude_file()),
                     "kind": "client_config",
                     "ownership_state": "managed",
                     "client": "claude_desktop",
@@ -70,6 +80,32 @@ class DiscoverClientsTests(unittest.TestCase):
         self.assertFalse(state["codex"])  # removed artifacts do not count
         self.assertFalse(state["claude_code"])
         self.assertFalse(state["cursor"])
+
+    def test_a_managed_file_without_the_entry_is_not_configured(self) -> None:
+        # The audit case: the kit's entry deleted from the client's file by hand.
+        # The manifest still remembers writing it; the file no longer has it.
+        # `exakit mcp-setup` read the record, said "already connected" and did
+        # nothing - so a record whose file has drifted must read as NOT
+        # configured, which is what makes setup offer the client again.
+        path = self._managed_claude_file()
+        gone = self._temp_dir / "gone.json"
+        manifest = {
+            "artifacts": [
+                {"artifact_id": "a0", "path": str(path), "kind": "client_config",
+                 "ownership_state": "managed", "client": "claude_desktop", "removed_at": None},
+                {"artifact_id": "a1", "path": str(gone), "kind": "client_config",
+                 "ownership_state": "managed", "client": "cursor", "removed_at": None},
+            ]
+        }
+        (self._temp_dir / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+        self.assertTrue(self._run_discover(self._temp_dir)["clients"][0]["id"])  # sanity: runs
+        state = {c["id"]: c["configured"] for c in self._run_discover(self._temp_dir)["clients"]}
+        self.assertTrue(state["claude_desktop"])
+        self.assertFalse(state["cursor"], "a record whose file is gone is not a configured client")
+
+        path.write_text(json.dumps({"mcpServers": {"other": {"command": "x"}}}), encoding="utf-8")
+        state = {c["id"]: c["configured"] for c in self._run_discover(self._temp_dir)["clients"]}
+        self.assertFalse(state["claude_desktop"], "the entry is gone from the file, so setup must offer it again")
 
     def test_missing_manifest_means_nothing_configured(self) -> None:
         payload = self._run_discover(self._temp_dir / "does-not-exist")

@@ -140,17 +140,27 @@ def _discover_clients(args: argparse.Namespace) -> int:
     environment = ExecutionEnvironment.current()
     filesystem = FileSystem()
     runtime_root = _resolve_runtime_root(args.runtime_root, environment)
+    # A client is CONFIGURED when its file still carries the entry the kit
+    # wrote, not when the manifest remembers writing one. The manifest record
+    # alone made `exakit mcp-setup` answer "already connected" for a file the
+    # user had emptied by hand, and then do nothing - the one situation setup
+    # exists to put right. A record whose file is gone, or whose file no longer
+    # holds the managed entry, is drift, and drift reads as not configured so
+    # setup offers the client again.
+    registry = AdapterRegistry()
     configured: set[str] = set()
     try:
         repository = ManifestRepository(RuntimePaths(runtime_root), filesystem)
         for record in repository.list_active_artifacts():
             client = record.get("client")
-            if client:
+            if not client:
+                continue
+            if _managed_entry_present(registry, record):
                 configured.add(str(client))
     except Exception:  # no managed state yet → nothing is configured
         configured = set()
     clients = []
-    for adapter in AdapterRegistry().all():
+    for adapter in registry.all():
         detection = adapter.detect(environment)
         clients.append(
             {
@@ -163,6 +173,26 @@ def _discover_clients(args: argparse.Namespace) -> int:
         )
     print(json.dumps({"clients": clients}, indent=2, sort_keys=True))
     return 0
+
+
+def _managed_entry_present(registry: AdapterRegistry, record: dict) -> bool:
+    """True when the managed file still holds the entry the record describes.
+
+    Conservative on failure: an adapter that cannot inspect the path (unknown
+    client id, unreadable file) keeps the manifest's word, so a transient read
+    error never flips a connected client to "offer it again".
+    """
+    path = Path(str(record.get("path") or ""))
+    if not path.exists():
+        return False
+    try:
+        adapter = registry.get(str(record.get("client")))
+        metadata = record.get("metadata") or {}
+        entry_name = str(metadata.get("entry_name", "exasol")) if isinstance(metadata, dict) else "exasol"
+        inspection = adapter.inspect(path, entry_name)
+    except Exception:
+        return True
+    return inspection.managed_hash is not None
 
 
 def _setup_runtime_clients(args: argparse.Namespace) -> int:

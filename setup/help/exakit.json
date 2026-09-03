@@ -145,14 +145,15 @@
     },
     {
       "command": "sql",
-      "options": "'<statement>' | --file <path> | (stdin) [--write] [--help]",
+      "options": "'<statement>' | --file <path> | (stdin) [--json] [--write] [--help]",
       "summary": "Run one SQL statement, with the error translated.",
-      "description": "Runs a single statement and turns the three faults everyone hits first into their remedy (connection refused -> exakit start; FETCH FIRST/TOP -> LIMIT; object not found -> describe it). Reads only unless --write. A saved statement runs with --file <path> or on stdin; comment lines (--) and a trailing ; are dropped first. The remedy is printed FIRST, on stdout with the error. A first word that is neither a read nor a known write is reported as unrecognised (a typo), not as a write.",
+      "description": "Runs a single statement and turns the three faults everyone hits first into their remedy (connection refused -> exakit start; FETCH FIRST/TOP -> LIMIT; object not found -> describe it). Reads only unless --write. A saved statement runs with --file <path> or on stdin; comment lines (--) and a trailing ; are dropped first. The remedy is printed FIRST, on stdout with the error. --json returns one object instead: {\"ok\": true, \"rows\": [...]} or {\"ok\": false, \"error\": ..., \"remedy\": ...}, nothing else on stdout. A first word that is neither a read nor a known write is reported as unrecognised (a typo), not as a write.",
       "warning": "This connects with the starter-kit profile, which is the ADMIN user and is NOT sandboxed. The read-only boundary is the MCP user, not this command.",
       "examples": [
         "exakit sql 'SELECT CURRENT_TIMESTAMP'",
         "exakit sql 'SELECT * FROM TPCH.NATION LIMIT 5'",
-        "exakit sql --file ~/.exasol-starter-kit/workflows/top3.sql"
+        "exakit sql --file ~/.exasol-starter-kit/workflows/top3.sql",
+        "exakit sql --json 'SELECT COUNT(*) AS c FROM TPCH.NATION'"
       ]
     },
     {
@@ -191,7 +192,7 @@
       "command": "mcp-setup",
       "options": "",
       "summary": "Connect your AI assistants.",
-      "description": "Permanently configures the exasol MCP server in every supported AI client. Existing configs are backed up first. Restart the client afterwards and look for a server named exasol.",
+      "description": "Permanently configures the exasol MCP server in every supported AI client. Existing configs are backed up first. Restart the client afterwards and look for a server named exasol. Takes no options: clients are named with EXAKIT_MCP_CLIENTS (an option or argument exits 2). A client whose config no longer holds the kit's entry is offered again.",
       "environment": [
         "EXAKIT_MCP_CLIENTS=claude,codex names clients by name (never menu numbers)",
         "EXAKIT_SKIP_MCP=1 skips MCP setup entirely"
@@ -205,7 +206,7 @@
       "command": "mcp-doctor",
       "options": "[clients] [--json]",
       "summary": "Test and repair the AI connection.",
-      "description": "Checks the configured MCP clients, repairs what has drifted, then re-checks. Confirms the database is running first. --json reports the diagnosis without repairing.",
+      "description": "Checks the configured MCP clients, repairs what has drifted, then re-checks. Confirms the database is running first. --json reports the diagnosis without repairing; its remedy names this command. Each finding names the client it is about, and only that client reads needs_attention.",
       "exit_codes": {
         "0": "healthy",
         "3": "database not running",
