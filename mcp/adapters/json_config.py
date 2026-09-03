@@ -18,6 +18,7 @@ from .base import (
     DetectionResult,
     LocationResult,
     RenderResult,
+    json_config_is_kit_only,
 )
 
 
@@ -35,7 +36,11 @@ class JsonConfigAdapter(ClientAdapter):
         default_location: str | None = None,
         workspace_relative_location: str | None = None,
         platforms: tuple[str, ...] = ("darwin", "linux", "win32"),
+        programs: tuple[str, ...] = (),
+        bundles: tuple[str, ...] = (),
     ) -> None:
+        self._programs = programs
+        self._bundles = bundles
         self._adapter_id_value = adapter_id_value
         self._display_name_value = display_name_value
         self._config_env_name = config_env_name
@@ -96,24 +101,14 @@ class JsonConfigAdapter(ClientAdapter):
         )
 
     def detect(self, environment: ExecutionEnvironment) -> DetectionResult:
-        location = self.locate(environment)
-        evidence = list(location.evidence)
-        if not location.available or location.path is None:
-            return DetectionResult(
-                detected=False,
-                confidence="none",
-                location=location,
-                evidence=evidence,
-            )
-        if location.path.exists():
-            evidence.append("Config file exists.")
-            return DetectionResult(True, "high", location, evidence)
-        if location.path.parent.exists():
-            evidence.append("Config directory exists.")
-            return DetectionResult(True, "medium", location, evidence)
-        evidence.append("No local config evidence was found.")
-        return DetectionResult(False, "low", location, evidence)
-
+        return self.detect_from_evidence(
+            environment,
+            client_label=self._display_name_value,
+            programs=self._programs,
+            bundles=self._bundles,
+            kit_only=lambda path: json_config_is_kit_only(path, self._top_level_key),
+            override_env=self._config_env_name,
+        )
     def inspect(self, path: Path, server_name: str) -> AdapterInspection:
         if not path.exists():
             return AdapterInspection(

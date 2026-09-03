@@ -19,6 +19,7 @@ from .base import (
     DetectionResult,
     LocationResult,
     RenderResult,
+    json_config_is_kit_only,
 )
 
 
@@ -66,39 +67,17 @@ class ClaudeCodeAdapter(ClientAdapter):
         )
 
     def detect(self, environment: ExecutionEnvironment) -> DetectionResult:
-        location = self.locate(environment)
-        evidence = list(location.evidence)
-        if not location.available or location.path is None:
-            return DetectionResult(
-                detected=False,
-                confidence="none",
-                location=location,
-                evidence=evidence,
-            )
-        if location.path.exists():
-            evidence.append("Config file exists.")
-            return DetectionResult(
-                detected=True,
-                confidence="high",
-                location=location,
-                evidence=evidence,
-            )
-        if shutil.which("claude") or (environment.home / ".claude").exists():
-            evidence.append("The Claude Code CLI is installed but has no user config yet.")
-            return DetectionResult(
-                detected=True,
-                confidence="medium",
-                location=location,
-                evidence=evidence,
-            )
-        evidence.append("No Claude Code CLI evidence was found.")
-        return DetectionResult(
-            detected=False,
-            confidence="low",
-            location=location,
-            evidence=evidence,
+        # ~/.claude.json carries far more than mcpServers once Claude Code has
+        # run; a file with only our entry was written by the kit. The CLI on
+        # PATH, or a ~/.claude with the CLI's own state, is the real evidence.
+        return self.detect_from_evidence(
+            environment,
+            client_label="the Claude Code CLI",
+            programs=("claude",),
+            client_dir=lambda env, path: env.home / ".claude",
+            kit_only=lambda path: json_config_is_kit_only(path, "mcpServers"),
+            override_env=self._CONFIG_ENV_NAME,
         )
-
     def inspect(self, path: Path, server_name: str) -> AdapterInspection:
         if not path.exists():
             return AdapterInspection(
