@@ -527,7 +527,10 @@ _covered_out="$( (
 has "no selectable rows -> covered list, no menu" "Everything available is already" "$_covered_out"
 has "the covered list shows the install" "Installed" "$_covered_out"
 lacks "and does not advertise the update command at them" "Update: exakit update" "$_covered_out"
-has "a system install reads as covered, not managed" "on this system" "$_covered_out"
+has "a system install reads as covered, not managed" "managed outside the kit" "$_covered_out"
+# id|why|version is three fields; reading it into two names left the empty
+# version riding inside the second and every covered line ended in "|".
+lacks "and the covered line carries no stray field separator" "kit|" "$_covered_out"
 rm -rf "$EXAKIT_HOME/dash-server-venv"
 
 echo "the module system-present hook overrides the PATH check:"
@@ -1274,7 +1277,13 @@ check "a venv without the engine does not count as installed" "not installed" "$
 # add-on must fail SOFT and name the fix, never end the caller's run.
 _jt_missing="$( (
     EXAKIT_JSON_TABLES_MIRROR_TAG="does-not-exist-$$"
-    _json_tables_mirror_wheel_name() { return 1; }
+    # The module chooses its sentence from the HTTP status the release lookup
+    # recorded, so the stub has to leave that record behind the way a real 404
+    # would -- a bare "return 1" is "GitHub could not be reached", which names
+    # the network, not the workflow.
+    _json_tables_mirror_wheel_name() {
+        _jtm_c="$(_json_tables_mirror_cache_file 2>/dev/null || printf '%s' "$EXAKIT_JSON_TABLES_MIRROR_CACHE")"
+        mkdir -p "$(dirname "$_jtm_c")"; printf '404' > "$_jtm_c.http"; return 1; }
     exakit_ensure_uv() { return 0; }
     EXAKIT_UV_BIN="$WORK/bin/uv"; printf '#!/bin/sh\nexit 0\n' > "$WORK/bin/uv"; chmod 755 "$WORK/bin/uv"
     detect_os() { printf 'linux\n'; }; detect_arch() { printf 'x86_64\n'; }
@@ -1314,12 +1323,12 @@ check "a manually installed add-on reads as present" "present" "$( (
     PATH="$WORK/manual-bin:$PATH"
     _exakit_marketplace_addon_present json-tables && printf 'present\n' || printf 'missing\n'
 ) )"
-check "the menu says so instead of offering an install" "on this system" "$( (
+check "the menu says so instead of offering an install" "managed outside the kit" "$( (
     PATH="$WORK/manual-bin:$PATH"
     # The row sits inside a panel now, so strip whatever border precedes it -
     # ASCII here, since a redirected run is always in plain mode - before
     # anchoring on the id.
-    exakit_marketplace_menu 2>/dev/null | sed 's/^[^A-Za-z]*//' | grep '^json-tables' | grep -o 'on this system' | head -1
+    exakit_marketplace_menu 2>/dev/null | sed 's/^[^A-Za-z]*//' | grep '^json-tables' | grep -o 'managed outside the kit' | head -1
 ) )"
 check "and it cannot be selected" "not-selectable" "$( (
     PATH="$WORK/manual-bin:$PATH"
@@ -1617,7 +1626,7 @@ has "...and stops it"                   'ui_table_end "$EXAKIT_ADDON_TABLE_STATE
 # unpickable rows in that same table.
 lacks "the state panel is gone"         'ui_panel_begin "Marketplace add-ons"'       "$COMMON_SH_ADDONS"
 has "...its columns moved into the table" 'UI_TABLE_COL3="Description"'              "$COMMON_SH_ADDONS"
-has "...and its other rows became disabled ones" 'disabled|||||| %s||' "$COMMON_SH_ADDONS"
+has "...and its other rows became disabled ones" '0|disabled|||||%s|%s|%s|%s' "$COMMON_SH_ADDONS"
 # The row builder must do NO lookups of its own. Resolving the version and the
 # About inside it put a version probe and a network fetch behind every caller --
 # including the pty scenario that drives this table with three ids that are not

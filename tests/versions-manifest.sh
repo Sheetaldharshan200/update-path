@@ -1356,12 +1356,16 @@ lacks "and says nothing extra when they agree" "kit installed" "$agree_out"
 # run had a warm cache. What the comment above actually cares about is the
 # SHAPE: a bare tag, never an image reference.
 _vm_nano_row="$(row "$agree_out" nano)"
-check "the runtime row is a bare tag, not an image reference" "yes" \
-    "$(case "$_vm_nano_row" in
-        *docker.io/*|*exasol/nano:*) echo no ;;
-        nano\ [0-9]*) echo yes ;;
-        *) echo "no ($_vm_nano_row)" ;;
-    esac)"
+# Decided in a variable, not inside "$(case ...)": bash 3.2 cannot parse a ")"
+# inside a double-quoted string inside a case arm inside a command substitution
+# ("no ($_vm_nano_row)"), and died here with a syntax error -- taking every
+# check after this line with it, on every macOS runner.
+case "$_vm_nano_row" in
+    *docker.io/*|*exasol/nano:*) _vm_nano_shape=no ;;
+    nano\ [0-9]*)                _vm_nano_shape=yes ;;
+    *)                           _vm_nano_shape="no ($_vm_nano_row)" ;;
+esac
+check "the runtime row is a bare tag, not an image reference" "yes" "$_vm_nano_shape"
 lacks "and no image reference reaches the table" "docker.io/exasol/nano" "$agree_out"
 
 echo "a component with no build for this machine is never offered:"

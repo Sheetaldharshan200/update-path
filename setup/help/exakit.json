@@ -265,7 +265,6 @@
       ],
       "examples": [
         "exakit update",
-        "exakit update runtime",
         "exakit update --yes"
       ]
     },
