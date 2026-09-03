@@ -319,47 +319,62 @@ jobs:
           # vsix digest: assert the release asset carries exactly that digest,
           # so a stale hash can never ship (the install refuses on mismatch).
           # json-tables is not released upstream in installable form: the kit
-          # prebuilds it (pkg-json-tables.yml) and serves it from this repo's
-          # own mirror-json-tables release. The check is therefore against the
-          # MIRROR: the advertised version must be exactly the build sitting on
-          # that release (its body carries version=<build>), because that is
-          # the only version `exakit update` can actually download. This is
-          # the merge gate behind the ordering promise -- the advertise PR that
-          # bumps this version can only pass CI after the artifacts exist.
+          # prebuilds it (pkg-json-tables.yml) and publishes ONE IMMUTABLE
+          # RELEASE PER BUILD in this repository, tagged json-tables-<version>.
+          # versions.json names that release, the wheel and the digest of every
+          # asset, and the install trusts nothing else -- so this is the merge
+          # gate: the release must exist, carry every asset the pins name, and
+          # each asset's published digest must equal the pinned one. The pkg
+          # workflow's advertise job writes all of it at once from the files it
+          # just published; a hand edit that gets any of it wrong cannot merge,
+          # and a release can never be rewritten underneath a pin because the
+          # workflow refuses to touch an existing tag.
           jt = components.get("json-tables") or {}
           if jt.get("version"):
-              body, reason = fetch("https://api.github.com/repos/%s/releases/tags/mirror-json-tables"
-                                   % os.environ.get("GITHUB_REPOSITORY", ""), token=True)
+              before = len(problems)
+              release = jt.get("release") or "json-tables-%s" % jt["version"]
+              if not release.startswith("json-tables-%s" % jt["version"]):
+                  problems.append("json-tables: release %s does not belong to version %s"
+                                  % (release, jt["version"]))
+              required = {"linux-x86_64", "linux-aarch64", "macos-aarch64",
+                          "windows-x86_64", "cargo-windows-x86_64", "wheel"}
+              pins = jt.get("sha256") or {}
+              if set(pins) != required:
+                  problems.append("json-tables: sha256 must cover exactly %s, found %s"
+                                  % (sorted(required), sorted(pins)))
+              if not jt.get("wheel"):
+                  problems.append("json-tables: wheel is not pinned")
+
+              def jt_asset_for(key):
+                  if key == "wheel":
+                      return jt.get("wheel", "")
+                  if key.startswith("cargo-"):
+                      return "exakit-json-tables-cargo-%s%s" % (key[len("cargo-"):],
+                                                                ".exe" if "windows" in key else "")
+                  return "exasol-json-tables-ingest-%s%s" % (key, ".exe" if "windows" in key else "")
+
+              body, reason = fetch("https://api.github.com/repos/%s/releases/tags/%s"
+                                   % (os.environ.get("GITHUB_REPOSITORY", ""), release), token=True)
               if body is None:
-                  # Bootstrap state: the workflow has never run. Users are safe
-                  # (the module resolves installable versions from the mirror
-                  # and soft-fails with the fix when it is absent), so this is
-                  # a loud notice, not a merge-blocker -- otherwise the PR that
-                  # introduces the add-on could never land. Once the release
-                  # exists, the version check below is a hard failure.
-                  print("::warning::json-tables: the mirror-json-tables release does not exist yet (%s) -- "
-                        "run the 'pkg / json-tables' workflow to publish the prebuilt artifacts" % reason)
+                  problems.append("json-tables: release %s does not exist (%s) -- the 'pkg / json-tables' "
+                                  "workflow publishes the release BEFORE the version is advertised"
+                                  % (release, reason))
               else:
-                  import re as _re
-                  built = _re.search(r"version=([A-Za-z0-9._+-]+)", body.get("body") or "")
-                  built = built.group(1) if built else ""
-                  if built != jt["version"]:
-                      problems.append("json-tables: versions.json advertises %s but the mirror release "
-                                      "carries %s -- the prebuilt artifacts must exist BEFORE the bump "
-                                      "(the pkg workflow's advertise job does this in the right order)"
-                                      % (jt["version"], built or "nothing"))
-                  else:
-                      print("  ok  json-tables: the mirror release carries the advertised build %s" % built)
-                  wanted = {"exasol-json-tables-ingest-linux-x86_64",
-                            "exasol-json-tables-ingest-linux-aarch64",
-                            "exasol-json-tables-ingest-macos-aarch64"}
-                  names = {a.get("name", "") for a in body.get("assets") or []}
-                  missing = sorted(wanted - names)
-                  if missing:
-                      problems.append("json-tables: the mirror release is missing engine binaries: %s"
-                                      % ", ".join(missing))
-                  if not any(n.endswith(".whl") for n in names):
-                      problems.append("json-tables: the mirror release carries no wheel")
+                  assets = {a.get("name", ""): a for a in body.get("assets") or []}
+                  for key, pinned in sorted(pins.items()):
+                      name = jt_asset_for(key)
+                      asset = assets.get(name)
+                      if asset is None:
+                          problems.append("json-tables: release %s has no asset %s (pinned as sha256.%s)"
+                                          % (release, name, key))
+                          continue
+                      published = str(asset.get("digest") or "").replace("sha256:", "")
+                      if published != pinned:
+                          problems.append("json-tables: sha256.%s pins %s but %s on %s is %s"
+                                          % (key, pinned, name, release, published or "unknown"))
+              if len(problems) == before:
+                  print("  ok  json-tables: release %s carries every pinned asset with the pinned digest"
+                        % release)
 
           for addon in ("dash-server", "exasol-vscode"):
               block = components.get(addon) or {}
@@ -416,6 +431,11 @@ jobs:
       - run: bash tests/dry-run-matrix.sh
       - run: bash tests/noninteractive-answers.sh
       - run: bash tests/marketplace.sh
+      # json-tables ships from one immutable release per build; the pin in
+      # versions.json is the only authority. This guards both halves: the
+      # module never reads a pin for a build it is not installing, and the
+      # packaging workflow can never overwrite a published release.
+      - run: bash tests/json-tables-release.sh
       - run: bash tests/uninstall.sh
       - run: bash tests/skills.sh
       - run: bash tests/agent-operability.sh

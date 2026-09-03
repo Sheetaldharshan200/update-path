@@ -239,6 +239,35 @@ other component, and everything user-facing — menu row, post-install offer,
 update flow, uninstall sweep — picks the add-on up from the registry line
 with no further wiring.
 
+## json-tables: one immutable release per build
+
+json-tables is the one component the kit packages itself. Its release model is
+different from every other component's, and it is worth knowing why.
+
+- `.github/workflows/pkg-json-tables.yml` builds the ingest engine for every
+  platform, the wheel and the Windows cargo shim, and publishes them as **one
+  release per build**, tagged `json-tables-<upstream version>` (a forced
+  rebuild of the same upstream version gets `-2`, `-3`, ...). **A published
+  release is never rewritten**: the workflow refuses to touch an existing tag.
+- The same run then opens a pull request that writes the **whole pin** into
+  `components.json-tables`: `version`, `release` (the exact tag), `wheel` (the
+  real filename) and a `sha256` map keyed by platform. Nothing else in the kit
+  decides what gets installed — the module reads that block and only that.
+- CI (`upstream-exists` in versions.yml) refuses the pull request unless the
+  named release exists, carries every pinned asset, and each asset's published
+  digest equals the pinned one. A hand edit that gets any of it wrong cannot
+  merge.
+
+The consequence you rely on: an upstream json-tables release changes nothing
+for anyone until the advertise pull request merges. New installs keep pulling
+the previous release, which still exists byte for byte, and every pinned
+digest keeps verifying. (The earlier single rolling tag broke exactly here —
+publishing v0.3 overwrote the v0.2 binaries while versions.json still pinned
+their digests, and every install of the add-on failed on checksum until the
+pins were fixed by hand.) Never publish to a fixed tag again, and never edit
+the json-tables digests by hand: re-run the workflow with `force` and merge
+the pull request it opens.
+
 ## What users see, and what you can rely on
 
 - Nothing about versions can break a command. Resolution degrades from a fresh

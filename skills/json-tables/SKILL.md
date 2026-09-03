@@ -66,8 +66,9 @@ contain the engine — so a plain `pip install` cannot ingest even on a machine
 that *has* Rust.
 
 The kit solves that for the user: the engine binaries are **built once per
-platform by the kit's own packaging workflow**, published to a mirror release,
-and downloaded **digest-verified** at install time. Nothing is compiled on the
+platform by the kit's own packaging workflow**, published as an immutable
+`json-tables-<version>` release whose asset digests `versions.json` pins, and
+downloaded **digest-verified** at install time. Nothing is compiled on the
 user's machine and no Rust toolchain is required.
 
 To make the upstream CLI use that prebuilt engine, the kit places a small

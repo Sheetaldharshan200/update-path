@@ -1338,17 +1338,22 @@ check "a manual copy is never counted as kit-managed" "not-managed" "$( (
 rm -f "$WORK/manual-bin/exasol-json-tables"
 
 echo "nothing is advertised before it is built:"
-# The mirror release is the authority on what can be installed. If the
-# packaging workflow has not built a version yet, the update flow must not
-# offer it -- an offer the user cannot act on is worse than no offer.
-check "the advertised version comes from the mirror, not the manifest" "mirror-2026aa" "$( (
-    _json_tables_mirror_version() { printf 'mirror-2026aa\n'; }
-    exakit_component_latest json-tables
+# versions.json is the authority on what can be installed: the packaging
+# workflow publishes the immutable json-tables-<version> release BEFORE the
+# pull request that advertises it can merge (CI checks every pinned digest
+# against that release). So "latest" for this add-on is the advertised
+# version, answered with no network call -- an upstream tag the kit has not
+# packaged is never offered, and a release body is never consulted (reading
+# the version off the release while the pins described another build is how
+# "Installing JSON Tables v0.3" came to verify a v0.2 digest).
+check "the advertised version comes from versions.json, without the network" \
+    "$(exakit_versions_value components.json-tables.version)" "$( (
+    curl() { printf 'NETWORK\n' >&2; return 7; }
+    exakit_component_latest json-tables 2>&1
 ) )"
-check "an unreachable mirror advertises nothing rather than guessing" "none" "$( (
-    _json_tables_mirror_version() { return 1; }
-    _out="$(exakit_component_latest json-tables 2>/dev/null || true)"
-    [ -n "$_out" ] && printf '%s\n' "$_out" || printf 'none\n'
+check "with nothing advertised the module's fallback answers, not a guess" "$EXAKIT_JSON_TABLES_VERSION_FALLBACK" "$( (
+    exakit_versions_value() { return 1; }
+    exakit_component_latest json-tables 2>/dev/null
 ) )"
 echo "data-load's default row when every bundled dataset is in:"
 # THE BUG: with nothing left to load from the bundle, the pre-selected row was
@@ -1791,7 +1796,7 @@ check "the release is fetched from one place only" "1" \
     "$(grep -c 'api.github.com' "$ROOT/setup/lib/json-tables.sh")"
 has "the document is cached in a file"   'EXAKIT_JSON_TABLES_MIRROR_CACHE=' "$JT_SH"
 has "...and so is the status"            '> "$_jmr_c.http"'                 "$JT_SH"
-has "...which the caller reads back"     'cat "$EXAKIT_JSON_TABLES_MIRROR_CACHE.http"' "$JT_SH"
+has "...which the caller reads back"     'cat "$(_json_tables_mirror_cache_file).http"' "$JT_SH"
 lacks "a refusal is never cached"        'printf %s "$_jmr_http" > "$_jmr_c" ' "$JT_SH"
 has "...and answers 403 differently"     '403|429)'                       "$JT_SH"
 has "...while keeping the 404 remedy"    'pkg / json-tables'              "$JT_SH"
