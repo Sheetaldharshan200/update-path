@@ -25,5 +25,13 @@
     "New: exakit update applies the tested version set.",
     "New: exakit version shows installed and advertised versions.",
     "The installer downloads 4x less: 27 MB down to 6.5 MB."
+  ],
+  "0.2.2": [
+    "exakit status says installing while the installer runs.",
+    "exakit sql runs a saved file: --file <path> or stdin.",
+    "Fixes come first in exakit sql errors, on stdout.",
+    "exakit version --json and mcp-status --json return objects.",
+    "EXAKIT_MCP_CLIENTS=all now means the clients installed here.",
+    "A busy database port is reported as a conflict, not running."
   ]
 }

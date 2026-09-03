@@ -18,7 +18,7 @@ fails=0
 
 awk '/^function Invoke-ExakitUninstallRun/,/^}/' "$CLI" > "/tmp/ps-uninst-fn.$$"
 # PowerShell built-ins the test does not have to supply.
-BUILTINS=" Get-Command Get-ChildItem Get-Content Remove-Item Test-Path Join-Path New-Item Set-Variable Write-Host Out-Null Where-Object ForEach-Object Select-Object Start-Process Split-Path "
+BUILTINS=" Get-Command Get-ChildItem Get-Content Remove-Item Test-Path Join-Path New-Item Set-Variable Write-Host Out-Null Where-Object ForEach-Object Select-Object Start-Process Split-Path Move-Item Get-Date "
 
 while read -r call; do
     case "$BUILTINS" in *" $call "*) continue ;; esac

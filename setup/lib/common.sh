@@ -896,22 +896,28 @@ die() {
 # unexpected FETCH_", "object X not found"); each match here appends the one
 # line that names the fix. Callers pass whatever output they captured; unknown
 # errors print nothing extra, so this can never make a message worse.
-exakit_explain_db_error() {
+# exakit_db_error_remedy <engine text> — the remedy lines for a raw database
+# error, one per line on stdout, nothing when none applies. Data, not
+# presentation: `exakit sql` prints these FIRST and on the same stream as the
+# error, because on stderr after the output an agent capturing stdout never
+# saw them, and one capturing both read exapump's generic "Hint:" first.
+# ⇄ twin: Get-ExakitDbErrorRemedy.
+exakit_db_error_remedy() {
     case "$1" in
         *"onnection refused"*|*"Errno 61"*|*"Errno 111"*|*"could not connect"*|*"Could not connect"*)
-            warn "That is the database not answering — it is stopped or unreachable. Start it with: exakit start (then check: exakit status)"
+            printf '%s\n' "That is the database not answering — it is stopped or unreachable. Start it with: exakit start (then check: exakit status)"
             ;;
     esac
     case "$1" in
         *"unexpected FETCH_"*|*"unexpected TOP_"*|*"FETCH FIRST"*)
-            warn "Exasol pages result sets with LIMIT <n> (optionally OFFSET) — not FETCH FIRST or TOP. Rewrite the query with LIMIT."
+            printf '%s\n' "Exasol pages result sets with LIMIT <n> (optionally OFFSET) — not FETCH FIRST or TOP. Rewrite the query with LIMIT."
             ;;
     esac
     case "$1" in
         *"not found"*)
             case "$1" in
                 *object*|*table*|*column*|*schema*|*view*)
-                    warn "A named object does not exist as written. Check the spelling and the schema qualifier — describe it first (MCP: describe_exasol_table_or_view; SQL: DESCRIBE <schema>.<table>)."
+                    printf '%s\n' "A named object does not exist as written. Check the spelling and the schema qualifier — describe it first (MCP: describe_exasol_table_or_view; SQL: DESCRIBE <schema>.<table>)."
                     ;;
             esac
             ;;
@@ -922,10 +928,19 @@ exakit_explain_db_error() {
     # trust model. Say so where the error appears, not only in the docs.
     case "$1" in
         *"insufficient privileges"*|*"42500"*)
-            warn "That write was refused by the DATABASE: the MCP user is read-only by design, and this is the guardrail working as intended."
-            warn "Do NOT re-run it through 'exapump -p starter-kit' — that profile is the ADMIN user and is not sandboxed. If a write is genuinely wanted, say so and let the user decide."
+            printf '%s\n' "That write was refused by the DATABASE: the MCP user is read-only by design, and this is the guardrail working as intended."
+            printf '%s\n' "Do NOT re-run it through 'exapump -p starter-kit' — that profile is the ADMIN user and is not sandboxed. If a write is genuinely wanted, say so and let the user decide."
             ;;
     esac
+    return 0
+}
+
+# exakit_explain_db_error <engine text> — the same remedies as warnings, for the
+# lifecycle paths that print their own output first.
+exakit_explain_db_error() {
+    exakit_db_error_remedy "$1" | while IFS= read -r _ede_line; do
+        [ -n "$_ede_line" ] && warn "$_ede_line"
+    done
     return 0
 }
 
@@ -4631,6 +4646,13 @@ exakit_print_version_table() {
     # in two phases so the reader can see which one is taking the time.
     # ui_spin_begin draws nothing unless stdout is a terminal, so a piped or
     # captured run is unchanged.
+    #
+    # --json: the same rows as one object — installed, advertised, status and
+    # severity per component, plus the three keys every state query carries.
+    # `exakit version --json` used to print the decorated table and exit 0,
+    # which is worse than an error for a parser.
+    _uvt_json=0
+    [ "${1:-}" = "--json" ] && _uvt_json=1
     if [ "${EXAKIT_VERSION_POLICY:-manifest}" = "manifest" ]; then
         ui_spin_begin "Checking for newer versions"
         exakit_versions_update_cache force >/dev/null 2>&1 || true
@@ -4646,6 +4668,7 @@ exakit_print_version_table() {
     # be empty — which is exactly the invariant this table drops. Separate arrays
     # cannot shift.
     _uc_comp=(); _uc_ver=(); _uc_status=(); _uc_note=(); _uc_maint=()
+    _uc_avail=(); _uc_raw=(); _uc_sev=()
     # Column widths measured, not guessed. A fixed %-10s fits the built-in
     # component names and nothing else: dash-server (11), json-tables (11) and
     # exasol-vscode (13) each overflow it, and an overflowing cell pushes every
@@ -4735,12 +4758,59 @@ exakit_print_version_table() {
         _uc_status+=("$(_exakit_status_cell "$_status" "$_row_severity")")
         _uc_note+=("$_row_note")
         _uc_maint+=("$(exakit_component_note "$_row_component" 2>/dev/null || true)")
+        _uc_avail+=("$_row_available")
+        _uc_raw+=("$_status")
+        _uc_sev+=("${_row_severity:-normal}")
     done
 
+    ui_spin_end
+    if [ "$_uvt_json" -eq 1 ]; then
+        _uvt_tab="$(printf '\t')"
+        _uvt_tmp="$(mktemp "${TMPDIR:-/tmp}/exakit-version.XXXXXX")" || die "Could not create a temporary file for --json."
+        _uvt_i=0
+        while [ "$_uvt_i" -lt "${#_uc_comp[@]}" ]; do
+            printf '%s\n' "${_uc_comp[$_uvt_i]}$_uvt_tab${_uc_ver[$_uvt_i]}$_uvt_tab${_uc_avail[$_uvt_i]}$_uvt_tab${_uc_raw[$_uvt_i]}$_uvt_tab${_uc_sev[$_uvt_i]}$_uvt_tab${_uc_maint[$_uvt_i]}$_uvt_tab${_uc_note[$_uvt_i]}" >> "$_uvt_tmp"
+            _uvt_i=$((_uvt_i + 1))
+        done
+        run_python - "$_uvt_tmp" "$_pending" "$(exakit_component_current exakit 2>/dev/null || printf unknown)" \
+            "$(manifest_get installed_at 2>/dev/null || true)" "$(exakit_versions_source 2>/dev/null || true)" <<'EXAKIT_VJ_PY'
+import json, sys
+rows = []
+with open(sys.argv[1], encoding="utf-8") as handle:
+    for line in handle:
+        line = line.rstrip("\n")
+        if not line:
+            continue
+        comp, ver, avail, status, sev, maint, note = (line.split("\t") + [""] * 7)[:7]
+        rows.append({
+            "component": comp,
+            "installed": None if ver in ("not installed", "not available", "") else ver,
+            "installed_label": ver,
+            "advertised": None if avail in ("unknown", "") else avail,
+            "status": status,
+            "severity": sev or "normal",
+            "note": maint or None,
+            "platform_note": note or None,
+        })
+pending = int(sys.argv[2] or 0)
+print(json.dumps({
+    "installed": True,
+    "status": "updates_pending" if pending > 0 else "current",
+    "remedy": "exakit update" if pending > 0 else None,
+    "pending": pending,
+    "kit": {"version": sys.argv[3], "installed_at": sys.argv[4] or None},
+    "versions_source": sys.argv[5] or None,
+    "components": rows,
+}, indent=2))
+EXAKIT_VJ_PY
+        _uvt_rc=$?
+        rm -f "$_uvt_tmp"
+        rm -f "$EXAKIT_NOTICE_PLAN" 2>/dev/null || true
+        return "$_uvt_rc"
+    fi
     # A card, like every other framed answer the kit gives. ui_panel_end measures
     # with _ui_visible_len, so the coloured severity suffix does not throw the
     # border off the way a byte count would.
-    ui_spin_end
     ui_panel_begin "Components"
     ui_panel_line "$(printf '%-*s %-*s %s' "$_uc_cw" "Component" "$_uc_vw" "Version" "Status")"
     _uc_i=0
@@ -4993,6 +5063,25 @@ exakit_update_self() {
     # The kit that just landed describes itself: read the section out of the NEW
     # copy, which is already in place at this point.
     exakit_print_whats_new "$_staged_version" "What's new in $_staged_version" || true
+}
+
+# exakit_install_helper_early <script_dir> — put the `exakit` command in place
+# BEFORE step 1, so `exakit status` answers from the first seconds of an
+# install. The helper used to arrive in the last step, at 105 s of a 107 s
+# install: AGENTS.md tells an agent to run the install in the background and
+# poll `exakit status` until it says running, and for 98 % of the run the only
+# answer was "command not found". The kit copy the command reads is already in
+# place (install.sh extracts into it before the setup script starts); step 6
+# still records the tick and refreshes anything that changed.
+exakit_install_helper_early() {
+    _ihe_src="$1/exakit"
+    [ -f "$_ihe_src" ] || return 0
+    mkdir -p "$EXAKIT_BIN_DIR" 2>/dev/null || return 0
+    if [ ! -x "$EXAKIT_BIN_DIR/exakit" ] || ! cmp -s "$_ihe_src" "$EXAKIT_BIN_DIR/exakit" 2>/dev/null; then
+        install -m 755 "$_ihe_src" "$EXAKIT_BIN_DIR/exakit" 2>/dev/null || return 0
+    fi
+    info "exakit command ready — follow this install from another shell with: exakit status"
+    return 0
 }
 
 # exakit_skills_local_version — the version of the skill set sitting in the kit
@@ -5783,6 +5872,12 @@ rollback_clear() {
 begin_step() {
     EXAKIT_CURRENT_STEP="$1"
     EXAKIT_ACTIVE_LABEL="$2"     # spinner label for run_logged inside this step
+    # On disk too, best-effort: `exakit status` reads it back as "installing
+    # (step X)" while the installer runs, which is the state an agent polling
+    # from a second shell had no way to see. Cleared by exakit_finish. In a
+    # subshell, because a manifest that cannot be written must not end the
+    # step -- the note is a nicety.
+    [ -f "$EXAKIT_MANIFEST" ] && ( manifest_set install.current_step "$1" ) >/dev/null 2>&1
     _bs_rerun=0
     # Cleared before every judgement so one step's reason cannot be reported
     # against the next; step_artifact_state sets it when it has a better
@@ -5883,6 +5978,8 @@ exakit_finish() {
     rollback_discard
     exakit_release_lock
     EXAKIT_CURRENT_STEP=""
+    [ -f "$EXAKIT_MANIFEST" ] && ( manifest_del install.current_step ) >/dev/null 2>&1
+    return 0
 }
 
 # ---------------------------------------------------------------------------
@@ -7508,6 +7605,35 @@ if skipped_clients:
 # a state map in the same vocabulary as the setup menu, so "not installed"
 # reads as expected state instead of a warning.
 discovered = (doc.get("details") or {}).get("discovered_clients") or []
+client_states = (doc.get("details") or {}).get("clients") or []
+if doc.get("operation") == "doctor" and client_states:
+    # The doctor derives each client's state from HEALTH (see _doctor in
+    # mcp/service.py). The map below used to be rebuilt here from "an artifact
+    # exists", which called a client connected with its entry deleted, and
+    # called clients that were not installed connected too.
+    groups = {"connected": [], "needs attention": [], "configured, not installed": [], "available": [], "not installed": []}
+    STATE_TO_GROUP = {
+        "connected": "connected",
+        "needs_attention": "needs attention",
+        "configured_client_missing": "configured, not installed",
+        "not_set_up": "available",
+        "not_installed": "not installed",
+    }
+    for entry in client_states:
+        cid = entry.get("client")
+        groups[STATE_TO_GROUP.get(entry.get("state"), "not installed")].append(LABELS.get(cid, cid))
+    hints = {
+        "available": "-> connect with: exakit mcp-setup",
+        "needs attention": "-> the findings below say what; exakit mcp-doctor repairs drift",
+        "configured, not installed": "-> the client is gone; its entry stays until: exakit mcp-doctor",
+    }
+    print("")
+    print("  Client state:")
+    for label, names in groups.items():
+        if names:
+            hint = hints.get(label, "")
+            print(f"    {label:<26} {', '.join(names)}{'   ' + hint if hint else ''}")
+    discovered = []
 if discovered:
     managed = {artifact.get("client") for artifact in doc.get("artifacts") or []}
     groups = {"connected": [], "available": [], "needs attention": [], "not installed": []}
@@ -7624,6 +7750,21 @@ exakit_parse_mcp_client_selection() {
     done
     [ -n "$_result" ] || return 1
     printf '%s\n' "$_result"
+}
+
+# exakit_mcp_detected_clients — csv of the clients detected on this machine
+# (installed, configured or not), in the kit's canonical order. Empty when
+# discovery is unavailable, so callers can fall back to the full list.
+exakit_mcp_detected_clients() {
+    _mdc_status="$(exakit_mcp_discover_status)" || return 1
+    _mdc_out=""
+    for _mdc_id in claude_desktop claude_code cursor codex vscode_copilot gemini_cli opencode continue; do
+        case "$_mdc_status" in
+            *"$_mdc_id connected"*|*"$_mdc_id pending"*) _mdc_out="${_mdc_out:+$_mdc_out,}$_mdc_id" ;;
+        esac
+    done
+    [ -n "$_mdc_out" ] || return 1
+    printf '%s\n' "$_mdc_out"
 }
 
 # exakit_mcp_discover_status — one "id state" line per supported MCP client,
@@ -7790,6 +7931,27 @@ exakit_mcp_setup() {
             warn "EXAKIT_MCP_CLIENTS='$EXAKIT_MCP_CLIENTS' is not valid (use claude, codex, cursor, copilot, gemini, opencode, continue, all, skip, or numbers 1-7)."
             return 1
         }
+        case "$EXAKIT_MCP_CLIENTS" in
+            all|ALL|All)
+                # "all" means every client ON THIS MACHINE — the set the menu
+                # offers — not every client the kit knows. The full list wrote
+                # the read-only password into config files for four tools that
+                # were not installed, and doctor then called them connected. A
+                # client named explicitly is still configured, installed or not.
+                _clients_all="$(exakit_mcp_detected_clients 2>/dev/null || true)"
+                if [ -n "$_clients_all" ]; then
+                    _clients_skipped=""
+                    for _clients_one in $(printf '%s' "$_clients_csv" | tr ',' ' '); do
+                        case ",$_clients_all," in
+                            *",$_clients_one,"*) ;;
+                            *) _clients_skipped="${_clients_skipped:+$_clients_skipped,}$_clients_one" ;;
+                        esac
+                    done
+                    _clients_csv="$_clients_all"
+                    [ -n "$_clients_skipped" ] && info "EXAKIT_MCP_CLIENTS=all — not installed here, skipped: $_clients_skipped (name one explicitly to configure it anyway)"
+                fi
+                ;;
+        esac
         info "Configuring MCP clients from EXAKIT_MCP_CLIENTS: $_clients_csv"
     else
         # Show the FULL list of supported clients so the user sees everything
@@ -8053,7 +8215,7 @@ exakit_mcp_operation() {
     _operation="$1"
     shift
     _clients_csv="$(exakit_mcp_clients_from_args "$@")" || {
-        warn "Please choose valid MCP clients: claude_desktop, cursor, codex, or all."
+        warn "Please choose valid MCP clients: claude, claude_desktop, claude_code, codex, cursor, copilot, gemini, opencode, continue, or all."
         return 1
     }
     _result_file="$(mktemp "${TMPDIR:-/tmp}/exakit-mcp-operation.XXXXXX")"
@@ -8074,13 +8236,16 @@ if not isinstance(doc, dict):
     sys.exit(1)
 doc.setdefault("installed", True)
 if "remedy" not in doc:
-    actions = doc.get("next_actions")
+    # From a WARNING or ERROR finding only. Taking the first next_action made a
+    # healthy machine answer "Install the client..." off an INFO finding about
+    # a client that is not installed, so `remedy != null` could not be branched on.
     remedy = None
-    if isinstance(actions, list):
-        for action in actions:
-            if isinstance(action, dict) and action.get("message"):
-                remedy = action["message"]
-                break
+    for finding in doc.get("findings") or []:
+        if not isinstance(finding, dict):
+            continue
+        if str(finding.get("severity", "")).lower() in ("warning", "error", "critical") and finding.get("recommended_action"):
+            remedy = finding["recommended_action"]
+            break
     doc["remedy"] = remedy
 print(json.dumps(doc, indent=2, sort_keys=True))
 EXAKIT_MCP_STAMP_PY
@@ -10231,6 +10396,17 @@ exakit_uninstall_run() {
     #    and the pyexasol / marketplace add-on virtual environments and state
     #    (dash-server's venv and instance data live under the kit home too).
     if [ -e "$EXAKIT_HOME" ]; then
+        # The MCP snapshots taken in step 2 are the only copy of each client
+        # config as it was BEFORE this uninstall edited it, and they lived in the
+        # kit home this step deletes — so a client file the kit had to rewrite
+        # (or, for VS Code, used to delete) had no backup the moment it was
+        # needed. Keep them beside the home, not inside it.
+        if [ "$_dry" != "1" ] && [ -d "$EXAKIT_HOME/backups" ] && [ -n "$(ls -A "$EXAKIT_HOME/backups" 2>/dev/null)" ]; then
+            _un_keep="${EXAKIT_HOME}-backups-$(date +%Y%m%d-%H%M%S)"
+            if mv "$EXAKIT_HOME/backups" "$_un_keep" 2>/dev/null; then
+                info "MCP client config snapshots kept at $_un_keep (delete it when you are sure)"
+            fi
+        fi
         _step "kit home $EXAKIT_HOME (credentials, logs, manifest, snapshots, pyexasol venv, add-ons)"
         _rm "$EXAKIT_HOME"
         _done "Kit home removed: $EXAKIT_HOME (credentials, logs, manifest, snapshots, pyexasol venv, add-on state)"

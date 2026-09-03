@@ -275,7 +275,7 @@ has "uninstall stays denied" "exakit uninstall" "$_deny"
 
 echo
 echo "the error translator covers the faults that would otherwise loop:"
-_xl="$(sed -n '/^exakit_explain_db_error()/,/^}/p' "$ROOT/setup/lib/common.sh")"
+_xl="$(sed -n '/^exakit_db_error_remedy()/,/^}/p' "$ROOT/setup/lib/common.sh")"
 has "privilege denial is translated" "insufficient privileges" "$_xl"
 has "and forbids escalating via exapump" "not sandboxed" "$_xl"
 _ux="$(sed -n '/^exakit_explain_uv_python_error()/,/^}/p' "$ROOT/setup/lib/common.sh")"
@@ -615,7 +615,7 @@ echo "the SQL path an agent is told to use names its remedy:"
 # lifecycle commands and false of the SQL path the skill mandates for every
 # validation.
 has "exakit sql exists" "cmd_sql" "$(cat "$ROOT/setup/exakit")"
-has "and routes failures through the translator" "exakit_explain_db_error" \
+has "and routes failures through the translator" "exakit_db_error_remedy" \
     "$(sed -n '/^cmd_sql()/,/^}/p' "$ROOT/setup/exakit")"
 has "and is in the catalog" "sql" "$(exakit_help_commands)"
 has "the PowerShell twin exists" "Invoke-CmdSql" "$(cat "$ROOT/setup/exakit.ps1")"
@@ -625,7 +625,7 @@ has "PowerShell has the translator too" "Show-ExakitDbErrorRemedy" \
     "$(cat "$ROOT/setup/lib/exakit-common.ps1")"
 for _case in "LIMIT" "exakit start" "describe it first"; do
     has "PowerShell translator covers '$_case'" "$_case" \
-        "$(sed -n '/^function Show-ExakitDbErrorRemedy/,/^}/p' "$ROOT/setup/lib/exakit-common.ps1")"
+        "$(sed -n '/^function Get-ExakitDbErrorRemedy/,/^}/p' "$ROOT/setup/lib/exakit-common.ps1")"
 done
 # The gate: a seatbelt, not a sandbox -- but it must at least refuse the two
 # shapes that are never wanted from a "read" command.

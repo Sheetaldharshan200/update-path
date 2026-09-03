@@ -232,16 +232,20 @@ class VSCodeCopilotAdapter(ClientAdapter):
         servers = document.get("servers")
         if isinstance(servers, dict):
             servers.pop(server_name, None)
-            if not servers:
-                document.pop("servers", None)
-        remove_file = not document
-        content = None if remove_file else json.dumps(document, indent=2, sort_keys=True) + "\n"
+            # Keep the (possibly empty) servers table and NEVER delete the
+            # file. mcp.json is VS Code's, not the kit's: an uninstall used to
+            # remove the whole file once the kit's entries were the last ones
+            # in it, and the kit's own snapshot of it went with the kit home in
+            # the same run, so a user with other servers there had nothing to
+            # recover from.
+            document["servers"] = servers
+        content = json.dumps(document, indent=2, sort_keys=True) + "\n"
         return RenderResult(
             path=inspection.path,
             content=content,
             managed_hash=None,
             entry_name=server_name,
-            remove_file=remove_file,
+            remove_file=False,
         )
 
     def validate_render(self, rendered: RenderResult) -> list[Finding]:

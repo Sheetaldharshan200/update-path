@@ -533,6 +533,49 @@ class MCPAccessSubsystem:
             active_artifacts,
         )
         findings = discover_result.findings + validation.findings
+        # One row per supported client with a state derived from HEALTH, not
+        # from the existence of a manifest record. The screen used to call a
+        # client "connected" because an artifact existed for it -- with the
+        # entry deleted from the file, and for clients that were not installed
+        # at all -- and the JSON carried no per-client state whatsoever.
+        #   connected                  managed, client detected, no warning/error names it
+        #   needs_attention            managed, a warning/error names it (drift, missing entry, launch failure)
+        #   configured_client_missing  managed, but the client is not on this machine
+        #   not_set_up                 client detected, not managed
+        #   not_installed              neither
+        discovered_by_id = {
+            entry.get("client"): entry
+            for entry in (discover_result.details or {}).get("discovered_clients", [])
+        }
+        managed_ids = {artifact.client for artifact in active_artifacts}
+        troubled_ids: set[str] = set()
+        for finding in validation.findings:
+            if finding.severity in (Severity.WARNING, Severity.ERROR, Severity.CRITICAL):
+                client_id = (finding.scope or {}).get("client")
+                if client_id:
+                    troubled_ids.add(client_id)
+                else:
+                    # A finding with no client scope (a manifest-wide drift, a
+                    # launch failure of the shared server) taints every managed client.
+                    troubled_ids.update(managed_ids)
+        client_states: list[dict[str, str | None]] = []
+        for adapter in self._registry.all():
+            adapter_id = adapter.adapter_id()
+            detected = bool((discovered_by_id.get(adapter_id) or {}).get("detected"))
+            managed = adapter_id in managed_ids
+            if managed and not detected:
+                state = "configured_client_missing"
+            elif managed and adapter_id in troubled_ids:
+                state = "needs_attention"
+            elif managed:
+                state = "connected"
+            elif detected:
+                state = "not_set_up"
+            else:
+                state = "not_installed"
+            client_states.append({"client": adapter_id, "state": state})
+        details = dict(discover_result.details or {})
+        details["clients"] = client_states
         # Findings already carry their own remedy; doctor was throwing it away
         # and returning next_actions=[] alongside a non-empty findings list. That
         # is the field an unattended caller branches on, so an empty one reads as
@@ -556,7 +599,7 @@ class MCPAccessSubsystem:
             next_actions=next_actions,
             verification_evidence=validation.verification_evidence,
             artifacts=active_artifacts,
-            details=discover_result.details,
+            details=details,
         )
 
     def _uninstall(
