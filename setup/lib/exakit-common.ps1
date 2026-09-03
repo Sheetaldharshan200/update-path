@@ -2683,6 +2683,125 @@ function Show-ExakitUpdateNotice {
 #
 # Callers pass the versions in, so the library keeps no dependency on the CLI's
 # component readers.
+# Twin of exakit_skills_local_version: the version of the skill set in the kit
+# copy on disk - the marker a skills-only update left beside the skills
+# (skills\.version), else the kit copy's own versions.json.
+function Get-ExakitSkillsLocalVersion {
+    $root = Get-ExakitRepoRoot
+    if (-not $root) { return "" }
+    $marker = Join-Path $root "skills\.version"
+    if (Test-Path $marker) {
+        $v = ("" + (Get-Content -Path $marker -TotalCount 1 -ErrorAction SilentlyContinue)).Trim()
+        if ($v -match '^[A-Za-z0-9._+-]+$') { return $v }
+    }
+    $doc = Join-Path $root "versions.json"
+    if (-not (Test-Path $doc)) { return "" }
+    $v = Get-ExakitVersionsValue -Path "components.skills.version" -DocPath $doc
+    if ($v -and $v -match '^[A-Za-z0-9._+-]+$') { return $v }
+    return ""
+}
+
+# Twin of _exakit_skills_record_installed: which skill-set version the placed
+# files ARE (the kit copy's, never the advertised one) and which skills the kit
+# placed - the list a full uninstall removes.
+function Set-ExakitSkillsRecord {
+    $version = Get-ExakitSkillsLocalVersion
+    if (-not $version) { $version = Get-ExakitVersionsValue -Path "components.skills.version" }
+    if (-not $version) { $version = "unknown" }
+    Set-ExakitManifestValue "components.skills.version" $version
+    $names = @()
+    $dir = Get-ExakitSkillsDir
+    if ($dir) {
+        foreach ($d in (Get-ChildItem -Path $dir -Directory -ErrorAction SilentlyContinue)) {
+            if (-not (Test-Path (Join-Path $d.FullName "SKILL.md"))) { continue }
+            if ((Get-ExakitSkillState $d.Name) -eq "available") { continue }
+            $names += $d.Name
+        }
+    }
+    Set-ExakitManifestValue "components.skills.installed" @($names)
+}
+
+# Twin of exakit_update_skills: bring the AI skills to the advertised set without
+# a kit release. Fetches the kit repository's main branch (the same archive the
+# kit self-update uses), moves its skills\ directory into the kit copy, places
+# the skills, and records the version the ARCHIVE's versions.json names - not
+# the advertised one, which can run minutes ahead of the branch. Best-effort: a
+# skill set that could not be fetched never fails an otherwise complete update.
+function Update-ExakitSkills {
+    param([string]$Advertised = "", [string]$Installed = "")
+    if (-not $Advertised) {
+        Warn2 "Could not resolve the advertised skill set; the skills were left as they are."
+        return
+    }
+    if ($Advertised -eq $Installed) { Ok "skills are already current ($Installed)"; return }
+    $kitDir = Join-Path $script:ExakitHome "kit"
+    $root = Get-ExakitRepoRoot
+    if (-not $root -or ($root -ne $kitDir)) {
+        Info "This kit runs from a source checkout; placing the skills it carries."
+        [void](Install-ExakitSkills)
+        return
+    }
+    $shown = $Installed
+    if (-not $shown) { $shown = "not installed" }
+    Info "Updating AI skills $shown -> $Advertised"
+    $tmpZip = Join-Path ([System.IO.Path]::GetTempPath()) "exakit-skills-$([guid]::NewGuid().ToString('N')).zip"
+    $stage = Join-Path ([System.IO.Path]::GetTempPath()) "exakit-skills-stage-$([guid]::NewGuid().ToString('N'))"
+    try {
+        Invoke-WebRequest -Uri "https://github.com/$($script:KitRepo)/archive/refs/heads/main.zip" -OutFile $tmpZip -UseBasicParsing -TimeoutSec 300
+    } catch {
+        Remove-Item -Force $tmpZip -ErrorAction SilentlyContinue
+        Warn2 "Could not download the skill set from $($script:KitRepo); the skills were left as they are. Retry: exakit update"
+        return
+    }
+    try {
+        New-Item -ItemType Directory -Force -Path $stage | Out-Null
+        Expand-Archive -Path $tmpZip -DestinationPath $stage -Force
+    } catch {
+        Remove-Item -Force $tmpZip -ErrorAction SilentlyContinue
+        Remove-Item -Recurse -Force $stage -ErrorAction SilentlyContinue
+        Warn2 "Could not unpack the skill set; the skills were left as they are. Retry: exakit update"
+        return
+    }
+    Remove-Item -Force $tmpZip -ErrorAction SilentlyContinue
+    $staged = Get-ChildItem -Path $stage -Directory -ErrorAction SilentlyContinue | Select-Object -First 1
+    $stagedSkills = ""
+    if ($staged) { $stagedSkills = Join-Path $staged.FullName "skills" }
+    if (-not $stagedSkills -or -not (Get-ChildItem -Path $stagedSkills -Directory -ErrorAction SilentlyContinue |
+            Where-Object { Test-Path (Join-Path $_.FullName "SKILL.md") } | Select-Object -First 1)) {
+        Remove-Item -Recurse -Force $stage -ErrorAction SilentlyContinue
+        Warn2 "The downloaded kit carries no skills; the skills were left as they are."
+        return
+    }
+    # The version the files actually ARE, from the document that travelled with them.
+    $stagedVersion = Get-ExakitVersionsValue -Path "components.skills.version" -DocPath (Join-Path $staged.FullName "versions.json")
+    if (-not $stagedVersion) {
+        $stagedVersion = $Advertised
+    } elseif ($stagedVersion -ne $Advertised -and (Test-ExakitVersionNewer -Latest $Advertised -Current $stagedVersion)) {
+        Warn2 "The downloaded skill set is $stagedVersion, not the advertised $Advertised - the published manifest is a few minutes ahead of main. Recording $stagedVersion; the next update picks up the rest."
+    }
+    Set-Content -Path (Join-Path $stagedSkills ".version") -Value $stagedVersion -Encoding Ascii
+    $current = Join-Path $kitDir "skills"
+    $backup = Join-Path $kitDir ("skills.backup-" + (Get-Date -Format 'yyyyMMdd-HHmmss'))
+    try {
+        if (Test-Path $current) { Move-Item -Path $current -Destination $backup -ErrorAction Stop }
+        Move-Item -Path $stagedSkills -Destination $current -ErrorAction Stop
+    } catch {
+        if (-not (Test-Path $current) -and (Test-Path $backup)) {
+            Move-Item -Path $backup -Destination $current -ErrorAction SilentlyContinue
+        }
+        Remove-Item -Recurse -Force $stage -ErrorAction SilentlyContinue
+        Warn2 "Could not install the downloaded skills; the previous set was put back."
+        return
+    }
+    Remove-Item -Recurse -Force $stage -ErrorAction SilentlyContinue
+    if (Install-ExakitSkills) {
+        Remove-Item -Recurse -Force $backup -ErrorAction SilentlyContinue
+        Ok "AI skills updated to $stagedVersion. Restart or reload your AI client to pick them up."
+    } else {
+        Warn2 "The new skills are in the kit copy but could not be placed - run: exakit skills-install"
+    }
+}
+
 function Update-ExakitSelf {
     param([Parameter(Mandatory)][string]$Advertised, [string]$Installed = "")
     $repo = $script:KitRepo
@@ -3355,8 +3474,8 @@ function Show-ExakitSkills {
     $skillsHave = Get-ExakitManifestValue "components.skills.version"
     $skillsWant = Get-ExakitVersionsValue -Path "components.skills.version"
     if ($skillsHave -and $skillsWant -and ("$skillsHave" -ne "$skillsWant")) {
-        Write-ExakitPanelLine "Installed from skill set $skillsHave; this kit carries $skillsWant."
-        Write-ExakitPanelLine "Refresh them:  exakit skills-install"
+        Write-ExakitPanelLine "Installed skill set $skillsHave; the kit advertises $skillsWant."
+        Write-ExakitPanelLine "Fetch and install them:  exakit update"
     } elseif ($pending -gt 0) {
         Write-ExakitPanelLine "Install or refresh every skill:  exakit skills-install"
     }
@@ -3402,6 +3521,10 @@ function Install-ExakitSkills {
     if ($installed -eq 0) { Warn2 "No SKILL.md files found under $skillsSrc - nothing to install."; return $false }
     if ($installed -eq 1) { $skillUnit = "AI skill" } else { $skillUnit = "AI skills" }
     Ok "Installed $installed $skillUnit for Claude Code (~\.claude\skills) and open-standard agents (~\.agents\skills)"
+    # Record what was placed and which skill-set version it is - twin of the
+    # record the shell has always written. Without it a Windows install could
+    # never say its skills were stale, and a full uninstall had no list of its own.
+    Set-ExakitSkillsRecord
     # The read-only allowlist the skill documents, applied for real.
     $applied = Set-ExakitReadonlyAllowlist
     if ($applied -eq "ADDED 0") {
@@ -4610,6 +4733,10 @@ function Get-ExakitComponentAvailable {
     # module's own fallback constant answers instead of "unknown" - the same
     # version the marketplace install would actually install.
     if (Get-ExakitMarketplaceAddon $Component) { return (Get-ExakitComponentFallback $Component) }
+    # The skill set likewise: a document with no skills block advertises nothing
+    # newer than what the kit copy carries - twin of the same rule in
+    # exakit_component_available.
+    if ($Component -eq "skills") { return (Get-ExakitComponentFallback "skills") }
     return ""
 }
 
@@ -4620,7 +4747,7 @@ function Get-ExakitComponentBlock {
     switch ($Component) {
         "exakit" { return "kit" }
         "kit2" { return "kit2" }
-        { $_ -in @("exapump", "mcp", "pyexasol", "nano", "personal") } { return "components.$Component" }
+        { $_ -in @("exapump", "mcp", "pyexasol", "nano", "personal", "skills") } { return "components.$Component" }
         "runtime" {
             if ((Get-RuntimeType) -eq "nano") { return "components.nano" }
             if ((Get-RuntimeType) -eq "personal") { return "components.personal" }
@@ -4683,6 +4810,13 @@ function Get-ExakitComponentCurrent {
                 -Arguments @("-c", "import pyexasol; print(pyexasol.__version__)") -Raw
             if ($live) { return $live }
             return (Get-ExakitManifestValue "components.pyexasol.version")
+        }
+        "skills" {
+            # What the manifest recorded when the skills were placed. Nothing
+            # recorded reads as "not installed", which makes `exakit update`
+            # place them - a repair, not a lie. Twin of the same arm in
+            # exakit_component_current.
+            return (Get-ExakitManifestValue "components.skills.version")
         }
         "nano" {
             # The tag on the container beats the record: someone may have recreated
@@ -4773,6 +4907,9 @@ function Get-ExakitComponentFallback {
         "mcp" { return $script:McpVersionFallback }
         "pyexasol" { return $script:PyexasolVersionFallback }
         "nano" { return $script:NanoTagFallback }
+        # The skill set has no constant either: the kit copy on disk says which
+        # set it carries.
+        "skills" { return (Get-ExakitSkillsLocalVersion) }
         # The kit's own version is not one of the constants: it comes from the copy
         # on disk, which is exactly what is installed.
         "exakit" { return (Get-ExakitKitBundledVersion) }
@@ -4911,10 +5048,17 @@ function Get-ExakitUpdateTargets {
             # Marketplace add-ons join the routine update set only once they
             # are installed: `exakit update all` must never install a tool the
             # user did not pick from `exakit marketplace`.
-            return @(@("exakit", "runtime", "exapump", "mcp", "pyexasol") + (Get-ExakitMarketplaceInstalledAddons))
+            # skills is a light component like exapump: the skill set has its own
+            # version in versions.json and Update-ExakitSkills fetches a newer set
+            # from the kit repository without a kit release.
+            $targets = @("exakit", "runtime", "exapump", "mcp", "pyexasol")
+            # A kit copy that carries no skills\ at all has no skill set to keep
+            # current, so it gets no row either.
+            if (Get-ExakitSkillsDir) { $targets += "skills" }
+            return @($targets + (Get-ExakitMarketplaceInstalledAddons))
         }
         { $_ -in @("runtime", "database", "db") } { return @("runtime") }
-        { $_ -in @("nano", "personal", "exakit", "exapump", "mcp", "pyexasol", "kit2") } { return @($Target) }
+        { $_ -in @("nano", "personal", "exakit", "exapump", "mcp", "pyexasol", "skills", "kit2") } { return @($Target) }
         default {
             # Any registered marketplace add-on is a valid explicit target.
             if (Get-ExakitMarketplaceAddon $Target) { return @($Target) }

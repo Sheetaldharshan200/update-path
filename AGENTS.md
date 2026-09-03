@@ -198,6 +198,8 @@ exakit skills-install     # place them where CLI agents look
 exakit skills             # what this kit carries, and what is installed (--json too)
 ```
 
+The skill set is a versioned component: `exakit version` shows a `skills` row, and `exakit update` fetches a newer set the maintainers advertise and installs it, without a kit release. A stale set is therefore fixed by `exakit update`, not by `skills-install`, which only re-places the local copy.
+
 There is one skill per thing you have to operate, so only the relevant one loads: `local-agent-ready-starter` (setup and the first query), `exasol-runtime`, `exasol-exapump`, `exasol-mcp`, `exasol-pyexasol`, and one per marketplace add-on (`exasol-marketplace`, `dash-server`, `json-tables`, `exasol-vscode`). Full index: [skills/README.md](skills/README.md).
 
 Then see `skills/local-agent-ready-starter/SKILL.md` for the full query-loop discipline. **If your harness loads this file but not filesystem skills, these are the rules that must not drop out:**

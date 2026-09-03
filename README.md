@@ -137,7 +137,7 @@ exakit skills-install     # place them where agents look
 exakit skills             # what this kit carries, and what is installed
 ```
 
-This copies the skills into each agent's discovery folder (`~/.claude/skills/`, `~/.agents/skills/`). In a **fresh** agent session, say **"setup starter kit"** and it takes over — or ask for anything else the kit does ("load this JSON file", "build me a dashboard", "query Exasol from Python") and the matching skill fires on its own. See [`skills/README.md`](skills/README.md) for the full index, and [`skills/reducing-agent-prompts.md`](skills/reducing-agent-prompts.md) if the agent asks for approval too often.
+This copies the skills into each agent's discovery folder (`~/.claude/skills/`, `~/.agents/skills/`). The set is versioned like every other component: when the maintainers publish a newer one, `exakit update` fetches and installs it in seconds. In a **fresh** agent session, say **"setup starter kit"** and it takes over — or ask for anything else the kit does ("load this JSON file", "build me a dashboard", "query Exasol from Python") and the matching skill fires on its own. See [`skills/README.md`](skills/README.md) for the full index, and [`skills/reducing-agent-prompts.md`](skills/reducing-agent-prompts.md) if the agent asks for approval too often.
 
 ## The workflow this kit teaches
 

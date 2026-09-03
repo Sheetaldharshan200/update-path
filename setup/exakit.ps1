@@ -1753,6 +1753,7 @@ function Invoke-CmdUpdate {
             "runtime" { Invoke-ExakitRuntimeComponentUpdate -Component "runtime" -Advertised $available }
             "nano"    { Invoke-ExakitRuntimeComponentUpdate -Component "nano" -Advertised $available }
             "personal" { Invoke-ExakitRuntimeComponentUpdate -Component "personal" -Advertised $available }
+            "skills" { Update-ExakitSkills -Advertised $available -Installed $current }
             "exapump" {
                 if ($available) {
                     $script:ExapumpVersion = $available

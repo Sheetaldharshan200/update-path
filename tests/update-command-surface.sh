@@ -22,7 +22,7 @@ fail() { FAIL=$((FAIL + 1)); printf '  FAIL %s\n' "$1"; }
 # Every component that is a valid update target, plus the add-on-author template
 # used in MARKETPLACE.md. Kept as a list rather than a wildcard so a NEW
 # component has to be added here consciously.
-COMPONENTS='dash-server runtime pyexasol exakit json-tables exapump personal exasol-vscode mcp kit2 my-tool'
+COMPONENTS='dash-server runtime pyexasol exakit json-tables exapump personal exasol-vscode mcp skills kit2 my-tool'
 
 printf '\n== no user-visible surface names a component after "exakit update" ==\n'
 
@@ -86,7 +86,7 @@ printf '\n== the capability itself is untouched ==\n'
 # only arm worth guarding. Asserting `all` here passed happily with the
 # per-component arm deleted, which is the exact failure this section exists to
 # catch.
-for _want in exakit runtime exapump mcp pyexasol; do
+for _want in exakit runtime exapump mcp pyexasol skills; do
     _got="$(bash -c ". '$ROOT/setup/lib/common.sh' 2>/dev/null; exakit_update_targets $_want 2>/dev/null" | tr '\n' ' ' || true)"
     case " $_got " in
         *" $_want "*) pass "\"$_want\" still resolves as an update target" ;;

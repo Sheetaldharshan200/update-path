@@ -40,8 +40,9 @@ Working on the code in this repo:
   `skills/README.md`. That is the whole change: the registry is the
   filesystem, so no shell code names a skill. `tests/skills.sh` fails if one
   is ever hardcoded into `common.sh` or `exakit.ps1`. Bump
-  `components.skills.version` in versions.json when the set changes, so
-  installed copies can be detected as stale.
+  `components.skills.version` in versions.json in the same PR: that bump is
+  what makes `exakit update` on every installed kit fetch the new set from
+  `main` — no kit release is needed for a skills change.
 - `setup/lib/ui.sh` and `setup/lib/ui.ps1` are close twins of the shared
   visual layer (banner, palette, status glyphs, spinner, progress, panels):
   when you change a function that exists in both, mirror it in the other,
