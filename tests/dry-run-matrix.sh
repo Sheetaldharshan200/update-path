@@ -149,7 +149,7 @@ echo "update command routing:"
 # add-on, the installed-addons probe would otherwise read the real manifest
 # and legitimately append it to the targets — the fixture wants a clean box.
 update_targets="$(bash -c "EXAKIT_HOME=\$(mktemp -d); EXAKIT_BIN_DIR=\"\$EXAKIT_HOME/bin\"; . '$ROOT/setup/lib/common.sh'; exakit_update_targets all" | tr '\n' ' ')"
-check "update_targets(all)" "exakit runtime exapump mcp pyexasol " "$update_targets"
+check "update_targets(all)" "exakit runtime exapump mcp pyexasol skills " "$update_targets"
 personal_target="$(bash -c ". '$ROOT/setup/lib/common.sh'; exakit_update_targets personal" | tr '\n' ' ')"
 check "update_targets(personal)" "personal " "$personal_target"
 if grep -q 'mcp.sh' "$ROOT/setup/exakit"; then
@@ -263,7 +263,7 @@ manifest_get() {
 }
 exakit_component_available() { printf '%s\n' 3.0.0; }
 personal_update --plan
-" 2>&1 | grep -c 'exakit update personal --backup')"
+" 2>&1 | grep -c 'migration/redeployment guidance')"
 check "personal_major(plan)" "1" "$personal_major_plan"
 
 personal_reuse_guard="$(bash -c "
@@ -793,11 +793,14 @@ else
 fi
 
 # json-tables: the no-Rust chain. The packaging workflow builds the engine and
-# the wheel, the module downloads them from the mirror release and puts a cargo
-# shim in front of the CLI, and versions.json is only bumped AFTER a successful
-# publish -- so no installed kit is ever offered a version whose artifacts do
-# not exist. Each of those is load-bearing.
-if grep -q 'mirror-json-tables' "$ROOT/.github/workflows/pkg-json-tables.yml" && \
+# the wheel, publishes them as one immutable json-tables-<version> release (a
+# fixed rolling tag is exactly the shape that broke: overwritten binaries under
+# pinned digests), the module downloads them from the release versions.json
+# names and puts a cargo shim in front of the CLI, and versions.json is only
+# bumped AFTER a successful publish -- so no installed kit is ever offered a
+# version whose artifacts do not exist. Each of those is load-bearing.
+if grep -q 'tag_name: ${{ needs.check.outputs.tag }}' "$ROOT/.github/workflows/pkg-json-tables.yml" && \
+   ! grep -q 'tag_name: mirror-json-tables' "$ROOT/.github/workflows/pkg-json-tables.yml" && \
    grep -q 'version=${{ needs.check.outputs.sha }}' "$ROOT/.github/workflows/pkg-json-tables.yml" && \
    grep -qE '^  advertise:' "$ROOT/.github/workflows/pkg-json-tables.yml" && \
    grep -q 'needs: \[check, publish\]' "$ROOT/.github/workflows/pkg-json-tables.yml" && \

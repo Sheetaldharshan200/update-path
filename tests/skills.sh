@@ -192,6 +192,125 @@ fi
 
 # ---------------------------------------------------------------------------
 echo
+echo "an add-on's skill ships with its add-on, not before it:"
+# ---------------------------------------------------------------------------
+# A skill for a marketplace add-on is no use until the add-on is there: its
+# whole job is to give an agent triggers for a tool, and matching those triggers
+# for a tool that is not installed is worse than not shipping the skill. So the
+# AI-bridge step places CORE skills only, and an add-on's skill arrives as part
+# of installing the add-on.
+#
+# Ownership is DECLARED in the skill's frontmatter ("addon: <id>"), not guessed
+# from the folder name, so nothing here or in the shell names a skill.
+mkdir -p "$WORK/fakekit/skills/zz-owned-skill"
+cat > "$WORK/fakekit/skills/zz-owned-skill/SKILL.md" <<'EOF'
+---
+name: zz-owned-skill
+addon: zz-fake-addon
+description: A skill owned by a test add-on. Triggers — "never".
+EOF
+printf -- '---\nBody.\n' >> "$WORK/fakekit/skills/zz-owned-skill/SKILL.md"
+
+check "the owner is read from the frontmatter" "zz-fake-addon" \
+    "$(exakit_skill_addon "$WORK/fakekit/skills/zz-owned-skill/SKILL.md")"
+check "a core skill declares no owner" "" \
+    "$(exakit_skill_addon "$WORK/fakekit/skills/zz-invented-skill/SKILL.md")"
+check "the add-on's skills are found by id" "zz-owned-skill" \
+    "$(exakit_skills_for_addon zz-fake-addon)"
+
+# Whether the add-on is installed is the only input that moves this.
+ZZ_ADDON_INSTALLED=0
+exakit_marketplace_addon_installed() {
+    [ "$1" = "zz-fake-addon" ] || return 1
+    [ "${ZZ_ADDON_INSTALLED:-0}" = "1" ]
+}
+
+# 1. The skills step must NOT place it while the add-on is absent.
+for _zz_root in "$WORK/claude" "$WORK/agents"; do rm -rf "$_zz_root/zz-owned-skill"; done
+exakit_install_skills >"$WORK/install2.log" 2>&1
+check "the skills step skips an absent add-on's skill" "available" \
+    "$(exakit_skill_state zz-owned-skill)"
+check "...and still places the core one" "installed" \
+    "$(exakit_skill_state zz-invented-skill)"
+lacks "the manifest does not claim it either" "zz-owned-skill" \
+    "$(manifest_get components.skills.installed 2>/dev/null || true)"
+
+# 2. Installing the add-on places it.
+exakit_install_addon_skills zz-fake-addon
+check "installing the add-on places its skill" "installed" \
+    "$(exakit_skill_state zz-owned-skill)"
+has "...and the manifest records it, so uninstall can find it" "zz-owned-skill" \
+    "$(manifest_get components.skills.installed 2>/dev/null || true)"
+
+# 3. A refresh while the add-on IS installed keeps it, rather than treating the
+#    skills step as the only authority and sweeping it away again.
+ZZ_ADDON_INSTALLED=1
+exakit_install_skills >"$WORK/install3.log" 2>&1
+check "a refresh keeps an installed add-on's skill" "installed" \
+    "$(exakit_skill_state zz-owned-skill)"
+
+# 4. Removing the add-on takes it back out. A skill left behind advertises
+#    triggers for a tool that is no longer on the machine.
+exakit_remove_addon_skills zz-fake-addon
+check "removing the add-on removes its skill" "available" \
+    "$(exakit_skill_state zz-owned-skill)"
+lacks "...and the manifest stops claiming it" "zz-owned-skill" \
+    "$(manifest_get components.skills.installed 2>/dev/null || true)"
+check "the core skill is untouched throughout" "installed" \
+    "$(exakit_skill_state zz-invented-skill)"
+
+unset -f exakit_marketplace_addon_installed
+ZZ_ADDON_INSTALLED=0
+
+# 5. The SHIPPED add-on skills actually declare an owner, and it is a real
+#    add-on id. Without this the machinery above works and nothing uses it.
+_zz_addon_ids="$(exakit_marketplace_addons 2>/dev/null | cut -d'|' -f1 | tr '\n' ' ')"
+_zz_owned=0
+for _zz_skill in $(ls -1 "$ROOT/skills" 2>/dev/null); do
+    [ -f "$ROOT/skills/$_zz_skill/SKILL.md" ] || continue
+    _zz_owner="$(exakit_skill_field "$ROOT/skills/$_zz_skill/SKILL.md" addon)"
+    [ -n "$_zz_owner" ] || continue
+    _zz_owned=$((_zz_owned + 1))
+    case " $_zz_addon_ids " in
+        *" $_zz_owner "*) _zz_ok="a marketplace add-on" ;;
+        *) _zz_ok="'$_zz_owner', which is not a marketplace add-on" ;;
+    esac
+    check "$_zz_skill is owned by" "a marketplace add-on" "$_zz_ok"
+done
+if [ "$_zz_owned" -gt 0 ]; then _zz_any="yes"; else _zz_any="no"; fi
+check "some shipped skill is add-on owned" "yes" "$_zz_any"
+
+# ...and the declaration cannot be quietly dropped from one of them. Without
+# this, deleting a single "addon:" line turns that skill back into a core one
+# installed up front, and the loop above just tests one skill fewer -- a guard
+# that gets weaker exactly when the thing it guards is broken. Keyed off the
+# add-on registry, so it needs no skill name of its own: an add-on that ships a
+# skill under its own name must own it.
+for _zz_id in $_zz_addon_ids; do
+    [ -f "$ROOT/skills/$_zz_id/SKILL.md" ] || continue
+    check "the $_zz_id skill still declares its owner" "$_zz_id" \
+        "$(exakit_skill_field "$ROOT/skills/$_zz_id/SKILL.md" addon)"
+done
+
+# 6. The PowerShell twin, asserted as text: there is no pwsh here, and Windows
+#    runs the same marketplace.
+_ZZ_PS_COMMON="$ROOT/setup/lib/exakit-common.ps1"
+_ZZ_PS_CLI="$ROOT/setup/exakit.ps1"
+# The WIRING, on both sides. The lifecycle above calls the two functions
+# directly, so it stays green even if nothing ever calls them from the install
+# and uninstall paths -- which is the whole feature.
+_ZZ_SH_COMMON="$(cat "$ROOT/setup/lib/common.sh")"
+has "the marketplace install places the add-on's skills" \
+    'exakit_install_addon_skills "$1"' "$_ZZ_SH_COMMON"
+has "...and uninstalling the add-on removes them" \
+    'exakit_remove_addon_skills "$_uc_key"' "$_ZZ_SH_COMMON"
+has "the twin reads the owner"        "function Get-ExakitSkillAddon" "$(cat "$_ZZ_PS_COMMON")"
+has "...and gates the skills step"    "Test-ExakitSkillWanted -Path" "$(cat "$_ZZ_PS_COMMON")"
+has "...and installs with the add-on" "Install-ExakitAddonSkills \$id" "$(cat "$_ZZ_PS_COMMON")"
+has "...and removes with it"          "Remove-ExakitAddonSkills \$Key" "$(cat "$_ZZ_PS_CLI")"
+
+# ---------------------------------------------------------------------------
+echo
 echo "uninstall removes only what the kit placed:"
 # ---------------------------------------------------------------------------
 # The discovery folders are shared with every other skill the user has. The
@@ -257,6 +376,138 @@ for _dir in "$ROOT"/skills/*/; do
     _id="$(basename "$_dir")"
     has "skills/README.md lists $_id" "$_id" "$README"
 done
+
+printf '\n== the skill set is a component exakit update can fetch ==\n'
+# THE GAP THIS CLOSES: skills reached a machine only inside a kit update. Bump
+# components.skills.version alone and `exakit skills` said "stale" while
+# pointing at skills-install -- which copied the OLD local files and recorded
+# the NEW number. A maintainer who edits skills/<name>/SKILL.md and bumps the
+# version, with no kit release, must reach every installed kit through
+# `exakit update`, the way an exapump bump does.
+SH_UPD="$(cat "$ROOT/setup/lib/common.sh")"
+# An earlier section removes the marketplace probe to test the skills registry
+# in isolation; the update-target list asks it which add-ons are installed, so
+# give it back a "none" answer here.
+command -v exakit_marketplace_addon_installed >/dev/null 2>&1 || exakit_marketplace_addon_installed() { return 1; }
+check "skills is a routine update target" "1" "$(exakit_update_targets all | grep -c '^skills$')"
+check "...and an explicit one" "skills" "$(exakit_update_targets skills)"
+check "it lives at components.skills" "components.skills" "$(_exakit_component_block skills)"
+has "the twin lists it too" 'if (Get-ExakitSkillsDir) { $targets += "skills" }' "$PS_COMMON"
+has "the shell updater exists" "exakit_update_skills()" "$SH_UPD"
+has "...and dispatches to it" "skills) exakit_update_skills ;;" "$SH_UPD"
+has "the twin updater exists" "function Update-ExakitSkills" "$PS_COMMON"
+has "...and the Windows CLI dispatches to it" 'Update-ExakitSkills -Advertised $available -Installed $current' "$(cat "$ROOT/setup/exakit.ps1")"
+has "the twin records what it placed" "function Set-ExakitSkillsRecord" "$PS_COMMON"
+
+# A kit copy under EXAKIT_HOME, so the updater takes the real path rather than
+# the source-checkout shortcut. The registry section above pinned
+# exakit_repo_root to its fake kit; point it back at this one.
+KIT="$EXAKIT_HOME/kit"
+exakit_repo_root() { printf '%s\n' "$KIT"; }
+rm -rf "$KIT"; mkdir -p "$KIT/mcp"
+cp -R "$ROOT/skills" "$KIT/skills"
+cp "$ROOT/versions.json" "$KIT/versions.json"
+manifest_set components.skills.version "1.0.0" >/dev/null 2>&1
+check "the installed version is the recorded one" "1.0.0" "$(exakit_component_current skills)"
+
+# The archive `exakit update` would download: the repository's skills plus one
+# new skill, and a versions.json naming 9.8.7 -- while the ADVERTISED document
+# says 9.9.9, the shape of the raw endpoint running ahead of the branch.
+FIX="$WORK/fixture/update-path-main"
+mkdir -p "$FIX"
+cp -R "$ROOT/skills" "$FIX/skills"
+mkdir -p "$FIX/skills/zz-fetched-skill"
+printf -- '---\nname: zz-fetched-skill\ndescription: Fetched by the test. Triggers — "zz fetched".\n---\n\n# fetched\n' > "$FIX/skills/zz-fetched-skill/SKILL.md"
+python3 - "$ROOT/versions.json" "$FIX/versions.json" "$WORK/advertised.json" <<'PYFIX'
+import json, sys, collections
+doc = json.load(open(sys.argv[1]), object_pairs_hook=collections.OrderedDict)
+doc["components"]["skills"]["version"] = "9.8.7"
+json.dump(doc, open(sys.argv[2], "w"), indent=2)
+doc["components"]["skills"]["version"] = "9.9.9"
+json.dump(doc, open(sys.argv[3], "w"), indent=2)
+PYFIX
+( cd "$WORK/fixture" && tar -czf "$WORK/main.tar.gz" update-path-main )
+_upd_out="$( (
+    EXAKIT_VERSIONS_CACHE="$WORK/advertised.json"; _EXAKIT_VERSIONS_DOC=""
+    curl() { # the only network call: hand over the fixture archive
+        while [ "$#" -gt 0 ]; do [ "$1" = "-o" ] && { cp "$WORK/main.tar.gz" "$2"; return 0; }; shift; done
+        return 1
+    }
+    exakit_update_skills 2>&1
+    printf 'recorded=%s current=%s marker=%s\n' \
+        "$(manifest_get components.skills.version)" "$(exakit_component_current skills)" \
+        "$(cat "$KIT/skills/.version" 2>/dev/null)"
+    [ -f "$WORK/claude/zz-fetched-skill/SKILL.md" ] && printf 'placed-claude ' || printf 'MISSING-claude '
+    [ -f "$WORK/agents/zz-fetched-skill/SKILL.md" ] && printf 'placed-agents ' || printf 'MISSING-agents '
+    [ -f "$KIT/skills/zz-fetched-skill/SKILL.md" ] && printf 'in-kit-copy' || printf 'NOT-in-kit-copy'
+    ls -d "$KIT"/skills.backup-* >/dev/null 2>&1 && printf ' BACKUP-LEFT' || printf ' backup-cleaned'
+) )"
+has "the update fetches and places the new skill" "placed-claude placed-agents in-kit-copy" "$_upd_out"
+has "it records the version the ARCHIVE names, not the advertised one" "recorded=9.8.7 current=9.8.7 marker=9.8.7" "$_upd_out"
+has "...and says the manifest is ahead" "not the advertised 9.9.9" "$_upd_out"
+has "the backup of the previous set is removed on success" "backup-cleaned" "$_upd_out"
+has "it tells the reader to reload the client" "Restart or reload your AI client" "$_upd_out"
+# A later skills-install must keep recording the fetched set, not the kit
+# copy's older versions.json: the marker beside the skills is what it reads.
+check "skills-install re-records the fetched set" "9.8.7" "$( (
+    EXAKIT_VERSIONS_CACHE="$WORK/advertised.json"; _EXAKIT_VERSIONS_DOC=""
+    exakit_install_skills >/dev/null 2>&1; manifest_get components.skills.version
+) )"
+check "the fallback tier reads the same marker" "9.8.7" "$(_exakit_component_fallback skills)"
+
+# An unreachable repository must never fail `exakit update`: skills are
+# best-effort, like the refresh inside the kit self-update.
+_fail_out="$( (
+    EXAKIT_VERSIONS_CACHE="$WORK/advertised.json"; _EXAKIT_VERSIONS_DOC=""
+    curl() { return 7; }
+    exakit_update_skills 2>&1; printf 'rc=%s\n' "$?"
+    printf 'recorded=%s\n' "$(manifest_get components.skills.version)"
+) )"
+has "an unreachable repository warns" "Could not download the skill set" "$_fail_out"
+has "...and does not fail the run" "rc=0" "$_fail_out"
+has "...and leaves the record alone" "recorded=9.8.7" "$_fail_out"
+check "a current set is left alone" "already current (9.8.7)" "$( (
+    EXAKIT_VERSIONS_CACHE="$KIT/versions.json"; _EXAKIT_VERSIONS_DOC=""
+    printf '9.8.7\n' > "$KIT/skills/.version"
+    python3 - "$KIT/versions.json" <<'PYCUR'
+import json, sys, collections
+p = sys.argv[1]; d = json.load(open(p), object_pairs_hook=collections.OrderedDict)
+d["components"]["skills"]["version"] = "9.8.7"; json.dump(d, open(p, "w"), indent=2)
+PYCUR
+    curl() { printf 'NETWORK\n' >&2; return 7; }
+    exakit_update_skills 2>&1 | grep -o 'already current (9.8.7)'
+) )"
+rm -rf "$KIT"
+
+printf '\n== the skills panel says the same three things on both platforms ==\n'
+
+# The stale branch existed only in the shell. On Windows a kit update that left
+# the installed copies behind said NOTHING: the skills read "installed", which
+# was true and useless, and the reader had no way to know the kit had moved
+# underneath them. It matters more now that the skill set has a version that
+# actually changes -- it moved to 1.3.0 in the same round this was found.
+SH_COMMON="$(cat "$ROOT/setup/lib/common.sh")"
+has "the shell detects a stale skill set" \
+    'ui_panel_line "Installed skill set $_skl_have; the kit advertises $_skl_want."' "$SH_COMMON"
+has "...and the twin does too" \
+    'Write-ExakitPanelLine "Installed skill set $skillsHave; the kit advertises $skillsWant."' "$PS_COMMON"
+# The remedy is `exakit update`, which FETCHES the advertised set. It used to be
+# skills-install, which copies the local kit copy's files -- the old set -- and
+# then recorded the advertised number over them, hiding the drift for good.
+has "the shell offers the fetch"    'ui_panel_line "Fetch and install them:  exakit update"' "$SH_COMMON"
+has "...and so does the twin"       'Write-ExakitPanelLine "Fetch and install them:  exakit update"' "$PS_COMMON"
+lacks "and neither points a stale set at skills-install" 'Refresh them:  exakit skills-install' "$SH_COMMON$PS_COMMON"
+# Both read the same two values to decide, or they can disagree about staleness.
+has "the shell compares installed against advertised" \
+    'exakit_versions_value components.skills.version' "$SH_COMMON"
+has "...and the twin compares the same pair" \
+    'Get-ExakitVersionsValue -Path "components.skills.version"' "$PS_COMMON"
+# Nothing is said when everything is installed AND current: the panel watches
+# for staleness itself, so telling the reader to watch for it was one more line.
+lacks "the shell offers no command when there is nothing to do" \
+    "All installed. Refresh after a kit update" "$SH_COMMON"
+lacks "...nor does the twin" \
+    "All installed. Refresh after a kit update" "$PS_COMMON"
 
 echo
 printf 'passed: %d, failed: %d\n' "$PASS" "$FAIL"

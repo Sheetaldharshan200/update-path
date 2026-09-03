@@ -21,11 +21,20 @@
 #     is visible ONLY to processes started by the kit's launcher — the user's
 #     real cargo, if any, is untouched everywhere else.
 #
-# Nothing is compiled here: the engine binaries and the wheel are built once by
-# .github/workflows/pkg-json-tables.yml and published to the kit repository's
-# `mirror-json-tables` release, so a user never needs Rust or cargo. When
-# upstream gains a documented way to point at a prebuilt engine, the shim is
-# the only piece that goes away.
+# Nothing is compiled here: .github/workflows/pkg-json-tables.yml assembles the
+# engine binaries and the wheel — since v0.3 the ones upstream publishes are
+# downloaded and verified against upstream's SHA256SUMS, and only the rest
+# (linux-aarch64, windows-x86_64, the Windows cargo shim) are built — and
+# publishes them to the kit repository as ONE IMMUTABLE RELEASE PER BUILD,
+# tagged `json-tables-<version>`, so a user never needs Rust or cargo. versions.json names the release, the wheel and the
+# digest of every asset, and that document is the only authority on what gets
+# installed. A release is never rewritten once published: the packaging
+# workflow refuses to touch an existing tag, so the artefacts a pinned kit
+# points at stay exactly where they were, whatever upstream ships next. (The
+# earlier single rolling tag was overwritten by every rebuild, which turned the
+# pinned digests into a checksum failure the moment upstream released v0.3.)
+# When upstream gains a documented way to point at a prebuilt engine, the shim
+# is the only piece that goes away.
 #
 #   - venv:     $EXAKIT_HOME/json-tables-venv
 #   - engine:   $EXAKIT_HOME/json-tables/libexec/json_to_parquet
@@ -38,9 +47,11 @@ EXAKIT_JSON_TABLES_PACKAGE="${EXAKIT_JSON_TABLES_PACKAGE:-exasol-json-tables}"
 # Upstream source, used only to restore package data the wheel omits (see
 # _json_tables_restore_package_data). Not where the wheel or engine come from.
 EXAKIT_JSON_TABLES_REPO="${EXAKIT_JSON_TABLES_REPO:-exasol-labs/exasol-json-tables}"
-# The mirror release lives in the kit's own repository: the same place the kit
-# is fetched from, built by the kit's own workflow.
-EXAKIT_JSON_TABLES_MIRROR_TAG="${EXAKIT_JSON_TABLES_MIRROR_TAG:-mirror-json-tables}"
+# The release lives in the kit's own repository: the same place the kit is
+# fetched from, built by the kit's own workflow. EXAKIT_JSON_TABLES_MIRROR_TAG
+# names a release tag by hand (tests, or pointing an install at one specific
+# build); empty means the tag versions.json names -- see json_tables_release_tag.
+EXAKIT_JSON_TABLES_MIRROR_TAG="${EXAKIT_JSON_TABLES_MIRROR_TAG:-}"
 EXAKIT_JSON_TABLES_VENV="${EXAKIT_JSON_TABLES_VENV:-$EXAKIT_HOME/json-tables-venv}"
 EXAKIT_JSON_TABLES_HOME="${EXAKIT_JSON_TABLES_HOME:-$EXAKIT_HOME/json-tables}"
 EXAKIT_JSON_TABLES_BIN="${EXAKIT_JSON_TABLES_BIN:-$EXAKIT_BIN_DIR/exasol-json-tables}"
@@ -77,6 +88,57 @@ json_tables_mirror_repo() {
         */*@*) printf '%s\n' "${_jmr_src%@*}"; return 0 ;;
     esac
     printf '%s\n' "$EXAKIT_KIT_REPO"
+}
+
+# _json_tables_target_version — the build this run installs: an explicit
+# EXAKIT_JSON_TABLES_VERSION, else the version versions.json advertises, else
+# the module's fallback constant. ⇄ twin: Get-JsonTablesTargetVersion.
+_json_tables_target_version() {
+    if [ -n "${EXAKIT_JSON_TABLES_VERSION:-}" ]; then
+        printf '%s\n' "$EXAKIT_JSON_TABLES_VERSION"
+        return 0
+    fi
+    _jtt="$(exakit_component_available json-tables 2>/dev/null || true)"
+    [ -n "$_jtt" ] || _jtt="$EXAKIT_JSON_TABLES_VERSION_FALLBACK"
+    printf '%s\n' "$_jtt"
+}
+
+# _json_tables_pin_applies — true when the build being installed is the one
+# versions.json describes, so its release tag, wheel name and digests may be
+# taken from that document. Any other build (a version picked by hand) has no
+# pin and is resolved from its own release's API instead — never from the pins
+# of a different build, which is how a digest ends up "mismatching".
+# ⇄ twin: Test-JsonTablesPinApplies.
+_json_tables_pin_applies() {
+    _jpa_pin="$(exakit_versions_value components.json-tables.version 2>/dev/null || true)"
+    [ -n "$_jpa_pin" ] && [ "$_jpa_pin" = "$(_json_tables_target_version)" ]
+}
+
+# json_tables_release_tag — the release the artefacts are downloaded from. One
+# immutable release per build, `json-tables-<version>`: versions.json may name
+# it outright (components.json-tables.release, which is also where a rebuild
+# suffix such as json-tables-v0.3-2 lives), and otherwise the tag is derived
+# from the version. EXAKIT_JSON_TABLES_MIRROR_TAG overrides everything.
+# ⇄ twin: Get-JsonTablesReleaseTag.
+json_tables_release_tag() {
+    if [ -n "${EXAKIT_JSON_TABLES_MIRROR_TAG:-}" ]; then
+        printf '%s\n' "$EXAKIT_JSON_TABLES_MIRROR_TAG"
+        return 0
+    fi
+    if _json_tables_pin_applies; then
+        _jrt_pin="$(exakit_versions_value components.json-tables.release 2>/dev/null || true)"
+        if [ -n "$_jrt_pin" ]; then
+            printf '%s\n' "$_jrt_pin"
+            return 0
+        fi
+    fi
+    printf 'json-tables-%s\n' "$(_json_tables_target_version)"
+}
+
+# _json_tables_mirror_cache_file — the cached release document, one file per
+# tag so a lookup for one build never answers for another.
+_json_tables_mirror_cache_file() {
+    printf '%s.%s.json\n' "${EXAKIT_JSON_TABLES_MIRROR_CACHE%.json}" "$(json_tables_release_tag)"
 }
 
 # _json_tables_restore_package_data — put back data files upstream ships in
@@ -222,7 +284,7 @@ _json_tables_not_installed() {
     # managed-Python cache makes the retry fail identically forever, so
     # "retry with" on its own is a loop, not a remedy.
     command -v exakit_explain_last_log_error >/dev/null 2>&1 && exakit_explain_last_log_error
-    warn "Everything else in the kit is unaffected. Retry with: exakit update json-tables"
+    warn "Everything else in the kit is unaffected. Retry with: exakit update"
     command -v exakit_note_failure >/dev/null 2>&1 && exakit_note_failure "$1"
     manifest_set components.json_tables.validated false
     return 1
@@ -231,16 +293,98 @@ _json_tables_not_installed() {
 # _json_tables_mirror_asset_url <name> — a file in the mirror release.
 _json_tables_mirror_asset_url() {
     printf 'https://github.com/%s/releases/download/%s/%s\n' \
-        "$(json_tables_mirror_repo)" "$EXAKIT_JSON_TABLES_MIRROR_TAG" "$1"
+        "$(json_tables_mirror_repo)" "$(json_tables_release_tag)" "$1"
 }
 
 # _json_tables_mirror_wheel_name — the wheel's real filename, read from the
 # release API (its version comes from upstream's pyproject, not from ours).
-_json_tables_mirror_wheel_name() {
-    _jmw_json="$(curl -fsSL --retry 3 --connect-timeout 15 \
-        "https://api.github.com/repos/$(json_tables_mirror_repo)/releases/tags/$EXAKIT_JSON_TABLES_MIRROR_TAG" \
+# _json_tables_mirror_release — the release document, fetched ONCE per process.
+#
+# Three callers wanted this same document — the wheel name, the asset digest and
+# the version in the release body — and each fetched it again. GitHub allows
+# sixty API requests an hour without a token, so one json-tables install spent
+# three of them on one answer, and a full install that had already used the rest
+# then reported the release as missing. PowerShell has cached this in
+# $script:JsonTablesMirrorCache all along; the shell never did.
+#
+# The status is written to a FILE for the same reason the document is: every
+# caller reaches this through $( ), and two levels of subshell separate the curl
+# from the code that has to choose a message. A variable would be set and thrown
+# away, and the caller would read the empty string on every path -- which is the
+# shape of the original bug, not a fix for it.
+#
+# EXAKIT_JSON_TABLES_MIRROR_HTTP is the status GitHub answered with, so a caller
+# can tell "this release does not exist" from "GitHub would not say". Without it
+# a 403 read exactly like a 404: curl -f prints nothing and exits non-zero on
+# either, so a refusal and an absence arrived as the same empty string.
+EXAKIT_JSON_TABLES_MIRROR_HTTP=""
+# A FILE, not a variable. Every caller reaches this through $( ), which is a
+# subshell, so a variable cache would be discarded the moment it was filled and
+# the next caller would fetch again -- the exact bug this exists to fix, wearing
+# a cache. The About text is cached the same way and for the same reason.
+EXAKIT_JSON_TABLES_MIRROR_CACHE="${EXAKIT_JSON_TABLES_MIRROR_CACHE:-$EXAKIT_CACHE_DIR/json-tables-mirror.json}"
+# Short: long enough to serve the three callers of one install from one request,
+# short enough that a freshly published release is picked up on a retry a minute
+# later. EXAKIT_JSON_TABLES_MIRROR_TTL=0 forces the fetch, which is what a test
+# wanting the network path sets.
+EXAKIT_JSON_TABLES_MIRROR_TTL="${EXAKIT_JSON_TABLES_MIRROR_TTL:-300}"
+
+_json_tables_mirror_release() {
+    _jmr_c="$(_json_tables_mirror_cache_file)"
+    if [ -s "$_jmr_c" ] && [ "$EXAKIT_JSON_TABLES_MIRROR_TTL" != "0" ]; then
+        _jmr_m="$(_exakit_file_mtime "$_jmr_c" 2>/dev/null || true)"
+        case "$_jmr_m" in
+            ''|*[!0-9]*) ;;
+            *) if [ "$(( $(date +%s) - _jmr_m ))" -lt "$EXAKIT_JSON_TABLES_MIRROR_TTL" ]; then
+                   printf '200' > "$_jmr_c.http" 2>/dev/null || true
+                   cat "$_jmr_c"
+                   return 0
+               fi ;;
+        esac
+    fi
+    mkdir -p "$(dirname "$_jmr_c")" 2>/dev/null || true
+    _jmr_tmp="$(mktemp "${TMPDIR:-/tmp}/exakit-jt.XXXXXX")" || return 1
+    # -f is deliberately NOT used: it throws the body away exactly when the body
+    # says why. A token when present lifts the limit from 60 an hour to 5000,
+    # which is what install.sh already does with GITHUB_TOKEN.
+    set -- -sSL --retry 3 --connect-timeout 15 -w '%{http_code}' -o "$_jmr_tmp"
+    [ -n "${GITHUB_TOKEN:-}" ] && set -- "$@" -H "Authorization: Bearer $GITHUB_TOKEN"
+    _jmr_http="$(curl "$@" \
+        "https://api.github.com/repos/$(json_tables_mirror_repo)/releases/tags/$(json_tables_release_tag)" \
         2>/dev/null || true)"
-    [ -n "$_jmw_json" ] || return 1
+    printf '%s' "$_jmr_http" > "$_jmr_c.http" 2>/dev/null || true
+    if [ "$_jmr_http" = "200" ] && [ -s "$_jmr_tmp" ]; then
+        mv -f "$_jmr_tmp" "$_jmr_c" 2>/dev/null || cp -f "$_jmr_tmp" "$_jmr_c" 2>/dev/null || true
+        rm -f "$_jmr_tmp"
+        cat "$_jmr_c"
+        return 0
+    fi
+    # A refusal must NOT be cached: the next run a minute later, or the same run
+    # with a token, has to be allowed to ask again.
+    rm -f "$_jmr_tmp"
+    return 1
+}
+
+_json_tables_mirror_wheel_name() {
+    # PINNED FIRST, network second. exapump and exasol-vscode both carry their
+    # artefact digests in versions.json and never ask an API for them; this one
+    # asked, and so every install depended on GitHub answering three separate
+    # times. It allows sixty requests an hour per IP without a token, which one
+    # install nearly spends: the run that prompted this resolved the wheel on
+    # call one and was refused on call two, so a release with a digest for every
+    # asset was reported as having no checksum.
+    #
+    # The download itself is a plain release URL and needs no API budget, so a
+    # pinned name and a pinned digest take the API off the install path
+    # entirely. The pin describes the ADVERTISED build only; a build chosen by
+    # hand reads its own release.
+    _jmw_pin=""
+    _json_tables_pin_applies && _jmw_pin="$(exakit_versions_value components.json-tables.wheel 2>/dev/null || true)"
+    if [ -n "$_jmw_pin" ]; then
+        printf '%s\n' "$_jmw_pin"
+        return 0
+    fi
+    _jmw_json="$(_json_tables_mirror_release)" || return 1
     if exakit_can_run_python; then
         printf '%s' "$_jmw_json" | run_python -c '
 import json, sys
@@ -259,15 +403,34 @@ if wheels:
     printf '%s' "$_jmw_json" | tr ',' '\n' | sed -n 's/.*"name":"\([^"]*\.whl\)".*/\1/p' | sort -V | tail -1
 }
 
-# _json_tables_mirror_digest <asset> — the sha256 GitHub publishes for a
-# release asset. The mirror tag is rolling (it moves whenever upstream does),
-# so a digest pinned in versions.json would go stale by design: the release API
-# is the right authority here, and an unverifiable download is still refused.
+# _json_tables_mirror_digest <asset> — the sha256 to verify a release asset
+# against: the one versions.json pins for the advertised build, else the one
+# GitHub publishes for the asset on the release being installed (a build chosen
+# by hand with EXAKIT_JSON_TABLES_VERSION has no pin). Releases are immutable,
+# so a pin can only disagree with the asset if the document was edited by
+# hand — and CI refuses that edit. An unverifiable download is refused either way.
 _json_tables_mirror_digest() {
-    _jmd_json="$(curl -fsSL --retry 3 --connect-timeout 15 \
-        "https://api.github.com/repos/$(json_tables_mirror_repo)/releases/tags/$EXAKIT_JSON_TABLES_MIRROR_TAG" \
-        2>/dev/null || true)"
-    [ -n "$_jmd_json" ] || return 1
+    # Pinned first, for the reason given on the wheel lookup above: this was the
+    # call that failed, and a digest in versions.json cannot be rate limited.
+    #
+    # Keyed by PLATFORM, not by asset name. exakit_versions_value walks a dotted
+    # path, and an asset name carries a version -- "...-0.2.0-..." -- whose dots
+    # split into path segments that do not exist, so a name-keyed lookup silently
+    # returned nothing and fell through to the network it was meant to avoid.
+    case "$1" in
+        *.whl)                            _jmd_key=wheel ;;
+        exakit-json-tables-cargo-*)        _jmd_key="cargo-$(printf '%s' "${1#exakit-json-tables-cargo-}" | sed 's/\.exe$//')" ;;
+        exasol-json-tables-ingest-*)       _jmd_key="$(printf '%s' "${1#exasol-json-tables-ingest-}" | sed 's/\.exe$//')" ;;
+        *)                                 _jmd_key="" ;;
+    esac
+    if [ -n "$_jmd_key" ] && _json_tables_pin_applies; then
+        _jmd_pin="$(exakit_versions_value "components.json-tables.sha256.$_jmd_key" 2>/dev/null || true)"
+        if [ -n "$_jmd_pin" ]; then
+            printf '%s\n' "$_jmd_pin"
+            return 0
+        fi
+    fi
+    _jmd_json="$(_json_tables_mirror_release)" || return 1
     if exakit_can_run_python; then
         printf '%s' "$_jmd_json" | run_python -c '
 import json, sys
@@ -321,52 +484,31 @@ _json_tables_fetch_verified() {
     return 1
 }
 
-# _json_tables_mirror_version — the upstream build the mirror release actually
-# carries, read from the `version=` line the packaging workflow writes into the
-# release body. This is the ONLY version that can be installed: the artifacts
-# for it are the ones sitting on that release.
-_json_tables_mirror_version() {
-    _jmv_json="$(curl -fsSL --retry 3 --connect-timeout 15 \
-        "https://api.github.com/repos/$(json_tables_mirror_repo)/releases/tags/$EXAKIT_JSON_TABLES_MIRROR_TAG" \
-        2>/dev/null || true)"
-    [ -n "$_jmv_json" ] || return 1
-    if exakit_can_run_python; then
-        printf '%s' "$_jmv_json" | run_python -c '
-import json, re, sys
-doc = json.load(sys.stdin)
-match = re.search(r"version=([A-Za-z0-9._+-]+)", doc.get("body") or "")
-if match:
-    print(match.group(1))
-'
-        return $?
-    fi
-    printf '%s' "$_jmv_json" | sed -n 's/.*version=\([A-Za-z0-9._+-]*\).*/\1/p' | head -1
-}
-
 # json_tables_latest — the generic <id>_latest hook (see exakit_component_latest).
 #
 # For every other component "latest" means whatever upstream published. Here it
-# deliberately means whatever the kit's own packaging workflow has already
-# BUILT and published, which can lag upstream by a run. That is the point: the
-# update flow must never advertise a version whose prebuilt engine and wheel do
-# not exist yet, because the whole promise of this add-on is that installing it
-# needs no Rust toolchain. An upstream release the mirror has not caught up
-# with is not installable, so it is not offered.
+# deliberately means whatever versions.json ADVERTISES, because that is the
+# only build whose prebuilt engine and wheel are guaranteed to exist: the
+# packaging workflow publishes an immutable `json-tables-<version>` release
+# first and only then opens the pull request that advertises it, and CI refuses
+# that pull request unless every pinned digest matches an asset on that
+# release. An upstream release the kit has not packaged yet is not installable,
+# so it is not offered — and no network call is needed to say so.
+# ⇄ twin: Get-JsonTablesLatest.
 json_tables_latest() {
-    _json_tables_mirror_version
+    _jtl="$(exakit_versions_value components.json-tables.version 2>/dev/null || true)"
+    [ -n "$_jtl" ] || _jtl="$EXAKIT_JSON_TABLES_VERSION_FALLBACK"
+    printf '%s\n' "$_jtl"
 }
 
 json_tables_install() {
-    # What gets installed is what the mirror release carries, so that is what
-    # gets recorded. Resolving it from the mirror first (rather than trusting
-    # versions.json, which moves in a follow-up pull request) keeps the recorded
-    # version equal to the artifacts on disk — otherwise `exakit version` would see
-    # a difference that no update could ever close.
+    # versions.json decides what gets installed — version, release tag, wheel
+    # and digests all come from that one document, so the version recorded here
+    # is the version of the artefacts on disk. (Reading the version off the
+    # release itself, as this once did, let the label say v0.3 while the pinned
+    # wheel and digests still described v0.2.)
     if [ -z "${EXAKIT_JSON_TABLES_VERSION:-}" ]; then
-        EXAKIT_JSON_TABLES_VERSION="$(_json_tables_mirror_version 2>/dev/null || true)"
-        [ -n "$EXAKIT_JSON_TABLES_VERSION" ] || \
-            EXAKIT_JSON_TABLES_VERSION="$(exakit_component_available json-tables 2>/dev/null || true)"
-        [ -n "$EXAKIT_JSON_TABLES_VERSION" ] || EXAKIT_JSON_TABLES_VERSION="$EXAKIT_JSON_TABLES_VERSION_FALLBACK"
+        EXAKIT_JSON_TABLES_VERSION="$(_json_tables_target_version)"
         export EXAKIT_JSON_TABLES_VERSION
     fi
 
@@ -388,7 +530,22 @@ json_tables_install() {
 
     _jti_wheel_name="$(_json_tables_mirror_wheel_name 2>/dev/null || true)"
     if [ -z "$_jti_wheel_name" ]; then
-        _json_tables_not_installed "the prebuilt mirror release '$EXAKIT_JSON_TABLES_MIRROR_TAG' was not found in $(json_tables_mirror_repo). Run the 'pkg / json-tables' workflow once to publish it (it builds the engine for every platform so nobody needs Rust)."
+        # The status decides the sentence. Reporting "not found" for every
+        # failure sent a reader off to publish a release that already existed.
+        _jti_http="$(cat "$(_json_tables_mirror_cache_file).http" 2>/dev/null || true)"
+        case "$_jti_http" in
+            403|429)
+                _jti_tok=""
+                [ -n "${GITHUB_TOKEN:-}" ] || _jti_tok=" (or set GITHUB_TOKEN, which raises the limit to 5000)"
+                _json_tables_not_installed "GitHub refused the lookup — its API allows 60 requests an hour without a token and this install has used them. Wait for the hour to turn over, then run: exakit marketplace$_jti_tok"
+                ;;
+            404)
+                _json_tables_not_installed "the prebuilt release '$(json_tables_release_tag)' was not found in $(json_tables_mirror_repo). Run the 'pkg / json-tables' workflow to publish it (it assembles the engine for every platform - fetching what upstream prebuilds, building the rest - so nobody needs Rust)."
+                ;;
+            *)
+                _json_tables_not_installed "GitHub could not be reached to find the prebuilt engine${_jti_http:+ (HTTP $_jti_http)}. Check the network, then run: exakit marketplace"
+                ;;
+        esac
         return 1
     fi
 
@@ -577,7 +734,7 @@ json_tables_validate() {
         return 0
     fi
     rm -rf "$_jtv_tmp"
-    warn "The ingest round trip did not produce Parquet (see: exakit logs json-tables). Recorded validated=false; retry with: exakit update json-tables"
+    warn "The ingest round trip did not produce Parquet (see: exakit logs json-tables). Recorded validated=false; retry with: exakit update"
     manifest_set components.json_tables.validated false
     return 0
 }
@@ -596,14 +753,15 @@ _json_tables_print_usage() {
     ui_panel_line "Run it          exasol-json-tables --help"
     ui_panel_line "Ingest JSON     exasol-json-tables ingest --input <file.json>"
     ui_panel_line "Engine          $(ui_tilde "$(json_tables_engine_path)")"
-    ui_panel_line "Update          exakit update json-tables"
+    ui_panel_line "Update          exakit update"
     ui_panel_end
 }
 
 # json_tables_summary — the one fact worth a place on the result line. Optional
 # hook, resolved generically by _exakit_addon_fn like install/validate/start.
 json_tables_summary() {
-    printf 'load JSON with: exasol-json-tables ingest --input <file.json>\n'
+    # 31 characters: the finished cell truncates at 33 in the plain palette.
+    printf 'ingest JSON: exasol-json-tables\n'
 }
 
 # json_tables_uninstall [dry] — the venv, the engine, the shim, the launcher
@@ -622,7 +780,7 @@ json_tables_uninstall() {
     if [ "$_jtu_dry" != "1" ]; then
         manifest_del components.json_tables
         manifest_del desired.json_tables
-        ok "JSON Tables removed — reinstall any time with: exakit marketplace"
+        ok_step "JSON Tables removed — reinstall any time with: exakit marketplace"
     fi
     return 0
 }
@@ -631,11 +789,10 @@ json_tables_uninstall() {
 # command (it re-downloads the engine and rewrites the shim and launcher), so
 # an explicit `exakit update json-tables` is always worth running.
 json_tables_update() {
-    # The mirror is the authority on what can be installed; the advertised set
-    # is the offline answer when it cannot be reached.
-    _jtu_available="$(_json_tables_mirror_version 2>/dev/null || true)"
-    [ -n "$_jtu_available" ] || _jtu_available="$(exakit_component_available json-tables 2>/dev/null || true)"
-    [ -n "$_jtu_available" ] || die "Could not resolve the advertised json-tables version."
+    # versions.json is the authority on what can be installed: the packaging
+    # workflow publishes the release before the version is ever advertised.
+    _jtu_available="$(exakit_component_available json-tables 2>/dev/null || true)"
+    [ -n "$_jtu_available" ] || _jtu_available="$EXAKIT_JSON_TABLES_VERSION_FALLBACK"
     _jtu_current="$(json_tables_installed_version 2>/dev/null || true)"
     if [ -n "$_jtu_current" ] && [ "$_jtu_current" = "$_jtu_available" ]; then
         # Same build can still need repair: rewrite the shim and launcher so a

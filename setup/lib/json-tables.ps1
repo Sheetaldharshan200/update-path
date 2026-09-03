@@ -7,8 +7,10 @@
 #
 # The kit's whole point with this add-on is that nobody needs a Rust toolchain:
 # .github/workflows/pkg-json-tables.yml builds the ingest engine for every
-# platform (Windows included) and the wheel, and publishes both to the
-# 'mirror-json-tables' release. On macOS and Linux the kit then puts a tiny
+# platform (Windows included) and the wheel, and publishes both as ONE
+# IMMUTABLE RELEASE PER BUILD, tagged json-tables-<version>; versions.json
+# names that release and pins the digest of every asset, and a published
+# release is never rewritten. On macOS and Linux the kit then puts a tiny
 # 'cargo' shim in front of the CLI, because upstream runs the engine with
 # exactly one call shape and no prebuilt-binary escape hatch:
 #
@@ -23,7 +25,7 @@
 #
 # The answer is the one the old comment named: a compiled launcher. The shim is
 # now a real Windows executable, built from setup/shim/json-tables-cargo by the
-# same workflow that builds the engine and published beside it. The toolchain
+# same workflow that assembles the engines and published beside them. The toolchain
 # requirement moves to OUR build machine, which is exactly the trade this
 # add-on exists to make - the user still installs nothing but prebuilt bytes.
 #
@@ -34,7 +36,9 @@
 
 $script:JsonTablesVersionFallback = if ($env:EXAKIT_JSON_TABLES_VERSION_FALLBACK) { $env:EXAKIT_JSON_TABLES_VERSION_FALLBACK } else { "v0.3" }
 $script:JsonTablesVersion = if ($env:EXAKIT_JSON_TABLES_VERSION) { $env:EXAKIT_JSON_TABLES_VERSION } else { "" }
-$script:JsonTablesMirrorTag = if ($env:EXAKIT_JSON_TABLES_MIRROR_TAG) { $env:EXAKIT_JSON_TABLES_MIRROR_TAG } else { "mirror-json-tables" }
+# An explicit release tag (tests, or pointing an install at one specific build);
+# empty means the tag versions.json names - see Get-JsonTablesReleaseTag.
+$script:JsonTablesMirrorTag = if ($env:EXAKIT_JSON_TABLES_MIRROR_TAG) { $env:EXAKIT_JSON_TABLES_MIRROR_TAG } else { "" }
 $script:JsonTablesPackage = if ($env:EXAKIT_JSON_TABLES_PACKAGE) { $env:EXAKIT_JSON_TABLES_PACKAGE } else { "exasol-json-tables" }
 $script:JsonTablesVenv = if ($env:EXAKIT_JSON_TABLES_VENV) { $env:EXAKIT_JSON_TABLES_VENV } else { Join-Path $script:ExakitHome "json-tables-venv" }
 $script:JsonTablesHome = if ($env:EXAKIT_JSON_TABLES_HOME) { $env:EXAKIT_JSON_TABLES_HOME } else { Join-Path $script:ExakitHome "json-tables" }
@@ -68,6 +72,38 @@ function Get-JsonTablesMirrorRepo {
     $src = Get-ExakitManifestValue "kit.source"
     if ($src -and $src -match '^([^@]+/[^@]+)@') { return $Matches[1] }
     return $script:KitRepo
+}
+
+# Twin of _json_tables_target_version: the build this run installs - an
+# explicit EXAKIT_JSON_TABLES_VERSION, else the version versions.json
+# advertises, else the module's fallback constant.
+function Get-JsonTablesTargetVersion {
+    if ($script:JsonTablesVersion) { return $script:JsonTablesVersion }
+    return (Get-ExakitAddonAdvertisedVersion -Id "json-tables" -Fallback $script:JsonTablesVersionFallback)
+}
+
+# Twin of _json_tables_pin_applies: true when the build being installed is the
+# one versions.json describes, so its release tag, wheel name and digests may
+# be taken from that document. Any other build has no pin and is resolved from
+# its own release - never from the pins of a different build.
+function Test-JsonTablesPinApplies {
+    $pin = Get-ExakitVersionsValue "components.json-tables.version"
+    if (-not $pin) { return $false }
+    return ($pin -eq (Get-JsonTablesTargetVersion))
+}
+
+# Twin of json_tables_release_tag: one immutable release per build,
+# json-tables-<version>. versions.json may name it outright
+# (components.json-tables.release, which also carries a rebuild suffix such as
+# json-tables-v0.3-2); otherwise the tag is derived from the version.
+# EXAKIT_JSON_TABLES_MIRROR_TAG overrides everything.
+function Get-JsonTablesReleaseTag {
+    if ($script:JsonTablesMirrorTag) { return $script:JsonTablesMirrorTag }
+    if (Test-JsonTablesPinApplies) {
+        $pin = Get-ExakitVersionsValue "components.json-tables.release"
+        if ($pin) { return $pin }
+    }
+    return ("json-tables-" + (Get-JsonTablesTargetVersion))
 }
 
 # Twin of json_tables_engine_asset. The workflow builds a Windows engine, and
@@ -131,7 +167,7 @@ function Get-JsonTablesInstalledVersion {
 function Write-JsonTablesNotInstalled {
     param([Parameter(Mandatory)][string]$Reason)
     Warn2 "JSON Tables was not installed: $Reason"
-    Warn2 "Everything else in the kit is unaffected. Retry with: exakit update json-tables"
+    Warn2 "Everything else in the kit is unaffected. Retry with: exakit update"
     if (Get-Command Set-ExakitFailureReason -ErrorAction SilentlyContinue) {
         Set-ExakitFailureReason $Reason
     }
@@ -142,25 +178,58 @@ function Write-JsonTablesNotInstalled {
 # ---------------------------------------------------------------------------
 # The mirror release - twins of the _json_tables_mirror_* helpers
 # ---------------------------------------------------------------------------
+# $script:JsonTablesMirrorHttp - the status GitHub answered with, so the caller
+# can tell "this release does not exist" from "GitHub would not say". Without it
+# a 403 read exactly like a 404 and the install told the reader to publish a
+# release that already existed; the real answer was that the unauthenticated API
+# allows 60 calls an hour and a full install had spent all sixty. Twin of
+# EXAKIT_JSON_TABLES_MIRROR_HTTP in json-tables.sh.
+$script:JsonTablesMirrorHttp = ""
 function Get-JsonTablesMirrorRelease {
-    if ($script:JsonTablesMirrorCache) { return $script:JsonTablesMirrorCache }
+    # Cached per TAG: a lookup for one build must never answer for another.
+    $tag = Get-JsonTablesReleaseTag
+    if ($script:JsonTablesMirrorCache -and ($script:JsonTablesMirrorCacheTag -eq $tag)) { return $script:JsonTablesMirrorCache }
     try {
-        $uri = "https://api.github.com/repos/$(Get-JsonTablesMirrorRepo)/releases/tags/$($script:JsonTablesMirrorTag)"
-        $script:JsonTablesMirrorCache = Invoke-RestMethod -Uri $uri -UseBasicParsing -TimeoutSec 20
+        $uri = "https://api.github.com/repos/$(Get-JsonTablesMirrorRepo)/releases/tags/$tag"
+        # A token when one is present lifts the same limit from 60 an hour to
+        # 5000. Unauthenticated stays the default; nothing here requires a token.
+        $headers = @{}
+        if ($env:GITHUB_TOKEN) { $headers["Authorization"] = "Bearer $($env:GITHUB_TOKEN)" }
+        $script:JsonTablesMirrorCache = Invoke-RestMethod -Uri $uri -UseBasicParsing -TimeoutSec 20 -Headers $headers
+        $script:JsonTablesMirrorCacheTag = $tag
+        $script:JsonTablesMirrorHttp = "200"
         return $script:JsonTablesMirrorCache
     } catch {
+        $script:JsonTablesMirrorHttp = ""
+        try {
+            if ($_.Exception.Response) {
+                $script:JsonTablesMirrorHttp = [string][int]$_.Exception.Response.StatusCode
+            }
+        } catch { }
         return $null
     }
 }
 
 function Get-JsonTablesMirrorAssetUrl {
     param([Parameter(Mandatory)][string]$Asset)
-    return "https://github.com/$(Get-JsonTablesMirrorRepo)/releases/download/$($script:JsonTablesMirrorTag)/$Asset"
+    return "https://github.com/$(Get-JsonTablesMirrorRepo)/releases/download/$(Get-JsonTablesReleaseTag)/$Asset"
 }
 
 # The wheel's real filename: its version comes from upstream's pyproject, not
 # from ours, so it is read off the release rather than constructed.
 function Get-JsonTablesMirrorWheelName {
+    # PINNED FIRST, network second - twin of the same order in json-tables.sh.
+    # exapump and exasol-vscode both carry their artefact digests in
+    # versions.json and never ask an API for them; this one asked, so every
+    # install depended on GitHub answering, and GitHub allows sixty requests an
+    # hour per IP without a token. The download is a plain release URL needing
+    # no API budget, so a pinned name and digest take the API off the install
+    # path entirely. The pin describes the ADVERTISED build only; a build chosen
+    # by hand reads its own release.
+    if (Test-JsonTablesPinApplies) {
+        $pin = Get-ExakitVersionsValue "components.json-tables.wheel"
+        if ($pin) { return $pin }
+    }
     $release = Get-JsonTablesMirrorRelease
     if (-not $release) { return "" }
     # NEWEST wheel, not the first one listed. The mirror release is rolling and
@@ -174,11 +243,28 @@ function Get-JsonTablesMirrorWheelName {
     return $newest.name
 }
 
-# The sha256 GitHub publishes for a release asset. The mirror tag is rolling
-# (it moves whenever upstream does), so a digest pinned in versions.json would
-# go stale by design: the release API is the right authority here.
+# The sha256 for a release asset: from versions.json for the advertised build,
+# and from the release API for any other. Releases are immutable, so a pin can
+# only disagree with its asset if the document was edited by hand - and CI
+# refuses that edit.
+#
+# Keyed by PLATFORM, not by asset name. The versions lookup walks a DOTTED path
+# and an asset name carries a version - "...-0.2.0-..." - whose dots split into
+# path segments that do not exist, so a name-keyed lookup returns nothing and
+# falls through to the network it was meant to avoid.
 function Get-JsonTablesMirrorDigest {
     param([Parameter(Mandatory)][string]$Asset)
+    $key = ""
+    if ($Asset.EndsWith(".whl")) { $key = "wheel" }
+    elseif ($Asset.StartsWith("exakit-json-tables-cargo-")) {
+        $key = "cargo-" + ($Asset.Substring("exakit-json-tables-cargo-".Length) -replace "\.exe$", "")
+    } elseif ($Asset.StartsWith("exasol-json-tables-ingest-")) {
+        $key = ($Asset.Substring("exasol-json-tables-ingest-".Length) -replace "\.exe$", "")
+    }
+    if ($key -and (Test-JsonTablesPinApplies)) {
+        $pin = Get-ExakitVersionsValue "components.json-tables.sha256.$key"
+        if ($pin) { return $pin }
+    }
     $release = Get-JsonTablesMirrorRelease
     if (-not $release) { return "" }
     # The loop variable must NOT be spelled $asset: PowerShell identifiers are
@@ -194,22 +280,15 @@ function Get-JsonTablesMirrorDigest {
     return ""
 }
 
-# The upstream build the mirror actually carries, from the `version=` line the
-# packaging workflow writes into the release body. This is the ONLY version
-# that can be installed: the artifacts for it are the ones on that release.
-function Get-JsonTablesMirrorVersion {
-    $release = Get-JsonTablesMirrorRelease
-    if (-not $release) { return "" }
-    if (("" + $release.body) -match 'version=([A-Za-z0-9._+-]+)') { return $Matches[1] }
-    return ""
-}
-
-# The generic <id>_latest hook. "Latest" deliberately means whatever the kit's
-# own packaging workflow has already BUILT, which can lag upstream by a run:
-# advertising a version whose prebuilt engine does not exist yet would break
-# the one promise this add-on makes.
+# The generic <id>_latest hook; twin of json_tables_latest. "Latest" deliberately
+# means what versions.json ADVERTISES: the packaging workflow publishes an
+# immutable json-tables-<version> release first and only then advertises it, so
+# the advertised build is the one whose artifacts are guaranteed to exist. No
+# network call is needed to answer.
 function Get-JsonTablesLatest {
-    return (Get-JsonTablesMirrorVersion)
+    $advertised = Get-ExakitVersionsValue "components.json-tables.version"
+    if ($advertised) { return $advertised }
+    return $script:JsonTablesVersionFallback
 }
 
 # Download one mirror asset and verify it against the digest the release
@@ -281,14 +360,12 @@ function Install-JsonTables {
         return (Write-JsonTablesNotInstalled (Get-JsonTablesApplicableReason))
     }
 
-    # What gets installed is what the mirror carries, so that is what gets
-    # recorded - otherwise `exakit version` would show a difference no update
-    # could ever close.
+    # versions.json decides what gets installed - version, release tag, wheel
+    # and digests all come from that one document, so the version recorded here
+    # is the version of the artifacts on disk. Twin of the same block in
+    # json_tables_install.
     if (-not $script:JsonTablesVersion) {
-        $script:JsonTablesVersion = Get-JsonTablesMirrorVersion
-        if (-not $script:JsonTablesVersion) {
-            $script:JsonTablesVersion = Get-ExakitAddonAdvertisedVersion -Id "json-tables" -Fallback $script:JsonTablesVersionFallback
-        }
+        $script:JsonTablesVersion = Get-JsonTablesTargetVersion
     }
 
     $engineAsset = Get-JsonTablesEngineAsset
@@ -296,7 +373,19 @@ function Install-JsonTables {
 
     $wheelName = Get-JsonTablesMirrorWheelName
     if (-not $wheelName) {
-        return (Write-JsonTablesNotInstalled "the prebuilt mirror release '$($script:JsonTablesMirrorTag)' was not found in $(Get-JsonTablesMirrorRepo). Run the 'pkg / json-tables' workflow once to publish it (it builds the engine and the cargo shim for every platform so nobody needs Rust).")
+        # The status decides the sentence. Reporting "not found" for every
+        # failure sent a reader off to publish a release that already existed.
+        if ($script:JsonTablesMirrorHttp -eq "403" -or $script:JsonTablesMirrorHttp -eq "429") {
+            $tok = ""
+            if (-not $env:GITHUB_TOKEN) { $tok = " (or set GITHUB_TOKEN, which raises the limit to 5000)" }
+            return (Write-JsonTablesNotInstalled "GitHub refused the lookup - its API allows 60 requests an hour without a token and this install has used them. Wait for the hour to turn over, then run: exakit marketplace$tok")
+        }
+        if ($script:JsonTablesMirrorHttp -eq "404") {
+            return (Write-JsonTablesNotInstalled "the prebuilt release '$(Get-JsonTablesReleaseTag)' was not found in $(Get-JsonTablesMirrorRepo). Run the 'pkg / json-tables' workflow to publish it (it assembles the engine and the cargo shim for every platform - fetching what upstream prebuilds, building the rest - so nobody needs Rust).")
+        }
+        $extra = ""
+        if ($script:JsonTablesMirrorHttp) { $extra = " (HTTP $($script:JsonTablesMirrorHttp))" }
+        return (Write-JsonTablesNotInstalled "GitHub could not be reached to find the prebuilt engine$extra. Check the network, then run: exakit marketplace")
     }
 
     try {
@@ -419,7 +508,7 @@ function Write-JsonTablesLauncher {
         'rem exasol-json-tables launcher - generated by the Exasol Personal Local',
         'rem Starter Kit. Runs the CLI from its kit-managed venv with the prebuilt',
         'rem ingest engine reachable through the compiled cargo shim, so no Rust',
-        'rem toolchain is needed. Regenerated by: exakit update json-tables',
+        'rem toolchain is needed. Regenerated by: exakit update',
         ('set "PATH=' + (Get-JsonTablesShimDir) + ';%PATH%"'),
         ('set "EXAKIT_JSON_TABLES_ENGINE=' + (Get-JsonTablesEnginePath) + '"'),
         ('"' + $venvBin + '" %*')
@@ -475,14 +564,14 @@ function Test-JsonTables {
             Write-ExakitPanelLine "Run it          exasol-json-tables --help"
             Write-ExakitPanelLine "Ingest JSON     exasol-json-tables ingest --input <file.json>"
             Write-ExakitPanelLine "Engine          $(Get-JsonTablesEnginePath)"
-            Write-ExakitPanelLine "Update          exakit update json-tables"
+            Write-ExakitPanelLine "Update          exakit update"
             Complete-ExakitPanel
             return
         }
     } finally {
         Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $tmp
     }
-    Warn2 "The ingest round trip did not produce Parquet (see: exakit logs json-tables). Recorded validated=false; retry with: exakit update json-tables"
+    Warn2 "The ingest round trip did not produce Parquet (see: exakit logs json-tables). Recorded validated=false; retry with: exakit update"
     Set-ExakitManifestValue "components.json_tables.validated" $false
 }
 
@@ -490,7 +579,8 @@ function Test-JsonTables {
 # Get-JsonTablesSummary - the one fact worth a place on the result line.
 # Optional registry hook (SummaryFn); twin of json_tables_summary.
 function Get-JsonTablesSummary {
-    return "load JSON with: exasol-json-tables ingest --input <file.json>"
+    # 31 characters: the finished cell truncates at 33 in the plain palette.
+    return "ingest JSON: exasol-json-tables"
 }
 
 function Uninstall-JsonTables {
@@ -507,7 +597,7 @@ function Uninstall-JsonTables {
     if (-not $DryRun) {
         Remove-ExakitManifestValue "components.json_tables"
         Remove-ExakitManifestValue "desired.json_tables"
-        Ok "JSON Tables removed - reinstall any time with: exakit marketplace"
+        OkStep "JSON Tables removed - reinstall any time with: exakit marketplace"
     }
     return $true
 }
@@ -520,10 +610,9 @@ function Update-JsonTables {
         Warn2 "JSON Tables is not available on this machine: $(Get-JsonTablesApplicableReason)"
         return $false
     }
-    $available = Get-JsonTablesMirrorVersion
-    if (-not $available) {
-        $available = Get-ExakitAddonAdvertisedVersion -Id "json-tables" -Fallback $script:JsonTablesVersionFallback
-    }
+    # versions.json is the authority on what can be installed: the packaging
+    # workflow publishes the release before the version is ever advertised.
+    $available = Get-ExakitAddonAdvertisedVersion -Id "json-tables" -Fallback $script:JsonTablesVersionFallback
     if (-not $available) { Fail "Could not resolve the advertised json-tables version." }
     $current = Get-JsonTablesInstalledVersion
     if ($current) { Info "Updating JSON Tables $current -> $available" }

@@ -1,5 +1,6 @@
 ---
 name: json-tables
+addon: json-tables
 description: Load JSON-shaped data into the local Exasol database with the JSON Tables add-on, which shreds nested JSON into relational tables — covering why exapump alone cannot load JSON, how the add-on is offered automatically during a data load, and the fact that its ingest engine ships prebuilt so no Rust toolchain is ever needed. Triggers — "load a JSON file into Exasol", "import JSON data", "exapump will not take my .json", "install JSON Tables", "exasol-json-tables", "flatten nested JSON into tables", "do I need Rust for this".
 ---
 
@@ -65,8 +66,9 @@ contain the engine — so a plain `pip install` cannot ingest even on a machine
 that *has* Rust.
 
 The kit solves that for the user: the engine binaries are **built once per
-platform by the kit's own packaging workflow**, published to a mirror release,
-and downloaded **digest-verified** at install time. Nothing is compiled on the
+platform by the kit's own packaging workflow**, published as an immutable
+`json-tables-<version>` release whose asset digests `versions.json` pins, and
+downloaded **digest-verified** at install time. Nothing is compiled on the
 user's machine and no Rust toolchain is required.
 
 To make the upstream CLI use that prebuilt engine, the kit places a small
@@ -82,7 +84,7 @@ So a version you see upstream may legitimately not be offered yet.
 
 ```bash
 exakit version                   # its row shows installed vs advertised
-exakit update json-tables        # also the repair command
+exakit update        # also the repair command
 exakit logs json-tables
 exakit uninstall                 # selectable on its own
 ```
@@ -92,14 +94,14 @@ exakit uninstall                 # selectable on its own
 | Symptom | Do |
 |---|---|
 | The add-on is not offered at all | it is already installed, or not applicable on this machine — check `exakit marketplace` output for the reason |
-| Ingest errors | `exakit logs json-tables`, then `exakit update json-tables` to repair |
+| Ingest errors | `exakit logs json-tables`, then `exakit update` to repair |
 | `exasol-json-tables: command not found` | it is not installed — `EXAKIT_MARKETPLACE_ADDONS=json-tables exakit marketplace` |
 | A JSON load did nothing | the prompt was answered `none`, or the run had no TTY and no `EXAKIT_MARKETPLACE_ADDONS` |
 
 ## Guardrails
 
 - **Never tell the user to install Rust** to make this work. If ingest fails,
-  the fix is `exakit update json-tables`, not a toolchain.
+  the fix is `exakit update`, not a toolchain.
 - **Do not bypass the kit's launcher** to run the upstream CLI directly — the
   `cargo` shim it sets up is what lets the CLI find the prebuilt engine.
 - **Loading data writes to the database.** Confirm the target schema and table

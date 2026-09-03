@@ -89,7 +89,7 @@ LAUNCHER_LINES="$(wc -l < "$WORK/launcher.txt" | tr -d ' ')"
 printf '\n== the launcher stream is consumed, not printed ==\n'
 
 STATE="$WORK/state"; TAIL="$WORK/tail"; NOTICE="$WORK/notice"
-printf '0|5|3|0|Preparing the deployment\n' > "$STATE"
+printf '0|5|3|0|Preparing to deploy\n' > "$STATE"
 : > "$TAIL"; : > "$NOTICE"
 # EXAKIT_DEPLOY_LIVE=1 is the animated case: the collector must print NOTHING,
 # because the animator owns the screen.
@@ -115,7 +115,7 @@ check "with the final phase"  "Deployed" "$(cut -d'|' -f5 "$STATE")"
 
 # Out-of-order and repeated milestones must not rewind the bar: a launcher that
 # retries a stage would otherwise walk the percentage backwards on screen.
-printf '0|5|3|0|Preparing the deployment\n' > "$STATE"
+printf '0|5|3|0|Preparing to deploy\n' > "$STATE"
 : > "$TAIL"; : > "$NOTICE"
 printf '%s\n' \
     '{"msg":"validating presets"}' \
@@ -124,11 +124,11 @@ printf '%s\n' \
     '{"msg":"extracting preset files"}' \
     | _personal_deploy_collect "$STATE" "$TAIL" "$NOTICE" >/dev/null
 check "a lower milestone never rewinds" "35" "$(cut -d'|' -f1 "$STATE")"
-check "...keeping its phase"          "Fetching the Exasol runtime" "$(cut -d'|' -f5 "$STATE")"
+check "...keeping its phase"          "Getting Exasol ready" "$(cut -d'|' -f5 "$STATE")"
 
 printf '\n== unknown output is harmless ==\n'
 
-printf '10|20|2|0|Preparing the deployment\n' > "$STATE"
+printf '10|20|2|0|Preparing to deploy\n' > "$STATE"
 : > "$TAIL"; : > "$NOTICE"
 NOISE="$(printf '%s\n' 'a line no launcher release ever wrote' '{"msg":"brand new message"}' \
     | _personal_deploy_collect "$STATE" "$TAIL" "$NOTICE")"
@@ -137,19 +137,27 @@ check "unknown lines do not move the bar" "10" "$(cut -d'|' -f1 "$STATE")"
 
 printf '\n== without an animation, each phase gets one plain line ==\n'
 
-printf '0|5|3|0|Preparing the deployment\n' > "$STATE"
+printf '0|5|3|0|Preparing to deploy\n' > "$STATE"
 : > "$TAIL"; : > "$NOTICE"
 EXAKIT_DEPLOY_LIVE=0
 PLAIN="$(_personal_deploy_collect "$STATE" "$TAIL" "$NOTICE" < "$WORK/launcher.txt")"
-has "phase: preparing"  "Preparing the deployment"          "$PLAIN"
-has "phase: fetching"   "Fetching the Exasol runtime"       "$PLAIN"
-has "phase: waiting"    "Waiting for the database" "$PLAIN"
+has "phase: preparing"  "Preparing to deploy"          "$PLAIN"
+has "phase: getting ready" "Getting Exasol ready" "$PLAIN"
+# The label has to hold for BOTH launcher messages this arm matches. It said
+# "Fetching the Exasol runtime" for a cache hit too, where nothing is fetched
+# and the launcher then goes quiet for the VM boot.
+check "the cached path says the same" "Getting Exasol ready" \
+    "$(_personal_deploy_milestone 'found resource in cache' | cut -d'|' -f4)"
+check "and so does the download path" "Getting Exasol ready" \
+    "$(_personal_deploy_milestone 'fetching resource abc' | cut -d'|' -f4)"
+lacks "nothing still says 'runtime' at the reader" "Fetching the Exasol runtime" "$PLAIN"
+has "phase: waiting"    "Waiting for Exasol" "$PLAIN"
 has "phase: finishing"  "Finishing up"                      "$PLAIN"
 has "phase: deployed"   "Deployed"                          "$PLAIN"
 lacks "still no JSON" '"level":"INFO"' "$PLAIN"
-# "Preparing the deployment" is three milestones; it must be said once.
+# "Preparing to deploy" is three milestones; it must be said once.
 check "a repeated phase is said once" "1" \
-    "$(printf '%s\n' "$PLAIN" | grep -c 'Preparing the deployment')"
+    "$(printf '%s\n' "$PLAIN" | grep -c 'Preparing to deploy')"
 
 printf '\n== the EULA notice survives the stream being hidden ==\n'
 
@@ -189,9 +197,9 @@ check "nor does a zero-length segment"     "65"  "$(ui_progress_creep 65 65 10 5
 printf '\n== the progress line carries a bar, a percentage and a clock ==\n'
 
 UI_SPIN_FRAMES=(a b c d e f g h i j)
-BAR="$(ui_progress_line 65 "Waiting for the database" 42 0 100)"
+BAR="$(ui_progress_line 65 "Waiting for Exasol" 42 0 100)"
 has "percentage rendered" "65%" "$BAR"
-has "phase rendered" "Waiting for the database" "$BAR"
+has "phase rendered" "Waiting for Exasol" "$BAR"
 has "elapsed rendered" "(42s)" "$BAR"
 has "bar is filled" "$UI_BAR_FULL" "$BAR"
 has "bar has a remainder" "$UI_BAR_EMPTY" "$BAR"
@@ -253,6 +261,246 @@ has "so is the phase"            "installing"  "$(cut -d'|' -f5 "$ADDON_STATE")"
 _exakit_addon_progress "$ADDON_STATE" dash-server 65 90 8 "validating"
 check "validating starts at 65"  "65" "$(cut -d'|' -f1 "$ADDON_STATE")"
 has "...and says so"             "validating" "$(cut -d'|' -f5 "$ADDON_STATE")"
+
+# Every phase must fit the cell it is drawn in. The phase gets 30% of the
+# progress line, which is 21 columns on an 80-column terminal -- the narrowest
+# the line supports -- so a longer phase is ellipsed for anyone not running a
+# wide window. This has gone wrong twice: once when a phase was reworded to be
+# accurate on both the download and cache-hit paths and grew to 33 characters,
+# and once before that. Measuring the strings is cheaper than noticing on screen.
+echo
+echo "== every phase fits the 21-column cell =="
+PHASE_SRC="$ROOT/setup/lib/runtime-personal.sh"
+LONGEST=0
+for _p in $(grep -ohE "printf '[0-9]+\|[0-9]+\|[0-9]+\|[^']+'" "$PHASE_SRC" \
+            | sed "s/.*|//;s/'$//" | tr ' ' '_' | sort -u); do
+    _phase="$(printf '%s' "$_p" | tr '_' ' ')"
+    _len=${#_phase}
+    [ "$_len" -gt "$LONGEST" ] && LONGEST=$_len
+    if [ "$_len" -le 21 ]; then
+        PASS=$((PASS + 1)); printf '  ok   %-28s fits (%d)\n' "$_phase" "$_len"
+    else
+        FAIL=$((FAIL + 1))
+        printf '  FAIL %-28s is %d chars; the cell is 21 at 80 columns\n' "$_phase" "$_len"
+    fi
+done
+check "a phase was actually measured" "yes" "$([ "$LONGEST" -gt 0 ] && echo yes || echo NONE-FOUND)"
+
+printf '\n== a failing deploy tells the truth, and never offers to delete a database ==\n'
+
+NANO_SH="$(cat "$ROOT/setup/lib/runtime-nano.sh")"
+NANO_PS1="$(cat "$ROOT/setup/lib/nano.ps1")"
+DETECT_SH="$(cat "$ROOT/setup/lib/detect.sh")"
+
+# C1: the branch knew only that the CONTAINER was absent, and deployed over an
+# existing data volume with a freshly minted password and single-use init args
+# the image refuses on an initialised /exa. Worse, it registered a `volume rm`
+# rollback unconditionally, so "undo the failed step?" deleted a database this
+# run had merely adopted.
+has   "the volume is probed first"     'volume inspect "$EXAKIT_NANO_VOLUME"'     "$NANO_SH"
+has   "...and on Windows"              'volume inspect $script:NanoVolume'        "$NANO_PS1"
+has   "an adopted volume is adopted"   'Adopting the existing database volume'    "$NANO_SH"
+has   "...and on Windows"              'Adopting the existing database volume'    "$NANO_PS1"
+# The rollback that can delete a database is registered once, inside the branch
+# that created the volume - never beside the adopt path.
+check "one volume rollback only"       "1" \
+    "$(printf '%s\n' "$NANO_SH" | grep -c 'push_rollback "\$_engine volume rm')"
+
+# C3: the container's own last words were read straight into the log file and
+# the caller then called the exit a timeout, which it never was.
+lacks "no log-only container tail"     'logs --tail 30 "$EXAKIT_NANO_CONTAINER" >> '  "$NANO_SH"
+has   "the tail is kept and shown"     'The database container started and then exited'  "$NANO_SH"
+has   "...and on Windows"              'The database container started and then exited'  "$NANO_PS1"
+has   "an exit is not a timeout"       'EXAKIT_NANO_EXITED'                       "$NANO_SH"
+has   "known causes are explained"     'nano_explain_container_exit'              "$NANO_SH"
+has   "...and on Windows"              'Show-NanoContainerExitRemedy'             "$NANO_PS1"
+
+# C4: the readiness timeout is reached from a first deploy, from `exakit start`
+# on an established database, and from an update - and it printed `volume rm`
+# to all three.
+has   "the destructive remedy is gated" 'if [ "${EXAKIT_NANO_FIRST_DEPLOY:-0}" = "1" ]' "$NANO_SH"
+has   "...and on Windows"               'if ($script:NanoFirstDeploy)'            "$NANO_PS1"
+has   "an established database is warned" 'it IS your database'                   "$NANO_SH"
+has   "...and on Windows"                 'it IS your database'                   "$NANO_PS1"
+
+# C5: -f is true for a zero-byte file, and an empty secret makes the image
+# refuse to deploy - which surfaces minutes later as C3's container exit.
+has   "an empty secret is refused"     '[ -s "${EXAKIT_CREDS_DIR}/nano_sys_password" ]' "$NANO_SH"
+lacks "...not merely an existing one"  '[ -f "${EXAKIT_CREDS_DIR}/nano_sys_password" ]' "$NANO_SH"
+has   "Windows checks it too"          'Test-Path $pwFile -PathType Leaf'         "$NANO_PS1"
+has   "...including the empty case"    '(Get-Item $pwFile).Length -eq 0'          "$NANO_PS1"
+
+# H1: "Stop it" is unactionable when "it" is never named. On a machine with WSL
+# the holder is often wslrelay, which only `wsl --shutdown` releases.
+has   "the shell can name a holder"    'port_holder_desc()'                       "$DETECT_SH"
+has   "...and Windows can"             'function Get-ExakitPortHolder'            "$NANO_PS1"
+lacks "no unnamed culprit"             'already in use by another application'    "$NANO_SH"
+lacks "...on Windows either"           'already in use by another application'    "$NANO_PS1"
+has   "the WSL relay case is named"    'wsl --shutdown'                           "$NANO_PS1"
+
+# MEDIUM: a one-line engine error was replaced with "(see log)".
+has   "a start failure is quoted"      'nano_die_container_start'                 "$NANO_SH"
+has   "...and on Windows"              'Show-NanoContainerStartFailure'           "$NANO_PS1"
+lacks "no bare see-log on start"       'die "Container failed to start (see log)"' "$NANO_SH"
+
+printf '\n== no function is defined twice ==\n'
+
+# A duplicated definition is invisible to every check the repo already runs: the
+# file parses, the encoding guard passes, and the LAST definition silently wins.
+# It happened for real - a patch to Install-Nano in nano.ps1 computed its end
+# offset from an anchor that occurs twice, re-included the region instead of
+# replacing it, and left the PRE-FIX body as the effective one. Windows kept the
+# old behaviour while every test went green.
+for _dup_file in "$ROOT"/setup/lib/*.ps1 "$ROOT"/setup/*.ps1 "$ROOT"/install.ps1; do
+    [ -f "$_dup_file" ] || continue
+    _dup_names="$(grep -oE '^function [A-Za-z][A-Za-z0-9-]*' "$_dup_file" 2>/dev/null | sort | uniq -d | tr '\n' ' ')"
+    check "$(basename "$_dup_file") defines each function once" "" "$(printf '%s' "$_dup_names" | sed 's/ *$//')"
+done
+
+# The shell side has the same hazard, and one real instance predates this guard:
+# ui_rule is defined twice in ui.sh. It is listed here so the count cannot grow
+# without someone noticing, rather than being quietly tolerated.
+for _dup_sh in "$ROOT"/setup/lib/*.sh; do
+    [ -f "$_dup_sh" ] || continue
+    _dup_shnames="$(grep -oE '^[a-z_][a-z0-9_]*\(\) \{' "$_dup_sh" 2>/dev/null | sort | uniq -d | tr '\n' ' ')"
+    _dup_shnames="$(printf '%s' "$_dup_shnames" | sed 's/ *$//')"
+    case "$(basename "$_dup_sh")" in
+        ui.sh) check "ui.sh has exactly the one known duplicate" "ui_rule() {" "$_dup_shnames" ;;
+        *)     check "$(basename "$_dup_sh") defines each function once" "" "$_dup_shnames" ;;
+    esac
+done
+
+printf '\n== a poisoned credential path is repaired, not just reported ==\n'
+
+NANO_PS1_R="$(cat "$ROOT/setup/lib/nano.ps1")"
+COMMON_PS1_R="$(cat "$ROOT/setup/lib/exakit-common.ps1")"
+NANO_SH_R="$(cat "$ROOT/setup/lib/runtime-nano.sh")"
+
+# Docker creates a missing bind-mount source as a DIRECTORY, so
+# credentials\nano_sys_password becomes a folder. It happened on a real machine
+# and blocked the install outright: the guard detected it correctly and then
+# had nothing to offer, because only the shell side could repair it.
+has   "the shell repairs it"          "nano_repair_creds"           "$NANO_SH_R"
+has   "...and now Windows does too"   "function Repair-NanoCredentials" "$NANO_PS1_R"
+has   "the repair runs before the read" "if (-not (Repair-NanoCredentials))" "$NANO_PS1_R"
+
+# Move-Item -Force onto a DIRECTORY moves the file INSIDE it and reports
+# success, which is how the real machine ended up holding
+# credentials\nano_sys_password\nano_sys_password.tmp - a password nothing could
+# read, inside a directory that kept poisoning the next run.
+has   "a directory target is refused" 'if (Test-Path $target -PathType Container) {' "$COMMON_PS1_R"
+
+printf '\n== asking the engine a question cannot end the run ==\n'
+
+NANO_PS1_N="$(cat "$ROOT/setup/lib/nano.ps1")"
+
+# $ErrorActionPreference is Stop module-wide, so a native command that writes to
+# stderr raises a TERMINATING error - and `2>$null` or `2>&1 | Out-Null` does not
+# prevent it, because a redirect only moves the text. This shipped once and
+# killed a clean install at step 1:
+#
+#   x Unexpected error: Error response from daemon: get exasol-nano-data: no such volume
+#
+# "the volume is not there" is an ordinary ANSWER to the question the code was
+# asking, and the probe now returns it instead of throwing.
+has   "the volume probe is a function"   "function Test-NanoVolumeExists"      "$NANO_PS1_N"
+has   "...that sets Continue"            'ErrorActionPreference = "Continue"'  "$NANO_PS1_N"
+has   "...and reads the exit code"       '$exists = ($LASTEXITCODE -eq 0)'     "$NANO_PS1_N"
+# Every caller goes through it: an inline probe is how the bug got in. Counted
+# on the INVOCATION, not the words - the helper's own comment explains the
+# hazard and names the command, and a comment is not a call.
+check "one probe, inside the helper"     "1" \
+    "$(printf '%s\n' "$NANO_PS1_N" | grep -c '& \$engine volume inspect')"
+check "and both callers use the helper"  "2" \
+    "$(printf '%s\n' "$NANO_PS1_N" | grep -c '= Test-NanoVolumeExists')"
+
+printf '\n== installing the runtime also records it ==\n'
+
+# The worst failure of this whole effort was silent. Removing a DUPLICATED copy
+# of Install-Nano took its tail with it, because the two copies were not
+# identical: the container started, the database came up in 5s, the step
+# reported "completed: runtime" - and every step after it died on
+#     No runtime DSN in the manifest - install the database first.
+# A running database the kit cannot describe is indistinguishable from no
+# database, and nothing in the suite could see it: the file parsed, the
+# encoding held, no function was duplicated any more, and 130 checks passed.
+#
+# Asserted on the FUNCTION BODY, because the recorder is also called from the
+# adopt-and-return paths higher up - a whole-file grep proves nothing here.
+ps_install_nano() {
+    awk 'index($0, "function Install-Nano {") == 1 { inside = 1 }
+         inside { print }
+         inside && /^\}/ { exit }' "$ROOT/setup/lib/nano.ps1"
+}
+sh_nano_install() {
+    awk 'index($0, "nano_install() {") == 1 { inside = 1 }
+         inside { print }
+         inside && /^\}/ { exit }' "$ROOT/setup/lib/runtime-nano.sh"
+}
+
+INSTALL_PS="$(ps_install_nano)"
+INSTALL_SH="$(sh_nano_install)"
+
+has   "the shell records the runtime"   "nano_record_manifest"  "$INSTALL_SH"
+has   "...and Windows does too"         "Set-NanoManifest"      "$INSTALL_PS"
+# It has to come after the wait: recording a DSN for a database that never came
+# up is the same lie in the other direction.
+check "the shell records it after waiting" "yes" \
+    "$(printf '%s\n' "$INSTALL_SH" | grep -nE '^[[:space:]]*(nano_wait_ready|nano_record_manifest)[[:space:]]*$' | tr '\n' ' ' | grep -q 'nano_wait_ready.*nano_record_manifest' && echo yes || echo no)"
+check "...and so does Windows"             "yes" \
+    "$(printf '%s\n' "$INSTALL_PS" | grep -nE '^[[:space:]]*(Wait-NanoReady|Set-NanoManifest)[[:space:]]*$' | tr '\n' ' ' | grep -q 'Wait-NanoReady.*Set-NanoManifest' && echo yes || echo no)"
+# And it says so on screen, which is the only reason a human notices the step ran.
+has   "the shell announces the runtime" "running on 127.0.0.1" "$INSTALL_SH"
+has   "...and Windows announces it"     "running on 127.0.0.1" "$INSTALL_PS"
+
+printf '\n== all three platforms install in the same six steps ==\n'
+
+MAC_SH="$(cat "$ROOT/setup/setup-macos.sh")"
+WSL_SH="$(cat "$ROOT/setup/setup-wsl.sh")"
+WIN_PS="$(cat "$ROOT/setup/setup-windows-docker.ps1")"
+
+# The container platforms used to fold "fetch the image" and "deploy the
+# database" into one step, so Step 1/5 covered an 18-second network download AND
+# the whole deploy - the longest silent stretch of the install and its most
+# failure-prone phase, under one heading. macOS had always split them.
+for _six_h in "Exasol launcher" "Local database deployment"; do
+    has "macOS has: $_six_h"   "$_six_h" "$MAC_SH"
+    has "WSL has: $_six_h"     "$_six_h" "$WSL_SH"
+    has "Windows has: $_six_h" "$_six_h" "$WIN_PS"
+done
+
+# Six on every platform, and the shared tail told the right total.
+# Counted as DECLARATIONS, not as label text: the two shell installers declare
+# their first two steps and delegate the remaining four to kit_shared_steps, so
+# a raw count of 'Step n/6' strings would differ by platform for a reason that
+# has nothing to do with the shape being the same.
+check "macOS declares two, then delegates" "2" \
+    "$(printf '%s\n' "$MAC_SH" | grep -c '^if begin_step ')"
+check "WSL declares two, then delegates" "2" \
+    "$(printf '%s\n' "$WSL_SH" | grep -c '^if begin_step ')"
+check "Windows declares all six itself" "6" \
+    "$(printf '%s\n' "$WIN_PS" | grep -c 'Begin-ExakitStep "')"
+# The shared tail must be told the right start and total, or the four steps it
+# owns would number themselves against the old five.
+check "macOS hands over at 3 of 6" "1" \
+    "$(printf '%s\n' "$MAC_SH" | grep -c 'kit_shared_steps 3 6')"
+check "WSL hands over at 3 of 6"   "1" \
+    "$(printf '%s\n' "$WSL_SH" | grep -c 'kit_shared_steps 3 6')"
+# And no installer still advertises a five-step run.
+lacks "macOS has no stale total"   "/5  " "$MAC_SH"
+lacks "WSL has no stale total"     "/5  " "$WSL_SH"
+lacks "Windows has no stale total" "/5  " "$WIN_PS"
+
+# The pull is idempotent, because a step boundary is not a promise about
+# ordering: a re-run, an update or a repair calls the deploy directly.
+NANO_SH_6="$(cat "$ROOT/setup/lib/runtime-nano.sh")"
+NANO_PS_6="$(cat "$ROOT/setup/lib/nano.ps1")"
+has "the shell pull is a function"  "nano_pull_image() {"        "$NANO_SH_6"
+has "...and Windows too"            "function Install-NanoImage" "$NANO_PS_6"
+has "the shell deploy delegates"    "        nano_pull_image"    "$NANO_SH_6"
+has "...and Windows too"            "        Install-NanoImage"  "$NANO_PS_6"
+has "an existing image is not refetched" "already present; not pulling again" "$NANO_SH_6"
+has "...and Windows says so too"         "already present; not pulling again" "$NANO_PS_6"
 
 printf '\n%s: %d passed, %d failed\n' "$(basename "$0")" "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

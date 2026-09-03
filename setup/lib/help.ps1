@@ -421,14 +421,24 @@ function Show-ExakitHelpCatalog {
     }
     foreach ($tool in $tools) {
         Write-ExakitHelpSection $tool
-        foreach ($row in $grouped[$tool]) {
-            $label = $row.command
-            if ($row.options) { $label = "$($row.command) $($row.options)" }
-            Write-ExakitHelpCommand -Label $label -Summary $row.description
+        $entries = @($grouped[$tool])
+        # NAME AND PURPOSE ONLY, sorted, with the column sized to this section.
+        #
+        # The option syntax used to ride along in the label, and a third of the
+        # rows were then too long for a fixed 26-column gutter - so they broke
+        # onto a second line and the descriptions stopped lining up. A catalog
+        # is for scanning down; a ragged one is the one thing it must not be.
+        # The full signature is one command away, and SEARCH still matches on
+        # the option text - only the display drops it. Sorted because the rows
+        # arrive in help-document order.
+        # Twin of render_catalog in help.sh.
+        $pad = 12
+        foreach ($e in $entries) { if ("$($e.command)".Length -gt $pad) { $pad = "$($e.command)".Length } }
+        if ($pad -gt 30) { $pad = 30 }
+        foreach ($row in ($entries | Sort-Object { "$($_.command)" })) {
+            Write-ExakitHelpCommand -Label $row.command -Summary $row.description -Pad $pad
         }
     }
-    Write-Host ""
-    Write-Host "  Tip: exakit catalog <search>, or exakit <component> --help for the full page." -ForegroundColor DarkGray
     Write-Host ""
     return 0
 }

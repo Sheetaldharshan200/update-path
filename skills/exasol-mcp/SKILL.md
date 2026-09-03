@@ -15,10 +15,7 @@ gives you diagnostics for when it drifts.
 exakit mcp-setup              # configure MCP in supported clients (the main one)
 exakit mcp-doctor             # diagnose problems; --json for raw per-client results
 exakit mcp-status [clients]   # managed MCP state for every supported client
-exakit mcp-validate [clients] # validate configs and test connectivity
 exakit mcp-doctor [clients]   # check the configured clients and repair what drifted
-exakit mcp-remove [clients]   # remove the managed config
-exakit mcp-restore [snapshot] # restore the latest (or a chosen) config snapshot
 ```
 
 Start with `mcp-doctor`. It checks the **database is running first**, so a
@@ -62,6 +59,19 @@ EXAKIT_MCP_CLIENTS=claude,codex exakit mcp-setup
 backup of each first (backups live under the kit's `mcp/` directory; the live
 configs stay inside each client's own config file — `exakit mcp-status` lists
 where). **The user must restart or reload the client afterwards.**
+
+### Two managed entries, not one
+
+Setup writes an entry per server the kit owns. Always **`exasol`** — the
+read-only database server this skill is about. And, when the **dash-server**
+add-on is installed, a second entry named **`dash-server`** for that add-on's
+MCP control plane (Streamable HTTP on the port dash-server recorded). A second
+managed entry in a client config is expected, not drift.
+
+Claude Desktop is left out of the `dash-server` entry — its config file cannot
+express a remote MCP server; the app takes those through its own Connectors
+settings — and that is printed as a note, never a failure of the run. Everything about that entry lives in the `dash-server`
+skill; the rest of this page is the database path.
 
 ## What the connection actually is
 
@@ -113,8 +123,8 @@ In this order:
    applies to you: your own MCP tools appear only after your process restarts.
    Use `exakit sql` in the meantime.
 4. **Has the config drifted?** `exakit mcp-doctor` puts it back to the
-   known-good state. `exakit mcp-restore` recovers from a snapshot if a repair
-   is not enough.
+   known-good state; it repairs what it finds, so there is nothing else to
+   reach for.
 5. Still stuck → `exakit logs`, then re-run the installer (safe and resumable).
 
 For scripted checks, `exakit mcp-doctor --json` prints the raw per-client
@@ -130,7 +140,7 @@ Update it like any other component:
 
 ```bash
 exakit version    # the mcp row shows what is installed and what is advertised
-exakit update mcp
+exakit update
 ```
 
 ## Guardrails

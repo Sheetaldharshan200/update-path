@@ -43,7 +43,14 @@ _sj="$(EXAKIT_HOME="$WORK/stopped" bash "$ROOT/setup/exakit" status --json 2>/de
 check "the JSON is valid JSON" "yes" "$(printf '%s' "$_sj" | python3 -m json.tool >/dev/null 2>&1 && echo yes || echo no)"
 has "and carries running=false" '"running": false' "$_sj"
 has "and the loaded datasets" '"tpch"' "$_sj"
-has "prose names the datasets too" "tpch" "$(EXAKIT_HOME="$WORK/stopped" bash "$ROOT/setup/exakit" status 2>/dev/null | grep '^Datasets:')"
+# Asserted against the whole screen, not a `grep '^Datasets:'`. That prose line
+# stopped existing when the Data PANEL replaced it, and grepping for a line that
+# is never there made this assertion fail on main for as long as the panel has
+# been the way datasets are shown. What it was really guarding is that an agent
+# reading the human output can still see which datasets are loaded, and the
+# panel row says so.
+has "the human screen names the datasets too" "tpch" \
+    "$(EXAKIT_HOME="$WORK/stopped" bash "$ROOT/setup/exakit" status 2>/dev/null)"
 has "prose names the fix" "exakit start" "$(EXAKIT_HOME="$WORK/stopped" bash "$ROOT/setup/exakit" status 2>/dev/null | tail -1)"
 # 2, not 1: bad input has its own code across the CLI now (the same one an
 # unknown subcommand uses), so an agent can tell "I typed it wrong" from "the
@@ -231,7 +238,7 @@ echo "the JSON carries the remedy the prose already had:"
 _rj="$(EXAKIT_HOME="$WORK/stopped" bash "$ROOT/setup/exakit" status --json 2>/dev/null)"
 has "status --json has a remedies map" '"remedies"' "$_rj"
 has "a stopped database names exakit start" 'exakit start' "$_rj"
-has "a missing pyexasol names its repair" 'exakit update pyexasol' "$_rj"
+has "a missing pyexasol names its repair" 'exakit update' "$_rj"
 has "status --json exposes last_failure" '"last_failure"' "$_rj"
 
 echo
@@ -249,7 +256,7 @@ mkdir -p "$_surface_home"
 HOME="$_surface_home" exakit_apply_readonly_allowlist >/dev/null
 _allow="$(python3 -c "
 import json; print('\n'.join(json.load(open('$_surface_home/.claude/settings.json'))['permissions']['allow']))")"
-for _cmd in status info version mcp-doctor logs catalog preflight guide mcp-status mcp-validate; do
+for _cmd in status info version mcp-doctor logs catalog preflight guide mcp-status; do
     has "allowlist covers exakit $_cmd" "exakit $_cmd" "$_allow"
 done
 # ...and must NOT auto-allow anything that writes, including the command that
@@ -768,6 +775,78 @@ lacks "no skill claims the tool gate is the boundary" "rejects a non-SELECT befo
 # An agent that ran the install cannot use the MCP tools it just configured.
 has "AGENTS.md says the MCP tools need a client restart" "no \`exasol\` tools until it restarts" \
     "$(cat "$ROOT/AGENTS.md")"
+
+printf '\n== the help corpus survives into the installed kit ==\n'
+
+# setup/help/ was never staged into ~/.exasol-starter-kit/kit, and
+# exakit_repo_root PREFERS the staged copy once kit/mcp exists -- so it did not
+# fall back to the checkout, it SHADOWED it. Every `exakit help <topic>` on
+# every real install answered "No help entry for ...", and the marketplace lost
+# all three tiers of its add-on descriptions with it: _exakit_addon_repo reads
+# the `repo` field from these documents, so the GitHub About could not even be
+# requested, the cache it fills stayed empty, and the `tagline` offline answer
+# was in the same missing file.
+#
+# It shipped because nothing checked. This checks.
+has "the staging copies the help corpus" \
+    '[ -d "$_kit_root/setup/help" ] && cp -R "$_kit_root/setup/help" "$EXAKIT_HOME/kit/setup/"' \
+    "$(cat "$ROOT/setup/lib/common.sh")"
+has "...and the Windows twin does too" \
+    'Copy-ExakitAsset -Source (Join-Path $KitRoot "setup\help")' \
+    "$(cat "$ROOT/setup/setup-windows-docker.ps1")"
+
+# Functional, not just textual: a kit staged the way the installer stages one
+# must answer for every topic it ships.
+HELPK="$WORK/staged"
+mkdir -p "$HELPK/kit/setup" "$HELPK/kit/mcp"
+cp -R "$ROOT/setup/lib" "$HELPK/kit/setup/"
+cp -R "$ROOT/setup/help" "$HELPK/kit/setup/"
+for _topic in "$ROOT"/setup/help/*.json; do
+    _tid="$(basename "$_topic" .json)"
+    check "a staged kit answers for '$_tid'" "found" \
+        "$( EXAKIT_HOME="$HELPK" bash -c '
+            . "'"$ROOT"'/setup/lib/ui.sh" 2>/dev/null
+            . "'"$ROOT"'/setup/lib/common.sh" 2>/dev/null
+            _exakit_addon_doc "'"$_tid"'" >/dev/null 2>&1 && printf found || printf MISSING
+        ' )"
+done
+# And the inverse, so the guard cannot pass by accident: strip the corpus and
+# the lookups must fail again. A test that only ever sees the fixed state would
+# have passed against the bug too.
+rm -rf "$HELPK/kit/setup/help"
+check "without it, the lookup fails again" "MISSING" \
+    "$( EXAKIT_HOME="$HELPK" bash -c '
+        . "'"$ROOT"'/setup/lib/ui.sh" 2>/dev/null
+        . "'"$ROOT"'/setup/lib/common.sh" 2>/dev/null
+        _exakit_addon_doc dash-server >/dev/null 2>&1 && printf found || printf MISSING
+    ' )"
+
+printf '\n== repair-runtime actually replaces the database ==\n'
+
+# It warns "REPLACES the database. Its data is not recoverable", takes a yes for
+# it, and then re-runs setup -- whose deployment step asks whether to reuse what
+# is already there, defaulting to YES. So the command answered its own second
+# question with "keep it", reported "Reusing the existing Exasol deployment",
+# and repaired nothing. On WSL and Windows there was not even a question:
+# nano_install adopts a running container outright.
+#
+# EXAKIT_REUSE_DB=0 is what makes the deployment step replace instead of adopt,
+# and every runtime has to honour it or the command lies on that platform.
+EXAKIT_SH="$(cat "$ROOT/setup/exakit")"
+has "repair-runtime forces a fresh deployment" 'export EXAKIT_REUSE_DB=0' "$EXAKIT_SH"
+has "...and the Windows twin does too" '$env:EXAKIT_REUSE_DB = "0"' "$(cat "$ROOT/setup/exakit.ps1")"
+# Honoured by BOTH runtimes: the macOS one asks and takes the flag as the
+# answer, the Nano one has no question at all and must be told outright.
+has "the personal runtime honours it" 'confirm_env EXAKIT_REUSE_DB' \
+    "$(cat "$ROOT/setup/lib/runtime-personal.sh")"
+has "the nano runtime honours it too" '[ "${EXAKIT_REUSE_DB:-1}" = "0" ] && nano_container_exists' \
+    "$(cat "$ROOT/setup/lib/runtime-nano.sh")"
+has "...and its twin"                 '$env:EXAKIT_REUSE_DB -eq "0" -and (Test-NanoContainerExists)' \
+    "$(cat "$ROOT/setup/lib/nano.ps1")"
+# The data volume goes with the container, or the rebuild wraps the same
+# database the repair was called to destroy.
+has "nano drops the data volume as well" 'volume" "rm' "$(cat "$ROOT/setup/lib/nano.ps1")"
+has "...on the shell side too" 'volume rm "$EXAKIT_NANO_VOLUME"' "$(cat "$ROOT/setup/lib/runtime-nano.sh")"
 
 echo "passed: $PASS, failed: $FAIL"
 [ "$FAIL" -eq 0 ]

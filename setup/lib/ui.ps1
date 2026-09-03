@@ -309,6 +309,40 @@ function Stop-ExakitSpinner {
     try { [Console]::Write("`r$($script:UiEsc)[K$($script:UiEsc)[?25h") } catch { }  # clear line, restore cursor
 }
 
+# Suspend-ExakitSpinner / Resume-ExakitSpinner - print a line without losing the
+# spinner. Twins of ui_spin_pause / ui_spin_resume in ui.sh.
+#
+# A spinner OWNS its line and rewrites it every 90ms, so anything printed while
+# it runs lands in the middle of that line rather than on a row of its own. The
+# uninstall showed it plainly: three add-on outcomes appended themselves to
+# "Removing the kit (4s)" instead of standing under it.
+#
+# Resuming restores the ORIGINAL start time, so the elapsed counter carries on
+# instead of restarting at (0s) every time something prints. The runspace reads
+# Label and T0 out of the synchronized hashtable while it runs, so putting T0
+# back after the restart is enough. Only the owner pauses, and only when nothing
+# else holds a reference -- a nested caller is not this one's to stop.
+$script:UiSpinPaused = $false
+$script:UiSpinPausedLabel = ""
+$script:UiSpinPausedT0 = $null
+function Suspend-ExakitSpinner {
+    $script:UiSpinPaused = $false
+    if ($script:UiSpinNested -gt 0) { return }
+    if ($null -eq $script:UiSpinFlag) { return }
+    $script:UiSpinPausedLabel = [string]$script:UiSpinFlag.Label
+    $script:UiSpinPausedT0 = $script:UiSpinFlag.T0
+    $script:UiSpinPaused = $true
+    Stop-ExakitSpinner
+}
+function Resume-ExakitSpinner {
+    if (-not $script:UiSpinPaused) { return }
+    $script:UiSpinPaused = $false
+    Start-ExakitSpinner $script:UiSpinPausedLabel
+    if ($null -ne $script:UiSpinFlag -and $null -ne $script:UiSpinPausedT0) {
+        try { $script:UiSpinFlag.T0 = $script:UiSpinPausedT0 } catch { }
+    }
+}
+
 function Restore-ExakitCursor { if ($script:UiFancy) { try { [Console]::Write("$($script:UiEsc)[?25h") } catch { } } }
 
 # --- progress bar (determinate) ---------------------------------------------
@@ -544,7 +578,8 @@ function Get-ExakitBar {
 #
 #   Title    what the top border says
 #   Col1     what the first column is called (datasets, clients, add-ons)
-#   Reserve  how many phase sub-lines the frame ALWAYS has (see below)
+#   Col2     heading for an optional second column, "" when there is none
+#   Col3     heading for an optional third column, "" when there is none
 #   Cols     the console width, measured once
 #   Lines    how many lines the last frame really occupied
 #   Width    how wide the last frame's box was - see Update-ExakitTable, which
@@ -580,7 +615,7 @@ $script:UiTableSrc = ""
 if ($PSCommandPath) { $script:UiTableSrc = $PSCommandPath }
 elseif ($PSScriptRoot) { $script:UiTableSrc = Join-Path $PSScriptRoot "ui.ps1" }
 
-# New-ExakitTable [-Title] [-Col1] [-Reserve] - a fresh, empty table. Returns it,
+# New-ExakitTable [-Title] [-Col1] [-Col2] [-Col3] - a fresh, empty table. Returns it,
 # and also parks it as the module's current one so every other call can default
 # to it.
 #
@@ -589,11 +624,13 @@ elseif ($PSScriptRoot) { $script:UiTableSrc = Join-Path $PSScriptRoot "ui.ps1" }
 # datasets, add-ons), and a heading left behind in module state is how the second
 # one ends up wearing the first one's column name.
 function New-ExakitTable {
-    param([string]$Title = "Progress", [string]$Col1 = "Dataset", [int]$Reserve = 1)
+    param([string]$Title = "Progress", [string]$Col1 = "Dataset",
+          [string]$Col2 = "", [string]$Col3 = "")
     $t = [hashtable]::Synchronized(@{
         Title   = $Title
         Col1    = $Col1
-        Reserve = $Reserve
+        Col2    = $Col2
+        Col3    = $Col3
         Cols    = 80
         Lines   = 0
         Width   = 0
@@ -614,6 +651,8 @@ function Add-ExakitTableRow {
     param(
         [ValidateSet("group", "tee", "corner", "plain")][string]$Kind = "plain",
         [Parameter(Mandatory)][string]$Label,
+        [string]$Col2 = "",
+        [string]$Col3 = "",
         [switch]$Ticked,
         [hashtable]$Table = $null
     )
@@ -623,9 +662,53 @@ function Add-ExakitTableRow {
         Kind = $Kind; Label = $Label; Tick = [bool]$Ticked
         State = "idle"; Pct = 0; Ceiling = 0; Secs = 0
         SegT0 = $null; Phase = ""; Final = ""
+        Col2 = $Col2; Col3 = $Col3
     })
     [void]$Table.Rows.Add($row)
     return $Table.Rows.Count
+}
+
+# $script:UiTableCol3Fixed - the Description column's width, FIXED rather than
+# measured. Measured, it would size to the longest About and change the table's
+# width whenever a fetch landed a longer one; fixed, the same description reads
+# the same here as it does in `exakit help`, which wraps to the same 44.
+$script:UiTableCol3Fixed = 44
+
+# $script:UiTableCol3Max - how wide the Description may GROW into slack the
+# console has going spare. The Status column reserves a 44-column floor for
+# statuses that only arrive once rows finish, so on a wide console the selection
+# screen showed a 44-wide description wrapped to five lines next to an empty
+# 44-wide column: a wall of text beside a void. Growing the description into the
+# slack spends that width on the only cell that has anything to say yet. Capped,
+# because past about 90 columns a line of prose stops being easy to track back
+# to the next one. Still fixed for the life of the menu - it derives from a
+# console width measured once - so a row's height cannot change under the
+# animator. Twin of UI_TABLE_COL3_MAX in ui.sh.
+$script:UiTableCol3Max = 90
+
+# Split-ExakitWrap <text> <width> - greedy word wrap, returned as an array of
+# lines. A word longer than the cell is BROKEN, not allowed to overhang: that is
+# the one place this differs from Format-ExakitAboutWrap, which prints into open
+# space where an overhang costs nothing; here it would print straight through
+# the table's right border. Twin of _ui_wrap in ui.sh.
+function Split-ExakitWrap {
+    param([string]$Text = "", [int]$Width = 44)
+    $out = New-Object 'System.Collections.Generic.List[string]'
+    if ($Width -le 0 -or -not $Text) { return @() }
+    $line = ""
+    foreach ($word in ($Text -split '\s+' | Where-Object { $_ })) {
+        $w = $word
+        while ($w.Length -gt $Width) {
+            if ($line) { [void]$out.Add($line); $line = "" }
+            [void]$out.Add($w.Substring(0, $Width))
+            $w = $w.Substring($Width)
+        }
+        if (-not $line) { $line = $w }
+        elseif (($line.Length + 1 + $w.Length) -le $Width) { $line = "$line $w" }
+        else { [void]$out.Add($line); $line = $w }
+    }
+    if ($line) { [void]$out.Add($line) }
+    return $out.ToArray()
 }
 
 # Get-ExakitTableWidths <table> - how wide the two columns want to be, capped to
@@ -643,9 +726,32 @@ function Get-ExakitTableWidths {
     # forty when it finished, and the whole table would change width as the last
     # row completed. Wide enough for a bar worth looking at, and for
     # "completed - 8 tables, 173,745 rows (23s)".
+    # The FLOOR is only reserved once the table has something to report, and
+    # only for a table with OTHER columns to carry the width. While every row is
+    # idle - the selection screen, before a single install has started - there
+    # is no status to hold room for, and holding it anyway put a 44-column void
+    # beside a description squeezed to fit around it. A name-and-status menu has
+    # nothing else holding the width, so it keeps its floor: withhold Status
+    # there and the box shrinks to barely wider than the longest name, then
+    # doubles the moment the first row starts.
+    # Twin of the same block in ui_table_widths (ui.sh).
     $statW = 44
+    if ($Table.Col2 -or $Table.Col3) {
+        $statW = 0
+        foreach ($r in $Table.Rows.ToArray()) {
+            if ($r.State -and $r.State -ne "idle" -and $r.State -ne "disabled") { $statW = 44; break }
+        }
+    }
+    # Zero unless a heading names the column, so a table that asks for neither
+    # is measured, and drawn, exactly as it was before they existed.
+    $col2W = 0; $col3W = 0
+    if ($Table.Col2) { $col2W = ([string]$Table.Col2).Length }
+    # FIXED, never measured: the Description column wraps to fill it rather than
+    # growing to fit the longest About.
+    if ($Table.Col3) { $col3W = $script:UiTableCol3Fixed }
     foreach ($row in $Table.Rows.ToArray()) {
         $len = $row.Label.Length
+        if ($col2W -gt 0 -and ("" + $row.Col2).Length -gt $col2W) { $col2W = ("" + $row.Col2).Length }
         # The tree connector plus its space is 3 columns of the name cell.
         if ($row.Kind -eq "tee" -or $row.Kind -eq "corner") { $len += 3 }
         if ($len -gt $nameW) { $nameW = $len }
@@ -654,7 +760,9 @@ function Get-ExakitTableWidths {
         # is short by the glyph and its space. Short means a row wider than the
         # box, which wraps, which makes the frame one line taller than the height
         # the animator moves the cursor up by.
-        if ($row.Final) {
+        # Only for a row that HAS a status; an idle row's final is empty and
+        # measuring it would reintroduce the column withheld above.
+        if ($row.Final -and $row.State -and $row.State -ne "idle" -and $row.State -ne "disabled") {
             $finalLen = $row.Final.Length + $script:UiTick.Length + 1
             if ($finalLen -gt $statW) { $statW = $finalLen }
         }
@@ -668,7 +776,52 @@ function Get-ExakitTableWidths {
     # a wrapped row is two lines where the frame counted one, so the next
     # cursor-up lands inside the frame before it and strands its top border on
     # screen. The one-line progress bar reserves its last column for this reason.
-    $over = 11 + $nameW + $statW + 3 - $cols
+    # Columns are separated by a plain two-space gap, whatever they hold. A
+    # drawn rule between them was tried here and taken out: alignment already
+    # tells the eye where a column starts, and the ONE vertical the table needs
+    # is the tree spine in the name column, which is a different line entirely.
+    $sepW = 2
+    # ONE decomposition, and the same one Write-ExakitTableFrame uses: the fixed
+    # chrome, the name, then every column that follows preceded by its gap.
+    # Written as "11 + name + status" with the gap folded into the 11, an extra
+    # column had to add its gap AND unpick that fold - which is how the
+    # no-extras table came out two columns wider than it had been.
+    #
+    # 9 is the chrome without that fold: 2 border + 1 space + 4 checkbox + 1
+    # space + 1 border. 3 is the two-column left margin every row is drawn with
+    # plus the one column left unwritten at the right.
+    $statSep = 0
+    if ($statW -gt 0) { $statSep = $sepW }
+    $total = 9 + $nameW + 3
+    if ($col2W -gt 0) { $total += $sepW + $col2W }
+    if ($col3W -gt 0) { $total += $sepW + $col3W }
+    $total += $statSep + $statW
+    $over = $total - $cols
+    # Slack, not overflow: spend it on the Description rather than leave it as a
+    # gap beside an empty Status column.
+    if ($over -lt 0 -and $col3W -gt 0) {
+        $grow = $script:UiTableCol3Max - $col3W
+        if ($grow -lt 0) { $grow = 0 }
+        if ((-$over) -lt $grow) { $grow = -$over }
+        $col3W += $grow
+        $over += $grow
+    }
+    # The description gives way FIRST, and can give way entirely. It is the one
+    # cell whose absence costs nothing that is not recoverable - `exakit help
+    # <add-on>` is one command away - while a truncated add-on id is a name the
+    # reader cannot match to anything and a squeezed bar stops reading as
+    # progress. On an 80-column console this column is the first thing to go,
+    # which is the intended outcome, not a failure of the layout.
+    if ($over -gt 0 -and $col3W -gt 0) {
+        if ($over -ge ($col3W + 2)) {
+            $over -= ($col3W + 2)
+            $col3W = 0
+        } else {
+            $col3W -= $over
+            $over = 0
+            if ($col3W -lt 8) { $over = 8 - $col3W; $col3W = 8 }
+        }
+    }
     if ($over -gt 0) {
         $nameW -= $over
         if ($nameW -lt 12) {
@@ -681,14 +834,18 @@ function Get-ExakitTableWidths {
             if ($statW -lt 12) { $statW = 12 }
         }
     }
-    return @{ Name = $nameW; Status = $statW }
+    return @{ Name = $nameW; Status = $statW; Col2 = $col2W; Col3 = $col3W; Sep = $sepW }
 }
 
 # Get-ExakitTableCell <row> <status-width> <now> - the Status column for one row,
-# as up to TWO lines: the bar and its percentage, then the phase and its elapsed
-# count directly underneath, so the percentage sits above the seconds. Returns
-# the text AND how wide it reads, because only the builder can tell those apart
-# once colour is in the string. Twin of _ui_table_cell in ui.sh.
+# as ONE line. Returns the text AND how wide it reads, because only the builder
+# can tell those apart once colour is in the string.
+#
+# A running row used to get a second line underneath carrying the phase on the
+# left and an elapsed "(Ns)" on the right; it is gone, and with it the reserved
+# blank line that kept the frame a constant height while no row was running. The
+# bar still creeps with the clock, so the row goes on saying "alive" without a
+# counter to read it off. Twin of _ui_table_cell in ui.sh.
 function Get-ExakitTableCell {
     param(
         [Parameter(Mandatory)][hashtable]$Row,
@@ -698,7 +855,7 @@ function Get-ExakitTableCell {
     $num = 7
     $barw = $StatusWidth - $num
     if ($barw -lt 8) { $barw = 8 }
-    $cell = @{ Text = ""; Len = 0; Text2 = ""; Len2 = 0 }
+    $cell = @{ Text = ""; Len = 0 }
     switch ($Row.State) {
         "running" {
             # The creep, inline: where the bar sits between the stage the job last
@@ -737,13 +894,6 @@ function Get-ExakitTableCell {
             $cell.Text = $script:UiAccent + ($script:UiBarFull * $full) + $script:UiDim + $head +
                 ($script:UiBarEmpty * $empty) + $script:UiReset + $pctText.PadLeft($num)
             $cell.Len = $barw + $num
-            $el = "(" + $inSeg + "s)"
-            $phase = "" + $Row.Phase
-            if ($phase.Length -gt $barw) { $phase = $phase.Substring(0, $barw - 1) + "…" }
-            $pad2 = $barw - $phase.Length + $num - $el.Length
-            if ($pad2 -lt 0) { $pad2 = 0 }
-            $cell.Text2 = $script:UiDim + $phase + (" " * $pad2) + $el + $script:UiReset
-            $cell.Len2 = $phase.Length + $pad2 + $el.Length
         }
         "waiting" {
             $cell.Text = $script:UiDim + "waiting" + $script:UiReset
@@ -756,6 +906,18 @@ function Get-ExakitTableCell {
         "failed" {
             $cell.Text = $script:UiErr + $script:UiCross + $script:UiReset + " " + $Row.Final
             $cell.Len = $script:UiCross.Length + 1 + ("" + $Row.Final).Length
+        }
+        "disabled" {
+            # No glyph: not an outcome of anything that ran, a standing fact
+            # about the row. ONLY where a Status column exists - a disabled row
+            # does not count as a status for width purposes, which is what lets
+            # the selection screen drop the column, so filling the cell there
+            # drew into a column of width zero and pushed the row past its own
+            # border. On that screen the same word is in Description.
+            if ($StatusWidth -gt 0) {
+                $cell.Text = $script:UiDim + $Row.Final + $script:UiReset
+                $cell.Len = ("" + $Row.Final).Length
+            }
         }
     }
     return $cell
@@ -770,7 +932,25 @@ function Get-ExakitTableFrame {
     $w = Get-ExakitTableWidths -Table $Table
     $nameW = [int]$w.Name
     $statW = [int]$w.Status
-    $inner = 5 + $nameW + 2 + $statW + 1
+    $col2W = [int]$w.Col2
+    $col3W = [int]$w.Col3
+    # A plain gap between columns. Rules were drawn here once and removed: they
+    # boxed every wrapped description into a cage, and they competed with the
+    # one line that carries meaning -- the tree spine down the name column.
+    $sepW = [int]$w.Sep
+    if ($sepW -lt 2) { $sepW = 2 }
+    $sep = "  "
+    # No Status column at all while nothing has a status: no heading, no rule,
+    # no reserved width. $statSep is the rule before it, which goes with it.
+    $statSep = ""
+    $statSepW = 0
+    if ($statW -gt 0) { $statSep = $sep; $statSepW = $sepW }
+    # The same decomposition Get-ExakitTableWidths uses: 5 of chrome, the name,
+    # then every column that follows preceded by its rule, and one trailing.
+    $inner = 5 + $nameW + 1
+    if ($col2W -gt 0) { $inner += $sepW + $col2W }
+    if ($col3W -gt 0) { $inner += $sepW + $col3W }
+    $inner += $statSepW + $statW
     $lines = New-Object 'System.Collections.Generic.List[string]'
 
     $title = " " + $Table.Title + " "
@@ -788,19 +968,40 @@ function Get-ExakitTableFrame {
     if (-not $col1) { $col1 = "Dataset" }
     $headPad = $nameW - $col1.Length
     if ($headPad -lt 0) { $headPad = 0 }
-    $head = "     " + $col1 + (" " * $headPad) + "  Status"
-    $headTail = $inner - $head.Length
+    $head = "     " + $col1 + (" " * $headPad)
+    $headLen = 5 + $nameW
+    # Headings are clamped the same way their cells are, so a column squeezed by
+    # a narrow console never prints a heading wider than the column under it.
+    if ($col2W -gt 0) {
+        $h2 = "" + $Table.Col2
+        if ($h2.Length -gt $col2W) { $h2 = $h2.Substring(0, $col2W) }
+        $head += $sep + $h2 + (" " * ($col2W - $h2.Length))
+        $headLen += $sepW + $col2W
+    }
+    if ($col3W -gt 0) {
+        $h3 = "" + $Table.Col3
+        if ($h3.Length -gt $col3W) { $h3 = $h3.Substring(0, $col3W) }
+        $head += $sep + $h3 + (" " * ($col3W - $h3.Length))
+        $headLen += $sepW + $col3W
+    }
+    if ($statW -gt 0) {
+        $head += $statSep + "Status"
+        $headLen += $statSepW + 6
+    }
+    # Padded from the LENGTH COUNTED ABOVE, never from $head.Length: the rules
+    # carry colour escapes, so the string is longer than it reads.
+    $headTail = $inner - $headLen
     if ($headTail -lt 0) { $headTail = 0 }
     [void]$lines.Add("  " + $script:UiAccent + $script:UiVB + $script:UiReset + $head +
         (" " * $headTail) + $script:UiAccent + $script:UiVB + $script:UiReset)
 
     $now = Get-Date
-    $sub = 0
     $i = 0
     foreach ($row in $Table.Rows.ToArray()) {
         $i++
         $conn = ""
-        if ($row.Kind -eq "tee") { $conn = $script:UiTee + " " }
+        $spine = $false
+        if ($row.Kind -eq "tee") { $conn = $script:UiTee + " "; $spine = $true }
         elseif ($row.Kind -eq "corner") { $conn = $script:UiCorner + " " }
         # A row nobody can pick: no checkbox at all (an empty one invites the
         # reader to try), and the note reads straight on from the label -
@@ -809,26 +1010,10 @@ function Get-ExakitTableFrame {
         # measured for text that is neither a name nor a status. The 5-space
         # indent is the width of the pointer and checkbox it replaces, so the tree
         # connectors still line up. Twin of the same branch in ui_table_frame.
-        if ($row.State -eq "disabled") {
-            $note = ("" + $row.Final).TrimStart()
-            $text = $conn + $row.Label
-            if ($note) { $text = $text + " " + $script:UiMidDot + " " + $note }
-            $dmax = $inner - 5
-            if ($text.Length -gt $dmax) {
-                # Measured from the marker's OWN width, not assumed to be one:
-                # the plain palette spells it "..." and a hard-coded 1 would put
-                # two columns of the note back over the border.
-                $dcut = $dmax - $script:UiEllipsis.Length
-                if ($dcut -lt 1) { $dcut = 1 }
-                $text = $text.Substring(0, $dcut) + $script:UiEllipsis
-            }
-            $dtail = $inner - 5 - $text.Length
-            if ($dtail -lt 0) { $dtail = 0 }
-            [void]$lines.Add("  " + $script:UiAccent + $script:UiVB + $script:UiReset + "     " +
-                $script:UiDim + $text + $script:UiReset + (" " * $dtail) +
-                $script:UiAccent + $script:UiVB + $script:UiReset)
-            continue
-        }
+        # A row nobody can pick keeps its COLUMNS. It used to merge into one
+        # sentence - "json-tables - Installed (0.2)" - which put a version in the
+        # middle of a name while the Version column beside it sat empty. Three
+        # spaces stand in for "[ ]" so the tree connectors still line up.
         if ($row.Tick) {
             # A plain "x", not the palette tick, when there is no colour: the
             # plain-palette tick is itself a marker and a checkbox is already
@@ -840,46 +1025,104 @@ function Get-ExakitTableFrame {
             $box = "[ ]"
             $boxLen = 3
         }
+        if ($row.State -eq "disabled") { $box = "   "; $boxLen = 3 }
         if ($i -eq $Cursor) {
             if ($script:UiFancy) { $ptr = $script:UiAccent + "❯" + $script:UiReset } else { $ptr = ">" }
         } else {
             $ptr = " "
         }
-        $name = $conn + $row.Label
-        if ($name.Length -gt $nameW) { $name = $name.Substring(0, $nameW - 1) + "…" }
-        $namePad = $nameW - $name.Length
+        # A row nobody can pick never takes the cursor either.
+        if ($row.State -eq "disabled") { $ptr = " " }
+        # MEASURED plain, PRINTED possibly dim: a disabled row's name carries
+        # colour escapes, and .Length would count those as width.
+        $plain = $conn + $row.Label
+        if ($plain.Length -gt $nameW) { $plain = $plain.Substring(0, $nameW - 1) + "…" }
+        $nameLen = $plain.Length
+        if ($row.State -eq "disabled") { $name = $script:UiDim + $plain + $script:UiReset }
+        else { $name = $plain }
+        $namePad = $nameW - $nameLen
         if ($namePad -lt 0) { $namePad = 0 }
         $cell = Get-ExakitTableCell -Row $row -StatusWidth $statW -Now $now
-        $tail = $inner - (1 + $boxLen + 1 + $nameW + 2 + [int]$cell.Len)
+        # The optional cells, dim so the eye still lands on the name and the
+        # status. Truncated to their own column; every string here is one this
+        # file assembled, so its width is arithmetic, never measured.
+        $mid = ""
+        $used = 1 + $boxLen + 1 + $nameW + $statSepW + [int]$cell.Len
+        if ($col2W -gt 0) {
+            $v2 = "" + $row.Col2
+            if ($v2.Length -gt $col2W) { $v2 = $v2.Substring(0, $col2W - 1) + "…" }
+            $mid += $sep + $script:UiDim + $v2 + $script:UiReset + (" " * ($col2W - $v2.Length))
+            $used += $col2W + $sepW
+        }
+        # The Description is never truncated. It wraps to as many lines as it
+        # needs; the first sits on the row, the rest follow underneath with every
+        # other cell blank, so the column stays a column. An About is written for
+        # a repository page, and an ellipsis throws away the half that says what
+        # the tool is for.
+        $wrapped = @()
+        if ($col3W -gt 0) {
+            $wrapped = @(Split-ExakitWrap -Text ("" + $row.Col3) -Width $col3W)
+            $v3 = ""
+            if ($wrapped.Count -gt 0) { $v3 = $wrapped[0] }
+            $mid += $sep + $script:UiDim + $v3 + $script:UiReset + (" " * ($col3W - $v3.Length))
+            $used += $col3W + $sepW
+        }
+        $tail = $inner - $used
         if ($tail -lt 0) { $tail = 0 }
         [void]$lines.Add("  " + $script:UiAccent + $script:UiVB + $script:UiReset + $ptr + $box + " " +
-            $name + (" " * $namePad) + "  " + $cell.Text + (" " * $tail) +
+            $name + (" " * $namePad) + $mid + $statSep + $cell.Text + (" " * $tail) +
             $script:UiAccent + $script:UiVB + $script:UiReset)
-        if ($cell.Text2) {
-            $tail2 = $inner - (5 + $nameW + 2 + [int]$cell.Len2)
-            if ($tail2 -lt 0) { $tail2 = 0 }
-            [void]$lines.Add("  " + $script:UiAccent + $script:UiVB + $script:UiReset + "     " +
-                (" " * $nameW) + "  " + $cell.Text2 + (" " * $tail2) +
-                $script:UiAccent + $script:UiVB + $script:UiReset)
-            $sub++
+        # The rest of a wrapped description. Only the Description cell carries
+        # anything: the checkbox, the name and the version belong to the row
+        # above, and repeating them would read as more rows than there are.
+        #
+        # These lines make the frame taller than one line per row, which the
+        # redraw can afford because the height is still the SAME on every
+        # redraw: an About and the column it wraps to are both fixed for the life
+        # of the menu, so a row's height cannot change under it. That is exactly
+        # what the phase sub-line could not promise - it appeared and vanished as
+        # a row started and stopped running, which is why it needed a reserved
+        # blank line and why it is gone.
+        if ($wrapped.Count -gt 1) {
+            # The TREE SPINE carries down the continuation lines. Without it the
+            # connector column goes blank for as long as a description wraps, and
+            # the line joining the add-ons snaps in half -- the same menu draws
+            # an unbroken spine while it installs, where every row is one line,
+            # so a description must not be what breaks it. Only a tee continues:
+            # after the corner the tree has ended and a spine below it would
+            # point at nothing. Built cell by cell and MEASURED as it goes, so
+            # the width is arithmetic rather than a count of escape bytes.
+            if ($spine) {
+                $wleft = (" " * 5) + $script:UiVB + (" " * ($nameW - 1))
+            } else {
+                $wleft = " " * (5 + $nameW)
+            }
+            $wlen = 5 + $nameW
+            if ($col2W -gt 0) {
+                $wleft += $sep + (" " * $col2W)
+                $wlen += $sepW + $col2W
+            }
+            $wlen += $sepW + $col3W + $statSepW
+            $wpad = $inner - $wlen
+            if ($wpad -lt 0) { $wpad = 0 }
+            for ($k = 1; $k -lt $wrapped.Count; $k++) {
+                $wl = $wrapped[$k]
+                [void]$lines.Add("  " + $script:UiAccent + $script:UiVB + $script:UiReset +
+                    $wleft + $sep + $script:UiDim + $wl + $script:UiReset +
+                    (" " * ($col3W - $wl.Length)) + $statSep + (" " * $wpad) +
+                    $script:UiAccent + $script:UiVB + $script:UiReset)
+            }
         }
     }
 
-    # The frame is ONE height in every state. A frame that grows by a line pushes
-    # the console to scroll, and once the screen has scrolled a cursor-up by the
-    # frame height no longer lands at the frame's top - every redraw after that is
-    # off by one and the error accumulates, which is what strands the top of an old
-    # frame above the new one near the bottom of a screen.
-    #
-    # So the phase lines are RESERVED rather than grown into: one line, because one
-    # dataset runs at a time. Should they ever run concurrently, this is the number
-    # to raise, and nothing else changes.
-    $want = [int]$Table.Reserve
-    while ($sub -lt $want) {
-        [void]$lines.Add("  " + $script:UiAccent + $script:UiVB + $script:UiReset + (" " * $inner) +
-            $script:UiAccent + $script:UiVB + $script:UiReset)
-        $sub++
-    }
+    # The frame is still ONE height in every state, and now structurally so
+    # rather than by arrangement: every row is exactly one line whatever it is
+    # doing, so there is nothing left to reserve. That property is what the
+    # redraw depends on - a frame that grows by a line pushes the console to
+    # scroll, and once the screen has scrolled a cursor-up by the frame height no
+    # longer lands at the frame's top. Every redraw after that is off by one and
+    # the error accumulates, which is what strands the top of an old frame above
+    # the new one near the bottom of a screen.
     [void]$lines.Add("  " + $script:UiAccent + $script:UiBL + ($script:UiHr * $inner) +
         $script:UiBR + $script:UiReset)
 

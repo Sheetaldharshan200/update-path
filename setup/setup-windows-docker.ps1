@@ -50,7 +50,16 @@ try {
     Test-NanoRequirements
 
     # --- step 2: Nano container -----------------------------------------------
-    if (Begin-ExakitStep "runtime" "Step 1/5  Exasol Nano container") {
+    # Its own step, matching the macOS shape and heading. What it fetches is the
+    # Nano image rather than a native launcher, so the lines UNDER the heading
+    # name the image - the two platforms install different things through the
+    # same step. Twin of the same split in setup-wsl.sh.
+    if (Begin-ExakitStep "launcher" "Step 1/6  Exasol launcher") {
+        Install-NanoImage
+        Set-ExakitStepDone "launcher"
+    }
+
+    if (Begin-ExakitStep "runtime" "Step 2/6  Local database deployment") {
         Install-Nano
         Set-ExakitStepDone "runtime"
     } elseif ((Get-NanoStatus) -ne "running") {
@@ -59,24 +68,52 @@ try {
     }
 
     # exapump publishes Windows binaries for x86_64 only. On other
-    # architectures (e.g. Windows-on-ARM) the exapump/data/MCP steps are
-    # skipped gracefully instead of aborting an install whose database
-    # container is already up and fully usable.
+    # architectures (e.g. Windows-on-ARM) the exapump, sample-data and AI
+    # bridge steps are skipped gracefully instead of aborting an install whose
+    # database container is already up and fully usable.
+    #
+    # The note has to name the WHOLE skip. It used to say "MCP client setup",
+    # which reads as "your AI clients are not configured, the bridge is there" -
+    # and the bridge is not there: step 3 installs and validates the MCP SERVER
+    # too, because the read-only database user it connects as is provisioned
+    # through exapump. Understating it is how a reader ends up hunting for a
+    # server that was never built.
     $exapumpSupported = ($env:PROCESSOR_ARCHITECTURE -eq "AMD64")
     if (-not $exapumpSupported) {
         Warn2 "exapump publishes Windows builds for x86_64 only (detected: $($env:PROCESSOR_ARCHITECTURE))."
-        Info "Skipping exapump, sample-data loading and MCP client setup - the database container itself is fully supported. Details: quickstarts/windows-docker.md"
+        Info "Skipping exapump, the sample data and the whole AI bridge (MCP server and clients) - the read-only database user the bridge connects as is provisioned through exapump, so the bridge cannot be built without it."
+        Info "The database container itself is fully supported. Details: quickstarts/windows-docker.md"
     }
 
     # --- step 3: exapump (data loading CLI) ------------------------------------
-    if ($exapumpSupported -and (Begin-ExakitStep "exapump" "Step 2/5  exapump (data loading CLI)")) {
-        if (Invoke-ExakitSoftStep -Component "exapump" -Repair "exakit update exapump" -Body {
-                Install-Exapump
-                New-ExapumpProfile
-                Test-ExapumpConnection
+    if ($exapumpSupported -and (Begin-ExakitStep "exapump" "Step 3/6  exapump (data loading CLI)")) {
+        # Three lines for this step, not nine. Invoke-ExakitLogged animates the
+        # label Begin-ExakitStep set, so the Info bullets under it were the
+        # second telling. What survives goes through OkStep: what was installed
+        # and where, the profile name someone types again, and the one fact the
+        # next steps depend on - that the database can persist a schema, not
+        # merely answer SELECT 1. Twin of _exakit_install_exapump (common.sh).
+        if (Invoke-ExakitSoftStep -Component "exapump" -Repair "exakit update" -Body {
+                $prevQuiet = $script:ExakitQuietDetail
+                if ($script:UiFancy) { $script:ExakitQuietDetail = $true }
+                try {
+                    Install-Exapump
+                    New-ExapumpProfile
+                    Test-ExapumpConnection
+                } finally {
+                    $script:ExakitQuietDetail = $prevQuiet
+                }
             }) {
             Set-ExakitStepDone "exapump"
         }
+    } elseif (-not $exapumpSupported) {
+        # Say which step is not happening. Begin-ExakitStep is the only thing
+        # that prints a step label, so gating the whole call made the screen
+        # jump from "Step 2/6" to "Step 5/6" - which reads as output that got
+        # lost, not as two steps this machine does not need. Twin of
+        # kit_shared_steps (common.sh), which prints this same line when a
+        # step is not part of the installation.
+        Info "Step 3/6  exapump - not part of this installation, skipping"
     }
 
     # Load the sample data before any MCP configuration. exapump is now up
@@ -95,13 +132,27 @@ try {
     }
 
     # --- step 3: AI bridge (server, clients, skills) ----------------------------
-    if ($exapumpSupported -and (Begin-ExakitStep "mcp" "Step 3/5  AI bridge (MCP server, clients and skills)")) {
-        if (Invoke-ExakitSoftStep -Component "mcp" -Repair "exakit update mcp" -Body {
-                Install-Mcp
-                Test-McpServer
+    if ($exapumpSupported -and (Begin-ExakitStep "mcp" "Step 4/6  AI bridge (MCP server, clients and skills)")) {
+        if (Invoke-ExakitSoftStep -Component "mcp" -Repair "exakit update" -Body {
+                # One line for this step's server work: the spinner narrates
+                # the prime and the handshake, so the Info/Ok pairs beneath
+                # were the second telling. try/finally because the body can
+                # throw and this is a soft step - a leaked quiet flag would
+                # silence every step after it.
+                # Twin of _exakit_install_mcp (common.sh).
+                $prevQuiet = $script:ExakitQuietDetail
+                if ($script:UiFancy) { $script:ExakitQuietDetail = $true }
+                try {
+                    Install-Mcp
+                    Test-McpServer
+                } finally {
+                    $script:ExakitQuietDetail = $prevQuiet
+                }
             }) {
             Set-ExakitStepDone "mcp"
         }
+    } elseif (-not $exapumpSupported) {
+        Info "Step 4/6  AI bridge (MCP server, clients and skills) - not part of this installation, skipping"
     }
 
     # The AI bridge is finished HERE, in the step that says it is being built:
@@ -117,10 +168,19 @@ try {
     # back to the checkout for skills\ when the helper step has not staged its
     # copy yet. What they DO need is the database and exapump, two steps back.
     # Twin of the same block in kit_shared_steps (common.sh).
-    [void](Invoke-ExakitBestEffort -Component "mcp_clients" -Repair "exakit mcp-setup" `
-        -Label "AI client (MCP) setup" `
-        -Warning "Your local runtime is installed, but MCP client setup did not finish cleanly." `
-        -Body { Request-ExakitMcpSetupOffer })
+
+    # Gated on $exapumpSupported like the step that builds the bridge. Ungated,
+    # the installer skipped building the AI bridge and then asked which AI
+    # clients to connect to it - pointing them at an MCP server this run never
+    # installed and a read-only database user it never provisioned. The skills
+    # offer below stays unconditional: skills are documents an AI client reads,
+    # and they are just as useful with the database alone.
+    if ($exapumpSupported) {
+        [void](Invoke-ExakitBestEffort -Component "mcp_clients" -Repair "exakit mcp-setup" `
+            -Label "AI client (MCP) setup" `
+            -Warning "Your local runtime is installed, but MCP client setup did not finish cleanly." `
+            -Body { Request-ExakitMcpSetupOffer })
+    }
 
     [void](Invoke-ExakitBestEffort -Component "skills" -Repair "exakit skills-install" `
         -Label "AI skills" `
@@ -138,11 +198,20 @@ try {
     # soft in name only: the driver could install fine and any Fail() raised while
     # validating (an unwritable manifest, say) still ended the run before the
     # exakit helper below existed. Install and validate are one isolated unit.
-    if (Begin-ExakitStep "pyexasol" "Step 4/5  pyexasol (Exasol Python driver)") {
-        if (Invoke-ExakitSoftStep -Component "pyexasol" -Repair "exakit update pyexasol" -Body {
-                if (-not (Install-Pyexasol)) { return $false }
-                Test-PyexasolConnection
-                return $true
+    if (Begin-ExakitStep "pyexasol" "Step 5/6  pyexasol (Exasol Python driver)") {
+        # Two lines for this step, not five: the outcome, and the interpreter to
+        # run it with. Everything between is in the logfile, and the spinner
+        # covered it live. Twin of _exakit_install_pyexasol (common.sh).
+        if (Invoke-ExakitSoftStep -Component "pyexasol" -Repair "exakit update" -Body {
+                $prevQuiet = $script:ExakitQuietDetail
+                if ($script:UiFancy) { $script:ExakitQuietDetail = $true }
+                try {
+                    if (-not (Install-Pyexasol)) { return $false }
+                    Test-PyexasolConnection
+                    return $true
+                } finally {
+                    $script:ExakitQuietDetail = $prevQuiet
+                }
             }) {
             Set-ExakitStepDone "pyexasol"
         }
@@ -153,7 +222,7 @@ try {
     # testing, older builds), a re-run must reinstall it rather than skip -
     # and the PATH check must run either way, since the PATH entry can be
     # missing even when the step is marked done.
-    $helperNeeded = Begin-ExakitStep "exakit_helper" "Step 5/5  exakit helper command"
+    $helperNeeded = Begin-ExakitStep "exakit_helper" "Step 6/6  exakit helper command"
     if (-not $helperNeeded -and -not (Test-Path (Join-Path $script:BinDir "exakit.cmd"))) {
         Info "exakit command is missing - reinstalling it"
         $helperNeeded = $true
@@ -194,6 +263,19 @@ try {
         # version resolution and the record of which kit version this is.
         Copy-ExakitAsset -Source (Join-Path $KitRoot "versions.json") -Destination (Join-Path $script:ExakitHome "kit\versions.json")
         Copy-ExakitAsset -Source (Join-Path $KitRoot "setup\whats-new.json") -Destination (Join-Path $script:ExakitHome "kit\setup\whats-new.json")
+        # setup\help\ is the WHOLE help corpus - one JSON per topic, and
+        # `exakit help <topic>` resolves through the repo-root lookup, which
+        # PREFERS this staged copy. Omitting it did not fall back to the
+        # checkout, it shadowed it: on every installed kit `exakit help mcp`,
+        # `exapump`, `nano`, `pyexasol`, `exakit` and all three add-ons answered
+        # "No help entry for ...".
+        #
+        # It also silently broke the marketplace. An add-on's description falls
+        # back to the `tagline` in its help document when the GitHub About
+        # cannot be fetched, so with no documents staged every add-on in the
+        # table read "Details: exakit help <id>" - pointing at the very command
+        # this omission had disabled. Same shape as the skills note above.
+        Copy-ExakitAsset -Source (Join-Path $KitRoot "setup\help") -Destination (Join-Path $script:ExakitHome "kit\setup\help")
 
         # Set-ExakitCmdShim owns the shim's content (the kit self-update writes the
         # same file, so it must not drift): the bare `exakit` command is ONLY the
@@ -202,7 +284,7 @@ try {
 
         Confirm-ExakitOnPath $script:BinDir
         Set-ExakitStepDone "exakit_helper"
-        Ok "exakit installed ($(Join-Path $script:BinDir 'exakit.cmd'))"
+        OkStep "exakit installed ($(Get-ExakitTilde (Join-Path $script:BinDir 'exakit.cmd')))"
     }
 
     # The upgrade news (Write-ExakitWhatsNewBox) and the closing summary
@@ -210,7 +292,6 @@ try {
     # very end of the run - not here, in the middle of the step output where
     # the connection details would push them off the screen.
 
-    Ok "Setup complete"
     Show-ExakitConnectionSummary
     # Only when the kit version moved during this run, and never able to fail it:
     # every reader inside degrades to silence.
@@ -219,6 +300,9 @@ try {
     # the one command that installs it. A step that failed mid-run scrolls away;
     # this is what the user is still looking at when the installer exits.
     Write-ExakitSoftFailures
+    # The install's one closing line, after the panel and after anything that
+    # did not finish. Silent when a soft failure was recorded.
+    Write-ExakitReadyLine
     # The closing offer: optional marketplace add-ons, asked exactly once, only
     # on an interactive run whose steps all completed, and only while something
     # is actually on offer (an add-on already on this machine is never
@@ -229,7 +313,7 @@ try {
     # took it away. Only applied when the manifest has no opinion yet, so
     # `exakit autostart off` survives a re-run. Before the offer, so an add-on
     # installed from it joins the boot set.
-    [void](Invoke-ExakitBestEffort -Component "autostart" -Repair "exakit autostart on" `
+    [void](Invoke-ExakitBestEffort -Component "autostart" -Repair "exakit autostart" `
         -Label "automatic start" `
         -Warning "Automatic start could not be turned on." `
         -Body { Enable-ExakitAutostartDefault })
@@ -237,7 +321,17 @@ try {
         -Label "marketplace add-ons" `
         -Warning "The marketplace offer did not finish cleanly." `
         -Body { Request-ExakitMarketplaceOffer })
-    Info "Run ""exakit help"" for support"
+    # A rule, then a heading: the last line on screen is where the reader is
+    # left, and run together with whatever the marketplace printed it read as
+    # one more of its bullets. The rule gives it air; the green arrow says it
+    # is not a step.
+    Write-ExakitRule
+    Write-ExakitHeading "Run ""exakit help"" for support"
+    # Two blank lines before the console prompt returns. The installer's last
+    # line was landing directly against it, so the prompt read as part of the
+    # output.
+    Write-Host ""
+    Write-Host ""
 } catch [ExakitFailException] {
     # A hard stop (no container runtime, no database) still owes the user the
     # account of what had already been skipped before it.

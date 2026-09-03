@@ -291,7 +291,10 @@ ui_spin_begin() {
     [ -t 1 ] || return 0
     _UI_SPIN_OWNER="$$"
     _UI_STEP_LABEL="$1"
-    _UI_STEP_T0="$(date +%s 2>/dev/null || echo 0)"
+    # $2 is an ORIGINAL start time, passed only by ui_spin_resume: a spinner that
+    # was paused so a line could be printed under it has to carry on counting
+    # from where it was, not restart at (0s) every time something prints.
+    _UI_STEP_T0="${2:-$(date +%s 2>/dev/null || echo 0)}"
     printf '\033[?25l'                          # hide cursor
     (
         _i=0
@@ -323,6 +326,34 @@ ui_spin_end() {
         return 0
     fi
     _ui_step_stop_spinner
+}
+
+# ui_spin_pause / ui_spin_resume — print a line without losing the spinner.
+#
+# A spinner OWNS its line and rewrites it every 80ms, so anything printed while
+# it runs lands in the middle of that line rather than on a row of its own. The
+# uninstall showed it plainly: three add-on outcomes appended themselves to
+# "Removing the kit (4s)" instead of standing under it.
+#
+# Pausing stops the animation and clears the line; resuming restarts it with the
+# same label AND the same start time, so the elapsed counter carries on. Only
+# the shell that owns the animation may pause it, and only when nothing else
+# holds a reference -- a nested caller is not this one's to stop.
+_UI_SPIN_PAUSED=0
+ui_spin_pause() {
+    _UI_SPIN_PAUSED=0
+    [ -n "${_UI_SPIN_PID:-}" ] || return 0
+    [ "${_UI_SPIN_OWNER:-}" = "$$" ] || return 0
+    [ "${_UI_SPIN_NESTED:-0}" -eq 0 ] || return 0
+    _UI_SPIN_PAUSED=1
+    _UI_SPIN_PAUSE_LABEL="$_UI_STEP_LABEL"
+    _UI_SPIN_PAUSE_T0="$_UI_STEP_T0"
+    _ui_step_stop_spinner
+}
+ui_spin_resume() {
+    [ "${_UI_SPIN_PAUSED:-0}" = 1 ] || return 0
+    _UI_SPIN_PAUSED=0
+    ui_spin_begin "$_UI_SPIN_PAUSE_LABEL" "$_UI_SPIN_PAUSE_T0"
 }
 
 # ui_step_start <label> — begin a visible step: an animated spinner in fancy
@@ -679,12 +710,21 @@ ui_bar() {
 # the work usually cannot reach the drawing code's variables — a pipeline's
 # right-hand side, a subshell, a background animator. The line is:
 #
-#   <kind>|<label>|<tick>|<state>|<pct>|<ceiling>|<secs>|<segment-start>|<phase>|<final>
+#   <kind>|<label>|<tick>|<state>|<pct>|<ceiling>|<secs>|<segment-start>|<phase>|<final>|<col2>|<col3>
 #
 #   kind    group | tee | corner | plain   — the tree connector to draw
 #   tick    1 while the row is selected
 #   state   idle | waiting | running | done | failed | disabled
 #   final   what the Status column says once the row is finished
+#   col2    the second column's cell, drawn only when UI_TABLE_COL2 names one
+#   col3    the third column's cell, drawn only when UI_TABLE_COL3 names one
+#
+# col2/col3 are OPTIONAL and were added after the fact, which is why they are
+# last: `read` with IFS='|' fills missing trailing fields with the empty string,
+# so every row written in the old ten-field shape still parses, and a table that
+# names no extra headings draws exactly what it drew before. The rewriters below
+# read all twelve for the same reason -- reading ten would fold "final|col2|col3"
+# into the final cell, because the last variable takes the whole remainder.
 #
 # A "disabled" row is one the reader can look at but never pick — an AI client
 # that is not installed on this machine. It is drawn by ui_table_frame itself
@@ -701,6 +741,78 @@ UI_TABLE_INNER=0
 _UI_TABLE_PREV_INNER=''
 UI_TABLE_NAME_W=0
 UI_TABLE_STAT_W=0
+UI_TABLE_COL2_W=0
+UI_TABLE_COL3_W=0
+
+# UI_TABLE_COL3_FIXED — the Description column's width, FIXED rather than
+# measured. Measured, it would size to the longest About and change the table's
+# width whenever a fetch landed a longer one; fixed, the same description reads
+# the same here as it does in `exakit help`, which wraps to the same 44.
+UI_TABLE_COL3_FIXED="${UI_TABLE_COL3_FIXED:-44}"
+
+# UI_TABLE_COL3_MAX — how wide the Description may GROW into slack the terminal
+# has going spare. The Status column reserves a 44-column floor for statuses
+# that only arrive once rows finish, so on a wide terminal the selection screen
+# showed a 44-wide description wrapped to five lines next to an empty 44-wide
+# column: a wall of text beside a void. Growing the description into the slack
+# spends that width on the only cell that has anything to say yet.
+#
+# Capped rather than uncapped: past about 90 columns a line of prose stops being
+# easy to track back to the next one, and the box would grow to whatever width
+# the terminal happens to be. Still FIXED for the life of the menu -- it is
+# derived from the terminal width, which is measured once -- so a row's height
+# cannot change under the animator.
+UI_TABLE_COL3_MAX="${UI_TABLE_COL3_MAX:-90}"
+
+# _UI_TABLE_SEP / _UI_TABLE_SEP_W — the rule drawn between columns, and how wide
+# it reads. Only a table with extra columns gets them: the dataset and AI-client
+# menus are a name and a status, where a rule between two columns is furniture
+# around nothing. Set per frame by ui_table_frame.
+_UI_TABLE_SEP=""
+_UI_TABLE_SEP_W=2
+
+# _ui_wrap <text> <width> — greedy word wrap into the _UI_WRAP array, with the
+# count in _UI_WRAP_N. Pure parameter expansion: this runs for every wrapping
+# cell of every frame, five frames a second, and a fork in here is the 223 ms
+# that made the screen sit blank (see the note above _ui_table_cell).
+#
+# A word longer than the cell is BROKEN, not allowed to overhang. That is the
+# one place this differs from exakit_about_wrap, which prints into open space
+# where an overhang costs nothing; here it would print straight through the
+# table's right border.
+_ui_wrap() {
+    _UI_WRAP=(); _UI_WRAP_N=0
+    _uw_w="$2"
+    [ "$_uw_w" -gt 0 ] || return 0
+    [ -n "$1" ] || return 0
+    # Globbing off while the text is split on whitespace: an About containing a
+    # bare * would otherwise expand to the contents of the working directory.
+    set -f
+    # shellcheck disable=SC2086 — deliberate word splitting, that is the split.
+    set -- $1
+    _uw_line=""
+    for _uw_word do
+        # Longer than the whole cell: emit it in cell-wide pieces.
+        while [ "${#_uw_word}" -gt "$_uw_w" ]; do
+            [ -n "$_uw_line" ] && {
+                _UI_WRAP[$_UI_WRAP_N]="$_uw_line"; _UI_WRAP_N=$(( _UI_WRAP_N + 1 )); _uw_line=""
+            }
+            _UI_WRAP[$_UI_WRAP_N]="${_uw_word:0:$_uw_w}"; _UI_WRAP_N=$(( _UI_WRAP_N + 1 ))
+            _uw_word="${_uw_word:$_uw_w}"
+        done
+        if [ -z "$_uw_line" ]; then
+            _uw_line="$_uw_word"
+        elif [ $(( ${#_uw_line} + 1 + ${#_uw_word} )) -le "$_uw_w" ]; then
+            _uw_line="$_uw_line $_uw_word"
+        else
+            _UI_WRAP[$_UI_WRAP_N]="$_uw_line"; _UI_WRAP_N=$(( _UI_WRAP_N + 1 ))
+            _uw_line="$_uw_word"
+        fi
+    done
+    [ -n "$_uw_line" ] && { _UI_WRAP[$_UI_WRAP_N]="$_uw_line"; _UI_WRAP_N=$(( _UI_WRAP_N + 1 )); }
+    set +f
+    return 0
+}
 
 # ui_table_widths <state-file> — how wide the two columns want to be, capped to
 # what the terminal has. The name column is the widest label, the status column
@@ -721,20 +833,64 @@ ui_table_widths() {
     # and forty when it finished, and the whole table would change width as the
     # last row completed. Wide enough for a bar worth looking at, and for
     # "completed · 8 tables, 173,745 rows (23s)".
+    # The FLOOR is only reserved once the table has something to report. While
+    # every row is still idle -- the selection screen, before a single install
+    # has started -- there is no status to hold room for, and holding it anyway
+    # put a 44-column void beside a description squeezed to fit around it.
+    #
+    # It is still a floor and not a measurement for the whole of the run that
+    # follows: the moment the first row leaves idle the column appears at its
+    # full width and stays there, so it does not grow from twenty to forty as
+    # the last row finishes. The one width change is at the selection/progress
+    # boundary, which ui_table_redraw already handles by clearing first -- and
+    # where the table SHOULD look different, because it is doing a different job.
+    # Only a table with OTHER columns may drop it. A name-and-status menu has
+    # nothing else to carry the width: withhold Status there and the box shrinks
+    # to barely wider than the longest name, then doubles the moment the first
+    # row starts. The marketplace table has a description holding the width
+    # either way, so the column can come and go without the box lurching.
     UI_TABLE_STAT_W="${UI_TABLE_STAT_MIN:-44}"
-    while IFS='|' read -r _utw_kind _utw_label _utw_rest; do
+    if [ -n "${UI_TABLE_COL2:-}" ] || [ -n "${UI_TABLE_COL3:-}" ]; then
+        UI_TABLE_STAT_W=0
+        while IFS='|' read -r _utw_k _utw_l _utw_t _utw_st _utw_rest2; do
+            case "$_utw_st" in
+                ''|idle|disabled) ;;
+                *) UI_TABLE_STAT_W="${UI_TABLE_STAT_MIN:-44}"; break ;;
+            esac
+        done < "$1"
+    fi
+    # Zero unless a heading names the column, so a table that asks for neither
+    # is measured, and drawn, exactly as it was before they existed.
+    UI_TABLE_COL2_W=0; UI_TABLE_COL3_W=0
+    [ -n "${UI_TABLE_COL2:-}" ] && UI_TABLE_COL2_W="${#UI_TABLE_COL2}"
+    # FIXED, never measured: the Description column wraps to fill it rather than
+    # growing to fit the longest About.
+    [ -n "${UI_TABLE_COL3:-}" ] && UI_TABLE_COL3_W="${UI_TABLE_COL3_FIXED:-44}"
+    while IFS='|' read -r _utw_kind _utw_label _utw_tick _utw_state _utw_pct \
+                          _utw_ceil _utw_secs _utw_t0 _utw_phase _utw_final \
+                          _utw_c2 _utw_c3; do
         [ -n "$_utw_kind" ] || continue
         case "$_utw_kind" in tee|corner) _utw_len=$(( ${#_utw_label} + 3 )) ;; *) _utw_len="${#_utw_label}" ;; esac
         [ "$_utw_len" -gt "$UI_TABLE_NAME_W" ] && UI_TABLE_NAME_W="$_utw_len"
-        _utw_final="${_utw_rest##*|}"
+        if [ "$UI_TABLE_COL2_W" -gt 0 ] && [ "${#_utw_c2}" -gt "$UI_TABLE_COL2_W" ]; then
+            UI_TABLE_COL2_W="${#_utw_c2}"
+        fi
         # Measured the way _ui_table_cell RENDERS it, not as stored: a finished
         # cell is "<tick> <final>", so a column sized to the bare string is short
         # by the glyph and its space -- and the plain palette's tick is "[ok]",
         # four columns, not one. Short here means a row wider than the box, which
         # wraps, which makes the frame one line taller than the cursor
         # arithmetic believes.
-        _utw_flen=$(( ${#_utw_final} + ${#UI_TICK} + 1 ))
-        [ "$_utw_flen" -gt "$UI_TABLE_STAT_W" ] && UI_TABLE_STAT_W="$_utw_flen"
+        # Only for a row that HAS a status; an idle row's final is empty and
+        # measuring it would reintroduce the column the check above just
+        # withheld.
+        case "$_utw_state" in
+            ''|idle|disabled) ;;
+            *)
+                _utw_flen=$(( ${#_utw_final} + ${#UI_TICK} + 1 ))
+                [ "$_utw_flen" -gt "$UI_TABLE_STAT_W" ] && UI_TABLE_STAT_W="$_utw_flen"
+                ;;
+        esac
     done < "$1"
     # 2 border + 1 space + 4 checkbox + name + 2 gap + status + 1 space + 1 border
     # = 11, PLUS the two-column left margin ui_table_frame prints every row with
@@ -746,7 +902,55 @@ ui_table_widths() {
     # previous frame's top border on screen until a later frame re-syncs -- a
     # table that flickers into two and heals itself a second later. The one-line
     # progress bar reserves its last column for the same reason.
-    _utw_over=$(( 11 + UI_TABLE_NAME_W + UI_TABLE_STAT_W + 3 - _utw_cols ))
+    # Columns are separated by a plain two-space gap, whatever they hold. A
+    # drawn rule between them was tried here and taken out: alignment already
+    # tells the eye where a column starts, and the ONE vertical the table needs
+    # is the tree spine in the name column, which is a different line entirely.
+    _utw_sepw=2
+    # ONE decomposition, and the same one ui_table_frame uses: the fixed chrome,
+    # the name, then every column that follows preceded by its gap. Written as
+    # "11 + name + status" with the gap folded into the 11, an extra column had
+    # to add its gap AND unpick that fold -- which is how the no-extras table
+    # came out two columns wider than it had been.
+    #
+    # 9 is the chrome without that fold: 2 border + 1 space + 4 checkbox + 1
+    # space + 1 border. 3 is the two-column left margin every row is drawn with
+    # plus the one column left unwritten at the right.
+    _utw_statsep=0
+    [ "$UI_TABLE_STAT_W" -gt 0 ] && _utw_statsep="$_utw_sepw"
+    _utw_total=$(( 9 + UI_TABLE_NAME_W + 3 ))
+    [ "$UI_TABLE_COL2_W" -gt 0 ] && _utw_total=$(( _utw_total + _utw_sepw + UI_TABLE_COL2_W ))
+    [ "$UI_TABLE_COL3_W" -gt 0 ] && _utw_total=$(( _utw_total + _utw_sepw + UI_TABLE_COL3_W ))
+    _utw_total=$(( _utw_total + _utw_statsep + UI_TABLE_STAT_W ))
+    _utw_over=$(( _utw_total - _utw_cols ))
+    # Slack, not overflow: spend it on the Description rather than leave it as a
+    # gap beside an empty Status column. Bounded by UI_TABLE_COL3_MAX, and
+    # derived from a terminal width measured once per frame set, so the wrap it
+    # produces is the same on every redraw.
+    if [ "$_utw_over" -lt 0 ] && [ "$UI_TABLE_COL3_W" -gt 0 ]; then
+        _utw_slack=$(( -_utw_over ))
+        _utw_grow=$(( UI_TABLE_COL3_MAX - UI_TABLE_COL3_W ))
+        [ "$_utw_grow" -lt 0 ] && _utw_grow=0
+        [ "$_utw_slack" -lt "$_utw_grow" ] && _utw_grow="$_utw_slack"
+        UI_TABLE_COL3_W=$(( UI_TABLE_COL3_W + _utw_grow ))
+        _utw_over=$(( _utw_over + _utw_grow ))
+    fi
+    # The description gives way FIRST, and can give way entirely. It is the one
+    # cell whose absence costs nothing that is not recoverable -- `exakit help
+    # <add-on>` is one command away -- while a truncated add-on id is a name the
+    # reader cannot match to anything and a squeezed bar stops reading as
+    # progress. On an 80-column terminal this column is the first thing to go,
+    # which is the intended outcome, not a failure of the layout.
+    if [ "$_utw_over" -gt 0 ] && [ "$UI_TABLE_COL3_W" -gt 0 ]; then
+        if [ "$_utw_over" -ge "$(( UI_TABLE_COL3_W + 2 ))" ]; then
+            _utw_over=$(( _utw_over - UI_TABLE_COL3_W - 2 ))
+            UI_TABLE_COL3_W=0
+        else
+            UI_TABLE_COL3_W=$(( UI_TABLE_COL3_W - _utw_over ))
+            _utw_over=0
+            [ "$UI_TABLE_COL3_W" -ge 8 ] || { _utw_over=$(( 8 - UI_TABLE_COL3_W )); UI_TABLE_COL3_W=8; }
+        fi
+    fi
     if [ "$_utw_over" -gt 0 ]; then
         UI_TABLE_NAME_W=$(( UI_TABLE_NAME_W - _utw_over ))
         if [ "$UI_TABLE_NAME_W" -lt 12 ]; then
@@ -788,14 +992,19 @@ _ui_table_prep() {
 }
 
 # _ui_table_cell <state> <pct> <ceiling> <secs> <segt0> <phase> <final> <now>
-# Sets UI_TABLE_CELL / _LEN and UI_TABLE_CELL2 / _LEN2 — the text and how wide it
-# reads, because only the builder can tell them apart once colour is in.
+# Sets UI_TABLE_CELL / _LEN — the text and how wide it reads, because only the
+# builder can tell them apart once colour is in.
+#
+# ONE line per row. A running row used to get a second line underneath carrying
+# the phase on the left and an elapsed "(Ns)" on the right; it is gone, and with
+# it the reserved blank line that kept the frame a constant height while no row
+# was running. The bar still creeps with the clock (see ui_progress_creep), so
+# the row goes on saying "alive" without a counter to read it off.
 _ui_table_cell() {
     _utc_num=7
     _utc_barw=$(( UI_TABLE_STAT_W - _utc_num ))
     [ "$_utc_barw" -ge 8 ] || _utc_barw=8
     UI_TABLE_CELL=""; UI_TABLE_CELL_LEN=0
-    UI_TABLE_CELL2=""; UI_TABLE_CELL2_LEN=0
     case "$1" in
         running)
             # The creep, inline: where the bar sits between the stage the job
@@ -825,16 +1034,6 @@ _ui_table_cell() {
             _utc_npad=$(( _utc_num - ${#_utc_pct} )); [ "$_utc_npad" -ge 0 ] || _utc_npad=0
             UI_TABLE_CELL="${UI_ACCENT:-}${_UI_TABLE_FULL:0:$_utc_full}${UI_DIM:-}${_utc_head}${_UI_TABLE_EMPTY:0:$_utc_empty}${UI_RESET:-}${_UI_TABLE_SP:0:$_utc_npad}${_utc_pct}"
             UI_TABLE_CELL_LEN=$(( _utc_barw + _utc_num ))
-            _utc_el="($(( $8 - $5 ))s)"
-            _utc_ph="$6"
-            [ "${#_utc_ph}" -le "$_utc_barw" ] || _utc_ph="${_utc_ph:0:$(( _utc_barw - 1 ))}…"
-            # A phase longer than the bar is a real possibility (a long
-            # dataset id and a long verb), and unclamped it errored and then
-            # printed a line wider than the box.
-            _utc_ppad=$(( _utc_barw - ${#_utc_ph} + _utc_num - ${#_utc_el} ))
-            [ "$_utc_ppad" -ge 0 ] || _utc_ppad=0
-            UI_TABLE_CELL2="${UI_DIM:-}${_utc_ph}${_UI_TABLE_SP:0:$_utc_ppad}${_utc_el}${UI_RESET:-}"
-            UI_TABLE_CELL2_LEN=$(( _utc_barw + _utc_num ))
             ;;
         waiting)
             UI_TABLE_CELL="${UI_DIM:-}waiting${UI_RESET:-}"; UI_TABLE_CELL_LEN=7 ;;
@@ -844,6 +1043,19 @@ _ui_table_cell() {
         failed)
             UI_TABLE_CELL="${UI_ERR:-}${UI_CROSS:-[x]}${UI_RESET:-} $7"
             UI_TABLE_CELL_LEN=$(( ${#UI_CROSS} + 1 + ${#7} )) ;;
+        disabled)
+            # No glyph: this is not an outcome of anything that ran, it is a
+            # standing fact about the row. Dim, like the name beside it.
+            #
+            # ONLY when a Status column exists. A disabled row does not count as
+            # a status for width purposes -- that is what lets the selection
+            # screen drop the column entirely -- so filling the cell anyway drew
+            # text into a column of width zero and pushed the row past its own
+            # border. On that screen the same word is in the Description column.
+            if [ "${UI_TABLE_STAT_W:-0}" -gt 0 ]; then
+                UI_TABLE_CELL="${UI_DIM:-}$7${UI_RESET:-}"
+                UI_TABLE_CELL_LEN=${#7}
+            fi ;;
     esac
     return 0
 }
@@ -855,7 +1067,26 @@ _ui_table_cell() {
 ui_table_frame() {
     _ui_table_prep
     ui_table_widths "$1"
-    _utr_inner=$(( 5 + UI_TABLE_NAME_W + 2 + UI_TABLE_STAT_W + 1 ))
+    # A plain gap between columns. Rules were drawn here once and removed: they
+    # boxed every wrapped description into a cage, and they competed with the
+    # one line that carries meaning -- the tree spine down the name column.
+    _UI_TABLE_SEP="  "
+    _UI_TABLE_SEP_W=2
+
+    # No Status column at all while nothing has a status: no heading, no rule,
+    # no reserved width. _utr_statsep is the rule before it, which goes with it.
+    _utr_statsep=""
+    _utr_statsep_w=0
+    if [ "$UI_TABLE_STAT_W" -gt 0 ]; then
+        _utr_statsep="$_UI_TABLE_SEP"
+        _utr_statsep_w="$_UI_TABLE_SEP_W"
+    fi
+    # The same decomposition ui_table_widths uses: 5 of chrome, the name, then
+    # every column that follows preceded by its rule, and one trailing column.
+    _utr_inner=$(( 5 + UI_TABLE_NAME_W + 1 ))
+    [ "$UI_TABLE_COL2_W" -gt 0 ] && _utr_inner=$(( _utr_inner + _UI_TABLE_SEP_W + UI_TABLE_COL2_W ))
+    [ "$UI_TABLE_COL3_W" -gt 0 ] && _utr_inner=$(( _utr_inner + _UI_TABLE_SEP_W + UI_TABLE_COL3_W ))
+    _utr_inner=$(( _utr_inner + _utr_statsep_w + UI_TABLE_STAT_W ))
     _utr_title=" ${UI_TABLE_TITLE:-Progress} "
     _utr_fill=$(( _utr_inner - ${#_utr_title} - 1 ))
     [ "$_utr_fill" -ge 0 ] || _utr_fill=0
@@ -865,41 +1096,54 @@ ui_table_frame() {
     # datasets, the MCP step with AI clients. Its width is UI_TABLE_NAME_W,
     # whose floor is 10, so any short heading pads without going negative.
     _utr_col1="${UI_TABLE_COL1:-Dataset}"
-    _utr_head="     ${_utr_col1}${_UI_TABLE_SP:0:$(( UI_TABLE_NAME_W - ${#_utr_col1} ))}  Status"
-    _utr_f="$_utr_f  ${UI_ACCENT:-}${UI_VB:-|}${UI_RESET:-}${_utr_head}${_UI_TABLE_SP:0:$(( _utr_inner - ${#_utr_head} ))}${UI_ACCENT:-}${UI_VB:-|}${UI_RESET:-}
+    _utr_head="     ${_utr_col1}${_UI_TABLE_SP:0:$(( UI_TABLE_NAME_W - ${#_utr_col1} ))}"
+    # Headings are clamped the same way their cells are, so a column squeezed by
+    # a narrow terminal never prints a heading wider than the column under it.
+    _utr_headlen=$(( 5 + UI_TABLE_NAME_W ))
+    if [ "$UI_TABLE_COL2_W" -gt 0 ]; then
+        _utr_h2="${UI_TABLE_COL2:0:$UI_TABLE_COL2_W}"
+        _utr_head="$_utr_head${_UI_TABLE_SEP}${_utr_h2}${_UI_TABLE_SP:0:$(( UI_TABLE_COL2_W - ${#_utr_h2} ))}"
+        _utr_headlen=$(( _utr_headlen + _UI_TABLE_SEP_W + UI_TABLE_COL2_W ))
+    fi
+    if [ "$UI_TABLE_COL3_W" -gt 0 ]; then
+        _utr_h3="${UI_TABLE_COL3:0:$UI_TABLE_COL3_W}"
+        _utr_head="$_utr_head${_UI_TABLE_SEP}${_utr_h3}${_UI_TABLE_SP:0:$(( UI_TABLE_COL3_W - ${#_utr_h3} ))}"
+        _utr_headlen=$(( _utr_headlen + _UI_TABLE_SEP_W + UI_TABLE_COL3_W ))
+    fi
+    if [ "$UI_TABLE_STAT_W" -gt 0 ]; then
+        _utr_head="$_utr_head${_utr_statsep}Status"
+        _utr_headlen=$(( _utr_headlen + _utr_statsep_w + 6 ))
+    fi
+    # Padded from the LENGTH COUNTED ABOVE, never from ${#_utr_head}: the rules
+    # carry colour escapes, so the string is bytes longer than it reads.
+    _utr_f="$_utr_f  ${UI_ACCENT:-}${UI_VB:-|}${UI_RESET:-}${_utr_head}${_UI_TABLE_SP:0:$(( _utr_inner - _utr_headlen ))}${UI_ACCENT:-}${UI_VB:-|}${UI_RESET:-}
 "
     _utr_lines=2
-    _utr_sub=0
     _utr_now="$(date +%s 2>/dev/null || echo 0)"
     _utr_i=0
     while IFS='|' read -r _utr_kind _utr_label _utr_tick _utr_state _utr_pct \
-                          _utr_ceil _utr_secs _utr_t0 _utr_phase _utr_final; do
+                          _utr_ceil _utr_secs _utr_t0 _utr_phase _utr_final \
+                          _utr_c2 _utr_c3; do
         [ -n "$_utr_kind" ] || continue
         _utr_i=$(( _utr_i + 1 ))
         case "$_utr_kind" in
-            tee)    _utr_conn="${UI_TEE:-|-} " ;;
-            corner) _utr_conn="${UI_CORNER:-\`-} " ;;
-            *)      _utr_conn="" ;;
+            tee)    _utr_conn="${UI_TEE:-|-} "; _utr_spine=1 ;;
+            corner) _utr_conn="${UI_CORNER:-\`-} "; _utr_spine=0 ;;
+            *)      _utr_conn=""; _utr_spine=0 ;;
         esac
-        # A row nobody can pick: no checkbox at all (an empty one invites the
-        # reader to try), and the note reads straight on from the label —
-        # "Cursor · not installed" is one sentence. Putting the note in the
-        # Status column instead would size that column, and the columns would
-        # then be measured for text that is neither a name nor a status. The
-        # 5-space indent is the width of the pointer and checkbox it replaces,
-        # so the tree connectors still line up.
+        # A row nobody can pick: no checkbox at all, because an empty one
+        # invites the reader to try. It keeps its COLUMNS though. It used to
+        # merge into one sentence -- "json-tables · Installed (0.2)" -- which
+        # put a version in the middle of a name while the Version column beside
+        # it sat empty, and left the Status column with nothing to say about the
+        # one row whose status was already known. The 5-space indent is the
+        # width of the pointer and checkbox it replaces, so the tree connectors
+        # still line up.
         if [ "$_utr_state" = "disabled" ]; then
-            _utr_note="${_utr_final# }"
-            _utr_text="$_utr_conn$_utr_label${_utr_note:+ · $_utr_note}"
-            _utr_max=$(( _utr_inner - 5 ))
-            [ "${#_utr_text}" -le "$_utr_max" ] || \
-                _utr_text="${_utr_text:0:$(( _utr_max - 1 ))}…"
-            _utr_f="$_utr_f  ${UI_ACCENT:-}${UI_VB:-|}${UI_RESET:-}     ${UI_DIM:-}${_utr_text}${UI_RESET:-}${_UI_TABLE_SP:0:$(( _utr_inner - 5 - ${#_utr_text} ))}${UI_ACCENT:-}${UI_VB:-|}${UI_RESET:-}
-"
-            _utr_lines=$(( _utr_lines + 1 ))
-            continue
-        fi
-        if [ "$_utr_tick" = "1" ]; then
+            # Three spaces, the width of "[ ]": with two the tree connector
+            # sat a column left of every pickable row above it.
+            _utr_ptr=" "; _utr_box="   "; _utr_boxlen=3
+        elif [ "$_utr_tick" = "1" ]; then
             # A plain "x", not the palette tick, when there is no colour: the
             # plain-palette UI_TICK is the multi-character "[ok]", and a checkbox
             # is already brackets — together they read "[[ok]]".
@@ -915,55 +1159,105 @@ ui_table_frame() {
         else
             _utr_ptr=" "
         fi
-        _utr_name="$_utr_conn$_utr_label"
-        [ "${#_utr_name}" -le "$UI_TABLE_NAME_W" ] || \
-            _utr_name="${_utr_name:0:$(( UI_TABLE_NAME_W - 1 ))}…"
+        # MEASURED plain, PRINTED possibly dim: a disabled row's name carries
+        # colour escapes, and ${#...} would count those bytes as width and pad
+        # the row short by exactly the length of the escape sequence.
+        _utr_plain="$_utr_conn$_utr_label"
+        [ "${#_utr_plain}" -le "$UI_TABLE_NAME_W" ] || \
+            _utr_plain="${_utr_plain:0:$(( UI_TABLE_NAME_W - 1 ))}…"
+        _utr_namelen=${#_utr_plain}
+        if [ "$_utr_state" = "disabled" ]; then
+            _utr_name="${UI_DIM:-}${_utr_plain}${UI_RESET:-}"
+        else
+            _utr_name="$_utr_plain"
+        fi
         _ui_table_cell "$_utr_state" "${_utr_pct:-0}" "${_utr_ceil:-0}" \
             "${_utr_secs:-0}" "${_utr_t0:-0}" "$_utr_phase" "$_utr_final" "$_utr_now"
-        _utr_used=$(( 1 + _utr_boxlen + 1 + UI_TABLE_NAME_W + 2 + UI_TABLE_CELL_LEN ))
+        _utr_used=$(( 1 + _utr_boxlen + 1 + UI_TABLE_NAME_W + _utr_statsep_w + UI_TABLE_CELL_LEN ))
         # Clamped, never trusted. A negative length is a bash ERROR ("substring
         # expression < 0") printed straight into the frame, and the row then goes
         # out unpadded -- so a width miscalculation would show up as garbage on
         # screen instead of a border a column out of line.
-        _utr_npad=$(( UI_TABLE_NAME_W - ${#_utr_name} )); [ "$_utr_npad" -ge 0 ] || _utr_npad=0
+        _utr_npad=$(( UI_TABLE_NAME_W - _utr_namelen )); [ "$_utr_npad" -ge 0 ] || _utr_npad=0
+        # The optional cells, dim so the eye still lands on the name and the
+        # status. Truncated to their own column, never measured with
+        # _ui_visible_len: every string here is one this file assembled, so its
+        # width is arithmetic rather than a sed per cell per frame.
+        _utr_mid=""
+        if [ "$UI_TABLE_COL2_W" -gt 0 ]; then
+            _utr_v2="$_utr_c2"
+            [ "${#_utr_v2}" -le "$UI_TABLE_COL2_W" ] || \
+                _utr_v2="${_utr_v2:0:$(( UI_TABLE_COL2_W - 1 ))}…"
+            _utr_mid="$_utr_mid${_UI_TABLE_SEP}${UI_DIM:-}${_utr_v2}${UI_RESET:-}${_UI_TABLE_SP:0:$(( UI_TABLE_COL2_W - ${#_utr_v2} ))}"
+            _utr_used=$(( _utr_used + UI_TABLE_COL2_W + _UI_TABLE_SEP_W ))
+        fi
+        # The Description is never truncated. It wraps to as many lines as it
+        # needs; the first sits on the row, the rest follow underneath with
+        # every other cell blank, so the column stays a column. An About is
+        # written for a repository page, and an ellipsis throws away the half
+        # that says what the tool is for.
+        _utr_wrapn=0
+        if [ "$UI_TABLE_COL3_W" -gt 0 ]; then
+            _ui_wrap "$_utr_c3" "$UI_TABLE_COL3_W"
+            _utr_wrapn="$_UI_WRAP_N"
+            _utr_v3=""
+            [ "$_utr_wrapn" -gt 0 ] && _utr_v3="${_UI_WRAP[0]}"
+            _utr_mid="$_utr_mid${_UI_TABLE_SEP}${UI_DIM:-}${_utr_v3}${UI_RESET:-}${_UI_TABLE_SP:0:$(( UI_TABLE_COL3_W - ${#_utr_v3} ))}"
+            _utr_used=$(( _utr_used + UI_TABLE_COL3_W + _UI_TABLE_SEP_W ))
+        fi
         _utr_rpad=$(( _utr_inner - _utr_used )); [ "$_utr_rpad" -ge 0 ] || _utr_rpad=0
-        _utr_f="$_utr_f  ${UI_ACCENT:-}${UI_VB:-|}${UI_RESET:-}${_utr_ptr}${_utr_box} ${_utr_name}${_UI_TABLE_SP:0:$_utr_npad}  ${UI_TABLE_CELL}${_UI_TABLE_SP:0:$_utr_rpad}${UI_ACCENT:-}${UI_VB:-|}${UI_RESET:-}
+        _utr_f="$_utr_f  ${UI_ACCENT:-}${UI_VB:-|}${UI_RESET:-}${_utr_ptr}${_utr_box} ${_utr_name}${_UI_TABLE_SP:0:$_utr_npad}${_utr_mid}${_utr_statsep}${UI_TABLE_CELL}${_UI_TABLE_SP:0:$_utr_rpad}${UI_ACCENT:-}${UI_VB:-|}${UI_RESET:-}
 "
         _utr_lines=$(( _utr_lines + 1 ))
-        # A row that CAN run always gets its second line, blank while it is not
-        # running. The height of the frame is then the same in every state, which
-        # is the whole reason: a frame that grows by a line pushes the terminal
-        # to scroll, and once the screen has scrolled a cursor-up by the frame
-        # height no longer lands at the frame's top. Every redraw after that is
-        # off by one and the error accumulates -- which is what left four lines
-        # of an old frame stranded above the new one, near the bottom of a
-        # screen. Nothing here can prevent the FIRST draw from scrolling; what it
-        # can do is never scroll again.
-        if [ -n "$UI_TABLE_CELL2" ]; then
-            _utr_used2=$(( 5 + UI_TABLE_NAME_W + 2 + UI_TABLE_CELL2_LEN ))
-            _utr_rpad2=$(( _utr_inner - _utr_used2 )); [ "$_utr_rpad2" -ge 0 ] || _utr_rpad2=0
-            _utr_f="$_utr_f  ${UI_ACCENT:-}${UI_VB:-|}${UI_RESET:-}     ${_UI_TABLE_SP:0:$UI_TABLE_NAME_W}  ${UI_TABLE_CELL2}${_UI_TABLE_SP:0:$_utr_rpad2}${UI_ACCENT:-}${UI_VB:-|}${UI_RESET:-}
+        # The rest of a wrapped description. Only the Description cell carries
+        # anything: the checkbox, the name and the version belong to the row
+        # above, and repeating them would read as more rows than there are.
+        #
+        # These lines make the frame taller than one line per row, which the
+        # redraw can afford because the height is still the SAME on every
+        # redraw: an About and the column it wraps to are both fixed for the
+        # life of the menu, so a row's height cannot change under it. That is
+        # exactly what the phase sub-line could not promise -- it appeared and
+        # vanished as a row started and stopped running, which is why it needed
+        # a reserved blank line and why it is gone.
+        _utr_wi=1
+        while [ "$_utr_wi" -lt "$_utr_wrapn" ]; do
+            _utr_wl="${_UI_WRAP[$_utr_wi]}"
+            # The TREE SPINE carries down the continuation lines. Without it the
+            # connector column goes blank for as long as a description wraps, and
+            # the line joining the add-ons snaps in half -- the same menu draws
+            # an unbroken spine while it installs, where every row is one line,
+            # so a description must not be what breaks it. Only a tee continues:
+            # after the corner the tree has ended and a spine below it would
+            # point at nothing. Built cell by cell and MEASURED as it goes, so
+            # the width is arithmetic rather than a count of escape bytes.
+            if [ "${_utr_spine:-0}" = 1 ]; then
+                _utr_wleft="     ${UI_VB:-|}${_UI_TABLE_SP:0:$(( UI_TABLE_NAME_W - 1 ))}"
+            else
+                _utr_wleft="${_UI_TABLE_SP:0:$(( 5 + UI_TABLE_NAME_W ))}"
+            fi
+            _utr_wlen=$(( 5 + UI_TABLE_NAME_W ))
+            if [ "$UI_TABLE_COL2_W" -gt 0 ]; then
+                _utr_wleft="${_utr_wleft}${_UI_TABLE_SEP}${_UI_TABLE_SP:0:$UI_TABLE_COL2_W}"
+                _utr_wlen=$(( _utr_wlen + _UI_TABLE_SEP_W + UI_TABLE_COL2_W ))
+            fi
+            _utr_wlen=$(( _utr_wlen + _UI_TABLE_SEP_W + UI_TABLE_COL3_W + _utr_statsep_w ))
+            _utr_wpad=$(( _utr_inner - _utr_wlen ))
+            [ "$_utr_wpad" -ge 0 ] || _utr_wpad=0
+            _utr_f="$_utr_f  ${UI_ACCENT:-}${UI_VB:-|}${UI_RESET:-}${_utr_wleft}${_UI_TABLE_SEP}${UI_DIM:-}${_utr_wl}${UI_RESET:-}${_UI_TABLE_SP:0:$(( UI_TABLE_COL3_W - ${#_utr_wl} ))}${_utr_statsep}${_UI_TABLE_SP:0:$_utr_wpad}${UI_ACCENT:-}${UI_VB:-|}${UI_RESET:-}
 "
             _utr_lines=$(( _utr_lines + 1 ))
-            _utr_sub=$(( _utr_sub + 1 ))
-        fi
+            _utr_wi=$(( _utr_wi + 1 ))
+        done
     done < "$1"
-    # The frame is ONE height in every state. A frame that grows by a line pushes
-    # the terminal to scroll, and once the screen has scrolled a cursor-up by the
-    # frame height no longer lands at the frame's top -- every redraw after that
-    # is off by one and the error accumulates, which is what left four lines of an
-    # old frame stranded above the new one near the bottom of a screen.
-    #
-    # So the phase lines are RESERVED rather than grown into: one line, because
-    # one dataset runs at a time. Should they ever run concurrently, this is the
-    # number to raise, and nothing else changes.
-    _utr_want="${UI_TABLE_RESERVE:-1}"
-    while [ "$_utr_sub" -lt "$_utr_want" ]; do
-        _utr_f="$_utr_f  ${UI_ACCENT:-}${UI_VB:-|}${UI_RESET:-}${_UI_TABLE_SP:0:$_utr_inner}${UI_ACCENT:-}${UI_VB:-|}${UI_RESET:-}
-"
-        _utr_lines=$(( _utr_lines + 1 ))
-        _utr_sub=$(( _utr_sub + 1 ))
-    done
+    # The frame is still ONE height in every state, and now structurally so
+    # rather than by arrangement: every row is exactly one line whatever it is
+    # doing, so there is nothing left to reserve. That property is what the
+    # redraw depends on -- a frame that grows by a line pushes the terminal to
+    # scroll, and once the screen has scrolled a cursor-up by the frame height
+    # no longer lands at the frame's top. Every redraw after that is off by one
+    # and the error accumulates, which is what left four lines of an old frame
+    # stranded above the new one near the bottom of a screen.
     _utr_f="$_utr_f  ${UI_ACCENT:-}${UI_BL:-+}${_UI_TABLE_HR:0:$_utr_inner}${UI_BR:-+}${UI_RESET:-}"
     UI_TABLE_FRAME="$_utr_f"
     UI_TABLE_LINES=$(( _utr_lines + 1 ))
@@ -1029,7 +1323,7 @@ ui_table_set() {
     [ "$_uts_state" = "running" ] && _uts_t0="$(date +%s 2>/dev/null || echo 0)"
     _uts_tmp="$_uts_f.new"
     _uts_i=0
-    while IFS='|' read -r _u1 _u2 _u3 _u4 _u5 _u6 _u7 _u8 _u9 _u10; do
+    while IFS='|' read -r _u1 _u2 _u3 _u4 _u5 _u6 _u7 _u8 _u9 _u10 _u11 _u12; do
         [ -n "$_u1" ] || continue
         _uts_i=$(( _uts_i + 1 ))
         if [ "$_uts_i" = "$_uts_row" ]; then
@@ -1037,12 +1331,12 @@ ui_table_set() {
             # the same job must not restart the elapsed count the reader is
             # watching. Only entering "running" starts one.
             [ "$_u4" = "running" ] && [ "$_uts_state" = "running" ] && _uts_t0="$_u8"
-            printf '%s|%s|%s|%s|%s|%s|%s|%s|%s|%s\n' "$_u1" "$_u2" "$_u3" \
+            printf '%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s\n' "$_u1" "$_u2" "$_u3" \
                 "$_uts_state" "$_uts_pct" "$_uts_ceil" "$_uts_secs" "$_uts_t0" \
-                "$_uts_phase" "$_uts_final"
+                "$_uts_phase" "$_uts_final" "$_u11" "$_u12"
         else
-            printf '%s|%s|%s|%s|%s|%s|%s|%s|%s|%s\n' "$_u1" "$_u2" "$_u3" "$_u4" \
-                "$_u5" "$_u6" "$_u7" "$_u8" "$_u9" "$_u10"
+            printf '%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s\n' "$_u1" "$_u2" "$_u3" "$_u4" \
+                "$_u5" "$_u6" "$_u7" "$_u8" "$_u9" "$_u10" "$_u11" "$_u12"
         fi
     done < "$_uts_f" > "$_uts_tmp"
     mv -f "$_uts_tmp" "$_uts_f"
@@ -1052,7 +1346,7 @@ ui_table_set() {
 ui_table_tick() {
     _utt_tmp="$1.new"
     _utt_i=0
-    while IFS='|' read -r _u1 _u2 _u3 _u4 _u5 _u6 _u7 _u8 _u9 _u10; do
+    while IFS='|' read -r _u1 _u2 _u3 _u4 _u5 _u6 _u7 _u8 _u9 _u10 _u11 _u12; do
         [ -n "$_u1" ] || continue
         _utt_i=$(( _utt_i + 1 ))
         case ",$2," in *",$_utt_i,"*) _u3=1 ;; *) _u3=0 ;; esac
@@ -1060,8 +1354,8 @@ ui_table_tick() {
         # a range that may contain one, and the defaults are built by the caller
         # — this is the one place both of those pass through.
         [ "$_u4" = "disabled" ] && _u3=0
-        printf '%s|%s|%s|%s|%s|%s|%s|%s|%s|%s\n' "$_u1" "$_u2" "$_u3" "$_u4" \
-            "$_u5" "$_u6" "$_u7" "$_u8" "$_u9" "$_u10"
+        printf '%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s\n' "$_u1" "$_u2" "$_u3" "$_u4" \
+            "$_u5" "$_u6" "$_u7" "$_u8" "$_u9" "$_u10" "$_u11" "$_u12"
     done < "$1" > "$_utt_tmp"
     mv -f "$_utt_tmp" "$1"
 }
@@ -1079,7 +1373,7 @@ ui_table_disable() {
     _utx_f="$1"; _utx_row="$2"; _utx_note="$3"
     _utx_tmp="$_utx_f.new"
     _utx_i=0
-    while IFS='|' read -r _u1 _u2 _u3 _u4 _u5 _u6 _u7 _u8 _u9 _u10; do
+    while IFS='|' read -r _u1 _u2 _u3 _u4 _u5 _u6 _u7 _u8 _u9 _u10 _u11 _u12; do
         [ -n "$_u1" ] || continue
         _utx_i=$(( _utx_i + 1 ))
         if [ "$_utx_i" = "$_utx_row" ]; then
@@ -1088,8 +1382,8 @@ ui_table_disable() {
             printf '%s|%s|0|disabled|%s|%s|%s|%s|%s|%s\n' "$_u1" "$_u2" \
                 "$_u5" "$_u6" "$_u7" "$_u8" "$_u9" "$_utx_note"
         else
-            printf '%s|%s|%s|%s|%s|%s|%s|%s|%s|%s\n' "$_u1" "$_u2" "$_u3" "$_u4" \
-                "$_u5" "$_u6" "$_u7" "$_u8" "$_u9" "$_u10"
+            printf '%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s\n' "$_u1" "$_u2" "$_u3" "$_u4" \
+                "$_u5" "$_u6" "$_u7" "$_u8" "$_u9" "$_u10" "$_u11" "$_u12"
         fi
     done < "$_utx_f" > "$_utx_tmp"
     mv -f "$_utx_tmp" "$_utx_f"

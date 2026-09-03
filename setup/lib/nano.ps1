@@ -11,6 +11,11 @@
 
 $script:NanoContainer = if ($env:EXAKIT_NANO_CONTAINER) { $env:EXAKIT_NANO_CONTAINER } else { "exasol-nano" }
 $script:NanoVolume    = if ($env:EXAKIT_NANO_VOLUME) { $env:EXAKIT_NANO_VOLUME } else { "exasol-nano-data" }
+# Set only where a first deployment actually happens, and read by
+# Wait-NanoReady: only a first deploy may be told to delete the data
+# volume, because only it has nothing to lose. Twin of
+# EXAKIT_NANO_FIRST_DEPLOY in runtime-nano.sh.
+$script:NanoFirstDeploy = $false
 $script:NanoMinRamGb  = if ($env:EXAKIT_NANO_MIN_RAM_GB) { [int]$env:EXAKIT_NANO_MIN_RAM_GB } else { 4 }
 # Hard floor and comfortable floor for free disk, checked on every volume this
 # install writes to (see Test-NanoDiskSpace): the Nano image alone unpacks to
@@ -504,7 +509,23 @@ function Test-NanoFirstDeployArgs {
 function Start-NanoExisting {
     $engine = Get-NanoEngine
     if (Test-NanoFirstDeployArgs) {
-        $image = & $engine container inspect -f "{{.Config.Image}}" $script:NanoContainer 2>$null
+        # Same hazard as Test-NanoVolumeExists: under the module-wide
+        # ErrorActionPreference of Stop, a native command that writes to stderr
+        # raises a TERMINATING error, and 2>$null does not prevent it - it only
+        # moves the text. This call normally succeeds (the container exists, or
+        # we would not be here), but a container removed between the check and
+        # this line is exactly the kind of race that should fall back rather
+        # than end the run.
+        $image = ""
+        $prevImgEAP = $ErrorActionPreference
+        try {
+            $ErrorActionPreference = "Continue"
+            $image = & $engine container inspect -f "{{.Config.Image}}" $script:NanoContainer 2>$null
+        } catch {
+            $image = ""
+        } finally {
+            $ErrorActionPreference = $prevImgEAP
+        }
         if (-not $image) { $image = Get-NanoImageRef }
         Info "Recreating the Nano container (first-deploy options are single-use; the data volume is kept)"
         $code = Invoke-ExakitLogged $engine "rm" "-f" $script:NanoContainer
@@ -514,7 +535,7 @@ function Start-NanoExisting {
             "-p" "127.0.0.1:$($script:DbPort):8563" `
             "-v" "$($script:NanoVolume):/exa" `
             $image
-        if ($code -ne 0) { Fail "Container failed to start (see log)" }
+        if ($code -ne 0) { Show-NanoContainerStartFailure }
     } else {
         $code = Invoke-ExakitLogged $engine "start" $script:NanoContainer
         if ($code -ne 0) { Fail "Could not start existing container $($script:NanoContainer) (see log)" }
@@ -524,9 +545,78 @@ function Start-NanoExisting {
 
 # Install-Nano - pull the pinned image and start the container (first run
 # deploys the database with a generated SYS password). Idempotent.
+# Install-NanoImage - fetch the pinned Runtime image, and nothing else.
+#
+# Its own STEP, so the two things that used to share one heading are separated:
+# this is network-bound and fails on connectivity or a bad digest, while
+# deploying the database is local and fails on a port clash, a poisoned
+# credential, an already-initialised volume or a readiness timeout. They were
+# the longest silent stretch of the install and its most failure-prone phase,
+# reported under one line.
+#
+# Idempotent, because a step boundary is not a promise about ordering: an image
+# already on the machine is not pulled again, and a container that already
+# exists needs no image at all. Both cases return having said so in the log, so
+# Install-Nano calls this too and a skipped step 1 costs nothing.
+# Twin of nano_pull_image in runtime-nano.sh.
+function Install-NanoImage {
+    $engine = Get-NanoEngine
+    $image = Get-NanoImageRef
+    if (Test-NanoContainerExists) {
+        Write-ExakitLog "INFO" "Container $($script:NanoContainer) already exists; no image pull needed"
+        return
+    }
+    $present = $false
+    $prevImgEAP = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = "Continue"
+        & $engine image inspect $image 2>&1 | Out-Null
+        $present = ($LASTEXITCODE -eq 0)
+    } catch {
+        $present = $false
+    } finally {
+        $ErrorActionPreference = $prevImgEAP
+    }
+    if ($present) {
+        Write-ExakitLog "INFO" "Image $image is already present; not pulling again"
+        return
+    }
+    $script:ExakitActiveLabel = "Pulling image $image"
+    Info "Pulling image $image"
+    $pulled = $false
+    for ($attempt = 1; $attempt -le 3; $attempt++) {
+        $code = Invoke-ExakitLogged $engine "pull" $image
+        if ($code -eq 0) { $pulled = $true; break }
+        if ($attempt -lt 3) { Warn2 "Pull attempt $attempt failed - retrying in $($attempt * 10)s"; Start-Sleep -Seconds ($attempt * 10) }
+    }
+    if (-not $pulled) { Fail "Image pull failed after 3 attempts: $image (network/Docker Hub issue - see log)" }
+    OkStep "Runtime image ready: $image"
+}
+
 function Install-Nano {
     $engine = Get-NanoEngine
     $image = Get-NanoImageRef
+
+    # EXAKIT_REUSE_DB=0 means REPLACE, not adopt.
+    #
+    # `exakit repair-runtime` sets it, having just told the user the data is not
+    # recoverable and taken a yes for it. Without this the two early returns
+    # below adopt the very container that repair promised to rebuild, report
+    # "already running and healthy", and the command repairs nothing.
+    #
+    # The volume goes with the container: it holds /exa, so leaving it would
+    # rebuild around the same database. Order matters - the engine refuses to
+    # remove a volume a container still uses.
+    # Twin of the same block in nano_install (runtime-nano.sh).
+    if ($env:EXAKIT_REUSE_DB -eq "0" -and (Test-NanoContainerExists)) {
+        Info "Replacing the existing Nano container and its data"
+        if ((Invoke-ExakitLogged $engine "rm" "-f" $script:NanoContainer) -ne 0) {
+            Warn2 "Could not remove the existing Nano container; the rebuild may adopt it."
+        }
+        if ((Invoke-ExakitLogged $engine "volume" "rm" $script:NanoVolume) -ne 0) {
+            Warn2 "Could not remove the existing Nano data volume; the rebuild may reuse its data."
+        }
+    }
 
     if ((Test-NanoContainerRunning) -and (Test-NanoReadyInLogs)) {
         Ok "Nano container already running and healthy"
@@ -541,27 +631,81 @@ function Install-Nano {
         return
     }
 
+    # The whole step on ONE line. Begin-ExakitStep set a spinner label and
+    # Invoke-ExakitLogged animates it, so a fresh install narrated itself twice
+    # over nine lines: an Info/Ok pair for the pull, another for the container,
+    # and one "Still starting..." every 30 seconds of a wait that can run for
+    # ten minutes. ExakitQuietDetail routes all of that to the LOGFILE and
+    # leaves the animation as the narration - the same save-and-restore bracket
+    # Invoke-ExakitMarketplaceApply uses, with Warn2/Write-ExakitError ungated so
+    # a quiet step still speaks when it goes wrong.
+    #
+    # Gated on UiFancy (the twin of `[ -t 1 ]`, and false when redirected):
+    # without a terminal the spinner draws nothing, and quieting the detail as
+    # well would leave a CI log silent for the length of a pull. The two early
+    # returns above are already one line each and are left alone.
+    # Twin of the same block in nano_install (runtime-nano.sh).
+    $prevLabel = $script:ExakitActiveLabel
+    $prevQuiet = $script:ExakitQuietDetail
+    if ($script:UiFancy) { $script:ExakitQuietDetail = $true }
+    $niT0 = Get-Date
+
     if (-not (Test-NanoContainerExists)) {
         $portBusy = Test-ExakitPortInUse -Port ([int]$script:DbPort)
         if ($portBusy) {
-            Fail "Port $($script:DbPort) is already in use by another application. Stop it or set EXAKIT_DB_PORT, then re-run."
+            $who = Get-ExakitPortHolder -Port ([int]$script:DbPort)
+            $suffix = ""
+            if ($who) { $suffix = " by $who" }
+            Write-ExakitError "Port $($script:DbPort) is already taken$suffix."
+            if ($who -match "wslrelay|vmmem|docker") {
+                Info "That is a WSL or Docker relay still holding the port from an earlier container. Free it with: wsl --shutdown"
+            }
+            Info "Or run the database on another port: `$env:EXAKIT_DB_PORT = '8564'  then re-run."
+            Fail "Port $($script:DbPort) is not available."
         }
-        Info "Pulling image $image"
-        $pulled = $false
-        for ($attempt = 1; $attempt -le 3; $attempt++) {
-            $code = Invoke-ExakitLogged $engine "pull" $image
-            if ($code -eq 0) { $pulled = $true; break }
-            if ($attempt -lt 3) { Warn2 "Pull attempt $attempt failed - retrying in $($attempt * 10)s"; Start-Sleep -Seconds ($attempt * 10) }
-        }
-        if (-not $pulled) { Fail "Image pull failed after 3 attempts: $image (network/Docker Hub issue - see log)" }
-        Ok "Image pulled"
+        # Re-assigned per phase rather than printed: Invoke-ExakitLogged reads
+        # this at its next Start-ExakitSpinner, so the words change on the
+        # operation boundary without starting a second animator.
+        # The pull is its own STEP now, and this is the same function that step
+        # calls - so a direct Install-Nano (an update, a repair) still fetches the
+        # image, and neither path can drift from the other.
+        Install-NanoImage
 
+        # Before anything reads or writes the secret: a container started while
+        # the file was missing leaves a DIRECTORY at that path, and every step
+        # after this one misreads it. Twin of the nano_repair_creds call in
+        # nano_install.
+        if (-not (Repair-NanoCredentials)) {
+            Fail "The database password path could not be repaired automatically."
+        }
         $password = Get-ExakitCredential "nano_sys_password"
         if (-not $password) {
             $password = New-ExakitPassword
             Set-ExakitCredential "nano_sys_password" $password
         }
         $pwFile = Join-Path $script:CredsDir "nano_sys_password"
+        # The twin of the guard in nano_install (runtime-nano.sh), which this
+        # side never had. Three ways the mount source goes wrong on Windows,
+        # and all three end as a container that starts and exits minutes later
+        # with "sys_password_file '/run/secrets/sys_password' is empty":
+        #
+        #   - the file is missing, so Docker creates the bind source itself -
+        #     as a DIRECTORY;
+        #   - a previous run already left a directory there, and Test-Path
+        #     alone answers $true for one;
+        #   - the file exists but is empty.
+        #
+        # PathType Leaf rules out the directory; Length rules out the empty
+        # file. Checked here, before the engine is asked to mount anything.
+        if (-not (Test-Path $pwFile -PathType Leaf)) {
+            if (Test-Path $pwFile) {
+                Fail "The database password path $pwFile is a directory, not a file. Delete it and re-run the installer to generate a new password."
+            }
+            Fail "The database password file $pwFile is missing. Re-run the installer to generate a new one."
+        }
+        if ((Get-Item $pwFile).Length -eq 0) {
+            Fail "The database password file $pwFile is empty. Delete it and re-run the installer to generate a new one."
+        }
         # Docker's bind-mount source parsing on Windows is picky about
         # backslashes (Join-Path produces "C:\Users\...\nano_sys_password",
         # and mixing that with the ":/run/secrets/...:ro" suffix can mis-parse
@@ -569,71 +713,281 @@ function Install-Nano {
         # documented, reliable form for a -v source path on Windows.
         $pwFileMount = $pwFile -replace '\\', '/'
 
+        # DOES THE DATA VOLUME ALREADY EXIST? This branch only knows the
+        # CONTAINER is absent, which is a different question - a removed
+        # container, a partial uninstall or a rolled-back run all leave the
+        # volume behind, and that volume IS the database. Deploying over it
+        # mounts a freshly generated password the volume will ignore, and hands
+        # the image single-use init options over an initialised /exa, which it
+        # refuses to boot with. Twin of the same probe in nano_install.
+        $volumeExisted = Test-NanoVolumeExists
+        if ($volumeExisted -and $env:EXAKIT_REUSE_DB -eq "0") {
+            Warn2 "Replacing the existing database volume $($script:NanoVolume) (EXAKIT_REUSE_DB=0) - its data is being deleted."
+            $rmCode = Invoke-ExakitLogged $engine "volume" "rm" $script:NanoVolume
+            if ($rmCode -ne 0) {
+                Fail "Could not remove the existing data volume $($script:NanoVolume) (see log). Remove it by hand, then re-run."
+            }
+            $volumeExisted = $false
+        }
+
         Info "Starting Nano container ($($script:NanoContainer))"
-        $code = Invoke-ExakitLogged $engine "run" "-d" "--name" $script:NanoContainer `
-            "--shm-size=512mb" "--pids-limit=-1" `
-            "-p" "127.0.0.1:$($script:DbPort):8563" `
-            "-v" "$($script:NanoVolume):/exa" `
-            "-v" "${pwFileMount}:/run/secrets/sys_password:ro" `
-            $image "init" "sys_password_file=/run/secrets/sys_password"
-        if ($code -ne 0) { Fail "Container failed to start (see log)" }
-
-        # THE SECRET-MOUNT CHECK THAT USED TO LIVE HERE IS GONE, because it
-        # could never pass. It ran
-        #
-        #     docker exec <container> sh -c "wc -c < /run/secrets/sys_password"
-        #
-        # and the nano image HAS NO SHELL. That exec fails outright with
-        # `exec: "sh": executable file not found in $PATH`, so the size never
-        # came back and the comparison never matched. Every Windows install
-        # therefore printed two alarming warnings about a Docker Desktop
-        # bind-mount problem it did not have.
-        #
-        # Measured on an affected install: `docker inspect` shows the bind in
-        # place (nano_sys_password -> /run/secrets/sys_password), and the
-        # connection check moments later reports success. The password was
-        # always fine; only the verification was broken.
-        #
-        # A check that cannot succeed but always warns is worse than no check:
-        # it teaches people to read past warnings, and this one made a healthy
-        # install look broken.
-        #
-        # The intent behind it is still covered, and covered better, one step
-        # later: "Validating the database connection (SELECT 1)" tries the
-        # recorded password against the running database. A password that did
-        # not reach the container fails THERE, with a real error rather than a
-        # guess, and Show-ExakitDbErrorRemedy already turns it into a remedy.
+        if ($volumeExisted) {
+            # An adopted volume gets neither the init options nor the secret
+            # mount: the database and its password already live inside it.
+            Info "Adopting the existing database volume $($script:NanoVolume) (its data and password are kept)"
+            $code = Invoke-ExakitLogged $engine "run" "-d" "--name" $script:NanoContainer `
+                "--shm-size=512mb" "--pids-limit=-1" `
+                "-p" "127.0.0.1:$($script:DbPort):8563" `
+                "-v" "$($script:NanoVolume):/exa" `
+                $image
+        } else {
+            $script:NanoFirstDeploy = $true
+            $code = Invoke-ExakitLogged $engine "run" "-d" "--name" $script:NanoContainer `
+                "--shm-size=512mb" "--pids-limit=-1" `
+                "-p" "127.0.0.1:$($script:DbPort):8563" `
+                "-v" "$($script:NanoVolume):/exa" `
+                "-v" "${pwFileMount}:/run/secrets/sys_password:ro" `
+                $image "init" "sys_password_file=/run/secrets/sys_password"
+        }
+        if ($code -ne 0) { Show-NanoContainerStartFailure }
+    } else {
+        $code = Invoke-ExakitLogged $engine "start" $script:NanoContainer
+        if ($code -ne 0) { Fail "Could not start existing container $($script:NanoContainer) (see log)" }
     }
-
     Wait-NanoReady
+    # RECORDING THE RUNTIME IS PART OF INSTALLING IT. Removing a duplicated copy
+    # of this function took this tail with it, because the two copies were not
+    # identical - and the result was the worst kind of failure: the container
+    # started, the database came up, the step reported completed, and every step
+    # after it died on "No runtime DSN in the manifest". A running database the
+    # kit cannot describe is indistinguishable from no database at all.
     Set-NanoManifest
+
+    $script:ExakitQuietDetail = $prevQuiet
+    $script:ExakitActiveLabel = $prevLabel
+    $niSecs = [int]((Get-Date) - $niT0).TotalSeconds
+    Ok "Exasol Nano $($script:NanoTag) running on 127.0.0.1:$($script:DbPort) (${niSecs}s)"
 }
 
+
 # Wait-NanoReady - poll container logs until the database reports ready.
+# Test-NanoVolumeExists - does the data volume exist right now?
+#
+# Asking is not as simple as running the command, because of two things that
+# compound. `docker volume inspect` on a MISSING volume writes
+# "Error response from daemon: get <name>: no such volume" to stderr and exits
+# non-zero - and $ErrorActionPreference is Stop module-wide, so that stderr
+# write becomes a TERMINATING error. `2>&1 | Out-Null` does not prevent it: the
+# redirect changes where the text goes, not whether PowerShell raises. The
+# absence of a volume is a perfectly ordinary answer to this question, so it
+# must not be able to end the run - which is exactly what it did, surfacing as
+#     Unexpected error: Error response from daemon: get exasol-nano-data: no such volume
+# on a clean machine at step 1.
+#
+# Same hazard, and the same remedy, as the tar call in dash-server.ps1 and
+# Invoke-ExakitLogged: set Continue for the duration and read the exit code.
+function Test-NanoVolumeExists {
+    $engine = Get-NanoEngine
+    $prevEAP = $ErrorActionPreference
+    $exists = $false
+    try {
+        $ErrorActionPreference = "Continue"
+        & $engine volume inspect $script:NanoVolume 2>&1 | Out-Null
+        $exists = ($LASTEXITCODE -eq 0)
+    } catch {
+        $exists = $false
+    } finally {
+        $ErrorActionPreference = $prevEAP
+    }
+    return $exists
+}
+
+# Repair-NanoCredentials - clear the debris a container leaves behind when it
+# was started while the secret file was missing.
+#
+# Docker creates a missing bind-mount SOURCE as a directory, so
+# credentials\nano_sys_password becomes a folder. Everything downstream then
+# misbehaves in a way that is hard to read: Test-Path answers $true for a
+# directory, Get-Content -Raw returns $null (so the password reads as absent),
+# and Set-ExakitCredential's Move-Item drops its .tmp INSIDE the folder instead
+# of replacing it - which is how a real machine ended up holding
+# credentials\nano_sys_password\nano_sys_password.tmp and an install that could
+# not proceed.
+#
+# The shell side has had nano_creds_poisoned/nano_repair_creds for this all
+# along; Windows only learned to DETECT it, which left the user correctly
+# informed and still stuck. Windows needs no container to fix it - there are no
+# root-owned files here, the path belongs to the user.
+# Twin of nano_repair_creds in runtime-nano.sh.
+function Repair-NanoCredentials {
+    $pwPath = Join-Path $script:CredsDir "nano_sys_password"
+    if (-not (Test-Path $pwPath -PathType Container)) { return $true }
+
+    # A stray .tmp in there is a password this kit generated and never applied:
+    # the deploy that would have used it is the thing that failed. Nothing here
+    # is recoverable, so all of it goes.
+    Warn2 "Found leftovers from an interrupted install: $pwPath is a directory, not the password file."
+    Info "Removing them and generating a new password."
+    try {
+        Remove-Item -Recurse -Force $pwPath -ErrorAction Stop
+    } catch {
+        Write-ExakitError "Could not remove $pwPath automatically: $_"
+        Info "Delete that folder by hand, then re-run the installer."
+        return $false
+    }
+    if (Test-Path $pwPath) {
+        Write-ExakitError "Could not remove $pwPath automatically."
+        Info "Delete that folder by hand, then re-run the installer."
+        return $false
+    }
+    Ok "Credentials directory repaired"
+    return $true
+}
+
+# Get-ExakitPortHolder <port> - "name (pid N)" for whatever is listening, or "".
+#
+# "Stop it or set EXAKIT_DB_PORT" is unactionable when "it" is never named, and
+# on Windows the holder is often not what the user expects: a failed WSL install
+# leaves wslrelay.exe holding the port long after its container is gone, which
+# no amount of "stop the other application" resolves. Observed on a real machine
+# - the Windows install refused in 11 seconds and named nothing.
+# Twin of port_holder_desc in detect.sh.
+function Get-ExakitPortHolder {
+    param([Parameter(Mandatory)][int]$Port)
+    try {
+        $conn = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+        if ($conn) {
+            $proc = Get-Process -Id $conn.OwningProcess -ErrorAction SilentlyContinue
+            if ($proc) { return "$($proc.ProcessName) (pid $($proc.Id))" }
+            return "pid $($conn.OwningProcess)"
+        }
+    } catch {
+        # Get-NetTCPConnection is absent on very old hosts; netstat always is not.
+    }
+    try {
+        $line = @(netstat -ano 2>$null | Select-String ":$Port\s" | Select-Object -First 1)
+        if ($line) {
+            $fields = ("$line").Trim() -split "\s+"
+            $holderPid = $fields[-1]
+            if ($holderPid -match '^\d+$') {
+                $proc = Get-Process -Id ([int]$holderPid) -ErrorAction SilentlyContinue
+                if ($proc) { return "$($proc.ProcessName) (pid $holderPid)" }
+                return "pid $holderPid"
+            }
+        }
+    } catch { }
+    return ""
+}
+
+# Show-NanoContainerStartFailure - the engine refused to start the container;
+# say what it said, then stop.
+#
+# `docker run` failures are single-line and self-explanatory - "port is already
+# allocated", "no space left on device", "invalid mount config for type bind" -
+# and they have different fixes. Sending the reader to a logfile for one line is
+# the kit refusing to pass on an answer it already has. Twin of
+# nano_die_container_start in runtime-nano.sh.
+function Show-NanoContainerStartFailure {
+    if ($script:LogFile -and (Test-Path $script:LogFile)) {
+        Write-ExakitError "The container engine refused to start the database container:"
+        $tail = @(Get-Content -Path $script:LogFile -Tail 5 -ErrorAction SilentlyContinue |
+            Where-Object { "$_".Trim() -ne "" })
+        foreach ($line in $tail) { Write-Host "      | $line" -ForegroundColor Red }
+    }
+    Fail "Container failed to start."
+}
+
+# Show-NanoContainerExitRemedy <tail> - say which known fatal cause this is.
+#
+# The container states its own problem plainly and then exits; matching the few
+# markers seen in the field turns a wall of engine log into one sentence with a
+# remedy. Anything unmatched gets no extra line - the tail is already printed,
+# which is more than "(see log)" ever gave. Twin of
+# nano_explain_container_exit in runtime-nano.sh.
+function Show-NanoContainerExitRemedy {
+    param([string]$Tail)
+    if ($Tail -match "sys_password_file|is empty") {
+        Write-Host "    The container was handed an empty password secret."
+        Write-Host "    Delete $($script:CredsDir)\nano_sys_password and re-run the installer."
+        return
+    }
+    if ($Tail -match "already initiali[sz]ed") {
+        Write-Host "    The data volume $($script:NanoVolume) is already initialised, so the"
+        Write-Host "    first-deploy options it was started with cannot apply. Reuse it, or"
+        Write-Host "    replace it and lose its data, with: `$env:EXAKIT_REUSE_DB = '0'"
+        return
+    }
+    if ($Tail -match "no space left") {
+        Write-Host "    The container ran out of disk. Free space where the engine stores"
+        Write-Host "    its data, then re-run."
+        return
+    }
+}
+
 function Wait-NanoReady {
     Info "Waiting for the database to come up (timeout: $($script:NanoReadyTimeout)s)"
+    # The longest stretch of the install, and the only one with nothing to
+    # animate it: the poll below is a plain sleep loop, so under a one-line step
+    # the screen would sit still for minutes. The spinner's own elapsed counter
+    # is exactly what the "Still starting..." lines were standing in for, in one
+    # line that updates in place instead of one more every 30 seconds. Every
+    # exit below stops it first - an abandoned animator paints over whatever the
+    # caller prints next. Twin of nano_wait_ready_soft (runtime-nano.sh).
+    Start-ExakitSpinner "Waiting for the database to come up"
     $engine = Get-NanoEngine
     $waited = 0
     while ($waited -lt $script:NanoReadyTimeout) {
         if (-not (Test-NanoContainerRunning)) {
+            Stop-ExakitSpinner
+            # The container had already said why it was dying. Reading the tail
+            # STRAIGHT INTO THE LOG FILE and failing with "(see log)" threw away
+            # an answer this process was holding - and called it a timeout, which
+            # it was not. Twin of the same block in nano_wait_ready_soft.
+            $tail = @()
             try {
-                $tail = & $engine logs --tail 30 $script:NanoContainer 2>&1
+                $tail = @(& $engine logs --tail 30 $script:NanoContainer 2>&1)
                 if ($script:LogFile) { $tail | Add-Content -Path $script:LogFile }
             } catch {
                 if ($script:LogFile) { "Could not read container logs: $_" | Add-Content -Path $script:LogFile }
             }
-            Fail "Nano container stopped unexpectedly (see log)"
+            Write-ExakitError "The database container started and then exited. Its last words:"
+            $shown = @($tail | Where-Object { "$_".Trim() -ne "" } | Select-Object -Last 8)
+            foreach ($line in $shown) { Write-Host "      | $line" -ForegroundColor Red }
+            Show-NanoContainerExitRemedy ($tail -join "`n")
+            Fail "The database container exited before the database came up - the lines above are its own reason."
         }
-        if (Test-NanoReadyInLogs) { Ok "Database is up (took ~${waited}s)"; return }
+        if (Test-NanoReadyInLogs) { Stop-ExakitSpinner; Ok "Database is up (took ~${waited}s)"; return }
         Start-Sleep -Seconds 5
         $waited += 5
-        if ($waited % 30 -eq 0) { Info "Still starting... (${waited}s)" }
+        if ($waited % 30 -eq 0) {
+            # Only where the spinner is NOT already counting. On a terminal it
+            # is, and a line printed under a live animator is erased by its next
+            # frame within 0.2s. The logfile gets the tick either way.
+            if ($script:UiFancy) { Write-ExakitLog "INFO" "Still starting... (${waited}s)" }
+            else { Info "Still starting... (${waited}s)" }
+        }
     }
-    Write-Host "  x Database did not become ready within $($script:NanoReadyTimeout)s." -ForegroundColor Red
-    Write-Host "    Inspect the logs:   $engine logs $($script:NanoContainer)"
-    Write-Host "    If a first install was interrupted, the data volume may be half-initialized."
-    Write-Host "    Reset and retry:    $engine rm -f $($script:NanoContainer) && $engine volume rm $($script:NanoVolume)"
-    Fail "Nano startup timed out"
+    Stop-ExakitSpinner
+    Write-ExakitError "The database did not report ready within $($script:NanoReadyTimeout)s."
+    Write-Host "    It may still be coming up. Watch it:  $engine logs -f $($script:NanoContainer)"
+    Write-Host "    Then check again:                     exakit status"
+    # The reset command below DELETES THE DATABASE, and this function is reached
+    # from three places: a first deploy, `exakit start` on an established
+    # database, and an update. Printing it unconditionally handed the user whose
+    # database was merely slow to come back the one command that destroys every
+    # table they ever loaded - framed as a routine remedy, with nothing saying
+    # that the volume IS the database. Only a first deploy has nothing to lose.
+    # Twin of the same branch in nano_wait_ready (runtime-nano.sh).
+    if ($script:NanoFirstDeploy) {
+        Write-Host "    This was a first deployment, so there is no data to lose yet."
+        Write-Host "    If the volume was left half-initialized, start over:"
+        Write-Host "      $engine rm -f $($script:NanoContainer) && $engine volume rm $($script:NanoVolume)"
+    } else {
+        Write-Host "    Do NOT remove the volume $($script:NanoVolume) - it IS your database."
+        Write-Host "    If the container is genuinely wedged:  exakit repair-runtime"
+    }
+    Fail "The database did not become ready in time."
 }
 
 function Set-NanoManifest {
@@ -728,11 +1082,7 @@ function Remove-Nano {
         Warn2 "No container named '$($script:NanoContainer)' found - nothing to remove (was it created under a different name?)"
     }
     if ($Data) {
-        $volumeExists = $false
-        try {
-            & $engine volume inspect $script:NanoVolume *> $null
-            $volumeExists = ($LASTEXITCODE -eq 0)
-        } catch { }
+        $volumeExists = Test-NanoVolumeExists
         if ($volumeExists) {
             Info "Removing data volume $($script:NanoVolume)"
             $code = Invoke-ExakitLogged $engine "volume" "rm" $script:NanoVolume

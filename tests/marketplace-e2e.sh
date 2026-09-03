@@ -110,9 +110,9 @@ case "$_version_out" in
 esac
 
 say "5/9 update says already current; a second marketplace run offers nothing"
-_update_out="$(bash "$ROOT/setup/exakit" update dash-server 2>&1)" || fail "exakit update dash-server failed: $_update_out"
+_update_out="$(bash "$ROOT/setup/exakit" update dash-server 2>&1)" || fail "exakit update failed: $_update_out"
 case "$_update_out" in
-    *"already current"*) echo "  ok  exakit update dash-server: already current" ;;
+    *"already current"*) echo "  ok  exakit update: already current" ;;
     *) fail "unexpected update output: $_update_out" ;;
 esac
 _second="$(EXAKIT_MARKETPLACE_ADDONS=dash-server bash "$ROOT/setup/exakit" marketplace 2>&1)" || fail "second marketplace run failed"
@@ -155,9 +155,9 @@ else
     echo "  ok  exasol.exasol-vscode@$_ext_live installed into the sandbox extensions dir"
 
     say "7/9 the extension joins the update flow and a second run offers nothing"
-    _ext_update="$(bash "$ROOT/setup/exakit" update exasol-vscode 2>&1)" || fail "exakit update exasol-vscode failed: $_ext_update"
+    _ext_update="$(bash "$ROOT/setup/exakit" update exasol-vscode 2>&1)" || fail "exakit update failed: $_ext_update"
     case "$_ext_update" in
-        *"already current"*) echo "  ok  exakit update exasol-vscode: already current" ;;
+        *"already current"*) echo "  ok  exakit update: already current" ;;
         *) fail "unexpected update output: $_ext_update" ;;
     esac
     _ext_targets="$(
@@ -180,17 +180,23 @@ fi
 say "8/9 json-tables installs from the kit's own mirror release and a real JSON file becomes tables"
 # The whole point of this add-on is the no-Rust story: the engine and the wheel
 # are prebuilt by .github/workflows/pkg-json-tables.yml and served from the
-# `mirror-json-tables` release. Until that workflow has been run once the
-# release does not exist -- then this stage SKIPS (with the reason) instead of
-# failing, so the rest of the e2e stays meaningful.
+# immutable json-tables-<version> release versions.json names. Until that
+# workflow has published the advertised build the release does not exist --
+# then this stage SKIPS (with the reason) instead of failing, so the rest of
+# the e2e stays meaningful.
 _jt_repo="$(
     . "$ROOT/setup/lib/common.sh" >/dev/null 2>&1
     . "$ROOT/setup/lib/json-tables.sh" >/dev/null 2>&1
     json_tables_mirror_repo
 )"
+_jt_tag="$(
+    . "$ROOT/setup/lib/common.sh" >/dev/null 2>&1
+    . "$ROOT/setup/lib/json-tables.sh" >/dev/null 2>&1
+    json_tables_release_tag
+)"
 if ! curl -fsSIL --max-time 15 \
-        "https://github.com/$_jt_repo/releases/tag/mirror-json-tables" >/dev/null 2>&1; then
-    echo "  SKIP  the mirror-json-tables release does not exist in $_jt_repo yet"
+        "https://github.com/$_jt_repo/releases/tag/$_jt_tag" >/dev/null 2>&1; then
+    echo "  SKIP  the $_jt_tag release does not exist in $_jt_repo yet"
     echo "        run the 'pkg / json-tables' workflow once, then this stage goes live"
 elif ! (
     . "$ROOT/setup/lib/common.sh" >/dev/null 2>&1
@@ -220,9 +226,20 @@ else
     [ -f "$_jt_venv_site/preprocessor_assets/jvs_preprocessor_lib.lua" ] \
         || fail "the preprocessor lua asset is missing -- ingest-and-wrap will fail with FILE-NOT-FOUND"
     echo "  ok  the preprocessor lua asset the wheel omits was restored"
-    case "$_jt_out" in
+    # The marketplace narrates an add-on install on ONE line, which routes every
+    # info/ok underneath it to the LOGFILE (EXAKIT_QUIET_DETAIL). The checksum
+    # tick is one of those, so proving the download WAS verified means reading
+    # the log, not the screen. Grepping stdout for it made this assertion fail
+    # on main for as long as the one-line narration has existed -- the download
+    # was verified the whole time, the proof had simply moved.
+    _jt_log="$(cat "$EXAKIT_HOME"/logs/*.log 2>/dev/null || true)"
+    case "$_jt_out$_jt_log" in
         *"Checksum verified"*) echo "  ok  artifacts were checksum-verified against the release digests" ;;
         *) fail "the install did not verify its downloads: $_jt_out" ;;
+    esac
+    # ...and it must NOT be on screen: that is the one-line narration working.
+    case "$_jt_out" in
+        *"Checksum verified"*) fail "the checksum tick reached the screen; the one-line narration is not quieting it" ;;
     esac
     # The real proof: a JSON document goes through the launcher (venv CLI ->
     # cargo shim -> prebuilt engine) and comes out as Parquet. No Rust anywhere.

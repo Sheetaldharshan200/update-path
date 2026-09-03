@@ -140,7 +140,7 @@ check "release url is the tag tarball" \
     "$(dash_server_release_url 0.1.0)"
 
 echo "update targets never sneak an add-on in:"
-check "not installed -> excluded from all" "exakit runtime exapump mcp pyexasol" \
+check "not installed -> excluded from all" "exakit runtime exapump mcp pyexasol skills" \
     "$(exakit_update_targets all | tr '\n' ' ' | sed 's/ $//')"
 check "explicit target still routable" "dash-server" "$(exakit_update_targets dash-server)"
 check "pending detection sees the gap" "yes" "$(exakit_marketplace_has_pending && echo yes || echo no)"
@@ -163,7 +163,7 @@ manifest_set components.dash_server.version "0.1.0"
 
 echo "installed add-on state:"
 check "live probe answers" "0.1.0" "$(exakit_component_current dash-server)"
-check "installed -> joins update all" "exakit runtime exapump mcp pyexasol dash-server" \
+check "installed -> joins update all" "exakit runtime exapump mcp pyexasol skills dash-server" \
     "$(exakit_update_targets all | tr '\n' ' ' | sed 's/ $//')"
 check "installed-addons list" "dash-server" "$(exakit_marketplace_installed_addons)"
 # With a second add-on registered, one install no longer empties the offer —
@@ -179,7 +179,7 @@ check "nothing pending once ALL are covered" "no" "$( (
 rm -rf "$EXAKIT_HOME/dash-server-venv"
 echo "a stale record is not an install:"
 check "probe fails without the venv" "absent" "$(exakit_component_current dash-server >/dev/null 2>&1 && echo present || echo absent)"
-check "excluded from update all again" "exakit runtime exapump mcp pyexasol" \
+check "excluded from update all again" "exakit runtime exapump mcp pyexasol skills" \
     "$(exakit_update_targets all | tr '\n' ' ' | sed 's/ $//')"
 
 echo "EXAKIT_MARKETPLACE_ADDONS (the non-interactive contract):"
@@ -421,7 +421,7 @@ _sys_out="$( (
     printf 'update-targets=%s' "$(exakit_update_targets all | tr '\n' ' ' | sed 's/ $//')"
 ) )"
 check "system install covers the offer but stays unmanaged" \
-    "present=yes pending=no kit-managed=no update-targets=exakit runtime exapump mcp pyexasol" "$_sys_out"
+    "present=yes pending=no kit-managed=no update-targets=exakit runtime exapump mcp pyexasol skills" "$_sys_out"
 check "kit launcher on PATH is NOT a system install" "no" "$( (
     cp "$WORK/system-bin/dash-server" "$EXAKIT_BIN_DIR/dash-server"
     PATH="$EXAKIT_BIN_DIR:$PATH"
@@ -465,10 +465,10 @@ _missing_out="$( (
     EXAKIT_MARKETPLACE_ADDONS="dash-server"
     exakit_marketplace_menu 2>&1
 ) )"
-has "env answer with module missing names the fix" "exakit update exakit" "$_missing_out"
+has "env answer with module missing names the fix" "exakit update" "$_missing_out"
 lacks "and does not call the add-on unknown" "Unknown marketplace add-on" "$_missing_out"
 # The generic installer path gives the same answer.
-has "install-one with module missing names the fix" "exakit update exakit" "$( (
+has "install-one with module missing names the fix" "exakit update" "$( (
     unset -f dash_server_install
     _exakit_marketplace_install_one dash-server 2>&1
     :
@@ -527,7 +527,10 @@ _covered_out="$( (
 has "no selectable rows -> covered list, no menu" "Everything available is already" "$_covered_out"
 has "the covered list shows the install" "Installed" "$_covered_out"
 lacks "and does not advertise the update command at them" "Update: exakit update" "$_covered_out"
-has "a system install reads as covered, not managed" "on this system" "$_covered_out"
+has "a system install reads as covered, not managed" "managed outside the kit" "$_covered_out"
+# id|why|version is three fields; reading it into two names left the empty
+# version riding inside the second and every covered line ended in "|".
+lacks "and the covered line carries no stray field separator" "kit|" "$_covered_out"
 rm -rf "$EXAKIT_HOME/dash-server-venv"
 
 echo "the module system-present hook overrides the PATH check:"
@@ -953,6 +956,10 @@ rm -f "$EXAKIT_HOME/dash-server-venv/bin/python"
 printf '#!/bin/sh\necho 0.1.0\n' > "$EXAKIT_HOME/dash-server-venv/bin/python"
 chmod +x "$EXAKIT_HOME/dash-server-venv/bin/python"
 manifest_set components.dash_server.python "$EXAKIT_HOME/dash-server-venv/bin/python"
+# The version RECORD too: a real install writes it, and presence now asks
+# for it, because a venv whose metadata answers a version is not evidence
+# that the install ever finished.
+manifest_set components.dash_server.version "0.1.0"
 check "an installed add-on with a log hook is a target" "dash-server" \
     "$(exakit_log_targets | cut -d'|' -f1 | grep -x dash-server)"
 check "--path prints the file, nothing else" "$EXAKIT_HOME/logs/dash-server.log" \
@@ -1087,6 +1094,10 @@ rm -f "$EXAKIT_HOME/dash-server-venv/bin/python"
 printf '#!/bin/sh\necho 0.1.0\n' > "$EXAKIT_HOME/dash-server-venv/bin/python"
 chmod +x "$EXAKIT_HOME/dash-server-venv/bin/python"
 manifest_set components.dash_server.python "$EXAKIT_HOME/dash-server-venv/bin/python"
+# The version RECORD too: a real install writes it, and presence now asks
+# for it, because a venv whose metadata answers a version is not evidence
+# that the install ever finished.
+manifest_set components.dash_server.version "0.1.0"
 check "the registry lists the database and the service add-on" "database dash-server" \
     "$(exakit_service_ids | tr '\n' ' ' | sed 's/ $//')"
 # An add-on with no service hooks must not appear as a service.
@@ -1266,7 +1277,13 @@ check "a venv without the engine does not count as installed" "not installed" "$
 # add-on must fail SOFT and name the fix, never end the caller's run.
 _jt_missing="$( (
     EXAKIT_JSON_TABLES_MIRROR_TAG="does-not-exist-$$"
-    _json_tables_mirror_wheel_name() { return 1; }
+    # The module chooses its sentence from the HTTP status the release lookup
+    # recorded, so the stub has to leave that record behind the way a real 404
+    # would -- a bare "return 1" is "GitHub could not be reached", which names
+    # the network, not the workflow.
+    _json_tables_mirror_wheel_name() {
+        _jtm_c="$(_json_tables_mirror_cache_file 2>/dev/null || printf '%s' "$EXAKIT_JSON_TABLES_MIRROR_CACHE")"
+        mkdir -p "$(dirname "$_jtm_c")"; printf '404' > "$_jtm_c.http"; return 1; }
     exakit_ensure_uv() { return 0; }
     EXAKIT_UV_BIN="$WORK/bin/uv"; printf '#!/bin/sh\nexit 0\n' > "$WORK/bin/uv"; chmod 755 "$WORK/bin/uv"
     detect_os() { printf 'linux\n'; }; detect_arch() { printf 'x86_64\n'; }
@@ -1306,12 +1323,12 @@ check "a manually installed add-on reads as present" "present" "$( (
     PATH="$WORK/manual-bin:$PATH"
     _exakit_marketplace_addon_present json-tables && printf 'present\n' || printf 'missing\n'
 ) )"
-check "the menu says so instead of offering an install" "on this system" "$( (
+check "the menu says so instead of offering an install" "managed outside the kit" "$( (
     PATH="$WORK/manual-bin:$PATH"
     # The row sits inside a panel now, so strip whatever border precedes it -
     # ASCII here, since a redirected run is always in plain mode - before
     # anchoring on the id.
-    exakit_marketplace_menu 2>/dev/null | sed 's/^[^A-Za-z]*//' | grep '^json-tables' | grep -o 'on this system' | head -1
+    exakit_marketplace_menu 2>/dev/null | sed 's/^[^A-Za-z]*//' | grep '^json-tables' | grep -o 'managed outside the kit' | head -1
 ) )"
 check "and it cannot be selected" "not-selectable" "$( (
     PATH="$WORK/manual-bin:$PATH"
@@ -1330,17 +1347,22 @@ check "a manual copy is never counted as kit-managed" "not-managed" "$( (
 rm -f "$WORK/manual-bin/exasol-json-tables"
 
 echo "nothing is advertised before it is built:"
-# The mirror release is the authority on what can be installed. If the
-# packaging workflow has not built a version yet, the update flow must not
-# offer it -- an offer the user cannot act on is worse than no offer.
-check "the advertised version comes from the mirror, not the manifest" "mirror-2026aa" "$( (
-    _json_tables_mirror_version() { printf 'mirror-2026aa\n'; }
-    exakit_component_latest json-tables
+# versions.json is the authority on what can be installed: the packaging
+# workflow publishes the immutable json-tables-<version> release BEFORE the
+# pull request that advertises it can merge (CI checks every pinned digest
+# against that release). So "latest" for this add-on is the advertised
+# version, answered with no network call -- an upstream tag the kit has not
+# packaged is never offered, and a release body is never consulted (reading
+# the version off the release while the pins described another build is how
+# "Installing JSON Tables v0.3" came to verify a v0.2 digest).
+check "the advertised version comes from versions.json, without the network" \
+    "$(exakit_versions_value components.json-tables.version)" "$( (
+    curl() { printf 'NETWORK\n' >&2; return 7; }
+    exakit_component_latest json-tables 2>&1
 ) )"
-check "an unreachable mirror advertises nothing rather than guessing" "none" "$( (
-    _json_tables_mirror_version() { return 1; }
-    _out="$(exakit_component_latest json-tables 2>/dev/null || true)"
-    [ -n "$_out" ] && printf '%s\n' "$_out" || printf 'none\n'
+check "with nothing advertised the module's fallback answers, not a guess" "$EXAKIT_JSON_TABLES_VERSION_FALLBACK" "$( (
+    exakit_versions_value() { return 1; }
+    exakit_component_latest json-tables 2>/dev/null
 ) )"
 echo "data-load's default row when every bundled dataset is in:"
 # THE BUG: with nothing left to load from the bundle, the pre-selected row was
@@ -1590,12 +1612,33 @@ echo "the selection and the install progress are ONE table:"
 # underneath it, so the reader had to map one onto the other.
 COMMON_SH_ADDONS="$(cat "$ROOT/setup/lib/common.sh")"
 has "the selection IS the table"        'ui_table_menu "$EXAKIT_ADDON_TABLE_STATE"' "$COMMON_SH_ADDONS"
-has "...titled for add-ons"            'UI_TABLE_TITLE="Add-ons to install"'       "$COMMON_SH_ADDONS"
+has "...titled for add-ons"            'UI_TABLE_TITLE="Marketplace add-ons"'      "$COMMON_SH_ADDONS"
+has "...with a Version column"          'UI_TABLE_COL2="Version"'                    "$COMMON_SH_ADDONS"
+has "...and a Description column"       'UI_TABLE_COL3="Description"'                "$COMMON_SH_ADDONS"
 lacks "and not a checkbox any more"    'ui_checkbox_menu "Select add-ons to install"' "$COMMON_SH_ADDONS"
 has "the install starts the same table" 'ui_table_begin "$EXAKIT_ADDON_TABLE_STATE"' "$COMMON_SH_ADDONS"
 has "...and stops it"                   'ui_table_end "$EXAKIT_ADDON_TABLE_STATE"'   "$COMMON_SH_ADDONS"
-# The STATE table above the selection is a different, deliberate thing and stays.
-has "the state table is still printed"  'ui_panel_begin "Marketplace add-ons"'       "$COMMON_SH_ADDONS"
+# The state PANEL above the selection is gone: it listed every add-on with a
+# version and a description, and then the selection under it repeated every
+# installable one by name -- the same list twice, a box apart. Its two columns
+# moved into the selection, and the add-ons it alone could show (installed,
+# already on the system, missing from this kit copy) come back as dim,
+# unpickable rows in that same table.
+lacks "the state panel is gone"         'ui_panel_begin "Marketplace add-ons"'       "$COMMON_SH_ADDONS"
+has "...its columns moved into the table" 'UI_TABLE_COL3="Description"'              "$COMMON_SH_ADDONS"
+has "...and its other rows became disabled ones" '0|disabled|||||%s|%s|%s|%s' "$COMMON_SH_ADDONS"
+# The row builder must do NO lookups of its own. Resolving the version and the
+# About inside it put a version probe and a network fetch behind every caller --
+# including the pty scenario that drives this table with three ids that are not
+# add-ons at all. The caller iterating the add-ons already has both values and
+# hands them over in EXAKIT_ADDON_TABLE_META.
+BUILDER_SRC="$(sed -n '/^_exakit_addon_table_build()/,/^}/p' "$ROOT/setup/lib/common.sh")"
+lacks "the row builder fetches no About"     "exakit_marketplace_addon_description" "$BUILDER_SRC"
+lacks "...and probes no version"             "exakit_component_available"           "$BUILDER_SRC"
+has   "it is handed them instead"            'EXAKIT_ADDON_TABLE_META'              "$BUILDER_SRC"
+# ...and the caller resolves them only when a table will actually draw them.
+has "the caller skips the lookup for a scripted answer" \
+    'if [ -z "${EXAKIT_MARKETPLACE_ADDONS:-}" ]; then' "$COMMON_SH_ADDONS"
 
 # The rows: a group, one per installable add-on on a tree connector, then Skip.
 ADDON_STATE_FILE="$WORK/addon-table"
@@ -1705,6 +1748,100 @@ if command -v python3 >/dev/null 2>&1; then
 else
     check "exactly one add-ons table survives" "skipped" "skipped"
 fi
+
+echo "== a half-installed add-on can be retried, and Windows can extract =="
+
+DS_PS1="$(cat "$ROOT/setup/lib/dash-server.ps1")"
+DS_SH="$(cat "$ROOT/setup/lib/dash-server.sh")"
+
+# A full Windows install ended with "dash-server installer reported: tar
+# (child): Cannot connect to C: resolve failed". Two stacked causes:
+#
+# 1. `tar` off PATH is Git's GNU tar on a developer machine, ahead of Windows'
+#    own bsdtar, and GNU tar reads "C:\..." as host:path rsh syntax.
+# 2. $ErrorActionPreference is Stop module-wide, so that stderr became a
+#    TERMINATING error - which 2>$null does not prevent - and a best-effort
+#    data-file top-up took the whole add-on install down with it.
+lacks "tar is not taken off PATH"   '& tar -xzf'                        "$DS_PS1"
+has   "...it is asked for by name"  'Join-Path $env:SystemRoot "System32\tar.exe"' "$DS_PS1"
+has   "...and cannot terminate"     '$ErrorActionPreference = "Continue"'  "$DS_PS1"
+has   "...with the code inspected"  '$tarCode = $LASTEXITCODE'             "$DS_PS1"
+
+# That failure left the venv behind but no launcher, and the version check read
+# ONLY the venv - so every caller believed the add-on was fully installed:
+# the marketplace answered "already present - nothing to install", `exakit
+# update dash-server` answered "everything is already current", and starting it
+# answered "not installed". No documented command could recover it.
+#
+# Presence now means USABLE, on both sides. json-tables already took this line.
+has "presence needs the record"     'if (-not (Get-ExakitManifestValue "components.dash_server.version")) { return $null }' "$DS_PS1"
+has "...and the twin agrees"        '_dsv_recorded="$(manifest_get components.dash_server.version' "$DS_SH"
+# ...and the venv is still asked, because neither half alone is evidence.
+has "the venv answers the version"  'return (Get-DashServerPackageVersion)'  "$DS_PS1"
+has "...and on the shell side"      '    dash_server_package_version'        "$DS_SH"
+# The installer asks the venv-only question, because it runs before the
+# record exists - asking the strict one there made a good install report
+# "the venv cannot report a dash-server version after the install".
+has "the installer asks the venv"   'if (-not (Get-DashServerPackageVersion)) {' "$DS_PS1"
+has "...and on the shell side"      '_ds_now="$(dash_server_package_version'   "$DS_SH"
+
+echo
+echo "a refused lookup is not a missing release:"
+# On a real install json-tables failed with "the prebuilt mirror release was not
+# found ... run the pkg workflow once to publish it". That release had existed
+# since August and held the exact asset that machine needed. GitHub had answered
+# 403: its API allows 60 calls an hour unauthenticated, and a full install spends
+# them. `curl -f` turns any 4xx into an empty body, so a refusal and an absence
+# were indistinguishable, and the remedy named was work that changes nothing.
+JT_SH="$(cat "$ROOT/setup/lib/json-tables.sh")"
+JT_PS="$(cat "$ROOT/setup/lib/json-tables.ps1")"
+CO_SH="$(cat "$ROOT/setup/lib/common.sh")"
+has "the shell records the HTTP status"  'EXAKIT_JSON_TABLES_MIRROR_HTTP=' "$JT_SH"
+has "...and no longer uses curl -f"      'set -- -sSL --retry 3'          "$JT_SH"
+# ONE request serves all three callers. Each reaches the release through $( ),
+# so the cache and the status both have to be FILES: a variable would be set in
+# a subshell and thrown away, which is the original bug wearing a cache.
+check "the release is fetched from one place only" "1" \
+    "$(grep -c 'api.github.com' "$ROOT/setup/lib/json-tables.sh")"
+has "the document is cached in a file"   'EXAKIT_JSON_TABLES_MIRROR_CACHE=' "$JT_SH"
+has "...and so is the status"            '> "$_jmr_c.http"'                 "$JT_SH"
+has "...which the caller reads back"     'cat "$(_json_tables_mirror_cache_file).http"' "$JT_SH"
+lacks "a refusal is never cached"        'printf %s "$_jmr_http" > "$_jmr_c" ' "$JT_SH"
+has "...and answers 403 differently"     '403|429)'                       "$JT_SH"
+has "...while keeping the 404 remedy"    'pkg / json-tables'              "$JT_SH"
+has "the twin records it too"            'JsonTablesMirrorHttp'           "$JT_PS"
+has "...and branches on 403"             '-eq "403"'                      "$JT_PS"
+has "a token is honoured on the shell"   'Bearer $GITHUB_TOKEN'           "$JT_SH"
+has "...and on Windows"                  'Bearer $($env:GITHUB_TOKEN)'    "$JT_PS"
+# The failure is said ONCE: the row says it, the module's own reason said why,
+# and the note under the table is gone. Asserted on what replaced it, not on the
+# wording that was removed -- that wording had already been changed once by
+# another hand, so a needle aimed at it tests nothing.
+has "the add-on failure is only logged"  '_exakit_log_file "WARN  $_mp_id did not finish installing"' "$CO_SH"
+lacks "no note is printed under the frame" '_exakit_addon_note warn \\' "$CO_SH"
+
+printf '\n== a failing add-on is readable, not spliced through the table ==\n'
+
+# A json-tables download failure arrived on a real machine as
+#   | [v] exasol-vscode  ok Exasol view in VS Code's sidebar (3s) |eleases/download/...
+#   | [ ] Skip                                                    |ownloaded or verified (see log)
+# - the reason written straight through the frame of the live add-on table and
+# effectively unreadable. warn and error are the two printers the quiet flag
+# deliberately does NOT gate, which is exactly why they are the two that reach
+# it, and every add-on module calls them directly rather than the deferring
+# helper. So they defer themselves.
+COMMON_D="$(cat "$ROOT/setup/lib/common.sh")"
+COMMON_PS_D="$(cat "$ROOT/setup/lib/exakit-common.ps1")"
+
+has   "the shell defers under a table"  "_exakit_defer_under_addon_table" "$COMMON_D"
+check "...from both printers"           "2" \
+    "$(printf '%s\n' "$COMMON_D" | grep -c 'if _exakit_defer_under_addon_table')"
+has   "Warn2 defers too"                'if ($script:ExakitAddonTableLive) {' "$COMMON_PS_D"
+check "...and so does the error printer" "2" \
+    "$(printf '%s\n' "$COMMON_PS_D" | grep -c 'Kind = "warn"; Text = $Msg')"
+# The log still gets every line: deferring must never mean losing.
+check "the shell still logs both"       "2" \
+    "$(printf '%s\n' "$COMMON_D" | grep -cE 'if _exakit_defer_under_addon_table .*_exakit_log_file')"
 
 echo "passed: $PASS, failed: $FAIL"
 [ "$FAIL" -eq 0 ]

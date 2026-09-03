@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "updated": "2026-08-27",
+  "updated": "2026-09-03",
   "kit": {
     "version": "0.2.1"
   },
@@ -27,19 +27,18 @@
       }
     },
     "mcp": {
-      "version": "2.1.0",
+      "version": "2.2.0",
       "package": "exasol-mcp-server",
       "severity": "normal"
     },
     "pyexasol": {
-      "version": "2.3.1",
+      "version": "2.3.2",
       "package": "pyexasol",
       "severity": "normal"
     },
     "skills": {
-      "version": "1.2.0",
-      "severity": "normal",
-      "note": "the AI skills shipped in this repo's skills/ directory; bump when a skill is added or its guidance changes"
+      "version": "1.6.0",
+      "severity": "normal"
     },
     "dash-server": {
       "version": "0.1.0",
@@ -57,7 +56,17 @@
     },
     "json-tables": {
       "version": "v0.3",
-      "severity": "normal"
+      "release": "json-tables-v0.3",
+      "severity": "normal",
+      "wheel": "exasol_json_tables-0.3.0-py3-none-any.whl",
+      "sha256": {
+        "cargo-windows-x86_64": "aeb2349e92de86c3da76af487737b7b3c2959ce34b3ce7b08b70d20ae5718bac",
+        "linux-aarch64": "c6e8bffd8a7f2b10397ed83a069a1db96ee0813da907de769adbce224a8bf121",
+        "linux-x86_64": "115229b1e99feef70342d87d60c6dfe815691965c624f200078edbd644ca2493",
+        "macos-aarch64": "6a19027fb455769e1c1f2915309bbd4f4ca3d77f05a35e6574d18bc2d5b8018e",
+        "wheel": "e8c2468b321d1bc8f57ac124ceb06a68ba80a8f5b7830d74dc75b581980b0f81",
+        "windows-x86_64": "acd0e1742864457019fe8963b8c8f429d12d7021dcab491def11870d73c93ff6"
+      }
     }
   }
 }

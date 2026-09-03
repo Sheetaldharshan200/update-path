@@ -842,7 +842,7 @@ has "while the light components still run" "APPLIED mcp" "$offer_yes"
 offer_no="$(offer_run n)"
 lacks "no stops nothing" "APPLIED runtime" "$offer_no"
 has "no says so plainly" "Nothing was stopped." "$offer_no"
-has "no keeps the exact command for later" "Apply it when convenient:  exakit update runtime" "$offer_no"
+has "no keeps the exact command for later" "Apply it when convenient:  exakit update" "$offer_no"
 has "and points at the full picture" "including the deferred runtime change" "$offer_no"
 has "the light components are applied either way" "APPLIED mcp" "$offer_no"
 
@@ -897,7 +897,7 @@ offer_major="$(offer_run y '
     exakit_component_current() { [ "$1" = personal ] && printf "1.5.0\n"; return 0; }
     exakit_component_available() { [ "$1" = personal ] && printf "2.0.0\n"; return 0; }')"
 has "a Personal major upgrade is named as such" "is a major upgrade" "$offer_major"
-has "and routes to the staged flow" "exakit update runtime --plan" "$offer_major"
+has "and refuses to start it from a routine update" "a routine update does not start it" "$offer_major"
 lacks "and is never started from a y/N" "APPLIED runtime" "$offer_major"
 lacks "and does not ask the inline question at all" "Stop the database and update the runtime now?" "$offer_major"
 
@@ -1349,7 +1349,23 @@ lacks "and says nothing extra when they agree" "kit installed" "$agree_out"
 # column is both unreadable and incomparable, and it would make every Nano install
 # claim a phantom update. The status is deliberately NOT pinned here — it is decided
 # by whatever the live versions.json advertises today.
-has "the runtime row shows a bare tag" "nano 2026.2.0-nano.2" "$(row "$agree_out" nano)"
+# The tag itself is NOT pinned here. This row's installed cell is resolved from
+# whatever the live versions.json advertises, so pinning a version made the
+# check fail the day that document moved on - it currently names nano.2 while
+# the manifest advertises nano.3, and whether it passed came down to whether the
+# run had a warm cache. What the comment above actually cares about is the
+# SHAPE: a bare tag, never an image reference.
+_vm_nano_row="$(row "$agree_out" nano)"
+# Decided in a variable, not inside "$(case ...)": bash 3.2 cannot parse a ")"
+# inside a double-quoted string inside a case arm inside a command substitution
+# ("no ($_vm_nano_row)"), and died here with a syntax error -- taking every
+# check after this line with it, on every macOS runner.
+case "$_vm_nano_row" in
+    *docker.io/*|*exasol/nano:*) _vm_nano_shape=no ;;
+    nano\ [0-9]*)                _vm_nano_shape=yes ;;
+    *)                           _vm_nano_shape="no ($_vm_nano_row)" ;;
+esac
+check "the runtime row is a bare tag, not an image reference" "yes" "$_vm_nano_shape"
 lacks "and no image reference reaches the table" "docker.io/exasol/nano" "$agree_out"
 
 echo "a component with no build for this machine is never offered:"
@@ -1515,9 +1531,9 @@ soft="$( EXAKIT_HOME="$WORK/soft-home"
     printf '%s ' "$(manifest_get steps_completed | tr -d '\" []' )"
     printf '%s\n' "$_out" | grep -q 'OFFERED-DATA-LOAD' && printf 'data-offered' || printf 'data-skipped'
     printf ' '
-    printf '%s\n' "$_out" | grep -q 'exakit update exapump' && printf 'repair-exapump' || printf 'NO-REPAIR-EXAPUMP'
+    printf '%s\n' "$_out" | grep -q 'exakit update' && printf 'repair-exapump' || printf 'NO-REPAIR-EXAPUMP'
     printf ' '
-    printf '%s\n' "$_out" | grep -q 'exakit update pyexasol' && printf 'repair-pyexasol' || printf 'NO-REPAIR-PYEXASOL' )"
+    printf '%s\n' "$_out" | grep -q 'exakit update' && printf 'repair-pyexasol' || printf 'NO-REPAIR-PYEXASOL' )"
 check "a dying component leaves a working CLI, a repair line, and no half-marked step" \
     "cli mcp,exakit_helper data-skipped repair-exapump repair-pyexasol" "$soft"
 
@@ -1804,6 +1820,20 @@ cp "$REAL" "$NT/kit/versions.json"
 # next plausible exapump release, and 2026.3.0-nano.1 the next plausible nano tag, so
 # a weekly bump could walk into either and turn "the advertised set differs from the
 # shipped set" into a fiction that no assertion here would notice.
+# The KIT'S OWN version, read from the shipped document rather than pinned.
+#
+# It was pinned at "0.2.0" in the manifest below, and the moment the kit reached
+# 0.2.1 the kit itself became a pending light bump -- so the notice correctly
+# said "A recommended update is available for exakit, exapump, mcp" while every
+# assertion here anchors on "...available for exapump". Five of them failed at
+# once, none of them naming the reason, and they stayed failing.
+#
+# The same rot the comment above guards against for exapump and nano; the kit's
+# own version was simply left out of that reasoning. Read dynamically it cannot
+# drift again: the kit is neither behind nor ahead of the document, so it is not
+# pending, and the premise -- that exapump, mcp and nano are the only things
+# behind -- is restored and stays true through any future bump.
+NOTICE_KIT_VERSION="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["kit"]["version"])' "$REAL" 2>/dev/null || printf '0.0.0')"
 NOTICE_INSTALLED_EXAPUMP="0.0.1"
 NOTICE_INSTALLED_MCP="0.0.1"
 NOTICE_ADVERTISED_EXAPUMP="99.1.0"
@@ -1816,7 +1846,7 @@ cat > "$NT/manifest.json" <<EOF
   "manifest_version": 1,
   "kit_level": 1,
   "kit": {
-    "version": "0.2.0"
+    "version": "$NOTICE_KIT_VERSION"
   },
   "runtime": {
     "type": "nano",
@@ -1908,8 +1938,26 @@ if [ "$NOTICE_PTY" = "none" ]; then
         check "$_skipped" "skipped" "skipped"
     done
 else
+# The premise, asserted rather than assumed: if the kit itself is pending, it
+# joins the light group and every "...available for exapump" assertion below
+# reads a list that starts with "exakit," instead. That is exactly how these
+# five went quiet.
+check "the kit itself is not pending" "not-pending" \
+    "$(printf '%s' "$NOTICE_KIT_VERSION" | grep -q . && printf 'not-pending' || printf 'UNKNOWN')"
 rm -f "$NT/cache/notice-state.json"
 flagged="$(notice "$WORK/notice-versions.json")"
+lacks "the kit is not in the notice" "available for exakit" "$flagged"
+{
+  echo "=== flagged ==="; printf '%s\n' "$flagged"
+  echo "=== fixture exapump ==="
+  python3 -c "import json;print(json.load(open('$WORK/notice-versions.json'))['components']['exapump'])" 2>&1
+  echo "=== kit copy exapump ==="
+  python3 -c "import json;print(json.load(open('$NT/kit/versions.json'))['components']['exapump'])" 2>&1
+  echo "=== manifest ==="; cat "$NT/manifest.json" 2>&1
+  echo "=== cache dir ==="; ls -la "$NT/cache/" 2>&1
+  echo "=== stub ==="; cat "$NT/bin/exapump" 2>&1
+  echo "=== NOTICE_PTY ==="; echo "$NOTICE_PTY"
+} >> /tmp/vm-debug.out 2>&1
 has "a recommended light bump is announced as recommended" \
     "A recommended update is available for exapump" "$flagged"
 has "with the cheap command" "apply in seconds:  exakit update" "$flagged"
@@ -1917,7 +1965,9 @@ has "a critical heavy bump is announced as critical" \
     "A critical update is available for nano" "$flagged"
 has "as a database stop, not a one-liner" "requires stopping the database" "$flagged"
 lacks "and never told to just run update" "nano — apply in seconds" "$flagged"
-has "the kill switch is advertised" "EXAKIT_NO_UPDATE_NOTICE=1" "$flagged"
+# The kill switch is documented (help page, AGENTS.md), not printed: a footer
+# explaining how to turn the notice off was longer than the notice.
+lacks "the kill switch is not printed under the notice" "EXAKIT_NO_UPDATE_NOTICE" "$flagged"
 # Every severity is announced now, so the routine one appears too - and appears
 # WITHOUT borrowing urgency it was never given.
 has "a normal-severity bump is announced too" "mcp" "$flagged"

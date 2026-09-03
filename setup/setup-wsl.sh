@@ -59,22 +59,36 @@ exakit_resolve_install_versions
 EXAKIT_CURRENT_STEP="requirements"
 nano_check_requirements
 
-# --- step 2: Nano container --------------------------------------------------
-if begin_step runtime "Step 1/5  Exasol Nano container"; then
+# --- step 2: the Runtime image ----------------------------------------------
+# Its own step, matching the macOS shape and heading. What it fetches is the
+# Nano image rather than a native launcher, so the lines UNDER the heading name
+# the image - the two platforms install different things through the same step.
+if begin_step launcher "Step 1/6  Exasol launcher"; then
+    nano_pull_image
+    mark_step launcher
+fi
+
+# --- step 3: local deployment ------------------------------------------------
+if begin_step runtime "Step 2/6  Local database deployment"; then
     nano_install
     mark_step runtime
 else
     if [ "$(nano_status)" != "running" ]; then
         info "Runtime marked done but not running — starting it"
         nano_install
+        # Same as the macOS resume: nano_install registers `volume rm` as its
+        # undo, and with no mark_step here it would stay armed. Worse than the
+        # macOS case, because that volume is armed whenever the CONTAINER is
+        # missing even if the volume already held data -- so the rollback could
+        # delete data this run never created.
+        rollback_clear
     fi
 fi
 
-# --- steps 2-5: exapump, MCP server, pyexasol, exakit helper (shared) ---------
-kit_shared_steps 2 5 "$SCRIPT_DIR" "$KIT_ROOT"
+# --- steps 3-6: exapump, MCP server, pyexasol, exakit helper (shared) ---------
+kit_shared_steps 3 6 "$SCRIPT_DIR" "$KIT_ROOT"
 
 exakit_finish
-ok "Setup complete"
 connection_summary
 # Only when the kit version moved during this run, and never able to fail it: the
 # trap is already released and every reader inside degrades to silence.
@@ -83,6 +97,9 @@ exakit_print_whats_new_box "$KIT_ROOT" || true
 # the one command that installs it. A step that failed mid-run scrolls away;
 # this is what the user is still looking at when the installer exits.
 exakit_print_soft_failures
+# The install's one closing line, after the panel and after anything that did
+# not finish. Silent when a soft failure was recorded.
+exakit_print_ready_line
 # The closing offer: optional marketplace add-ons, asked exactly once, only on
 # an interactive run whose steps all completed, and only while something is
 # actually on offer. The subshell keeps any failure inside it from ending an
@@ -94,4 +111,11 @@ exakit_print_soft_failures
 # the marketplace offer so an add-on installed from it joins the boot set.
 exakit_autostart_default_on || true
 ( exakit_marketplace_offer ) || true
-info "Run \"exakit help\" for support"
+# A rule, then a heading: the last line on screen is where the reader is left,
+# and run together with whatever the marketplace printed it read as one more of
+# its bullets. The rule gives it air; the green arrow says it is not a step.
+ui_rule
+heading "Run \"exakit help\" for support"
+# Two blank lines before the shell prompt returns. The installer's last line was
+# landing directly against it, so the prompt read as part of the output.
+printf '\n\n'

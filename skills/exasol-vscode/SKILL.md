@@ -1,5 +1,6 @@
 ---
 name: exasol-vscode
+addon: exasol-vscode
 description: Install and use the Exasol for VS Code extension from the starter kit's marketplace — SQL editing and schema browsing against the local Exasol database inside the editor, including why it is hidden on machines without VS Code and why the kit refuses to manage a copy the user installed themselves. Triggers — "Exasol extension for VS Code", "browse my schema in the editor", "write SQL in VS Code against Exasol", "install exasol-vscode", "the VS Code add-on is not listed", "remove the Exasol extension".
 ---
 
@@ -69,7 +70,7 @@ paste it into a settings file you then show the user.**
 
 ```bash
 exakit version                   # its row shows installed vs advertised
-exakit update exasol-vscode      # also the repair command
+exakit update      # also the repair command
 exakit uninstall                 # selectable on its own
 ```
 

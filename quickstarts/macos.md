@@ -7,7 +7,7 @@ Gets you from a bare Mac to a local Exasol database with an AI assistant connect
 - macOS on Apple Silicon or Intel
 - 8 GB+ RAM, ~20 GB free disk
 
-The install runs unattended and usually finishes in **under 2 minutes**.
+The install runs unattended, and the database is usually up in **under 2 minutes**. The steps after it — sample data, the AI bridge, the Python driver — add to that.
 
 Check before you start (installs nothing):
 
@@ -61,8 +61,7 @@ Then continue with the [first workflow](../demo/first-revenue-analysis.md).
 ```bash
 exakit version         # installed vs the versions the maintainers advertise
 exakit update          # the quick ones in seconds, then it asks before touching the database
-exakit update runtime  # Exasol Personal itself, on its own; a major version routes through
-                       # --plan / --backup / --apply, and your data is backed up first
+exakit update --yes    # unattended: applies a waiting database update without asking
 ```
 
 A waiting database update is offered inline — `Stop the database and update the

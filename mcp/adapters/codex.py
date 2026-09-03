@@ -38,6 +38,14 @@ class CodexAdapter(ClientAdapter):
     def describe_capabilities(self) -> AdapterCapabilities:
         return AdapterCapabilities(
             supports_stdio=True,
+            # Streamable HTTP is first-class in Codex now. Verified against
+            # Codex CLI 0.147.0 on 2026-09-03 by letting it write the entry
+            # itself (`codex mcp add <name> --url <url>`), which produces
+            #     [mcp_servers.<name>]
+            #     url = "<url>"
+            # with no feature flag. That is exactly the shape render() emits
+            # for an HTTP definition. (An earlier Codex gated this behind an
+            # experimental flag, which is why this adapter used to say no.)
             supports_http=True,
             supports_managed_file=True,
             supports_patch_mode=True,
@@ -149,18 +157,25 @@ class CodexAdapter(ClientAdapter):
     def render(
         self, server_definition: ServerDefinition, inspection: AdapterInspection
     ) -> RenderResult:
-        if server_definition.transport != DeploymentMode.STDIO:
-            raise ValueError("Codex rendering currently supports stdio only.")
-        if not server_definition.command:
-            raise ValueError("Codex stdio rendering requires a command.")
         document = dict(inspection.document or {})
         mcp_servers = dict(document.get("mcp_servers", {}))
-        entry = {
-            "command": server_definition.command,
-            "args": list(server_definition.args),
-        }
-        if server_definition.env:
-            entry["env"] = dict(server_definition.env)
+        entry: dict
+        if server_definition.transport is DeploymentMode.HTTP:
+            # A remote server is one key: Codex reads `url` and speaks
+            # streamable HTTP to it. No env block -- the client does not start
+            # anything, so there is no process to hand variables to.
+            if not server_definition.url:
+                raise ValueError("Codex HTTP rendering requires a url.")
+            entry = {"url": server_definition.url}
+        else:
+            if not server_definition.command:
+                raise ValueError("Codex stdio rendering requires a command.")
+            entry = {
+                "command": server_definition.command,
+                "args": list(server_definition.args),
+            }
+            if server_definition.env:
+                entry["env"] = dict(server_definition.env)
         mcp_servers[server_definition.name] = entry
         document["mcp_servers"] = mcp_servers
         return RenderResult(

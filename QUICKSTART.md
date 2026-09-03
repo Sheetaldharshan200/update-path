@@ -4,8 +4,17 @@ Goal: a local Exasol database on your machine, an AI assistant connected to it, 
 
 ## 1. Check your machine (optional, 10 seconds)
 
+**macOS / Linux / WSL:**
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/krishna-exasol/update-path/main/install.sh | EXAKIT_PREFLIGHT=1 sh
+```
+
+**Windows (PowerShell):** there is no `sh` there, and `curl` is an alias for `Invoke-WebRequest`, so set the variable first and use the PowerShell installer:
+
+```powershell
+$env:EXAKIT_PREFLIGHT = '1'
+irm https://raw.githubusercontent.com/krishna-exasol/update-path/main/install.ps1 | iex
 ```
 
 ## 2. Install everything (one command)
@@ -76,7 +85,7 @@ exakit uninstall           # remove everything the kit installed
 The quick updates take seconds and no downtime. When a **database** update is
 waiting, `exakit update` asks — `Stop the database and update the runtime now?
 [y/N]` — and on `y` it stops the database, updates it, brings it back up and says
-so. On `n` nothing is stopped and `exakit update runtime` applies it later. Your
+so. On `n` nothing is stopped and `exakit update` applies it later. Your
 data is kept either way. Full detail:
 [Staying up to date](README.md#staying-up-to-date).
 

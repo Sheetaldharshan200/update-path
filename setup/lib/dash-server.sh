@@ -115,12 +115,31 @@ dash_server_venv_python() {
     printf '%s\n' "$EXAKIT_DASH_SERVER_VENV/bin/python"
 }
 
+# dash_server_package_version — what the VENV alone says, with no opinion on
+# whether the add-on is usable yet. The installer asks this immediately after
+# pip, before the launcher exists; dash_server_installed_version below is the
+# stricter question every other caller wants.
+# ⇄ twin: Get-DashServerPackageVersion in dash-server.ps1.
+dash_server_package_version() {
+    _dsp_python="$(dash_server_venv_python)"
+    [ -x "$_dsp_python" ] || return 1
+    ( "$_dsp_python" -c 'from importlib.metadata import version; print(version("dash-server"))' && : ) 2>/dev/null
+}
+
 dash_server_installed_version() {
-    _dsv_python="$(dash_server_venv_python)"
-    [ -x "$_dsv_python" ] || return 1
-    # dash-server exposes no __version__; the distribution metadata written by
-    # the install is the authority. ⇄ twin: Get-DashServerInstalledVersion.
-    ( "$_dsv_python" -c 'from importlib.metadata import version; print(version("dash-server"))' && : ) 2>/dev/null
+    # The manifest RECORD as well as the venv. The record is written at the END
+    # of a successful install, so an install that died earlier leaves a venv and
+    # nothing else, and no longer reports a version for something no command can
+    # start. Every caller believed the old answer: the marketplace said "already
+    # present - nothing to install", `exakit update dash-server` said
+    # "everything is already current", and starting it said "not installed" -
+    # with no documented command able to recover.
+    #
+    # Both halves, because neither alone is evidence. json_tables_installed_version
+    # already takes exactly this line.
+    _dsv_recorded="$(manifest_get components.dash_server.version 2>/dev/null || true)"
+    [ -n "$_dsv_recorded" ] || return 1
+    dash_server_package_version
 }
 
 # dash_server_release_url <version> — the source tarball of the tagged release.
@@ -141,7 +160,7 @@ _dash_server_not_installed() {
     # managed-Python cache makes the retry fail identically forever, so
     # "retry with" on its own is a loop, not a remedy.
     command -v exakit_explain_last_log_error >/dev/null 2>&1 && exakit_explain_last_log_error
-    warn "Everything else in the kit is unaffected. Retry with: exakit update dash-server"
+    warn "Everything else in the kit is unaffected. Retry with: exakit update"
     # The reason has to outlive this subshell so the closing summary can print it
     # instead of a generic "did not finish" (see exakit_note_failure in common.sh).
     command -v exakit_note_failure >/dev/null 2>&1 && exakit_note_failure "$1"
@@ -203,7 +222,7 @@ dash_server_install() {
         # The install is not done until the venv can actually answer for the
         # version: a tarball that unpacked but failed to build would otherwise
         # be reported as installed and only fail at first launch.
-        _ds_now="$(dash_server_installed_version || true)"
+        _ds_now="$(dash_server_package_version || true)"
         if [ -z "$_ds_now" ]; then
             _dash_server_not_installed "the venv cannot report a dash-server version after the install (see log)"
             return 1
@@ -228,6 +247,14 @@ dash_server_install() {
     manifest_set components.dash_server.command "$EXAKIT_DASH_SERVER_BIN"
     manifest_set components.dash_server.port "$EXAKIT_DASH_SERVER_PORT"
     manifest_set components.dash_server.instance "$EXAKIT_DASH_SERVER_HOME/instance"
+
+    # AFTER the port is recorded, because that record is where the endpoint URL
+    # comes from. Until this ran, dash-server's control plane was registered
+    # nowhere: an agent had to hand-roll an HTTP transport against /mcp to reach
+    # tools that every other MCP server on the machine offers by name.
+    if command -v mcp_register_addon_servers >/dev/null 2>&1; then
+        mcp_register_addon_servers "dash-server" || true
+    fi
 }
 
 # _dash_server_restore_package_data — put back data files the release ships in
@@ -394,7 +421,7 @@ if [ "$_ds_holder" = "ours" ]; then
     exit 0
 elif [ -n "$_ds_holder" ]; then
     printf 'Port @PORT@ is held by another process (%s), so dash-server cannot start.\n' "$_ds_holder"
-    printf 'Move it: EXAKIT_DASH_SERVER_PORT=<port> exakit update dash-server\n'
+    printf 'Move it: EXAKIT_DASH_SERVER_PORT=<port> exakit update\n'
     exit 1
 fi
 : "${DASH_SERVER_INSTANCE_PATH:=@INSTANCE@}"
@@ -446,7 +473,7 @@ dash_server_validate() {
     # soft-fail by design and has already explained itself.
     [ -x "$_dsv_python" ] || return 0
     if ! ( "$_dsv_python" -c 'import dash_server' && : ) >/dev/null 2>&1; then
-        warn "dash-server is installed but cannot be imported from $EXAKIT_DASH_SERVER_VENV (see log). Recorded validated=false; retry with: exakit update dash-server"
+        warn "dash-server is installed but cannot be imported from $EXAKIT_DASH_SERVER_VENV (see log). Recorded validated=false; retry with: exakit update"
         manifest_set components.dash_server.validated false
         return 0
     fi
@@ -455,7 +482,7 @@ dash_server_validate() {
     _dsv_foreign="$(_dash_server_port_foreign_desc || true)"
     if [ -n "$_dsv_foreign" ]; then
         warn "Port $EXAKIT_DASH_SERVER_PORT is held by another process ($_dsv_foreign) — dash-server was not validated."
-        info "Move it with: EXAKIT_DASH_SERVER_PORT=<port> exakit update dash-server"
+        info "Move it with: EXAKIT_DASH_SERVER_PORT=<port> exakit update"
         manifest_set components.dash_server.validated false
         return 0
     fi
@@ -525,7 +552,7 @@ dash_server_validate() {
         manifest_set components.dash_server.validated true
         _dash_server_print_usage
     else
-        warn "dash-server did not answer on port $EXAKIT_DASH_SERVER_PORT (see log). Recorded validated=false; retry with: exakit update dash-server"
+        warn "dash-server did not answer on port $EXAKIT_DASH_SERVER_PORT (see log). Recorded validated=false; retry with: exakit update"
         manifest_set components.dash_server.validated false
     fi
     return 0
@@ -570,7 +597,7 @@ _dash_server_report_ui() {
         return 0
     fi
     warn "The control plane is up, but the dashboards page at http://127.0.0.1:$EXAKIT_DASH_SERVER_PORT does not render (see: exakit logs dash-server)."
-    warn "Agents can still drive it over MCP. Retry the repair with: exakit update dash-server"
+    warn "Agents can still drive it over MCP. Retry the repair with: exakit update"
     manifest_set components.dash_server.ui_validated false
     return 0
 }
@@ -589,7 +616,7 @@ _dash_server_print_usage() {
     ui_panel_line "Start it        dash-server"
     ui_panel_line "Dashboards      http://127.0.0.1:$EXAKIT_DASH_SERVER_PORT"
     ui_panel_line "MCP endpoint    http://127.0.0.1:$EXAKIT_DASH_SERVER_PORT/mcp"
-    ui_panel_line "Update          exakit update dash-server"
+    ui_panel_line "Update          exakit update"
     ui_panel_end
 }
 
@@ -597,7 +624,10 @@ _dash_server_print_usage() {
 # hook, resolved generically by _exakit_addon_fn like install/validate/start.
 dash_server_summary() {
     _dash_server_resolve_port 2>/dev/null || true
-    printf 'dashboards at http://127.0.0.1:%s\n' "$EXAKIT_DASH_SERVER_PORT"
+    # 33 characters at a four-digit port. The cell truncates anything
+    # longer, and its room is 33 in the PLAIN palette, whose tick is the
+    # four-character "[ok]" rather than a one-character glyph.
+    printf 'dashboards: http://127.0.0.1:%s\n' "$EXAKIT_DASH_SERVER_PORT"
 }
 
 # ---------------------------------------------------------------------------
@@ -679,7 +709,7 @@ dash_server_start() {
     _dst_foreign="$(_dash_server_port_foreign_desc || true)"
     if [ -n "$_dst_foreign" ]; then
         warn "Port $EXAKIT_DASH_SERVER_PORT is held by another process ($_dst_foreign), so dash-server cannot bind it."
-        info "Move dash-server to a free port with: EXAKIT_DASH_SERVER_PORT=<port> exakit update dash-server"
+        info "Move dash-server to a free port with: EXAKIT_DASH_SERVER_PORT=<port> exakit update"
         return 1
     fi
     mkdir -p "$EXAKIT_DASH_SERVER_HOME" "$EXAKIT_LOG_DIR" 2>/dev/null || true
@@ -759,9 +789,15 @@ dash_server_uninstall() {
         fi
     done
     if [ "$_dsu_dry" != "1" ]; then
+        # Before the manifest block goes: an entry pointing at a port nothing
+        # answers on is worse than no entry at all, because a client reports it
+        # as a broken server every time it starts.
+        if command -v mcp_unregister_server_entry >/dev/null 2>&1; then
+            mcp_unregister_server_entry "dash-server" "dash-server" || true
+        fi
         manifest_del components.dash_server
         manifest_del desired.dash_server
-        ok "dash-server removed — reinstall any time with: exakit marketplace"
+        ok_step "dash-server removed — reinstall any time with: exakit marketplace"
     fi
     return 0
 }

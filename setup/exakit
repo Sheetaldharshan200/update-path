@@ -24,7 +24,8 @@
 #                       launcher reports it interrupted and every start fails);
 #                       DESTRUCTIVE — the deployment is replaced and its data
 #                       is gone, bundled datasets are reloaded afterwards
-#   autostart [on|off]  whether everything comes back after a restart
+#   autostart           whether everything comes back after a restart; shows
+#                       the current state and asks whether to change it
 #   data-load [--force|<path>]
 #                       open focused data loading options; a file path loads that
 #                       file, a FOLDER path bulk-loads every CSV/Parquet/JSON file
@@ -37,9 +38,6 @@
 #   mcp-doctor          check the configured MCP clients, repair what has
 #                       drifted, then re-check (there is no separate repair)
 #   mcp-status          show managed MCP state for the supported AI clients
-#   mcp-validate        validate managed MCP configs and test connectivity
-#   mcp-remove          remove managed MCP config from the supported clients
-#   mcp-restore         restore the latest (or a chosen) MCP snapshot
 #   skills [--json]     list the kit's AI skills and whether each one has
 #                       reached the agents' discovery folders
 #   skills-install      install the kit's AI skills for CLI agents
@@ -272,7 +270,7 @@ running = db.startswith("running")
 # null, and should never have to parse the human screen to find one.
 remedies = {}
 if not pyx:
-    remedies["pyexasol"] = "exakit update pyexasol"
+    remedies["pyexasol"] = "exakit update"
 if not running:
     # "exakit start" is the wrong remedy for an INTERRUPTED deployment: it fails
     # identically every time, which is how an agent ends up looping on it. The
@@ -343,12 +341,16 @@ EXAKIT_SJ_PY
     ui_panel_line "$(_cs_pad 'Runtime' "${_type:-none}$(_cs_engine_suffix) · $_cs_db")"
     ui_panel_line "$(_cs_pad 'Database' "$(manifest_get runtime.dsn 2>/dev/null || printf 'unknown')$(
         [ "$_cs_running" -eq 1 ] && printf ' · reachable' || printf ' · not reachable')")"
+    # "enabled"/"disabled", not "on"/"off": this row reports a STATE, and on/off
+    # reads as the switch you flip rather than the position it is in. The
+    # The command itself takes no verb: it shows this state and asks.
     if [ "$_cs_autostart" = "true" ]; then
-        ui_panel_line "$(_cs_pad 'Autostart' 'on')"
+        ui_panel_line "$(_cs_pad 'Autostart' 'enabled')"
     else
-        ui_panel_line "$(_cs_pad 'Autostart' 'off — turn it on with: exakit autostart on')"
+        ui_panel_line "$(_cs_pad 'Autostart' 'disabled — change it with: exakit autostart')"
     fi
-    ui_panel_line "$(_cs_pad 'Kit level' "$(manifest_get kit_level 2>/dev/null)")"
+    # "Kit level" is an internal schema number. It means nothing to the person
+    # reading this screen, and `exakit version` carries what they do want.
     # NOT the install date: `exakit version` already prints it, and repeating
     # it here is exactly the duplication that made the older screens read like
     # the same content three times.
@@ -412,19 +414,24 @@ EXAKIT_CS_INSTALLED
         # written into a shell that exits a moment later and the panel would
         # render EMPTY. Fed from a heredoc the loop runs in this shell and the
         # buffer survives.
+        # Only the clients that ARE connected. Eight rows of which five said
+        # "not installed" answered a question nobody asked of a status screen --
+        # what this machine does not have -- and buried the three that matter.
+        # `exakit mcp-setup` is where the full roster belongs, because there the
+        # list IS the choice.
+        _cs_any=0
         while IFS='|' read -r _cs_cl _cs_cs; do
             [ -n "$_cs_cl" ] || continue
+            [ "$_cs_cs" = "configured" ] || continue
             ui_panel_line "$(_cs_pad "$_cs_cl" "$_cs_cs")"
+            _cs_any=1
         done <<EXAKIT_CS_CLIENTS
 $_cs_clients
 EXAKIT_CS_CLIENTS
-        # mcp-setup records how it went. "success_with_warnings" was never
-        # shown anywhere, so a kit carrying a real warning looked perfect.
-        _cs_mcpwarn="$(manifest_get components.mcp_server.client_setup.status 2>/dev/null || true)"
-        case "$_cs_mcpwarn" in
-            success|"") ;;
-            *) ui_panel_line "$(_cs_pad 'health' "$_cs_mcpwarn — details: exakit mcp-doctor")" ;;
-        esac
+        # A record of configured clients that yields no configured ROW means
+        # every one of them was skipped: say so rather than draw an empty panel.
+        [ "$_cs_any" -eq 1 ] || \
+            ui_panel_line "$(_cs_pad 'none' 'connect one with: exakit mcp-setup')"
     else
         ui_panel_line "$(_cs_pad 'none' 'connect one with: exakit mcp-setup')"
     fi
@@ -445,8 +452,9 @@ EXAKIT_CS_CLIENTS
             fi
             ui_panel_line "$(printf '%-11s %-11s %s' "$_cs_ds" "$_cs_dsch" "$_cs_dline")"
         done
-        _cs_last="$(manifest_get data.last_load.source 2>/dev/null || true)"
-        [ -n "$_cs_last" ] && ui_panel_line "$(printf '%-11s %s' 'last load' "$_cs_last")"
+        # No "last load" row: the rows above already say what is in the
+        # database, which is the question. Which of them arrived most recently
+        # is not something anyone acts on.
     else
         ui_panel_line 'none loaded — load some with: exakit data-load'
     fi
@@ -476,9 +484,9 @@ EXAKIT_CS_CLIENTS
         _cs_missing="${_cs_missing}${_cs_missing:+
 }$(printf '%-9s repair: %s' "$_cs_cid" "$_cs_cfix")"
     done <<EXAKIT_CS_SOFT
-exapump|components.exapump.validated|exakit update exapump
-mcp|components.mcp_server.validated|exakit update mcp
-pyexasol|components.pyexasol.validated|exakit update pyexasol
+exapump|components.exapump.validated|exakit update
+mcp|components.mcp_server.validated|exakit update
+pyexasol|components.pyexasol.validated|exakit update
 EXAKIT_CS_SOFT
     if [ -n "$_cs_missing" ]; then
         _cs_label='Missing:'
@@ -493,7 +501,8 @@ EXAKIT_CS_SOFT
         done
         IFS=$_cs_oifs
     fi
-    _cs_row 'Manifest:' "$EXAKIT_MANIFEST"
+    # No "Manifest:" row: an internal file path, on the last line of the screen,
+    # that nothing on this screen asks the reader to open.
     # Superseded launchers the kit set aside during an upgrade. Each is a full
     # ~130 MB binary, and nothing reported them, so they accumulated silently
     # and no command would ever reclaim the space.
@@ -591,8 +600,18 @@ cmd_repair_runtime() {
     warn "Repairing the runtime REPLACES the database. Its data is not recoverable."
     info "Bundled datasets are reloaded afterwards; anything you loaded yourself is not."
     if [ "$_rr_yes" -ne 1 ]; then
-        confirm "Replace the database and rebuild it now?" n || \
-            die "Nothing was changed. Re-run with --yes (or EXAKIT_CONFIRM_RUNTIME_REPAIR=1) when you are ready."
+        if ! confirm "Delete the database and rebuild it now?" n; then
+            # DECLINING A DESTRUCTIVE PROMPT IS THE SAFE ANSWER, not an error.
+            # die() rendered it as a red error card and exited 1 - and because
+            # die() calls exakit_note_failure, it also left `exakit status
+            # --json` reporting a last_failure on a machine where nothing had
+            # gone wrong. common.sh documents that exact hazard as the reason
+            # reject() exists; the answer here is simpler still, because "no,
+            # not now" is a successful outcome of this command.
+            info "Repair cancelled — nothing was changed."
+            info "When you are ready: exakit repair-runtime --yes (or set EXAKIT_CONFIRM_RUNTIME_REPAIR=1)"
+            return 0
+        fi
     fi
 
     exakit_init_logging
@@ -601,20 +620,55 @@ cmd_repair_runtime() {
     exakit_unmark_step runtime
     info "Re-running $_rr_setup to rebuild the database"
     export EXAKIT_BANNER_SHOWN=1
+    # The deployment step must NOT offer to reuse what is there. Its reuse
+    # question defaults to YES, so a repair that the user had just confirmed as
+    # destructive ("its data is not recoverable") answered itself with "keep the
+    # existing database" and reported "Reusing the existing Exasol deployment".
+    # The command did not repair anything, and the second question contradicted
+    # the first one it had just been given.
+    #
+    # EXAKIT_REUSE_DB=0 is the documented way to force a fresh deployment, and
+    # it is what this command has meant all along.
+    export EXAKIT_REUSE_DB=0
     exec bash "$_rr_kit/$_rr_setup"
 }
 
-# cmd_autostart [on|off] — whether everything the kit runs comes back after a
-# restart. With no argument it reports the current state.
+# cmd_autostart — one command: show where it stands, then offer to flip it.
+#
+# It was three (`on`, `off`, and a bare form that only reported), which made the
+# reader pick the verb before being told what the current state even was -- and
+# the bare form then closed by explaining the other two. Now the answer comes
+# first and the only decision left is yes or no.
+#
+# EXAKIT_AUTOSTART_CHANGE pre-answers it for automation, the same contract every
+# other prompt in the kit uses; without a terminal the default is NO CHANGE, so
+# a scripted run can never silently flip a boot setting.
 cmd_autostart() {
     _require_install
     exakit_init_logging 2>/dev/null || true
-    case "${1:-}" in
-        on|enable)   exakit_autostart_enable ;;
-        off|disable) exakit_autostart_disable ;;
-        ""|status)   exakit_autostart_print ;;
-        *) reject "Unknown option '$1' for autostart (use: on, off, or no argument to show the state)." ;;
-    esac
+    [ "$#" -eq 0 ] || \
+        reject "autostart takes no arguments — run 'exakit autostart' and answer the question."
+
+    exakit_autostart_print
+
+    _as_total=0
+    _as_on=0
+    for _as_id in $(exakit_service_ids); do
+        _as_total=$(( _as_total + 1 ))
+        if _exakit_autostart_registered "$_as_id"; then _as_on=$(( _as_on + 1 )); fi
+    done
+    [ "$_as_total" -gt 0 ] || return 0
+
+    # "Everything is on" is the only state that offers to turn things off;
+    # anything else -- none of it, or some of it -- offers to turn it all on,
+    # because a partly-registered set is the one a reader wants made whole.
+    if [ "$_as_on" -eq "$_as_total" ]; then
+        confirm_env EXAKIT_AUTOSTART_CHANGE "Turn it off?" n || return 0
+        exakit_autostart_disable
+    else
+        confirm_env EXAKIT_AUTOSTART_CHANGE "Turn it on?" n || return 0
+        exakit_autostart_enable
+    fi
 }
 
 cmd_uninstall() {
@@ -681,8 +735,9 @@ cmd_version() {
     [ -f "$EXAKIT_MANIFEST" ] || { echo "Not installed (no manifest at $EXAKIT_MANIFEST)"; exit 4; }
     ui_panel_begin "Kit"
     ui_panel_line "$(printf '%-14s %s' Version "$(exakit_component_current exakit 2>/dev/null || printf 'unknown')")"
-    ui_panel_line "$(printf '%-14s %s' Level "$(manifest_get kit_level 2>/dev/null)")"
-    ui_panel_line "$(printf '%-14s %s' Source "$(manifest_get kit.source 2>/dev/null)")"
+    # No "Level" row: an internal schema number, meaningless to the reader.
+    # No "Source" row either: an absolute path to the kit's own copy of itself,
+    # which answers a question nobody asks of a version screen.
     ui_panel_line "$(printf '%-14s %s' Installed "$(exakit_format_local_time "$(manifest_get installed_at 2>/dev/null)")")"
     ui_panel_end
     printf '\n'
@@ -922,28 +977,6 @@ cmd_mcp_status() {
     die "Could not read managed MCP state"
 }
 
-cmd_mcp_validate() {
-    _require_install
-    exakit_init_logging
-    exakit_mcp_operation validate "$@"
-    _cmd_rc=$?
-    [ "$_cmd_rc" = 0 ] && return 0
-    [ "$_cmd_rc" = 2 ] && exit 1
-    die "Could not validate managed MCP configuration"
-}
-
-cmd_mcp_remove() {
-    _require_install
-    exakit_init_logging
-    exakit_mcp_operation uninstall "$@" || die "Could not remove managed MCP configuration"
-}
-
-cmd_mcp_restore() {
-    _require_install
-    exakit_init_logging
-    exakit_mcp_restore "${1:-}" || die "Could not restore managed MCP configuration"
-}
-
 cmd_skills_install() {
     exakit_init_logging
     exakit_install_skills || die "Could not install the kit's AI skills"
@@ -1175,21 +1208,20 @@ case "${1:-help}" in
                   # in connection_panel because the install ends with that same
                   # panel, and someone finishing an install is not looking for a
                   # JSON dump.
-                  *) _with_notice connection_panel
-                     printf '  %sMachine-readable: exakit info --json%s\n\n' "${UI_DIM:-}" "${UI_RESET:-}" ;;
+                  # No trailing "Machine-readable:" sentence -- the Manifest
+                  # row inside the panel names `exakit info --json` where the
+                  # reader is already looking.
+                  *) _with_notice connection_panel ;;
               esac ;;
     guide)    _with_notice exakit_guide ;;
     start)    _with_notice cmd_start ;;
     stop)     _with_notice cmd_stop ;;
     repair-runtime) shift; cmd_repair_runtime "$@" ;;
-    autostart) shift; _with_notice cmd_autostart "${1:-}" ;;
+    autostart) shift; _with_notice cmd_autostart "$@" ;;
     data-load) shift; _with_notice cmd_data_load "${1:-}" ;;
     mcp-setup) _with_notice cmd_mcp_setup ;;
     mcp-doctor) shift; _with_notice cmd_mcp_doctor "$@" ;;
     mcp-status) shift; _with_notice cmd_mcp_status "$@" ;;
-    mcp-validate) shift; _with_notice cmd_mcp_validate "$@" ;;
-    mcp-remove) shift; _with_notice cmd_mcp_remove "$@" ;;
-    mcp-restore) shift; _with_notice cmd_mcp_restore "$@" ;;
     skills)   shift
               case "${1:-}" in
                   --json|-j) cmd_skills --json ;;

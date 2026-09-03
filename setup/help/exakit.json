@@ -3,19 +3,11 @@
   "id": "exakit",
   "kind": "cli",
   "title": "exakit",
-  "tagline": "The one command that runs your local Exasol stack.",
+  "tagline": "Your local Exasol database and everything that talks to it.",
   "repo": "krishna-exasol/update-path",
   "docs": "https://github.com/krishna-exasol/update-path#readme",
   "state_dir": "~/.exasol-starter-kit",
   "groups": [
-    {
-      "title": "Get started",
-      "commands": [
-        "guide",
-        "mcp-setup",
-        "data-load"
-      ]
-    },
     {
       "title": "Everyday",
       "commands": [
@@ -24,6 +16,7 @@
         "start",
         "stop",
         "sql",
+        "data-load",
         "logs",
         "autostart"
       ]
@@ -33,10 +26,7 @@
       "commands": [
         "mcp-setup",
         "mcp-doctor",
-        "mcp-status",
-        "mcp-validate",
-        "mcp-remove",
-        "mcp-restore"
+        "mcp-status"
       ]
     },
     {
@@ -69,8 +59,10 @@
     {
       "title": "Reference",
       "commands": [
+        "guide",
         "help",
-        "catalog"
+        "catalog",
+        "whats-new"
       ]
     }
   ],
@@ -143,12 +135,11 @@
     },
     {
       "command": "autostart",
-      "options": "[on|off]",
+      "options": "",
       "summary": "Come back automatically after a restart?",
-      "description": "Whether the database and add-on services restart at login: launchd on macOS, systemd --user on Linux, the container restart policy for Nano, a Startup entry on Windows. No argument shows the current state.",
+      "description": "Shows whether the kit's services start at login, then offers to change it.",
       "examples": [
-        "exakit autostart",
-        "exakit autostart on"
+        "exakit autostart"
       ]
     },
     {
@@ -166,14 +157,12 @@
       "command": "data-load",
       "options": "[--force | -Force] [<file-or-folder>]",
       "summary": "Load sample data, one file, or a whole folder.",
-      "description": "Opens the data-loading menu: bundled datasets (tpch, energy, weather) or your own data. Name a path to skip the menu. A FILE asks the same two things whatever its kind - the file, then SCHEMA.TABLE - and JSON is shredded into tables by an engine the kit installs for you. A FOLDER is a bulk load: every CSV / Parquet / JSON file at its top level, one table each named after the file, asking for the schema once. Subfolders are not scanned, files of other kinds are ignored, and duplicates - byte-identical files, or two names that resolve to the same table - are skipped with the reason. When the folder holds more than one format you are asked which to load. --force reloads bundled datasets instead of skipping what is already there. JSON is macOS, Linux and WSL only; on Windows a folder's JSON files are listed as skipped.",
+      "description": "Opens the data-loading menu: bundled datasets (tpch, energy, weather) or your own data. Name a path to skip the menu. A FILE asks the same two things whatever its kind - the file, then SCHEMA.TABLE - and JSON is shredded into tables by an engine the kit installs for you. A FOLDER is a bulk load: every CSV / Parquet / JSON file at its top level, one table each named after the file, asking for the schema once. Subfolders are not scanned, files of other kinds are ignored, and duplicates - byte-identical files, or two names that resolve to the same table - are skipped with the reason. --force reloads bundled datasets instead of skipping what is already there. JSON is macOS, Linux and WSL only; on Windows a folder's JSON files are listed as skipped.",
       "environment": [
         "EXAKIT_DATASETS=tpch,energy,weather names exactly which bundled datasets to load",
         "EXAKIT_DATA_FILE=/path/file.json or /path/folder answers the local-data question, so a run without a terminal loads that file or folder",
         "EXAKIT_DATA_TABLE=SCHEMA.TABLE answers the target-table question for a single EXAKIT_DATA_FILE (default: STARTER_KIT.<filename>)",
-        "EXAKIT_DATA_FORMATS=csv,parquet,json answers the which-formats question for a folder load (default: every format found)",
-        "EXAKIT_SCHEMA sets the default target schema",
-        "EXAKIT_BULK_CONFIRM=1 answers the confirmation before a folder load (default: yes without a terminal)"
+        "EXAKIT_SCHEMA sets the default target schema"
       ],
       "examples": [
         "exakit data-load",
@@ -182,7 +171,7 @@
         "exakit data-load --force",
         "EXAKIT_DATASETS=tpch exakit data-load",
         "EXAKIT_DATA_FILE=./sales.json EXAKIT_DATA_TABLE=STARTER_KIT.SALES exakit data-load",
-        "EXAKIT_DATA_FILE=~/exports EXAKIT_DATA_FORMATS=csv,parquet EXAKIT_SCHEMA=SALES exakit data-load"
+        "EXAKIT_DATA_FILE=~/exports EXAKIT_SCHEMA=SALES exakit data-load"
       ]
     },
     {
@@ -235,37 +224,10 @@
       ]
     },
     {
-      "command": "mcp-validate",
-      "options": "[clients]",
-      "summary": "Validate MCP configs and test connectivity.",
-      "description": "Checks the managed config files parse and the server answers over stdio.",
-      "examples": [
-        "exakit mcp-validate"
-      ]
-    },
-    {
-      "command": "mcp-remove",
-      "options": "[clients]",
-      "summary": "Remove the managed MCP config.",
-      "description": "Takes the kit's MCP entry back out of the selected clients. Anything you configured yourself is left alone.",
-      "examples": [
-        "exakit mcp-remove"
-      ]
-    },
-    {
-      "command": "mcp-restore",
-      "options": "[snapshot]",
-      "summary": "Restore a previous MCP config snapshot.",
-      "description": "Puts back the latest, or a chosen, backup of the client config files.",
-      "examples": [
-        "exakit mcp-restore"
-      ]
-    },
-    {
       "command": "skills",
       "options": "[--json | -j]",
       "summary": "List the AI skills the kit carries.",
-      "description": "One skill per component and add-on, with a one-line summary and whether each has reached the agents' discovery folders.",
+      "description": "One skill per component and add-on, with a one-line summary and whether each has reached the agents' discovery folders. When the maintainers advertise a newer skill set, the panel says so and names exakit update, which fetches it.",
       "examples": [
         "exakit skills",
         "exakit skills --json"
@@ -275,7 +237,7 @@
       "command": "skills-install",
       "options": "",
       "summary": "Install the AI skills for CLI agents.",
-      "description": "Installs the kit's skills into ~/.claude/skills and ~/.agents/skills so agent sessions can drive the kit. Restart or reload the agent afterwards.",
+      "description": "Places the skills the kit copy carries into ~/.claude/skills and ~/.agents/skills so agent sessions can drive the kit. Restart or reload the agent afterwards. To pick up a NEWER skill set the maintainers advertise, run exakit update instead: it fetches the set, then places it.",
       "examples": [
         "exakit skills-install"
       ]
@@ -295,16 +257,15 @@
     },
     {
       "command": "update",
-      "options": "[all|runtime|exakit|exapump|mcp|pyexasol|<add-on>|nano|personal]",
+      "options": "[all|runtime|exakit|exapump|mcp|pyexasol|skills|<add-on>|nano|personal]",
       "summary": "Apply the updates that are waiting.",
-      "description": "Applies the quick components (kit scripts, exapump, MCP server, pyexasol, installed add-ons) in seconds. A database change stops the database, so it is only applied for an answer the run was actually given: on a terminal you are asked, and an unattended run defers it with the exact command. Your data is kept either way.",
+      "description": "Applies the quick components (kit scripts, exapump, MCP server, pyexasol, the AI skills, installed add-ons) in seconds. A newer skill set published by the maintainers is fetched and installed here too, with no kit release needed. A database change stops the database, so it is only applied for an answer the run was actually given: on a terminal you are asked, and an unattended run defers it with the exact command. Your data is kept either way.",
       "environment": [
         "EXAKIT_CONFIRM_RUNTIME_UPDATE=1 pre-answers yes to the runtime change",
         "EXAKIT_<COMPONENT>_VERSION pins one component by hand"
       ],
       "examples": [
         "exakit update",
-        "exakit update exapump",
         "exakit update --yes"
       ]
     },
@@ -325,7 +286,7 @@
       "command": "uninstall",
       "options": "[--yes | --dry-run]",
       "summary": "Remove what the kit installed.",
-      "description": "Pick what to remove (Skip, each add-on, or EVERYTHING) with a confirmation summary and a typed gate, or name a single component (exakit uninstall mcp_configs). --dry-run previews the full plan and changes nothing.",
+      "description": "Pick what to remove (Skip, each add-on, or EVERYTHING) with a confirmation summary and a typed gate. --dry-run previews the full plan and changes nothing.",
       "warning": "A full uninstall removes the database AND its data, the MCP configs, the skills and the binaries.",
       "examples": [
         "exakit uninstall --dry-run",
@@ -353,6 +314,16 @@
         "exakit catalog mcp",
         "exakit catalog --json"
       ]
+    },
+    {
+      "command": "whats-new",
+      "options": "[<version>]",
+      "summary": "What changed in this kit version.",
+      "description": "The what's-new card for the kit version you have installed, or for a named one. The installer shows the same cards, one per version crossed, after an upgrade; this prints them again any time.",
+      "examples": [
+        "exakit whats-new",
+        "exakit whats-new 0.2.0"
+      ]
     }
   ],
   "environment": [
@@ -378,7 +349,7 @@
     },
     {
       "name": "EXAKIT_REUSE_DB",
-      "effect": "macOS: 1 adopts an existing database (default), 0 destroys it and deploys fresh."
+      "effect": "1 adopts an existing database (default), 0 destroys it and deploys fresh. Both runtimes: on the container path 0 removes the Nano container and its data volume, which is the database."
     },
     {
       "name": "EXAKIT_DB_PORT",

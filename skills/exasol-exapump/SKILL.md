@@ -133,7 +133,7 @@ Matching numbers is the whole point — the AI's answer becomes the user's
 | `syntax error, unexpected FETCH_` / `TOP_` | Exasol does not support those | rewrite with `LIMIT <n>` |
 | `object <NAME> not found` | wrong name or missing schema | describe it first, then fix the query |
 
-Reinstall or update exapump itself with `exakit update exapump`. Discover every
+Reinstall or update exapump itself with `exakit update`. Discover every
 command the kit knows with `exakit catalog` (searchable: `exakit catalog upload`).
 
 ## Guardrails

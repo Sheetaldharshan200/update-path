@@ -24,7 +24,7 @@ Keep prompting (do **not** auto-allow):
   use — but that gate is a seatbelt, not a sandbox.) Auto-allowing either would
   defeat the kit's inspect-before-run trust model. Every query should be seen first.
 - **Mutating / lifecycle commands** — `exakit uninstall`, installs, upgrades,
-  anything under `mcp-remove`.
+  and `exakit mcp-setup`, which writes to AI client config files.
 
 That split kills the noise (all the harmless status checks) without weakening
 the guardrail that makes the kit trustworthy.
@@ -65,7 +65,7 @@ names only `exakit uninstall` is sidestepped by typing the full path.
 
 The real list covers the whole read-only surface — `status`, `info`, `version`,
 `mcp-doctor`, `logs`, `catalog`, `preflight`, `guide`, `mcp-status`,
-`mcp-validate`, `help`, plus the exact forms `exakit skills` and `exakit skills --json`
+`help`, plus the exact forms `exakit skills` and `exakit skills --json`
 — in each of the three spellings. `exakit skills-install` is deliberately *not*
 prefix-matched: it writes this very file, and an allowlisted command that can grant
 permissions is an escalation path.

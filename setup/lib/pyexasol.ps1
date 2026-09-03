@@ -36,7 +36,7 @@ function Get-PyexasolInstalledVersion {
 function Write-PyexasolNotInstalled {
     param([Parameter(Mandatory)][string]$Reason)
     Warn2 "pyexasol was not installed: $Reason"
-    Warn2 "Everything else in the kit is unaffected. Retry with: exakit update pyexasol"
+    Warn2 "Everything else in the kit is unaffected. Retry with: exakit update"
     # Hand the reason to the closing summary, which prints it next to the repair
     # command; without this the user is told only that pyexasol is missing.
     Set-ExakitFailureReason $Reason
@@ -58,6 +58,7 @@ function Install-Pyexasol {
     if ($current -and $current -eq $script:PyexasolVersion) {
         Ok "pyexasol $current already installed: $script:PyexasolVenv"
     } else {
+        $script:ExakitActiveLabel = "Installing pyexasol $($script:PyexasolVersion)"
         Info "Installing pyexasol $($script:PyexasolVersion) (Exasol Python driver)"
         if (-not (Test-Path $python)) {
             $code = Invoke-ExakitLogged $uv "venv" "--python" $script:ManagedPythonVersion $script:PyexasolVenv
@@ -132,6 +133,8 @@ function Test-PyexasolConnection {
     }
 
     Info "Validating pyexasol against the database (SELECT 1)"
+    $pyvT0 = Get-Date
+    $script:ExakitActiveLabel = "Validating pyexasol against the database"
     # The probe script contains no secrets: the password travels via a file
     # read inside python, never on a command line. TLS mirrors the exapump
     # profile posture (tls on, local cert not validated); a plain connection
@@ -165,7 +168,11 @@ finally:
     if ($code -eq 0) {
         Ok "pyexasol works: SELECT 1 returned 1"
         Set-ExakitManifestValue "components.pyexasol.validated" $true
-        Info "Use it from Python:  $python  (import pyexasol)"
+        # Two lines for the step: what happened, and the interpreter to run it
+        # with. Installed-and-validated is one fact - an install that failed
+        # validation says so through the Warn2 below, which is never gated.
+        OkStep "pyexasol $($script:PyexasolVersion) installed and validated against the database ($([int]((Get-Date) - $pyvT0).TotalSeconds)s)"
+        InfoStep "Use it from Python:  $(Get-ExakitTilde $python)  (import pyexasol)"
     } else {
         Warn2 "pyexasol could not complete SELECT 1 against the database (see log). Recorded validated=false; re-run setup to retry."
         Set-ExakitManifestValue "components.pyexasol.validated" $false

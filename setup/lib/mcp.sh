@@ -62,7 +62,9 @@ mcp_ssl_cert_validation() {
 
 mcp_uv_install() {
     if command -v uv >/dev/null 2>&1; then
-        ok "uv already installed: $(command -v uv)"
+        # A dependency that was already there is not an outcome of this step,
+        # and its path is not something to act on. Logged, not printed.
+        _exakit_log_file "OK    uv already installed: $(command -v uv)"
         return 0
     fi
     info "Installing uv (Python tool runner used by the MCP server)"
@@ -90,8 +92,14 @@ mcp_uv_install() {
     ok "uv installed"
 }
 
+# Six lines became one. uv's path, the priming bullet, "package cached",
+# "ready to run via uvx", the handshake bullet and its tick were one fact:
+# the server is cached and answers. mcp_validate prints the merged line; the
+# phases live on the spinner instead. ⇄ twin: Install-Mcp in mcp.ps1.
 mcp_install() {
+    EXAKIT_MCP_STEP_T0="$(date +%s 2>/dev/null || echo 0)"
     mcp_uv_install
+    EXAKIT_ACTIVE_LABEL="Downloading ${EXAKIT_MCP_PACKAGE}@${EXAKIT_MCP_VERSION} — first run only"
     info "Priming ${EXAKIT_MCP_PACKAGE}@${EXAKIT_MCP_VERSION} (downloads on first use)"
     # `--help` exits non-zero on server versions that demand connection env
     # before printing usage — so the exit code can't distinguish "download
@@ -114,7 +122,9 @@ mcp_install() {
     manifest_set components.mcp_server.command "$(mcp_command_path)"
     manifest_set components.mcp_server.package "$EXAKIT_MCP_PACKAGE"
     manifest_set components.mcp_server.version "$EXAKIT_MCP_VERSION"
-    ok "MCP server ready to run via uvx"
+    # Not announced: "cached" above and "answers over stdio" below are the two
+    # facts, and this said neither of them again.
+    _exakit_log_file "OK    MCP server ready to run via uvx"
 }
 
 mcp_update() {
@@ -237,6 +247,111 @@ mcp_refresh_client_pins() {
     ok "AI client configs now launch ${EXAKIT_MCP_PACKAGE}@${EXAKIT_MCP_VERSION}"
 }
 
+# _exakit_mcp_addon_say <info|warn> <text> - say something that may be
+# happening UNDER A LIVE TABLE.
+#
+# The marketplace paints its add-ons as an animated table: it redraws the frame
+# in place by moving the cursor up by the frame height. A line printed straight
+# to the terminal in the middle of that lands inside the box and throws the
+# cursor arithmetic off, so the frame is stranded exactly where it was -- which
+# is what the registration line did on a real install: dash-server frozen at
+# 14%, the two rows below it never drawn, and the message sitting under a table
+# that had stopped moving.
+#
+# _exakit_addon_note is the mechanism that already exists for this: it holds a
+# line back while the table is live and the apply loop drains it the moment the
+# table stops. ok_step was the wrong tool -- it exists to survive the QUIETING a
+# one-line step turns on, which is a different problem, and surviving the
+# quieting is precisely how it punched through the protection.
+#
+# The fallback keeps this module usable on its own: the exakit CLI sources
+# common.sh, a bare `. mcp.sh` does not, and there is no table in that case
+# anyway.
+_exakit_mcp_addon_say() {
+    if command -v _exakit_addon_note >/dev/null 2>&1; then
+        _exakit_addon_note "$1" "$2"
+        return 0
+    fi
+    case "$1" in
+        warn) warn "$2" ;;
+        *)    info "$2" ;;
+    esac
+}
+
+# mcp_register_addon_servers <label> - put an installed add-on's MCP endpoint
+# into the clients that are already connected.
+#
+# Scoped to already-managed clients for the same reason mcp_refresh_client_pins
+# is: configure would happily create a config for a client the user never chose
+# to connect. Nothing here is fatal - an add-on that installed correctly is
+# installed, whether or not an AI client is wired to it yet, and the endpoint is
+# one `exakit mcp-setup` away in any case.
+mcp_register_addon_servers() {
+    _mras_label="${1:-the add-on}"
+    command -v exakit_run_mcp_addon_cli >/dev/null 2>&1 || return 0
+    exakit_can_run_python || return 0
+    _mras_clients="$(mcp_managed_clients)"
+    if [ -z "$_mras_clients" ]; then
+        info "No AI client is connected yet - connect one any time with: exakit mcp-setup"
+        return 0
+    fi
+    _mras_result="$(mktemp "${TMPDIR:-/tmp}/exakit-mcp-addon.XXXXXX")"
+    if ! exakit_run_mcp_addon_cli "$_mras_clients" "$_mras_result"; then
+        rm -f "$_mras_result"
+        _exakit_mcp_addon_say warn "Could not register the $_mras_label MCP endpoint with your AI clients - run: exakit mcp-setup"
+        return 1
+    fi
+    _mras_configured="$(run_python - "$_mras_result" 2>/dev/null <<'PY'
+import json, sys
+
+try:
+    with open(sys.argv[1], encoding="utf-8") as handle:
+        doc = json.load(handle)
+except (OSError, ValueError):
+    raise SystemExit(0)
+dash = doc.get("dash_server") or {}
+print(",".join(dash.get("configured_clients") or []))
+PY
+    )"
+    rm -f "$_mras_result"
+    if [ -n "$_mras_configured" ]; then
+        # Nothing on screen. Registering the endpoint is part of installing the
+        # add-on, not a step of its own, and the row in the marketplace table
+        # already says the add-on installed. A separate line for a sub-step of a
+        # row that has just reported success is one fact twice -- and it was
+        # arriving under a live table, where any line at all strands the frame.
+        # The logfile keeps the record, which is where the account of what an
+        # install touched belongs.
+        _exakit_log_file "OK    $_mras_label MCP endpoint registered with: $_mras_configured"
+        return 0
+    fi
+    # Every connected client was skipped: the two that cannot express a remote
+    # MCP server (Codex, Claude) are the usual reason, and that is a fact about
+    # the client, not a failure of this install.
+    _exakit_mcp_addon_say info "No connected AI client can take a remote MCP endpoint - drive $_mras_label with: exakit help dash-server"
+    return 0
+}
+
+# mcp_unregister_server_entry <server> <label> - the mirror image, for an add-on
+# being removed: drop just that one entry, so the exasol server (and any other
+# add-on) stays where it is.
+mcp_unregister_server_entry() {
+    _muse_server="$1"
+    _muse_label="${2:-$1}"
+    command -v exakit_run_mcp_server_removal_cli >/dev/null 2>&1 || return 0
+    exakit_can_run_python || return 0
+    _muse_clients="$(mcp_managed_clients)"
+    [ -n "$_muse_clients" ] || return 0
+    _muse_result="$(mktemp "${TMPDIR:-/tmp}/exakit-mcp-unregister.XXXXXX")"
+    if ! exakit_run_mcp_server_removal_cli "$_muse_server" "$_muse_clients" "$_muse_result"; then
+        rm -f "$_muse_result"
+        warn "The $_muse_label MCP entry may still be in your AI client configs - check with: exakit mcp-status"
+        return 1
+    fi
+    rm -f "$_muse_result"
+    return 0
+}
+
 mcp_update_snapshot() {
     command -v exakit_run_mcp_operation_cli >/dev/null 2>&1 || return 1
     _result_file="$(mktemp "${TMPDIR:-/tmp}/exakit-mcp-update-backup.XXXXXX")"
@@ -330,10 +445,43 @@ sys.exit(1)
 PY
 }
 
+# mcp_print_handshake_detail — show what the failed handshake actually said.
+#
+# mcp_stdio_handshake_once deliberately captures the server's stderr and prints
+# it, and the whole call is redirected into the log file — so the process was
+# already holding the reason (an authentication failure, a bad DSN, a missing
+# package) when the old wording said "see log" and sent the reader into a
+# different program to look for it. On this step above all — the one a user
+# reaches BECAUSE their assistant cannot see the database — the cause belongs on
+# screen.
+#
+# Only this validation's own slice of the log is read, from the mark taken
+# before the first attempt, so noise from an earlier step can never be presented
+# as this failure's cause. Only the tail of that slice is shown: uvx narrates
+# its own environment build first and the reason is always last.
+#
+# The text is redacted before printing. It comes from a process that was handed
+# the database password in its environment, and a driver traceback can echo its
+# connection arguments back out.
+mcp_print_handshake_detail() {
+    [ -n "${EXAKIT_LOG_FILE:-}" ] && [ -f "$EXAKIT_LOG_FILE" ] || return 1
+    _mphd_text="$(tail -n "+$(( ${_mcp_handshake_log_mark:-0} + 1 ))" "$EXAKIT_LOG_FILE" 2>/dev/null \
+        | grep -av '^[[:space:]]*$' | tail -8)"
+    [ -n "$_mphd_text" ] || return 1
+    _mphd_text="$(_exakit_redact_mcp_secret_output "$_mphd_text" "${_password:-}")"
+    # Same dim-gutter containment every other piece of foreign output gets, in
+    # the error colour because that is what this is.
+    printf '%s\n' "$_mphd_text" | while IFS= read -r _mphd_line; do
+        printf '      %s%s %s%s\n' "${UI_ERR:-}" "${UI_VB:-|}" "$_mphd_line" "${UI_RESET:-}" >&2
+    done
+    return 0
+}
+
 # mcp_validate — start the server over stdio and check it answers an MCP
 # initialize handshake. Uses the same env the client configs use.
 mcp_validate() {
     info "Validating the MCP server (stdio handshake)"
+    EXAKIT_ACTIVE_LABEL="Starting the MCP server and checking it answers"
     _dsn="$(manifest_get runtime.dsn 2>/dev/null)"
     mcp_resolve_creds
     _user="$_mcp_user"
@@ -342,12 +490,25 @@ mcp_validate() {
     _ssl_cert_validation="$(mcp_ssl_cert_validation)"
 
     require_python3
+    # Where this validation's output starts in the log, so a failure can quote
+    # its own handshake and nothing else.
+    _mcp_handshake_log_mark=0
+    [ -n "${EXAKIT_LOG_FILE:-}" ] && [ -f "$EXAKIT_LOG_FILE" ] && \
+        _mcp_handshake_log_mark="$(wc -l < "$EXAKIT_LOG_FILE" 2>/dev/null | tr -d ' ')"
+    case "$_mcp_handshake_log_mark" in ''|*[!0-9]*) _mcp_handshake_log_mark=0 ;; esac
     _handshake_ok=0
     for _attempt in 1 2; do
+        # The handshake starts the server, and starting it can mean uvx
+        # materialising an environment first. Under the step's one-line quieting
+        # the info above went to the log, so without a spinner this phase is a
+        # blank screen for as long as that takes.
+        ui_spin_begin "${EXAKIT_ACTIVE_LABEL:-working}"
         if mcp_stdio_handshake_once; then
+            ui_spin_end
             _handshake_ok=1
             break
         fi
+        ui_spin_end
         [ "$_attempt" -lt 2 ] && { warn "Handshake attempt $_attempt failed — retrying"; sleep 5; }
     done
     # Faked-SVE self-repair: on aarch64 guests whose hypervisor advertises
@@ -366,11 +527,18 @@ mcp_validate() {
         fi
     fi
     if [ "$_handshake_ok" -eq 1 ]; then
-        ok "MCP server answers over stdio"
+        # The step's one line: what is cached, and that it answers. The elapsed
+        # spans the prime and the handshake, which is the whole of this step's
+        # work. Through ok_step so it survives the caller's one-line quieting.
+        ok_step "MCP server ${EXAKIT_MCP_PACKAGE}@${EXAKIT_MCP_VERSION} cached and answering over stdio ($(( $(date +%s 2>/dev/null || echo 0) - ${EXAKIT_MCP_STEP_T0:-0} ))s)"
         manifest_set components.mcp_server.mode "stdio"
         manifest_set components.mcp_server.validated true
     else
-        warn "MCP stdio validation failed (see log). The configs are still in place; clients may show more detail."
+        error "The MCP server did not answer the stdio handshake. What it said:"
+        mcp_print_handshake_detail || \
+            printf '      %s%s (the handshake produced no output)%s\n' \
+                "${UI_ERR:-}" "${UI_VB:-|}" "${UI_RESET:-}" >&2
+        warn "Your database and the client configs are unchanged — clients will still start the server. For a deeper check, run: exakit mcp-doctor"
         manifest_set components.mcp_server.validated false
     fi
 

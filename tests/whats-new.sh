@@ -114,5 +114,23 @@ else
     fail "exakit_whats_new_versions is gone from common.sh"
 fi
 
+# The command is discoverable: it sits in the help screen's Reference group,
+# answers --help, and the catalog finds it. It shipped without any of that --
+# `exakit whats-new --help` said "No help entry" and `exakit catalog whats`
+# matched nothing -- so a reader could only learn of it from the CHANGELOG.
+if python3 - "$ROOT/setup/help/exakit.json" <<'PYCHECK' >/dev/null 2>&1
+import json, sys
+doc = json.load(open(sys.argv[1]))
+ref = next(g for g in doc["groups"] if g["title"] == "Reference")
+assert "whats-new" in ref["commands"], "not in the Reference group"
+assert any(c["command"] == "whats-new" and c["summary"] for c in doc["commands"]), "no command entry"
+PYCHECK
+then pass "whats-new is in the help document's Reference group"; else fail "whats-new is missing from setup/help/exakit.json (Reference group + command entry)"; fi
+_wn_help="$(NO_COLOR=1 EXAKIT_NO_FANCY=1 bash "$ROOT/setup/exakit" whats-new --help 2>/dev/null)"
+case "$_wn_help" in
+    *"exakit whats-new"*"Examples"*) pass "exakit whats-new --help renders its page" ;;
+    *) fail "exakit whats-new --help does not render a page: $_wn_help" ;;
+esac
+
 printf '\n%d checks, %d failed\n' "$checks" "$fails"
 [ "$fails" -eq 0 ]

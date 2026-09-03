@@ -1,6 +1,7 @@
 ---
 name: dash-server
-description: Build and operate live dashboards on the local Exasol database with the dash-server add-on — an agent-operated Dash hosting server the AI drives through its MCP control plane while the user opens a browser URL. Covers installing it from the marketplace, starting and stopping it as a kit service, the port it serves on, and diagnosing a control plane that answers while the dashboards page does not. Triggers — "build me a dashboard", "visualize this Exasol data", "install dash-server", "dash-server is not running", "port 5100", "my dashboard page is blank or 500", "deploy a dashboard on my database".
+addon: dash-server
+description: Build and operate live dashboards on the local Exasol database with the dash-server add-on — an agent-operated Dash hosting server the AI drives through its MCP control plane while the user opens a browser URL. Covers installing it from the marketplace, starting and stopping it as a kit service, the port it serves on, how the control plane is registered with AI clients as an MCP server named dash-server, and diagnosing a control plane that answers while the dashboards page does not. Triggers — "build me a dashboard", "visualize this Exasol data", "install dash-server", "dash-server is not running", "port 5100", "my dashboard page is blank or 500", "deploy a dashboard on my database", "I do not see the dash-server MCP tools", "register dash-server with my AI client".
 ---
 
 # dash-server — agent-built dashboards
@@ -24,7 +25,7 @@ install. Nothing in the kit's setup flow installs it for you.
 | Endpoint | For | Default |
 |---|---|---|
 | Dashboards UI | the **user**, in a browser | `http://127.0.0.1:5100` |
-| MCP control plane | **you**, the agent (Streamable HTTP) | `http://127.0.0.1:5100/mcp` |
+| MCP control plane | **you**, the agent (Streamable HTTP) | `http://127.0.0.1:5100/mcp`, registered as `dash-server` |
 
 `5100` is only the default. If something else already holds that port, the
 install **moves to the next free one and records it** — so read the real port
@@ -38,8 +39,31 @@ exakit status      # running / stopped per service
 Move it deliberately with:
 
 ```bash
-EXAKIT_DASH_SERVER_PORT=<port> exakit update dash-server
+EXAKIT_DASH_SERVER_PORT=<port> exakit update
 ```
+
+## The control plane is a registered MCP server
+
+You do not hand-roll a transport over `/mcp`. Whenever the add-on is installed,
+`exakit mcp-setup` registers the control plane as a normal MCP server named
+**`dash-server`** — Streamable HTTP at `http://127.0.0.1:<port>/mcp`, the port
+read from the same recorded value every other dash-server command uses. Its
+tools then appear in your session alongside the `exasol` ones.
+
+```bash
+exakit mcp-setup     # writes the exasol entry, and the dash-server one
+```
+
+Which clients get it: **Cursor**, **Claude Code**, **Codex**, **GitHub Copilot
+(VS Code)**, **Gemini CLI**, **OpenCode** and **Continue**. **Claude Desktop is
+the one left out** — its config file knows only `command`/`args`, and the app
+takes remote MCP servers through its own Connectors settings instead — so setup
+prints one note naming the URL, not a warning, and the run is not affected by it.
+
+**The client must restart or reload before the tools appear.** The same rule as
+the `exasol` server, and the same trap: if *you* just ran `exakit mcp-setup`,
+your own process has no `dash-server` tools this session. Drive the endpoint over
+HTTP for the rest of it, and expect the tools next session.
 
 ## Running it
 
@@ -75,9 +99,9 @@ Work these in order:
    the port", and those need different fixes.
 2. **Port held by a foreign process.** The kit will not fight for it and will
    not touch a process it does not own. Either stop that process, or move
-   dash-server: `EXAKIT_DASH_SERVER_PORT=<port> exakit update dash-server`.
+   dash-server: `EXAKIT_DASH_SERVER_PORT=<port> exakit update`.
 3. **`exakit logs dash-server`** — the server's own log.
-4. **`exakit update dash-server`** — doubles as the repair command.
+4. **`exakit update`** — doubles as the repair command.
 
 ### The specific failure worth knowing
 
@@ -91,7 +115,7 @@ Symptom: agents can drive it fine over MCP, the user sees an error page. Fix:
 ```bash
 exakit stop && exakit start        # restart it
 # or
-exakit update dash-server          # the repair path
+exakit update          # the repair path
 ```
 
 If the control plane answers but the page does not, say so plainly rather than

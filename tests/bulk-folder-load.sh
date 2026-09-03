@@ -94,26 +94,23 @@ has "a same-table name is skipped"     "skip|duplicate-table|orders.parquet|$D/o
 # punctuation on macOS and does not in CI.
 has "the first in byte order wins" "load|csv|SALES|$D/sales.csv" "$PLAN"
 
-printf '\n== formats: asked only when there is a choice ==\n'
+printf '\n== a folder is never asked about its formats ==\n'
 
 check "kinds present, in menu order" "csv parquet json" \
     "$(exakit_bulk_kinds_present "$PLAN" | tr '\n' ' ' | sed 's/ $//')"
 
-# One format in the folder: nothing to ask, and the answer is that format.
-ONE="$WORK/one"; mkdir -p "$ONE"
-printf 'a\n1\n' > "$ONE/only.csv"
-exakit_bulk_select_formats "$(exakit_bulk_scan_folder "$ONE")"
-check "a single-format folder asks nothing" "csv" "$EXAKIT_BULK_FORMATS"
+# The question is GONE, not merely defaulted. A folder means "here is my data",
+# so every loadable file is taken whatever its kind -- and the menu that used to
+# ask was being drawn while the selection table was still on screen, which is
+# what duplicated its borders.
+lacks "no format selector survives"    "exakit_bulk_select_formats" "$(cat "$ROOT/setup/lib/exapump.sh")"
+lacks "...nor on the PowerShell side"  "Select-ExakitBulkFormats"   "$(cat "$ROOT/setup/lib/exapump.ps1")"
+lacks "no env var pre-answers it"      "EXAKIT_DATA_FORMATS"        "$(cat "$ROOT/setup/lib/exapump.sh")"
+lacks "and the help stops promising it" "more than one format"      "$(cat "$ROOT/setup/help/exakit.json")"
 
-EXAKIT_DATA_FORMATS="csv,json" exakit_bulk_select_formats "$PLAN"
-check "EXAKIT_DATA_FORMATS answers the menu" "csv,json" "$EXAKIT_BULK_FORMATS"
-EXAKIT_DATA_FORMATS="pq,jsonl" exakit_bulk_select_formats "$PLAN"
-check "extension aliases resolve" "parquet,json" "$EXAKIT_BULK_FORMATS"
-# Not in $( ): the function reports through EXAKIT_BULK_FORMATS, which a
-# command substitution's subshell would throw away. The warning is on stderr.
-EXAKIT_DATA_FORMATS="parquet,avro" exakit_bulk_select_formats "$PLAN" 2>"$WORK/fmt.err"
-has "a format the folder lacks is called out" "No avro files in this folder" "$(cat "$WORK/fmt.err")"
-check "...and the rest still load" "parquet" "$EXAKIT_BULK_FORMATS"
+# Behaviour, not just absence: a mixed folder yields every loadable row.
+MIXED_ALL="$(printf '%s\n' "$PLAN" | grep -c '^load|' || true)"
+check "every loadable file is taken from a mixed folder" "4" "$MIXED_ALL"
 
 printf '\n== the loop loads every chosen file, one table each ==\n'
 
@@ -147,7 +144,7 @@ has "json goes through the JSON path" "json events.json -> STARTER_KIT.EVENTS"  
 lacks "the skipped duplicate never loads" "sales_copy.csv" "$LOG"
 has "the folder is recorded" "manifest data.last_load.type=local_folder" "$LOG"
 has "the file count is recorded" "manifest data.last_load.files=4" "$LOG"
-has "the summary counts them" "Loaded 4 file(s) into STARTER_KIT" "$OUT"
+has "the summary counts them" "Loaded 4 files into STARTER_KIT" "$OUT"
 
 # This is also the guard for a bash 3.2 trap: filtering the plan with a `case`
 # inside $( ) returns the script's own text instead of the matches on the shell
@@ -163,17 +160,54 @@ OUT="$(exakit_load_local_folder "$D" 2>&1)"
 RC=$?
 check "a failed file is reported" "1" "$RC"
 check "the other three still loaded" "3" "$(grep -cE '^(upload|json) ' "$LOADED")"
-has "the failure names the file" "orders.parquet could not be loaded" "$OUT"
-has "and the rest are counted" "Loaded 3 of 4 file(s)" "$OUT"
+has "the failure names the file" "orders.parquet not loaded" "$OUT"
+has "and the rest are counted" "Loaded 3 of 4 into STARTER_KIT" "$OUT"
 FAIL_ON=""
 
-printf '\n== choosing formats narrows what loads ==\n'
+printf '\n== a file that will not load says why, and the rest still load ==\n'
 
+# The engine explains itself well and the kit was throwing that away. One file of
+# three failed as "could not be loaded (see log)", under a red "Upload failed"
+# banner and a log path -- which reads as the whole job dying. It is one file.
+EXAKIT_LOG_FILE="$WORK/reason.log"
+cat > "$EXAKIT_LOG_FILE" <<'REASONLOG'
+Error: SQL execution failed: Protocol error: ETL-2107: Error while parsing row=4 (starting from 0) [CSV Parser found at byte 8 of 76 single field delimiter in a not enclosed field]
+REASONLOG
+check "the commonest CSV fault is put into words" \
+    "row 4 has a line break or an unescaped comma inside a quoted field" \
+    "$(exakit_upload_failure_reason)"
+printf 'Error: ETL-5000: something else entirely\n' > "$EXAKIT_LOG_FILE"
+has "an unrecognised engine fault is passed through" "ETL-5000" "$(exakit_upload_failure_reason)"
+: > "$EXAKIT_LOG_FILE"
+check "and nothing is invented when the log says nothing" "" "$(exakit_upload_failure_reason || true)"
+EXAKIT_LOG_FILE=""
+
+# Soft mode is what stops one bad file announcing itself as a failed job.
+EXAPUMP_SRC="$(cat "$ROOT/setup/lib/exapump.sh")"
+EXAPUMP_PS_SRC="$(cat "$ROOT/setup/lib/exapump.ps1")"
+has "the folder loop asks for soft failures" "EXAKIT_UPLOAD_SOFT=1 exapump_upload" "$EXAPUMP_SRC"
+has "...and the uploader honours it" 'if [ "${EXAKIT_UPLOAD_SOFT:-0}" = 1 ]; then' "$EXAPUMP_SRC"
+# Matched on the STATEMENT, not the phrase: the phrase appears in the comments
+# that explain why it was dropped, and a needle that cannot tell code from prose
+# fails on its own documentation.
+lacks "no per-file line sends the reader to the log" 'warn "$(basename "$_blf_path") could not be loaded' "$EXAPUMP_SRC"
+lacks "...nor on the PowerShell side" 'Warn2 "$(Split-Path $file -Leaf) could not be loaded' "$EXAPUMP_PS_SRC"
+has "the twin keeps the reason instead of the banner" 'ExakitUploadReason = Get-ExakitUploadFailureReason' "$EXAPUMP_PS_SRC"
+
+printf '\n== a mixed folder loads every kind in one pass ==\n'
+
+# This block used to prove that EXAKIT_DATA_FORMATS narrowed the load. That
+# narrowing is gone on purpose: the folder is the answer, so all four files go
+# in together and no variable can hold any of them back.
 : > "$LOADED"
 OUT="$(EXAKIT_DATA_FORMATS=csv exakit_load_local_folder "$D" 2>&1)"
-check "only the chosen format loads" "2" "$(grep -c '^upload ' "$LOADED")"
-lacks "parquet stayed out" "orders.parquet" "$(cat "$LOADED")"
-lacks "json stayed out"    "events.json"    "$(cat "$LOADED")"
+# Three UPLOADS, four files: JSON does not go through the uploader at all, it is
+# shredded into tables by the ingest engine first. The "Loaded 4 file(s)" line
+# below is the one that counts files.
+check "every non-JSON kind uploads" "3" "$(grep -c '^upload ' "$LOADED")"
+has "parquet is in"  "orders"    "$(cat "$LOADED")"
+has "json is in"     "events"    "$(cat "$LOADED")"
+has "and the old variable no longer narrows anything" "Loaded 4 files" "$OUT"
 
 printf '\n== a folder with nothing to load says so ==\n'
 
@@ -205,8 +239,117 @@ has "data-load accepts a path argument" '_dl_path="$1"' "$CLI"
 has "a path pre-answers the local-data question" 'EXAKIT_DATA_FILE="$_dl_norm"' "$CLI"
 has "a missing path is refused" 'No such file or folder' "$CLI"
 HELP="$(cat "$ROOT/setup/help/exakit.json")"
-has "the help documents a folder" "or a folder" "$HELP"
-has "the help documents the format variable" "EXAKIT_DATA_FORMATS" "$HELP"
+has "the help documents a folder" "A FOLDER is a bulk load" "$HELP"
+lacks "the help no longer documents a format variable" "EXAKIT_DATA_FORMATS" "$HELP"
+
+printf '\n== Windows loads JSON where the engine exists ==\n'
+
+# Get-JsonTablesEngineAsset publishes a build for windows/x86_64, so the add-on
+# is applicable, offered and installable there - but exapump.ps1 refused every
+# .json file unconditionally, with a message that contradicted itself by ending
+# "Windows x86_64 is supported; ARM64 is not built yet." The refusal outlived
+# the limitation it was written for, kept alive by a comment asserting it.
+EXAPUMP_PS1="$(cat "$ROOT/setup/lib/exapump.ps1")"
+EXAPUMP_SH_ALL="$(cat "$ROOT/setup/lib/exapump.sh")"
+
+# The three shell helpers, and their twins.
+has "the shell knows when it is ready"  "_exakit_json_tables_ready() {"        "$EXAPUMP_SH_ALL"
+has "...and Windows does too"           "function Test-ExakitJsonTablesReady"  "$EXAPUMP_PS1"
+has "the shell installs on demand"      "_exakit_json_tables_ensure() {"       "$EXAPUMP_SH_ALL"
+has "...and Windows does too"           "function Confirm-ExakitJsonTablesReady" "$EXAPUMP_PS1"
+has "the shell loads a JSON file"       "exakit_load_local_json() {"           "$EXAPUMP_SH_ALL"
+has "...and Windows does too"           "function Import-ExakitLocalJson"      "$EXAPUMP_PS1"
+
+# The refusal survives, but only where the engine can never exist.
+has "the refusal asks first"            'if ($kind -eq "json" -and -not (Test-ExakitJsonTablesApplicable))' "$EXAPUMP_PS1"
+check "both entry points ask"           "2" \
+    "$(printf '%s\n' "$EXAPUMP_PS1" | grep -c 'json" -and -not (Test-ExakitJsonTablesApplicable)')"
+# ...and never unconditionally, which is what shipped.
+lacks "no blanket refusal"              'if ((Get-ExakitDataFileKind $path) -eq "json") {'  "$EXAPUMP_PS1"
+lacks "...on either path"               'if ((Get-ExakitDataFileKind $name) -eq "json") {'  "$EXAPUMP_PS1"
+
+# A local file and a downloaded one take the same path.
+check "both routes reach the loader"    "2" \
+    "$(printf '%s\n' "$EXAPUMP_PS1" | grep -c 'Import-ExakitLocalJson -Path')"
+
+# The install announces itself once, in the words the shell uses, with an ASCII
+# hyphen because every .ps1 but ui.ps1 is ASCII-only.
+# The announcement is LOGGED, not printed. It fires mid-folder-load, where the
+# one-line progress bar owns the row and rewrites it continuously, so the line
+# landed inside the bar. ok_step could not save it either: its pause looks for a
+# spinner, and a progress bar is a different animator holding the same line.
+lacks "no add-on line prints over the bar" 'ok_step "JSON Tables installed' "$EXAPUMP_SH_ALL"
+lacks "...nor on Windows"                  'OkStep "JSON Tables installed'  "$EXAPUMP_PS1"
+has "the shell logs it instead"   '_exakit_log_file "OK    JSON Tables installed' "$EXAPUMP_SH_ALL"
+has "...and Windows logs it too"  'Write-ExakitLog "OK" "JSON Tables installed'   "$EXAPUMP_PS1"
+
+# The comment that kept the refusal alive after the code outgrew it.
+lacks "the stale claim is gone"         "Windows cannot run the"               "$EXAPUMP_PS1"
+# ...and the advice no longer names three platforms, one of which is this one.
+lacks "no misleading platform list"     "load it from macOS, Linux or WSL"     "$EXAPUMP_PS1"
+
+# What the prompt offers is what it accepts.
+has "the prompt offers JSON"            "Local CSV / Parquet / JSON file"      "$EXAPUMP_PS1"
+has "...and so does the remote one"     "Remote CSV / Parquet / JSON URL"      "$EXAPUMP_PS1"
+
+printf '\n== a FATAL upload failure names the reason too ==\n'
+
+# The translator was used on the soft path and dropped on the fatal one, so the
+# worse outcome got the worse message. exakit_explain_db_error, which the fatal
+# path did call, knows connection, LIMIT and privilege faults - a malformed CSV
+# is none of those, and it is the commonest upload failure there is, so a single
+# file load died as "(see log)" while the folder loop above was already putting
+# the very same engine line into words.
+#
+# exapump_upload is stubbed further up this suite, and `die` exits the shell it
+# runs in, so the real function is exercised in a child bash: the engine fails,
+# and the logfile already holds its Error: line, which is the whole situation.
+FATAL_LOG="$WORK/fatal.log"
+cat > "$FATAL_LOG" <<'FATALLOG'
+Error: SQL execution failed: Protocol error: ETL-2107: Error while parsing row=412 (starting from 0) [CSV Parser found at byte 8 of 76 single field delimiter in a not enclosed field]
+FATALLOG
+
+fatal_upload() { # fatal_upload <log-file> -> the message a doomed upload prints
+    EXAKIT_HOME="$WORK/home" EXAKIT_BIN_DIR="$WORK/bin" HOME="$WORK/fake-home" \
+    bash -c '
+        set -u
+        . "$1/setup/lib/ui.sh"
+        . "$1/setup/lib/common.sh"
+        . "$1/setup/lib/exapump.sh"
+        EXAKIT_LOG_FILE="$2"
+        # The layer below: the upload fails, and the engine has already said why
+        # in the logfile.
+        run_logged() { return 1; }
+        exapump_upload "$3" "STARTER_KIT.SALES"
+    ' _ "$ROOT" "$1" "$D/sales.csv" 2>&1
+}
+
+FATAL_OUT="$(fatal_upload "$FATAL_LOG" || true)"
+
+has "the fatal path says what the engine said" \
+    "row 412 has a line break or an unescaped comma inside a quoted field" "$FATAL_OUT"
+has "...and names the file and the table it was going into" \
+    "Could not load sales.csv into STARTER_KIT.SALES" "$FATAL_OUT"
+lacks "the fatal path no longer sends the reader to the log" "Upload failed:" "$FATAL_OUT"
+
+# The fallback survives: with nothing in the log to translate, inventing a
+# reason would be worse than the old wording.
+: > "$FATAL_LOG"
+FATAL_BARE="$(fatal_upload "$FATAL_LOG" || true)"
+has "an untranslatable failure keeps the old wording" "Upload failed:" "$FATAL_BARE"
+lacks "...and invents no reason" "Could not load sales.csv" "$FATAL_BARE"
+
+# Both paths call the same translator, on both sides of the kit.
+FATAL_SH="$(cat "$ROOT/setup/lib/exapump.sh")"
+FATAL_PS="$(cat "$ROOT/setup/lib/exapump.ps1")"
+has "the shell fatal path asks for the reason" \
+    '_upl_why="$(exakit_upload_failure_reason' "$FATAL_SH"
+has "the twin asks for it on its fatal path too" \
+    '$uploadWhy = Get-ExakitUploadFailureReason -Output $result.Output' "$FATAL_PS"
+has "...and puts it in the message it dies with" \
+    'Fail "Could not load $(Split-Path $Path -Leaf) into $Target - $uploadWhy"' "$FATAL_PS"
+check "the twin asks on both paths, not one" "2" \
+    "$(printf '%s\n' "$FATAL_PS" | grep -c 'Get-ExakitUploadFailureReason -Output $result.Output')"
 
 printf '\n%s: %d passed, %d failed\n' "$(basename "$0")" "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

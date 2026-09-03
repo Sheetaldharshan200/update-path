@@ -72,6 +72,11 @@ else
     if ! personal_deployment_exists; then
         info "Deployment marked done but not reachable — redeploying"
         personal_deploy_local
+        # The deploy registers `destroy --remove --auto-approve` as its undo.
+        # The branch above disarms it with mark_step; this one has no mark_step
+        # to make -- the step is already recorded -- so it must say so directly,
+        # or that destroy stays armed for every later failure in this run.
+        rollback_clear
     elif ! personal_deployment_running; then
         # Exists but merely STOPPED (exakit stop, a reboot — the Personal
         # runtime does not auto-start): start it, don't skip it. Every step
@@ -90,7 +95,6 @@ fi
 kit_shared_steps 3 6 "$SCRIPT_DIR" "$KIT_ROOT"
 
 exakit_finish
-ok "Setup complete"
 connection_summary
 # Only when the kit version moved during this run, and never able to fail it: the
 # trap is already released and every reader inside degrades to silence.
@@ -99,6 +103,9 @@ exakit_print_whats_new_box "$KIT_ROOT" || true
 # the one command that installs it. A step that failed mid-run scrolls away;
 # this is what the user is still looking at when the installer exits.
 exakit_print_soft_failures
+# The install's one closing line, after the panel and after anything that did
+# not finish. Silent when a soft failure was recorded.
+exakit_print_ready_line
 # The closing offer: optional marketplace add-ons, asked exactly once, only on
 # an interactive run whose steps all completed, and only while something is
 # actually on offer (an add-on already on this machine is never advertised).
@@ -111,4 +118,11 @@ exakit_print_soft_failures
 # the marketplace offer so an add-on installed from it joins the boot set.
 exakit_autostart_default_on || true
 ( exakit_marketplace_offer ) || true
-info "Run \"exakit help\" for support"
+# A rule, then a heading: the last line on screen is where the reader is left,
+# and run together with whatever the marketplace printed it read as one more of
+# its bullets. The rule gives it air; the green arrow says it is not a step.
+ui_rule
+heading "Run \"exakit help\" for support"
+# Two blank lines before the shell prompt returns. The installer's last line was
+# landing directly against it, so the prompt read as part of the output.
+printf '\n\n'

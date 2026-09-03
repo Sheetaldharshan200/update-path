@@ -89,14 +89,52 @@ has "the percentage is right-aligned"   '$pctText.PadLeft($num)'          "$UI_P
 # was missing from the budget, so the table wrote the console's LAST column and
 # the row wrapped; and the status column was measured from the stored string
 # while the cell renders "<tick> <final>", two columns wider.
-has "the left margin is in the width budget" '$over = 11 + $nameW + $statW + 3 - $cols' "$UI_PS1"
+# ONE decomposition on both sides. Written as "11 + name + status" the gap
+# before Status was folded into the 11, so an extra column had to add its own
+# gap AND unpick that fold -- and not unpicking it made the no-extras table two
+# columns wider than it had been. 9 is that chrome with the fold taken out.
+has "the width budget takes the fold out"  '$total = 9 + $nameW + 3'  "$UI_PS1"
+lacks "and nobody folds it back in"        '11 + $nameW + $statW + 3' "$UI_PS1"
+has "...and the shell agrees"              '_utw_total=$(( 9 + UI_TABLE_NAME_W + 3 ))' "$UI_SH"
 has "the status column is measured as rendered" '$row.Final.Length + $script:UiTick.Length + 1' "$UI_PS1"
 has "and the status column gives way too"      '$statW -= $rest' "$UI_PS1"
-has "the second line carries the phase" '$cell.Text2 = $script:UiDim + $phase' "$UI_PS1"
-# Floors keep the frame ONE height in every state, or a growing frame scrolls the
-# screen and every later cursor-up lands one line off.
-has "the frame reserves its phase line" '$want = [int]$Table.Reserve'     "$UI_PS1"
-has "the status column has a floor"     '$statW = 44'                     "$UI_PS1"
+
+# The phase sub-line is GONE, and so is the blank line that reserved room for
+# it. It appeared and vanished as a row started and stopped running, which is
+# why it needed a reserve at all; with one line per row the frame height is
+# constant structurally rather than by arrangement.
+lacks "no phase sub-line"                  '$cell.Text2' "$UI_PS1"
+lacks "and nothing reserves room for one"  '$Table.Reserve' "$UI_PS1"
+lacks "the shell has neither either"       'UI_TABLE_CELL2' "$UI_SH"
+lacks "...nor a reserve"                   'UI_TABLE_RESERVE' "$UI_SH"
+
+# The Status floor is only held once the table has something to report, and only
+# where another column holds the width. Withheld from a name-and-status menu it
+# shrank the box to barely wider than the longest name, then doubled the moment
+# the first row started.
+has "the status floor is conditional"   'if ($Table.Col2 -or $Table.Col3) {' "$UI_PS1"
+has "the status column has a floor"     '$statW = 44'                        "$UI_PS1"
+has "...and the shell gates it the same way" 'if [ -n "${UI_TABLE_COL2:-}" ] || [ -n "${UI_TABLE_COL3:-}" ]; then' "$UI_SH"
+
+# Two optional columns, last in the row format so every row written in the old
+# ten-field shape still parses.
+has "the twin carries a second column"  'Col2 = $Col2; Col3 = $Col3' "$UI_PS1"
+# No rule is drawn between columns -- alignment carries them, and a rule turned
+# every wrapped description into a cage. The one vertical the table does draw is
+# the TREE SPINE, which has to survive a description that wraps: a blank
+# connector column snapped the line joining the add-ons in half, while the very
+# same menu drew it unbroken while installing, where every row is one line.
+lacks "no rule drawn between columns"   'if ($sepW -eq 3) { $sep = " " + $script:UiDim + $script:UiVB' "$UI_PS1"
+lacks "...and none on the shell side"   '_UI_TABLE_SEP=" ${UI_DIM:-}${UI_VB:-|}${UI_RESET:-} "' "$UI_SH"
+has "a tee remembers to carry a spine"  'if ($row.Kind -eq "tee") { $conn = $script:UiTee + " "; $spine = $true }' "$UI_PS1"
+has "...drawn on every wrapped line"    '$wleft = (" " * 5) + $script:UiVB + (" " * ($nameW - 1))' "$UI_PS1"
+has "the shell flags the tee the same"  'tee)    _utr_conn="${UI_TEE:-|-} "; _utr_spine=1 ;;' "$UI_SH"
+has "...and draws the same spine"       '_utr_wleft="     ${UI_VB:-|}${_UI_TABLE_SP:0:$(( UI_TABLE_NAME_W - 1 ))}"' "$UI_SH"
+has "the description wraps, never truncates" "function Split-ExakitWrap" "$UI_PS1"
+has "...and the shell wraps without forking" "_ui_wrap() {" "$UI_SH"
+has "the description width is fixed"    '$script:UiTableCol3Fixed = 44' "$UI_PS1"
+has "...and may grow into slack"        '$script:UiTableCol3Max = 90'   "$UI_PS1"
+has "the shell fixes and caps it too"   'UI_TABLE_COL3_MAX="${UI_TABLE_COL3_MAX:-90}"' "$UI_SH"
 # A PowerShell [int] cast ROUNDS (and rounds .5 to even), so 12 eighths became
 # two whole cells plus a half-cell frontier - a bar one cell ahead of the number
 # beside it. The shell twin divides in integers, and the table has to agree with
@@ -169,7 +207,9 @@ lacks "and neither do they"               'Read-ExakitCheckboxMenu -Title "Selec
 # Each table is titled and its first column named for what it holds, or the
 # add-ons would sit under "Dataset" - the heading the component defaults to.
 has "the client table is titled"   'New-ExakitTable -Title "AI clients to connect" -Col1 "Client"' "$MCP_PS1"
-has "the add-on table is titled"   'New-ExakitTable -Title "Add-ons to install" -Col1 "Add-on"'    "$COMMON_PS1"
+has "the add-on table is titled"   'New-ExakitTable -Title "Marketplace add-ons" -Col1 "Add-on"'   "$COMMON_PS1"
+has "...with Version and Description" '-Col2 "Version" -Col3 "Description"'                          "$COMMON_PS1"
+has "...and the shell declares both"  'UI_TABLE_COL2="Version"'                                      "$COMMON_SH"
 has "...and the shell agrees"      'UI_TABLE_COL1="Client"'                                        "$COMMON_SH"
 has "...for add-ons too"           'UI_TABLE_COL1="Add-on"'                                        "$COMMON_SH"
 # The heading comes off the TABLE, not out of module state: three tables are
@@ -202,7 +242,7 @@ else
     fail "EXAKIT_MCP_CLIENTS no longer short-circuits the client table (env=$_env_at table=$_tbl_at)"
 fi
 _env_at="$(grep -n 'if ($env:EXAKIT_MARKETPLACE_ADDONS) {' "$COMMON_PS1" | head -1 | cut -d: -f1)"
-_tbl_at="$(grep -n 'New-ExakitTable -Title "Add-ons to install"' "$COMMON_PS1" | head -1 | cut -d: -f1)"
+_tbl_at="$(grep -n 'New-ExakitTable -Title "Marketplace add-ons"' "$COMMON_PS1" | head -1 | cut -d: -f1)"
 if [ -n "$_env_at" ] && [ -n "$_tbl_at" ] && [ "$_env_at" -lt "$_tbl_at" ]; then
     pass "EXAKIT_MARKETPLACE_ADDONS is answered before any table is built"
 else
@@ -434,6 +474,47 @@ PYEOF
 else
     printf 'SKIP the balance check needs python3\n'
 fi
+
+printf '\n== the selection\047s columns do not survive into the install ==\n'
+# The add-on table the reader ticks IS the table the install then fills in, so
+# whatever headings the menu chose are still attached when the progress display
+# starts. On the shell they are module globals the caller switches off; in
+# PowerShell they are fields on the table OBJECT, which outlive the menu unless
+# cleared. Nothing forced the two to agree, and they did not: a Windows install
+# ran with Add-on, Version, Description AND Status while macOS showed Add-on and
+# Status. Asserted as text because there is no pwsh on the machine this kit is
+# developed on, and Windows is the only place that screen is drawn.
+if grep -A2 'ui_table_menu "$EXAKIT_ADDON_TABLE_STATE"' "$COMMON_SH" | grep -qF 'UI_TABLE_COL2=""'; then
+    pass "the shell drops Version once the add-on menu closes"
+else
+    fail "the shell no longer drops Version after the add-on menu"
+fi
+if grep -A3 'ui_table_menu "$EXAKIT_ADDON_TABLE_STATE"' "$COMMON_SH" | grep -qF 'UI_TABLE_COL3=""'; then
+    pass "...and Description with it"
+else
+    fail "the shell no longer drops Description after the add-on menu"
+fi
+has "the twin drops Version on the object"  '$script:ExakitAddonTable.Col2 = ""' "$COMMON_PS1"
+has "...and Description with it"            '$script:ExakitAddonTable.Col3 = ""' "$COMMON_PS1"
+
+printf '\n== a row nobody can pick keeps its columns ==\n'
+# It used to merge into one sentence -- "json-tables · Installed (0.2)" -- which
+# put a version in the middle of a name while the Version column beside it sat
+# empty, and left Status with nothing to say about the one row whose state was
+# already known. Now it renders like any other row, minus the checkbox.
+lacks "the shell no longer merges the note into the name" '_utr_text="$_utr_conn$_utr_label${_utr_note:+ · $_utr_note}"' "$UI_SH"
+lacks "...nor does the twin"        '$text = $text + " " + $script:UiMidDot + " " + $note' "$UI_PS1"
+has "the shell blanks the checkbox" '_utr_ptr=" "; _utr_box="   "; _utr_boxlen=3' "$UI_SH"
+has "...and the twin does too"      'if ($row.State -eq "disabled") { $box = "   "; $boxLen = 3 }' "$UI_PS1"
+# The name carries colour now, so its width must be measured before the escapes
+# are added or every disabled row pads short by the length of the escape.
+has "the shell measures the name plain" '_utr_namelen=${#_utr_plain}' "$UI_SH"
+has "...and so does the twin"           '$nameLen = $plain.Length' "$UI_PS1"
+# And the state cell is drawn ONLY where a Status column exists: a disabled row
+# does not count as a status for width, so filling it on the selection screen
+# drew into a column of width zero and pushed the row past its border.
+has "the shell guards the cell on width" 'if [ "${UI_TABLE_STAT_W:-0}" -gt 0 ]; then' "$UI_SH"
+has "...and the twin guards it too"      'if ($StatusWidth -gt 0) {' "$UI_PS1"
 
 printf '\n%d checks, %d failed\n' "$checks" "$fails"
 [ "$fails" -eq 0 ]

@@ -159,7 +159,13 @@ exapump_install() {
     _asset="$(exapump_asset_name)"
     _url="https://github.com/${EXAKIT_EXAPUMP_REPO}/releases/download/v${EXAKIT_EXAPUMP_VERSION}/${_asset}"
     _tmp="$(mktemp "${TMPDIR:-/tmp}/exakit-exapump.XXXXXX")"
+    _exi_t0="$(date +%s 2>/dev/null || echo 0)"
 
+    # Named per phase so the one animated line says what is happening now. The
+    # checksum has no phase of its own: it is sub-second on a 20 MB binary, and
+    # its own tick is gone -- it announced basename($_tmp), the mktemp path,
+    # never the asset. The verification itself is untouched.
+    EXAKIT_ACTIVE_LABEL="Downloading exapump v${EXAKIT_EXAPUMP_VERSION}"
     info "Downloading exapump v${EXAKIT_EXAPUMP_VERSION} ($_asset)"
     fetch "$_url" "$_tmp"
 
@@ -192,7 +198,7 @@ exapump_install() {
     # un-launchable binary would otherwise surface 30s later as an opaque
     # "SELECT 1 failed" after the connection retries.
     exapump_verify_runs
-    ok "exapump installed: $EXAKIT_EXAPUMP_BIN"
+    ok_step "exapump v${EXAKIT_EXAPUMP_VERSION} installed to $(ui_tilde "$EXAKIT_EXAPUMP_BIN") ($(( $(date +%s 2>/dev/null || echo 0) - _exi_t0 ))s)"
     exapump_record_manifest
 }
 
@@ -360,7 +366,7 @@ os.replace(tmp, path)
 PY
     chmod 600 "$EXAPUMP_CONFIG"
     manifest_set components.exapump.profile "$EXAKIT_EXAPUMP_PROFILE"
-    ok "Connection profile written: [$EXAKIT_EXAPUMP_PROFILE] in $EXAPUMP_CONFIG"
+    ok_step "Connection profile [$EXAKIT_EXAPUMP_PROFILE] written to $(ui_tilde "$EXAPUMP_CONFIG")"
 }
 
 # exapump_ddl_roundtrip — one DDL write-readback round through the profile.
@@ -403,9 +409,15 @@ exapump_ddl_roundtrip() {
 exapump_confirm_database_ready() {
     _timeout="${EXAKIT_DDL_READY_TIMEOUT:-180}"
     info "Confirming the database can persist schema changes"
+    # Announced by the caller, not here: answering SELECT 1 and persisting a
+    # schema are one fact to the reader -- the database is ready -- and two
+    # ticks for it read as two things to keep track of. This one stays in the
+    # logfile; exapump_validate_connection prints the merged line.
+    ui_spin_begin "Confirming the database can persist schema changes"
     _waited=0
     while :; do
         if exapump_ddl_roundtrip; then
+            ui_spin_end
             if [ "$_waited" -eq 0 ]; then
                 ok "Database is ready for schema changes"
             else
@@ -417,9 +429,16 @@ exapump_confirm_database_ready() {
         sleep 5
         _waited=$((_waited + 5))
         if [ $((_waited % 30)) -eq 0 ]; then
-            info "Database still stabilizing... (${_waited}s)"
+            # Only where the spinner is not already counting -- a line printed
+            # under a live animator is erased by its next frame.
+            if [ -t 1 ]; then
+                _exakit_log_file "INFO  Database still stabilizing... (${_waited}s)"
+            else
+                info "Database still stabilizing... (${_waited}s)"
+            fi
         fi
     done
+    ui_spin_end
     die "The database accepts connections but could not durably persist a schema within ${_timeout}s (first-boot stabilization window). Wait a moment, then retry: exakit data-load"
 }
 
@@ -431,6 +450,8 @@ exapump_validate_connection() {
         die "No connection profile exists (no database password was available to write one). Create it manually with 'exapump profile init $EXAKIT_EXAPUMP_PROFILE', then re-run this script."
     fi
     info "Validating the database connection (SELECT 1)"
+    _evc_t0="$(date +%s 2>/dev/null || echo 0)"
+    EXAKIT_ACTIVE_LABEL="Validating the database connection"
     _connected=0
     _tries=0
     while [ "$_tries" -lt 6 ]; do
@@ -449,6 +470,10 @@ exapump_validate_connection() {
     # yet — see exapump_ddl_roundtrip. Gate here so both the data-load and MCP
     # steps that follow run against a database that is genuinely ready.
     exapump_confirm_database_ready
+
+    # One line for both checks. Reaching here means SELECT 1 answered AND a
+    # schema round-tripped durably; either failing dies with its own message.
+    ok_step "Database ready — connection and schema changes verified ($(( $(date +%s 2>/dev/null || echo 0) - _evc_t0 ))s)"
 
     manifest_set components.exapump.validated true
     # Now that the password is proven to work, persist it as the runtime
@@ -475,6 +500,35 @@ exapump_run_sql_file() {
     [ "${EXAKIT_UPLOAD_QUIET:-0}" = 1 ] || ok "${2:-$(basename "$1")} done"
 }
 
+# exakit_upload_failure_reason — why the last upload failed, in one short line.
+#
+# The engine says something genuinely useful and says it in the logfile, where a
+# reader has to go and find it. "could not be loaded (see log)" is the kit
+# refusing to pass on an answer it already has: for a folder of three, one line
+# said nothing and the reason sat four directories away.
+#
+# Only the shapes worth translating are translated; anything else is passed
+# through trimmed, because a slightly long engine message beats no message.
+exakit_upload_failure_reason() {
+    [ -n "${EXAKIT_LOG_FILE:-}" ] || return 1
+    _ufr_line="$(grep -a '^Error: ' "$EXAKIT_LOG_FILE" 2>/dev/null | tail -1)"
+    [ -n "$_ufr_line" ] || return 1
+    _ufr_row="$(printf '%s' "$_ufr_line" | sed -n 's/.*row=\([0-9][0-9]*\).*/\1/p')"
+    case "$_ufr_line" in
+        *"not enclosed field"*)
+            # The commonest CSV fault by far, and the message for it is dense:
+            # a delimiter the parser met outside quotes. A line break inside a
+            # quoted field arrives here too, because the parser ends the row at
+            # the newline and then finds the fragment malformed.
+            printf 'row %s has a line break or an unescaped %s inside a quoted field\n' \
+                "${_ufr_row:-?}" "${EXAKIT_CSV_DELIM_NAME:-comma}" ;;
+        *"ETL-"*)
+            printf '%s\n' "$(printf '%s' "$_ufr_line" | sed -n 's/.*\(ETL-[0-9]*\): *\([^[]*\).*/\1 \2/p' | cut -c1-100)" ;;
+        *)
+            printf '%s\n' "$(printf '%s' "$_ufr_line" | sed 's/^Error: //' | cut -c1-100)" ;;
+    esac
+}
+
 # exapump_upload <file> <schema.table> — load a CSV/Parquet file, logged.
 exapump_upload() {
     [ -s "$1" ] || { warn "Data file missing or empty: $1"; return 1; }
@@ -483,10 +537,29 @@ exapump_upload() {
     # The installer leaves it unset and keeps its step-by-step narration.
     [ "${EXAKIT_UPLOAD_QUIET:-0}" = 1 ] || info "Loading $(basename "$1") into $2"
     if ! run_logged "$(exapump_cli)" upload "$1" --table "$2" -p "$EXAKIT_EXAPUMP_PROFILE"; then
+        # EXAKIT_UPLOAD_SOFT: the caller is loading MANY files, reports each one
+        # itself and carries on. Dying here announced a whole-job failure for one
+        # file out of three -- a red "Upload failed" and a log path, directly
+        # above the caller's own line saying the same thing more calmly. One
+        # unreadable file in a folder is not the job failing.
+        if [ "${EXAKIT_UPLOAD_SOFT:-0}" = 1 ]; then
+            return 1
+        fi
         # The engine's message is in the log; translate the common faults into
         # their remedy before dying, so "Connection refused" arrives WITH
         # "exakit start" instead of leaving the user to map one to the other.
         [ -n "${EXAKIT_LOG_FILE:-}" ] && exakit_explain_db_error "$(tail -8 "$EXAKIT_LOG_FILE" 2>/dev/null)"
+        # exakit_explain_db_error only knows connection, LIMIT and privilege
+        # faults, so a malformed CSV -- the commonest upload failure there is --
+        # matched none of them and arrived as "(see log)". The translator that
+        # does know that fault was already written and already used one line
+        # above (the soft path) and in the folder loop, which means the FATAL
+        # outcome was the one getting the worse message. Same reason, same
+        # words, on both paths.
+        _upl_why="$(exakit_upload_failure_reason 2>/dev/null || true)"
+        if [ -n "$_upl_why" ]; then
+            die "Could not load $(basename "$1") into $2 — $_upl_why"
+        fi
         die "Upload failed: $1 -> $2 (see log)"
     fi
     [ "${EXAKIT_UPLOAD_QUIET:-0}" = 1 ] || ok "$(basename "$1") loaded"
@@ -926,8 +999,9 @@ _exakit_json_tables_load_module() {
 # _exakit_json_tables_ensure - make the JSON engine usable, saying nothing.
 # A JSON file is just data the user asked to load, so the engine it needs is an
 # implementation detail: it installs with its output in the log, under the same
-# "Loading your data" spinner as the load itself. No question is asked, and no
-# download or install step is announced.
+# "Loading your data" spinner as the load itself. No question is asked and no
+# install STEP is announced -- but the fact that an add-on arrived is, on one
+# line, once it has.
 #
 # Returns 0 when the engine is ready, 1 when this machine cannot have it - that
 # case still speaks up, because a silent failure is worse than a loud one.
@@ -935,7 +1009,7 @@ _exakit_json_tables_ensure() {
     _exakit_json_tables_ready && return 0
 
     _exakit_json_tables_load_module || {
-        warn "This kit copy does not carry the JSON engine - update the kit first: exakit update exakit"
+        warn "This kit copy does not carry the JSON engine - update the kit first: exakit update"
         return 1
     }
     if command -v _exakit_addon_applicable >/dev/null 2>&1 && \
@@ -958,6 +1032,31 @@ _exakit_json_tables_ensure() {
         warn "The JSON engine installed but is not usable yet - retry with: exakit data-load"
         return 1
     }
+    # Said once, and only when this run actually installed it -- the early
+    # readiness check above returns before reaching here, so a machine that
+    # already has the add-on stays quiet.
+    #
+    # An add-on the reader never chose has just appeared on their machine, and
+    # since an add-on's skills now install WITH it, a skill arrived too. Leaving
+    # both silent asks them to discover it in `exakit marketplace` later and work
+    # out where it came from. The install itself is still unannounced: this says
+    # that it happened and what it is for, not what it did.
+    #
+    # ok_step rather than ok: the load narrates on one line, which gates plain
+    # ok to the logfile, and ok_step also hands the spinner's line back before
+    # printing so this lands on a row of its own.
+    # Nothing on screen. This runs in the middle of a folder load, where the
+    # one-line progress bar owns the row and rewrites it continuously -- the
+    # line landed inside it:
+    #
+    #   ⠇ products.json (2/2)  ████████ 99% (7s)   ✓ JSON Tables installed — ...
+    #
+    # ok_step cannot help here: its ui_spin_pause looks for a SPINNER, and a
+    # progress bar is a different animator holding the same line. Announcing an
+    # add-on the reader did not choose was worth one line; it is not worth one
+    # line printed through the middle of another. The logfile keeps it, and the
+    # add-on shows as installed in `exakit marketplace` like any other.
+    _exakit_log_file "OK    JSON Tables installed — the add-on that loads JSON into Exasol"
     return 0
 }
 
@@ -1280,68 +1379,6 @@ exakit_bulk_label() {
     esac
 }
 
-# exakit_bulk_select_formats <plan> — which formats to load.
-#
-# Only asked when the folder actually holds more than one loadable format:
-# with a single format there is nothing to choose, and a menu whose every answer
-# is the same answer is just a keystroke. EXAKIT_DATA_FORMATS pre-answers it for
-# an unattended run, the same way EXAKIT_DATASETS pre-answers the dataset menu.
-# Sets EXAKIT_BULK_FORMATS to a comma-separated list, or "none" to cancel.
-exakit_bulk_select_formats() {
-    _bsl_kinds="$(exakit_bulk_kinds_present "$1")"
-    _bsl_n=0
-    for _bsl_k in $_bsl_kinds; do _bsl_n=$((_bsl_n + 1)); done
-
-    if [ -n "${EXAKIT_DATA_FORMATS:-}" ]; then
-        EXAKIT_BULK_FORMATS=""
-        for _bsl_want in $(printf '%s' "$EXAKIT_DATA_FORMATS" | tr ',' ' ' | tr '[:upper:]' '[:lower:]'); do
-            case "$_bsl_want" in
-                pq) _bsl_want=parquet ;;
-                ndjson|jsonl) _bsl_want=json ;;
-            esac
-            case " $(printf '%s' "$_bsl_kinds" | tr '\n' ' ') " in
-                *" $_bsl_want "*) EXAKIT_BULK_FORMATS="${EXAKIT_BULK_FORMATS:+$EXAKIT_BULK_FORMATS,}$_bsl_want" ;;
-                *) warn "No $(exakit_bulk_label "$_bsl_want") files in this folder (EXAKIT_DATA_FORMATS)." ;;
-            esac
-        done
-        [ -n "$EXAKIT_BULK_FORMATS" ] || EXAKIT_BULK_FORMATS="none"
-        return 0
-    fi
-
-    if [ "$_bsl_n" -le 1 ]; then
-        EXAKIT_BULK_FORMATS="$(printf '%s' "$_bsl_kinds" | tr '\n' ',' | sed 's/,$//')"
-        [ -n "$EXAKIT_BULK_FORMATS" ] || EXAKIT_BULK_FORMATS="none"
-        return 0
-    fi
-
-    _bsl_labels=()
-    _bsl_ids=()
-    _bsl_defaults=""
-    _bsl_i=0
-    for _bsl_k in $_bsl_kinds; do
-        _bsl_i=$((_bsl_i + 1))
-        _bsl_count="$(printf '%s\n' "$1" | grep -c "^load|$_bsl_k|")"
-        _bsl_labels+=("$(exakit_bulk_label "$_bsl_k") ($_bsl_count file$([ "$_bsl_count" = 1 ] || printf 's'))")
-        _bsl_ids+=("$_bsl_k")
-        _bsl_defaults="${_bsl_defaults:+$_bsl_defaults,}$_bsl_i"
-    done
-    _bsl_labels+=("Skip")
-    _bsl_final=$((_bsl_i + 1))
-    EXAKIT_CHECKBOX_EXCLUSIVE="$_bsl_final"
-    ui_checkbox_menu "This folder has more than one format — which do you want to load?" \
-        "$_bsl_defaults" "${_bsl_labels[@]}"
-    case ",$EXAKIT_CHECKBOX_SELECTION," in
-        *",$_bsl_final,"*) EXAKIT_BULK_FORMATS="none"; return 0 ;;
-    esac
-    EXAKIT_BULK_FORMATS=""
-    for _bsl_idx in $(printf '%s' "$EXAKIT_CHECKBOX_SELECTION" | tr ',' ' '); do
-        [ "$_bsl_idx" -ge 1 ] && [ "$_bsl_idx" -lt "$_bsl_final" ] || continue
-        EXAKIT_BULK_FORMATS="${EXAKIT_BULK_FORMATS:+$EXAKIT_BULK_FORMATS,}${_bsl_ids[$((_bsl_idx - 1))]}"
-    done
-    [ -n "$EXAKIT_BULK_FORMATS" ] || EXAKIT_BULK_FORMATS="none"
-    return 0
-}
-
 # exakit_load_local_folder <dir> — load every data file in one folder.
 #
 # The schema is asked once, not once per file: a folder is one job, and its
@@ -1358,25 +1395,19 @@ exakit_load_local_folder() {
         return 1
     fi
 
-    exakit_bulk_select_formats "$_blf_plan"
-    if [ "$EXAKIT_BULK_FORMATS" = "none" ]; then
-        info "Nothing selected — no files were loaded."
-        return 2
-    fi
-    # One grep, not a case inside $( ): bash 3.2 -- the shell every macOS user
-    # runs this with -- mis-parses a case pattern inside a command substitution
-    # and silently returns the script text instead of the output. `bash -n` does
-    # not catch it, because the substitution is only parsed when it expands.
-    # The alternation is built from a fixed set of kinds, never from user input.
-    _blf_re="^load\\|($(printf '%s' "$EXAKIT_BULK_FORMATS" | tr ',' '|'))\\|"
-    _blf_chosen="$(printf '%s\n' "$_blf_plan" | grep -E "$_blf_re" | cut -d'|' -f2-)"
+    # EVERY loadable file, whatever its kind. A folder means "here is my data",
+    # and asking which of CSV, Parquet and JSON to take is asking the reader to
+    # do the sorting the kit exists to do -- for an answer that is almost always
+    # "all of them". Anything unreadable is already listed as skipped with its
+    # reason, so nothing disappears silently by not being asked about.
+    _blf_chosen="$(printf '%s\n' "$_blf_plan" | grep '^load|' | cut -d'|' -f2-)"
     _blf_n="$(printf '%s\n' "$_blf_chosen" | grep -c '.' || true)"
     [ "$_blf_n" -gt 0 ] || { info "Nothing selected — no files were loaded."; return 2; }
 
     # One schema for the whole folder, asked once.
     _blf_schema="${EXAKIT_SCHEMA:-STARTER_KIT}"
     while :; do
-        _blf_schema="$(prompt_text "Target schema for all $_blf_n file(s) (back to return)" "$_blf_schema")"
+        _blf_schema="$(prompt_text "Target schema (back to return)" "$_blf_schema")"
         case "$_blf_schema" in
             b|B|back|Back|BACK) info "Returning to data loading options."; return 2 ;;
             ""|*[!A-Za-z0-9_]*)
@@ -1388,15 +1419,19 @@ exakit_load_local_folder() {
     done
     _blf_schema="$(printf '%s' "$_blf_schema" | tr '[:lower:]' '[:upper:]')"
 
+    # No confirmation. The reader has already answered twice -- the folder, then
+    # the schema -- and the plan printed above is what those two answers produced.
+    # A third question asking whether they meant it turns a two-answer job into a
+    # three-answer one and adds nothing: `back` at either prompt is the way out,
+    # and nothing is written until the loading starts.
     exakit_bulk_print_plan "$_blf_plan" "$_blf_chosen" "$_blf_schema" "$_blf_dir"
-    confirm_env EXAKIT_BULK_CONFIRM "Load these $_blf_n file(s) into $_blf_schema?" y || {
-        info "Nothing was loaded."
-        return 2
-    }
 
-    exakit_ensure_schema "$_blf_schema"
+    # Quiet BEFORE the schema call, not after: creating the schema is plumbing
+    # this job needs, not a step the reader is following, and it was the one line
+    # of it that escaped onto the screen.
     EXAKIT_UPLOAD_QUIET=1
     export EXAKIT_UPLOAD_QUIET
+    exakit_ensure_schema "$_blf_schema"
     # Weighted by BYTES, like a bundled dataset: a folder is usually one big
     # export and a handful of small ones, and counting files would put the bar
     # at 90% while the only file that matters is still going.
@@ -1411,7 +1446,7 @@ EXAKIT_BULK_WEIGH_EOF
     _blf_t0="$(date +%s 2>/dev/null || echo 0)"
     _blf_state="$(mktemp "${TMPDIR:-/tmp}/exakit-folder.XXXXXX")" || _blf_state=""
     if [ -n "$_blf_state" ]; then
-        ui_progress_state "$_blf_state" 0 1 2 "reading $_blf_n file(s)"
+        ui_progress_state "$_blf_state" 0 1 2 "reading $(exakit_plural "$_blf_n" file)"
         ui_progress_begin "$_blf_state" "$_blf_t0" || true
     fi
     _blf_done=0
@@ -1436,19 +1471,23 @@ EXAKIT_BULK_WEIGH_EOF
                 _blf_done=$((_blf_done + 1))
                 _blf_done_w=$(( _blf_done_w + _blf_w ))
             else
-                warn "$(basename "$_blf_path") could not be loaded (see log) — the rest of the folder continues."
+                _blf_why="$(exakit_upload_failure_reason 2>/dev/null || true)"
+                warn "$(basename "$_blf_path") not loaded${_blf_why:+ — $_blf_why}"
                 _blf_failed=$((_blf_failed + 1))
             fi
             continue
         fi
-        # exapump_upload dies on failure; the subshell keeps that soft, so one
-        # bad file in forty does not end the job.
-        if ( exapump_upload "$_blf_path" "$_blf_target" ); then
+        # EXAKIT_UPLOAD_SOFT keeps one unreadable file from announcing itself as
+        # a failed job: this loop reports each file and carries on, so the
+        # engine's own "Upload failed" banner would be the same news twice, in a
+        # louder voice than the truth deserves.
+        if ( EXAKIT_UPLOAD_SOFT=1 exapump_upload "$_blf_path" "$_blf_target" ); then
             _exakit_log_file "OK    $(basename "$_blf_path") -> $_blf_target"
             _blf_done=$((_blf_done + 1))
             _blf_done_w=$(( _blf_done_w + _blf_w ))
         else
-            warn "$(basename "$_blf_path") could not be loaded (see log) — the rest of the folder continues."
+            _blf_why="$(exakit_upload_failure_reason 2>/dev/null || true)"
+            warn "$(basename "$_blf_path") not loaded${_blf_why:+ — $_blf_why}"
             _blf_failed=$((_blf_failed + 1))
         fi
     done <<EXAKIT_BULK_LOAD_EOF
@@ -1465,11 +1504,18 @@ EXAKIT_BULK_LOAD_EOF
     manifest_set data.last_load.files "$_blf_done"
 
     if [ "$_blf_failed" -gt 0 ]; then
-        warn "Loaded $_blf_done of $_blf_n file(s) into $_blf_schema; $_blf_failed failed (see log)."
+        warn "Loaded $_blf_done of $_blf_n into $_blf_schema; $_blf_failed not loaded (reason above, full detail: exakit logs)."
         return 1
     fi
-    ok "Loaded $_blf_done file(s) into $_blf_schema"
+    ok "Loaded $(exakit_plural "$_blf_done" file) into $_blf_schema"
     return 0
+}
+
+# exakit_plural <n> <noun> — "1 file", "2 files". The kit wrote "file(s)" in
+# nine places, which is a form nobody says out loud and which reads as unfinished
+# on the only count that is ever common: one.
+exakit_plural() {
+    if [ "$1" = "1" ]; then printf '%s %s\n' "$1" "$2"; else printf '%s %ss\n' "$1" "$2"; fi
 }
 
 # exakit_bulk_print_plan <plan> <chosen> <schema> <dir> — what is about to
@@ -1478,12 +1524,17 @@ EXAKIT_BULK_LOAD_EOF
 # because a folder of exports beside two hundred images should not print two
 # hundred lines.
 exakit_bulk_print_plan() {
-    info "From $(ui_tilde "$4") into $3:"
+    # No header line. The confirm below names the count, the schema and the
+    # folder in one sentence, so a line above the list saying the same three
+    # things was the plan introducing itself.
     printf '%s\n' "$2" | while IFS='|' read -r _bpp_kind _bpp_table _bpp_path; do
         [ -n "$_bpp_path" ] || continue
-        printf '      %s%s%s %s %s->%s %s.%s\n' \
+        # Table name only. The schema is the same for every row and is said
+        # once, in the question underneath -- repeating it per file made the
+        # busiest column the one carrying the least information.
+        printf '      %s%s%s %s %s->%s %s\n' \
             "${UI_DIM:-}" "${UI_BULLET:--}" "${UI_RESET:-}" \
-            "$(basename "$_bpp_path")" "${UI_DIM:-}" "${UI_RESET:-}" "$3" "$_bpp_table"
+            "$(basename "$_bpp_path")" "${UI_DIM:-}" "${UI_RESET:-}" "$_bpp_table"
     done
     printf '%s\n' "$1" | grep '^skip|duplicate' | while IFS='|' read -r _bpp_v _bpp_reason _bpp_of _bpp_path; do
         case "$_bpp_reason" in
@@ -1493,12 +1544,16 @@ exakit_bulk_print_plan() {
         printf '      %s! %s skipped (%s)%s\n' \
             "${UI_DIM:-}" "$(basename "$_bpp_path")" "$_bpp_why" "${UI_RESET:-}"
     done
+    # The two counts on ONE line when both happen, and each with its own
+    # plural. Two near-identical sentences stacked under a three-file plan was
+    # more lines about what is NOT being loaded than about what is.
     _bpp_other="$(printf '%s\n' "$1" | grep -c '^skip|unsupported|' || true)"
     _bpp_empty="$(printf '%s\n' "$1" | grep -c '^skip|empty|' || true)"
-    [ "$_bpp_other" -gt 0 ] && printf '      %s%s file(s) of other kinds ignored%s\n' \
-        "${UI_DIM:-}" "$_bpp_other" "${UI_RESET:-}"
-    [ "$_bpp_empty" -gt 0 ] && printf '      %s%s empty file(s) ignored%s\n' \
-        "${UI_DIM:-}" "$_bpp_empty" "${UI_RESET:-}"
+    _bpp_ig=""
+    [ "$_bpp_other" -gt 0 ] && _bpp_ig="$_bpp_other of other kinds"
+    [ "$_bpp_empty" -gt 0 ] && _bpp_ig="${_bpp_ig:+$_bpp_ig, }$_bpp_empty empty"
+    [ -n "$_bpp_ig" ] && printf '      %signored: %s%s\n' \
+        "${UI_DIM:-}" "$_bpp_ig" "${UI_RESET:-}"
     return 0
 }
 
@@ -2139,9 +2194,14 @@ exakit_data_load_select() {
         return 1
     }
     exakit_data_table_build "$EXAKIT_TABLE_STATE"
+    # Nothing said about the bundled datasets already being loaded. The table
+    # below shows exactly what is on offer, and when they are all in it offers
+    # the local-file row and Skip -- their absence IS the message. A sentence
+    # explaining why the list is short, printed above the list, is the screen
+    # apologising for itself. The logfile keeps the fact.
     if [ "$(exakit_data_table_row local)" = "$EXAKIT_TABLE_ROW_LOCAL" ] && \
        [ "$EXAKIT_TABLE_ROW_LOCAL" = "1" ]; then
-        info "Every bundled dataset is already loaded (reload with: exakit data-load --force)."
+        _exakit_log_file "INFO  Every bundled dataset is already loaded (reload with: exakit data-load --force)."
     fi
     UI_TABLE_TITLE="Datasets to load"
     printf '\n'
@@ -2281,6 +2341,7 @@ exakit_data_load_menu() {
     # no explanation. ui_table_detach is what keeps the subshell's exit from
     # taking this shell's animation with it.
     _menu_notes=""
+    _menu_has_local=0
     EXAKIT_DEFER_ERRORS=""
     if [ "$EXAKIT_TABLE_LIVE" = 1 ]; then
         EXAKIT_DEFER_ERRORS="$EXAKIT_TABLE_STATE.fatal"
@@ -2289,14 +2350,10 @@ exakit_data_load_menu() {
     for _menu_id in $(printf '%s' "$EXAKIT_DATA_LOAD_SELECTION" | tr ',' ' '); do
         case "$_menu_id" in
             local)
-                ( ui_table_detach; exakit_load_local_file )
-                _local_status=$?
-                if [ "$_local_status" -eq 2 ]; then
-                    _menu_notes="${_menu_notes}info|Local file load skipped. Run it any time with: exakit data-load
-"
-                elif [ "$_local_status" -ne 0 ]; then
-                    _menu_status="$_local_status"
-                fi
+                # Deferred until the table has closed - see below. Everything
+                # this row does is a QUESTION, and a question cannot be asked
+                # under a frame that is still repainting itself.
+                _menu_has_local=1
                 ;;
             *)
                 _kit_root="$(exakit_repo_root)" || _kit_root=""
@@ -2334,6 +2391,28 @@ exakit_data_load_menu() {
         rm -f "$EXAKIT_DEFER_ERRORS"
     fi
     EXAKIT_DEFER_ERRORS=""
+    # The local file / folder load, now that the box is closed.
+    #
+    # It is the one selection made entirely of QUESTIONS -- the path, then the
+    # schema -- and they were being asked while the selection table was still on
+    # screen as the progress display. A prompt printed into a frame that is
+    # still repainting duplicates its borders and strands it: the folder load
+    # showed "Datasets to load" twice, then a third time after the question.
+    #
+    # Nothing is lost by closing first. This row has no per-file progress to
+    # show in that table anyway: the folder load draws its own one-line bar, and
+    # the datasets above have already finished and been drawn.
+    if [ "$_menu_has_local" = 1 ]; then
+        printf '\n'
+        ( exakit_load_local_file )
+        _local_status=$?
+        if [ "$_local_status" -eq 2 ]; then
+            _menu_notes="${_menu_notes}info|Local file load skipped. Run it any time with: exakit data-load
+"
+        elif [ "$_local_status" -ne 0 ]; then
+            _menu_status="$_local_status"
+        fi
+    fi
     while IFS='|' read -r _mn_kind _mn_text; do
         [ -n "$_mn_text" ] || continue
         case "$_mn_kind" in

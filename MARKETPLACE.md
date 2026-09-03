@@ -84,12 +84,17 @@ Pick your reference by what the tool is:
   the user installed themselves).
 - **A tool users cannot install as shipped** (needs a toolchain, ships no
   binaries, hardcodes a build step) → copy **json-tables**: a packaging
-  workflow in this repo (`.github/workflows/pkg-json-tables.yml`) builds the
-  artifacts once for every platform and publishes them to a `mirror-<id>`
-  release here; the module downloads the prebuilt pair digest-verified,
-  resolves "latest" from that release (`<id>_latest` hook) so nothing is ever
-  advertised before it is built, and the workflow's `advertise` job bumps
-  versions.json by pull request only after a successful publish.
+  workflow in this repo (`.github/workflows/pkg-json-tables.yml`) assembles the
+  artifacts once for every platform — downloading and digest-verifying the ones
+  upstream prebuilds, building only the rest — and publishes them as **one immutable
+  release per build** (`<id>-<version>`, never rewritten); the module downloads
+  the prebuilt pair from the release versions.json names and verifies each
+  against the digest pinned there, "latest" is the advertised version
+  (`<id>_latest` hook) so nothing is ever offered before it is built, and the
+  workflow's `advertise` job writes the whole pin — version, release tag,
+  wheel, digests — by pull request only after a successful publish. A rolling
+  tag is the one shape to avoid: overwriting its assets breaks every pinned
+  install until the pins catch up.
 
 ### 1. Ship the module pair
 
@@ -118,7 +123,7 @@ my_tool_installed_version() {
 # Soft-fail helper: marketplace installs must never end the caller's run.
 _my_tool_not_installed() {
     warn "my-tool was not installed: $1"
-    warn "Everything else in the kit is unaffected. Retry with: exakit update my-tool"
+    warn "Everything else in the kit is unaffected. Retry with: exakit update"
     command -v exakit_note_failure >/dev/null 2>&1 && exakit_note_failure "$1"
     manifest_set components.my_tool.validated false
     return 1
@@ -196,8 +201,10 @@ my_tool_uninstall() {
 
 # OPTIONAL — only when "installable" is stricter than "released upstream".
 # json-tables is the model: the kit prebuilds its artifacts in a packaging
-# workflow, so what CAN be installed is what that workflow has published, not
-# what upstream tagged. The generic upstream lookup calls this hook first.
+# workflow, so what CAN be installed is what that workflow has published and
+# versions.json advertises, not what upstream tagged. The generic upstream
+# lookup calls this hook first; json_tables_latest answers from versions.json
+# alone, with no network call.
 # my_tool_latest() { ... }   # print the newest INSTALLABLE version
 ```
 
@@ -295,6 +302,31 @@ shared checkbox layer keeps every menu row to exactly one terminal line.
 Skipping this document is allowed — the row then reads
 `Details: exakit help my-tool` — but the screen is worse for it.
 
+### 5. Optional: ship an AI skill with it
+
+If the add-on is worth teaching an agent to drive, add
+`skills/my-tool/SKILL.md` with the usual `name` + `description` frontmatter and
+one extra key naming its owner:
+
+```yaml
+---
+name: my-tool
+addon: my-tool
+description: ... Triggers — "...".
+---
+```
+
+That key is the whole wiring. The marketplace places the skill as part of
+installing the add-on and removes it again when the add-on is uninstalled; the
+AI-bridge step, which installs the core skills, leaves it alone until then. A
+skill is a set of triggers for an agent to match on, and matching them for a
+tool that is not on the machine is worse than not shipping the skill — so an
+add-on's skill travels with the add-on, not with the kit.
+
+Nothing in the shell or PowerShell learns the skill's name: the owner is read
+out of the frontmatter. Bump `components.skills.version` in `versions.json`, add
+a row to `skills/README.md` under the marketplace heading, and that is all.
+
 ### The CI guards (same PR, mechanical)
 
 | File | Change |
@@ -309,7 +341,7 @@ label's one-liner (both come from the About, cached, with the tagline behind
 them), menu row, closing-offer row, presence detection, `exakit update
 my-tool`, `update all` gating (installed only), `exakit version` row,
 `EXAKIT_MARKETPLACE_ADDONS` parsing, uninstall sweep of the launcher and the
-kit-home state — all generic. `tests/marketplace.sh` asserts `common.sh`
+kit-home state, placing and removing the add-on's own skill — all generic. `tests/marketplace.sh` asserts `common.sh`
 carries **zero** per-add-on case arms, so a regression back to hand-wired
 arms fails CI.
 

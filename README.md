@@ -54,9 +54,9 @@ You already use AI. The hard part is trusting it with your data. This kit gives 
 | ⚡ | **[exapump](https://github.com/exasol-labs/exapump)** | Load CSV/Parquet files and run SQL from your terminal |
 | 🐍 | **[pyexasol](https://github.com/exasol/pyexasol)** | The official Exasol Python driver, ready in its own environment |
 
-At the end: connection details on screen, a managed runtime state under `~/.exasol-starter-kit/`, and guided MCP setup for supported clients. Time to first query: **under 2 minutes**.
+At the end: connection details on screen, a managed runtime state under `~/.exasol-starter-kit/`, and guided MCP setup for supported clients. The database itself is usually up in **under 2 minutes**.
 
-**Three optional add-ons  `exakit marketplace`:**
+**Three optional add-ons — add them any time with `exakit marketplace`:**
 
 | | Add-on | What it does for you |
 |---|---|---|
@@ -68,8 +68,8 @@ At the end: connection details on screen, a managed runtime state under `~/.exas
 
 ## Key features
 
-- 🪶 **Almost no prerequisites.** No Homebrew or Rust needed. Python 3.11+ is needed.
-- ⚡ **Ready in under 2 minutes.** One command installs and connects the whole stack.
+- 🪶 **Almost no prerequisites.** No Homebrew, Rust or Python install needed. The kit uses a suitable Python if it finds one, otherwise it installs a managed one for itself.
+- ⚡ **Database up in under 2 minutes.** The full install — sample data and AI client setup included — takes longer, notably so on Windows. Let it finish; re-running is always safe.
 - 🔒 **Read-only AI.** Your assistant can read everything and change nothing. The database enforces it.
 - 🤖 **Support for multiple AI clients.** Claude, Codex, Cursor, GitHub Copilot, Gemini CLI, OpenCode, Continue.
 - 📊 **Sample data included.** Three sample datasets, loaded and verified for you.
@@ -83,23 +83,32 @@ At the end: connection details on screen, a managed runtime state under `~/.exas
 
 | Your machine | Minimum Requirements | That's all |
 |---|---|---|
-| **macOS** | 8 GB+ RAM, 10 GB free disk | The database runs natively |
+| **macOS** | 8 GB+ RAM, 20 GB free disk | The database runs natively |
 | **Linux / WSL** | Docker or Podman (running), 4 GB+ RAM | Container runtime required |
 | **Windows** | Docker Desktop (running), 4 GB+ RAM | Native Windows uses the PowerShell installer |
 
-Every platform also needs **Python 3.11+**.
+**No Python install needed** on any platform: the kit uses a system Python 3.11+ when it finds one, and otherwise installs a managed Python for its own use.
 
 Not sure? Check first. It installs **nothing**:
 
+**macOS / Linux / WSL**
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/krishna-exasol/update-path/main/install.sh | EXAKIT_PREFLIGHT=1 sh
+```
+
+**Windows (PowerShell)** — there is no `sh` there, and `curl` is an alias for `Invoke-WebRequest`, so set the variable first:
+
+```powershell
+$env:EXAKIT_PREFLIGHT = '1'
+irm https://raw.githubusercontent.com/krishna-exasol/update-path/main/install.ps1 | iex
 ```
 
 Step-by-step guides: [QUICKSTART](QUICKSTART.md) · [macOS](quickstarts/macos.md) · [WSL](quickstarts/windows-wsl.md) · [Windows + Docker](quickstarts/windows-docker.md)
 
 ### Installing: what to expect
 
-The installer detects your OS and hardware, shows its plan, then installs everything: the database, exapump, the MCP server, pyexasol, and your AI client connections. The flow is the same on macOS, Linux, WSL, and Windows PowerShell. The database is usually up in **under 2 minutes**.
+The installer detects your OS and hardware, shows its plan, then installs everything: the database, exapump, the MCP server, pyexasol, and your AI client connections. The flow is the same on macOS, Linux, WSL, and Windows PowerShell. The database is usually up in **under 2 minutes**; the steps after it — sample data, the AI bridge, the Python driver — take longer, and a full Windows install is the slowest of them. A long-running install is not a stuck one.
 
 At the end you get a connection panel with everything you need, and a first prompt for your AI client is on your clipboard.
 
@@ -128,7 +137,7 @@ exakit skills-install     # place them where agents look
 exakit skills             # what this kit carries, and what is installed
 ```
 
-This copies the skills into each agent's discovery folder (`~/.claude/skills/`, `~/.agents/skills/`). In a **fresh** agent session, say **"setup starter kit"** and it takes over — or ask for anything else the kit does ("load this JSON file", "build me a dashboard", "query Exasol from Python") and the matching skill fires on its own. See [`skills/README.md`](skills/README.md) for the full index, and [`skills/reducing-agent-prompts.md`](skills/reducing-agent-prompts.md) if the agent asks for approval too often.
+This copies the skills into each agent's discovery folder (`~/.claude/skills/`, `~/.agents/skills/`). The set is versioned like every other component: when the maintainers publish a newer one, `exakit update` fetches and installs it in seconds. In a **fresh** agent session, say **"setup starter kit"** and it takes over — or ask for anything else the kit does ("load this JSON file", "build me a dashboard", "query Exasol from Python") and the matching skill fires on its own. See [`skills/README.md`](skills/README.md) for the full index, and [`skills/reducing-agent-prompts.md`](skills/reducing-agent-prompts.md) if the agent asks for approval too often.
 
 ## The workflow this kit teaches
 
@@ -199,12 +208,9 @@ later with:
 exakit marketplace
 ```
 
-Space selects, Enter installs. The first add-on is **dash-server**, an
-agent-operated dashboard host: your AI assistant builds live, query-backed
-dashboards on the local database through its MCP control plane, and you open
-them in the browser. Installed add-ons update through `exakit update` like
-everything else; a tool you already have (even installed outside the kit) is
-never offered twice. Flowcharts of every scenario:
+Space selects, Enter installs. Installed add-ons update through `exakit update`
+like everything else, and a tool you already have — even one installed outside
+the kit — is never offered twice. Flowcharts of every scenario:
 [MARKETPLACE-FLOWS.md](MARKETPLACE-FLOWS.md). Building your own add-on:
 [MARKETPLACE.md](MARKETPLACE.md).
 
@@ -214,12 +220,6 @@ The kit tracks a **tested set** of versions, not the newest of everything. The
 maintainers publish that set, and your machine reads it — so an update means
 "move to the combination we verified together", never "hope four independent
 releases work with each other".
-
-```bash
-exakit version         # what is installed vs what is available, and why
-exakit update          # apply everything that is waiting; it asks before it stops the database
-exakit update runtime  # the database itself, on its own — stops it briefly, keeps your data
-```
 
 `exakit update` applies the quick components (kit scripts, exapump, MCP server,
 pyexasol) in seconds. If a **database** update is waiting it asks you first,
@@ -231,7 +231,7 @@ because that one stops the database for a minute or two:
 
 Answer `y` and it does the whole job — stops the database, updates the runtime,
 brings it back up and tells you it is running again. Answer `n` and nothing is
-stopped; `exakit update runtime` applies it whenever you like. Your data is kept
+stopped; `exakit update` applies it whenever you like. Your data is kept
 either way: the update reuses the same data volume, and the previous version is
 put back if the new one does not come up.
 
@@ -241,11 +241,11 @@ deliberately with `exakit update --yes` (or `EXAKIT_CONFIRM_RUNTIME_UPDATE=1`).
 
 ```
 Component  Installed         Tagged            Severity    Action
-exakit     0.2.0             0.2.0             -           current
-nano       2026.2.0-nano.2   2026.3.0-nano.1   -           exakit update runtime (heavy)
-exapump    0.11.2            0.12.0            recommended exakit update exapump
-mcp        1.10.1            1.10.1            -           current
-pyexasol   2.2.2             2.2.2             -           current
+exakit     0.2.1             0.2.1             -           current
+nano       2026.2.0-nano.2   2026.2.0-nano.3   -           exakit update (heavy)
+exapump    0.11.3            0.12.0            recommended exakit update
+mcp        2.1.0             2.1.0             -           current
+pyexasol   2.3.2             2.3.2             -           current
 ```
 
 A few things worth knowing:
@@ -271,7 +271,7 @@ A few things worth knowing:
 - **Repo stays pure source.** Runtime state, logs, credentials, backups, and generated configs live under `~/.exasol-starter-kit/`, never in this repo.
 - **Everything is inspectable.** Install scripts, MCP configs, backups, and logs remain available on disk.
 - **Local only.** The database listens on `127.0.0.1` only, passwords live in local files and are never shown on screen, and AI client configs are backed up before every change.
-- **Reversible lifecycle.** `exakit` manages the kit end to end: `status`, `start`/`stop`, `data-load`, MCP setup and maintenance (`mcp-setup`, `mcp-doctor`, `mcp-remove`, `mcp-restore`), `logs`, and a guarded `uninstall`. Run `exakit help` (or `exakit catalog`) to see every command.
+- **Reversible lifecycle.** `exakit` manages the kit end to end: `status`, `start`/`stop`, `data-load`, MCP setup and maintenance (`mcp-setup`, `mcp-doctor`), `logs`, and a guarded `uninstall`. Run `exakit help` (or `exakit catalog`) to see every command.
 
 ## See it in action
 
@@ -283,7 +283,7 @@ https://github.com/user-attachments/assets/77916db0-d273-4720-8d59-1aedac95d5e8
 
 | Question | Answer |
 |---|---|
-| Do&nbsp;I&nbsp;need&nbsp;Rust&nbsp;/&nbsp;Python&nbsp;/&nbsp;Homebrew? | **Rust and Homebrew, no.** Python 3.11+ is needed. |
+| Do&nbsp;I&nbsp;need&nbsp;Rust&nbsp;/&nbsp;Python&nbsp;/&nbsp;Homebrew? | **None of them.** The kit uses a system Python 3.11+ if you have one, and otherwise installs a managed Python for its own use. |
 | Does&nbsp;it&nbsp;cost&nbsp;anything? | No. Exasol Personal Local is free. |
 | What&nbsp;makes&nbsp;this&nbsp;"for&nbsp;Agentic&nbsp;AI"? | An MCP server ships in the box with a dedicated read-only login, so Claude, Cursor, and other MCP clients can query your data directly, with every SQL statement inspectable before it runs. |
 | What&nbsp;sample&nbsp;data&nbsp;is&nbsp;included? | Three bundled datasets: TPC-H retail, smart-meter energy, daily weather, each in its own schema. See the [data dictionary](data/data-dictionary.md). |

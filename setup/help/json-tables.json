@@ -9,7 +9,7 @@
   "package": "exasol-json-tables",
   "binary": "~/.local/bin/exasol-json-tables",
   "installed_by": "Automatically by exakit data-load when you load a JSON file, or from exakit marketplace.",
-  "platforms": "macOS and Linux (including WSL). Not available on Windows: the ingest engine cannot be wired in there.",
+  "platforms": "macOS (Apple silicon), Linux (including WSL) and Windows x86_64. Not available on Windows ARM64 or Intel Macs: no prebuilt ingest engine is published for them.",
   "quickstart": [
     {
       "step": "Just load a JSON file",
@@ -38,11 +38,11 @@
       "examples": []
     },
     {
-      "command": "exakit update json-tables",
+      "command": "exakit update",
       "options": "",
       "summary": "Update the engine and wheel.",
       "examples": [
-        "exakit update json-tables"
+        "exakit update"
       ]
     },
     {
@@ -71,7 +71,7 @@
     },
     {
       "symptom": "Not available on this machine",
-      "remedy": "Windows cannot run the engine. Load the file from macOS, Linux or WSL."
+      "remedy": "No prebuilt engine is published for this platform (Windows ARM64, Intel Mac). Load the file from a supported machine; on Windows, WSL works."
     },
     {
       "symptom": "object <NAME> not found, on a table you can see in the list",

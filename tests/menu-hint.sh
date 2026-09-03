@@ -35,14 +35,46 @@ export EXAKIT_HOME="$WORK/kit-home"; mkdir -p "$EXAKIT_HOME"
 
 # The hint is only drawn on a terminal, so each case runs under a pty and the
 # menu is answered with a single Enter.
+# script(1) comes in two incompatible flavours: BSD/macOS takes the command as
+# ARGUMENTS after the typescript file, util-linux takes it after -c. Written the
+# BSD way only, this ran on a developer's macOS and nowhere else -- which went
+# unnoticed for as long as the suite itself was not in CI. The same detection
+# tests/versions-manifest.sh already carries, for the same reason.
+#
+# stdin must be /dev/null for the probe: macOS script(1) refuses to start when
+# its stdin is a socket, which is what a CI or agent shell hands it.
+PTY_KIND="none"
+if command -v script >/dev/null 2>&1; then
+    if script -q /dev/null /bin/echo probe </dev/null >/dev/null 2>&1; then
+        PTY_KIND="bsd"
+    elif script -q -c "/bin/echo probe" /dev/null </dev/null >/dev/null 2>&1; then
+        PTY_KIND="util-linux"
+    fi
+fi
+# in_pty <script-file> — run it on a pty, whichever flavour is present.
+in_pty() {
+    case "$PTY_KIND" in
+        bsd)        script -q /dev/null bash "$1" 2>&1 ;;
+        util-linux) script -q -c "bash $1" /dev/null 2>&1 ;;
+        *)          printf '' ;;
+    esac
+}
+
 render() { # render <script-body> -> the drawn frames, escape codes stripped
     printf '%s\n' "$1" > "$WORK/case.sh"
-    printf '\n' | script -q /dev/null bash "$WORK/case.sh" 2>&1 \
-        | sed 's/\x1b\[[0-9;]*[A-Za-z]//g'
+    printf '\n' | in_pty "$WORK/case.sh" | sed 's/\x1b\[[0-9;]*[A-Za-z]//g'
 }
 
 PRELUDE=". '$ROOT/setup/lib/ui.sh' 2>/dev/null; ui_detect 2>/dev/null
 . '$ROOT/setup/lib/common.sh'"
+
+if [ "$PTY_KIND" = "none" ]; then
+    # Without a pty the hint cannot be drawn at all -- that is its own gate, and
+    # reporting "drew no keyboard hint" here would blame the menu for the host.
+    echo "SKIP: no usable script(1); the hint is only drawn on a terminal"
+    printf '\n%d checks, %d failed\n' "$checks" "$fails"
+    exit 0
+fi
 
 # 1. Either/or: two selectable rows and an exclusive index.
 out="$(render "$PRELUDE

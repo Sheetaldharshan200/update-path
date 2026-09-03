@@ -19,7 +19,8 @@
 #                         clients (DBeaver, DbVisualizer), and Python (pyexasol)
 #   start                 start the local database and every add-on service
 #   stop                  stop them again
-#   autostart [on|off]    whether everything comes back after a restart
+#   autostart             whether everything comes back after a restart; shows
+#                         the current state and asks whether to change it
 #   data-load [-Force|<path>]
 #                         open focused data loading options; a file path loads that
 #                         file, a FOLDER path bulk-loads every CSV/Parquet file in
@@ -27,9 +28,6 @@
 #   mcp-setup             permanently configure MCP in supported AI clients
 #   mcp-doctor [clients]  check MCP config, connectivity, and managed state
 #   mcp-status [clients]  show managed MCP state for the supported AI clients
-#   mcp-validate [clients] validate managed MCP configs and test connectivity
-#   mcp-remove [clients]  remove managed MCP config from the supported clients
-#   mcp-restore [snapshot] restore the latest (or a chosen) MCP snapshot
 #   skills-install        install the kit's AI skills for CLI agents
 #                         (~\.claude\skills, ~\.agents\skills)
 #   marketplace           browse optional add-ons (dash-server, ...) and install
@@ -165,6 +163,10 @@ function Invoke-CmdStatus {
         ,@(Get-ExakitLoadedDatasets)
     })
     $pyexasol = Get-ExakitComponentCurrent "pyexasol"
+    # Why the last run stopped, read off disk rather than out of this process:
+    # the install that failed was a different process, and its reason is the one
+    # an agent needs here. Twin of the .last-failure read in cmd_status.
+    $failureNote = Read-ExakitFailureNote
     $services = @{}
     Invoke-ExakitWithSpinner -Quiet:$Json -Label "Checking the add-on services" -Body {
         foreach ($svcId in (Get-ExakitServiceIds)) {
@@ -184,6 +186,12 @@ function Invoke-CmdStatus {
             datasets_loaded = $datasets
             steps_completed = $steps
             pyexasol        = $(if ($pyexasol) { "$pyexasol" } else { $null })
+            # Both keys, always. A reason with no date cannot be told from a
+            # current one, and an undated note that outlived its cause is exactly
+            # how a healthy machine comes to look broken - which is why the note
+            # carries the timestamp on its second line.
+            last_failure    = $(if ($failureNote.reason) { $failureNote.reason } else { $null })
+            last_failure_at = $(if ($failureNote.at) { $failureNote.at } else { $null })
             manifest        = $script:ManifestPath
         } | ConvertTo-Json -Depth 4
         if ($running) { exit 0 } else { exit 3 }
@@ -230,12 +238,16 @@ function Invoke-CmdStatus {
     if (-not $dsn) { $dsn = "unknown" }
     if ($running) { $reach = "reachable" } else { $reach = "not reachable" }
     Write-StatusPanelRow "Database" "$dsn - $reach"
+    # "enabled"/"disabled", not "on"/"off": this row reports a STATE, and on/off
+    # reads as the switch you flip rather than the position it is in. The
+    # The command itself takes no verb: it shows this state and asks.
     if ((Get-ExakitManifestValue "autostart.enabled") -eq $true) {
-        Write-StatusPanelRow "Autostart" "on"
+        Write-StatusPanelRow "Autostart" "enabled"
     } else {
-        Write-StatusPanelRow "Autostart" "off - turn it on with: exakit autostart on"
+        Write-StatusPanelRow "Autostart" "disabled - change it with: exakit autostart"
     }
-    Write-StatusPanelRow "Kit level" "$(Get-ExakitManifestValue 'kit_level')"
+    # "Kit level" is an internal schema number. It means nothing to the person
+    # reading this screen, and `exakit version` carries what they do want.
     # NOT the install date: `exakit version` already prints it.
     Complete-ExakitPanel
     Write-Host ""
@@ -289,19 +301,23 @@ function Invoke-CmdStatus {
         @("opencode", "OpenCode"), @("continue", "Continue")
     )
     $configured = @(Get-ExakitManifestValue "components.mcp_server.client_setup.configured_clients")
-    $skipped = @(Get-ExakitManifestValue "components.mcp_server.client_setup.skipped_clients")
     if ($configured.Count -gt 0 -and $configured[0]) {
+        # Only the clients that ARE connected. Eight rows of which five said
+        # "not installed" answered a question nobody asked of a status screen -
+        # what this machine does not have - and buried the three that matter.
+        # `exakit mcp-setup` is where the full roster belongs, because there the
+        # list IS the choice.
+        $anyClient = $false
         foreach ($pair in $labels) {
-            if ($configured -contains $pair[0]) { $state = "configured" }
-            elseif ($skipped -contains $pair[0]) { $state = "skipped" }
-            else { $state = "not installed" }
-            Write-StatusPanelRow $pair[1] $state
+            if ($configured -contains $pair[0]) {
+                Write-StatusPanelRow $pair[1] "configured"
+                $anyClient = $true
+            }
         }
-        # mcp-setup records how it went. "success_with_warnings" was never shown
-        # anywhere, so a kit carrying a real warning looked perfect.
-        $mcpHealth = Get-ExakitManifestValue "components.mcp_server.client_setup.status"
-        if ($mcpHealth -and $mcpHealth -ne "success") {
-            Write-StatusPanelRow "health" "$mcpHealth - details: exakit mcp-doctor"
+        # A record of configured clients that yields no configured ROW means
+        # every one of them was skipped: say so rather than draw an empty panel.
+        if (-not $anyClient) {
+            Write-StatusPanelRow "none" "connect one with: exakit mcp-setup"
         }
     } else {
         Write-StatusPanelRow "none" "connect one with: exakit mcp-setup"
@@ -328,8 +344,9 @@ function Invoke-CmdStatus {
             }
             Write-ExakitPanelLine ("$ds".PadRight(11) + " " + "$dsSchema".PadRight(11) + " " + $detail)
         }
-        $lastLoad = Get-ExakitManifestValue "data.last_load.source"
-        if ($lastLoad) { Write-ExakitPanelLine ("last load".PadRight(11) + " " + $lastLoad) }
+        # No "last load" row: the rows above already say what is in the
+        # database, which is the question. Which of them arrived most recently
+        # is not something anyone acts on.
     } else {
         Write-ExakitPanelLine "none loaded - load some with: exakit data-load"
     }
@@ -347,9 +364,9 @@ function Invoke-CmdStatus {
     # Mirrors cmd_status in setup/exakit.
     $softRows = @()
     foreach ($soft in @(
-        @{ Id = "exapump";  Key = "components.exapump.validated";    Fix = "exakit update exapump" },
-        @{ Id = "mcp";      Key = "components.mcp_server.validated"; Fix = "exakit update mcp" },
-        @{ Id = "pyexasol"; Key = "components.pyexasol.validated";   Fix = "exakit update pyexasol" }
+        @{ Id = "exapump";  Key = "components.exapump.validated";    Fix = "exakit update" },
+        @{ Id = "mcp";      Key = "components.mcp_server.validated"; Fix = "exakit update" },
+        @{ Id = "pyexasol"; Key = "components.pyexasol.validated";   Fix = "exakit update" }
     )) {
         # A manifest record is what says "this install attempted the component".
         if ($null -eq (Get-ExakitManifestValue $soft.Key)) { continue }
@@ -361,7 +378,8 @@ function Invoke-CmdStatus {
         Write-StatusRow $softLabel $row
         $softLabel = ""
     }
-    Write-StatusRow "Manifest:" $script:ManifestPath
+    # No "Manifest:" row: an internal file path, on the last line of the screen,
+    # that nothing on this screen asks the reader to open.
     if (-not $running) {
         Write-Host "Start it:   exakit start"
         exit 3
@@ -446,6 +464,10 @@ function Enable-ExakitAutostart {
         if (Register-ExakitAutostart -Id $id) { $any = $true }
     }
     Set-ExakitManifestValue "autostart.enabled" $any
+    # One line, whatever the service count - the twin of the sentence
+    # Disable-ExakitAutostart has always printed, and of the one in
+    # exakit_autostart_enable.
+    if ($any) { Ok "Automatic start after a restart is on." }
 }
 
 function Disable-ExakitAutostart {
@@ -467,23 +489,51 @@ function Show-ExakitAutostart {
     Start-ExakitPanel "Automatic start after a restart"
     Write-ExakitPanelLine (("{0,-$w}  {1}") -f "Service", "Status")
     foreach ($id in (Get-ExakitServiceIds)) {
-        $state = if (Test-ExakitAutostartRegistered -Id $id) { "yes" } else { "no" }
+        $state = if (Test-ExakitAutostartRegistered -Id $id) { "enabled" } else { "disabled" }
         Write-ExakitPanelLine (("{0,-$w}  {1}") -f $id, $state)
     }
     Complete-ExakitPanel
     Write-Host ""
-    Info "Turn it on with: exakit autostart on   -   off with: exakit autostart off"
+    # No "turn it on with ..." line: the question that follows this panel IS the
+    # way to change it, and naming two commands that no longer exist was how
+    # this screen used to end.
 }
 
+# Invoke-CmdAutostart - one command: show where it stands, then offer to flip it.
+#
+# It was three ("on", "off", and a bare form that only reported), which made the
+# reader pick the verb before being told what the current state even was - and
+# the bare form then closed by explaining the other two. Now the answer comes
+# first and the only decision left is yes or no.
+#
+# EXAKIT_AUTOSTART_CHANGE pre-answers it for automation, the same contract every
+# other prompt in the kit uses; without a console the default is NO CHANGE, so a
+# scripted run can never silently flip a boot setting.
+# Twin of cmd_autostart in setup/exakit.
 function Invoke-CmdAutostart {
     param([string]$Action = "")
     Assert-ExakitInstalled
     Initialize-ExakitLogging
-    switch ($Action) {
-        { $_ -in @("on", "enable") }   { Enable-ExakitAutostart }
-        { $_ -in @("off", "disable") } { Disable-ExakitAutostart }
-        { $_ -in @("", "status") }     { Show-ExakitAutostart }
-        default { Fail "Unknown option '$Action' for autostart (use: on, off, or no argument to show the state)." }
+    if ($Action) {
+        Fail "autostart takes no arguments - run 'exakit autostart' and answer the question."
+    }
+    Show-ExakitAutostart
+
+    $ids = @(Get-ExakitServiceIds)
+    if ($ids.Count -eq 0) { return }
+    $on = @($ids | Where-Object { Test-ExakitAutostartRegistered -Id $_ }).Count
+
+    # "Everything is on" is the only state that offers to turn things off;
+    # anything else - none of it, or some of it - offers to turn it all on,
+    # because a partly-registered set is the one a reader wants made whole.
+    if ($on -eq $ids.Count) {
+        if (Confirm-ExakitEnvPrompt "EXAKIT_AUTOSTART_CHANGE" "Turn it off?" $false) {
+            Disable-ExakitAutostart
+        }
+    } else {
+        if (Confirm-ExakitEnvPrompt "EXAKIT_AUTOSTART_CHANGE" "Turn it on?" $false) {
+            Enable-ExakitAutostart
+        }
     }
 }
 
@@ -545,8 +595,16 @@ function Invoke-CmdRepairRuntime {
     Warn2 "Repairing the runtime REPLACES the database. Its data is not recoverable."
     Info "Bundled datasets are reloaded afterwards; anything you loaded yourself is not."
     if (-not $confirmed) {
-        if (-not (Confirm-ExakitPrompt "Replace the database and rebuild it now?" $false)) {
-            Fail "Nothing was changed. Re-run with -Yes (or EXAKIT_CONFIRM_RUNTIME_REPAIR=1) when you are ready."
+        if (-not (Confirm-ExakitPrompt "Delete the database and rebuild it now?" $false)) {
+            # DECLINING A DESTRUCTIVE PROMPT IS THE SAFE ANSWER, not an error.
+            # Fail() rendered it as a red error card and exited 1 - and it
+            # records the reason as the last failure, so `exakit status --json`
+            # then reported one on a machine where nothing had gone wrong. "No,
+            # not now" is a successful outcome of this command. Twin of the same
+            # branch in cmd_repair_runtime (setup/exakit).
+            Info "Repair cancelled - nothing was changed."
+            Info "When you are ready: exakit repair-runtime --yes (or set EXAKIT_CONFIRM_RUNTIME_REPAIR=1)"
+            return
         }
     }
 
@@ -556,6 +614,11 @@ function Invoke-CmdRepairRuntime {
     Remove-ExakitStepDone "runtime"
     Info "Re-running setup\setup-windows-docker.ps1 to rebuild the database"
     $env:EXAKIT_BANNER_SHOWN = "1"
+    # The deployment step must NOT offer to reuse what is there: its reuse
+    # question defaults to YES, so a repair the user had just confirmed as
+    # destructive answered itself with "keep the existing database".
+    # Twin of the same export in cmd_repair_runtime (setup/exakit).
+    $env:EXAKIT_REUSE_DB = "0"
     & $setup
     exit $LASTEXITCODE
 }
@@ -568,6 +631,42 @@ function Invoke-CmdRepairRuntime {
 # PATH entry are intentionally left in place and only reported.
 function Invoke-ExakitUninstallRun {
     param([switch]$DryRun)
+
+    # A real run narrates itself on ONE line. Every path it touches was printed
+    # as its own bullet, around twenty lines for a command whose whole result is
+    # "it is gone". The paths go to the LOGFILE, which is the right place for an
+    # account of what a destructive command touched.
+    #
+    # THE OUTCOMES DO NOT GO WITH THEM. Quieting the paths through
+    # ExakitQuietDetail also quieted every Info() that named WHAT was gone, so a
+    # run that removed a database, a container, a volume, three add-ons, five
+    # AI-client configs, two virtual environments and the launcher printed six
+    # lines and named none of them. And step 5 below deletes the logfile the
+    # detail was routed into, so afterwards there was no record anywhere, on
+    # screen or on disk. Each area therefore promotes ONE durable line through
+    # RecordRemoved (OkStep, which survives the quiet bracket), naming
+    # what it removed; the closing line says that those lines are the whole
+    # record, because by then they are.
+    #
+    # NOT in a dry run: there, listing every path IS the output. Twin of
+    # exakit_uninstall_run in common.sh.
+    $unPrevQuiet = $script:ExakitQuietDetail
+    if (-not $DryRun -and $script:UiFancy) {
+        $script:ExakitQuietDetail = $true
+        Start-ExakitSpinner "Removing the kit"
+    }
+    # Real runs only: a dry run removed nothing, so a line in the past tense
+    # would be a lie, and the plan lines above already say what it would do.
+    #
+    # No Verb-Noun hyphen, and not by accident: this helper is nested inside the
+    # function that uses it, and tests/lib/ps-uninstall-calls.sh resolves every
+    # Verb-Noun call in here against the file's TOP-LEVEL definitions - a nested
+    # one is invisible to it, so a hyphenated name would read as a call to a
+    # helper that does not exist. OkStep and Warn2 are spelled the same way.
+    function RecordRemoved([string]$Message) {
+        if (-not $DryRun) { OkStep $Message }
+    }
+    try {
 
     # 0a) Boot entries first: a Startup entry left behind would try to start
     #     something that no longer exists at the next login.
@@ -582,14 +681,16 @@ function Invoke-ExakitUninstallRun {
     #    VS Code extension). Registry-driven: a new add-on ships its own
     #    UninstallFn and appears here with no edits. A system-installed copy
     #    the kit never managed is not touched (each hook enforces that).
+    $addonsGone = @()
     foreach ($addonId in (Get-ExakitMarketplaceInstalledAddons)) {
         $addonEntry = Get-ExakitMarketplaceAddon $addonId
         if ($addonEntry -and $addonEntry.PSObject.Properties["UninstallFn"] -and
             (Get-Command $addonEntry.UninstallFn -ErrorAction SilentlyContinue)) {
-            try { [void](& $addonEntry.UninstallFn -DryRun:$DryRun) }
+            try { [void](& $addonEntry.UninstallFn -DryRun:$DryRun); $addonsGone += $addonId }
             catch { Warn2 "Removing the $addonId add-on reported issues (continuing uninstall)" }
         }
     }
+    if ($addonsGone.Count -gt 0) { RecordRemoved "Add-ons removed: $($addonsGone -join ', ')" }
 
     # 1) Database + all data (the Windows runtime is Nano).
     $type = Get-RuntimeType
@@ -603,17 +704,33 @@ function Invoke-ExakitUninstallRun {
                 default { Warn2 "Unknown runtime type '$type'; skipping database removal" }
             }
         }
+        # BY NAME. "The database was removed" leaves the reader to guess which
+        # container and which volume that was, and those are exactly the two
+        # names they need if the engine kept one of them: a container the engine
+        # refused to remove is found again by name, and nothing else on screen
+        # ever says what it was called.
+        if ($type -eq "nano") {
+            RecordRemoved "Database removed: Nano container $script:NanoContainer, data volume $script:NanoVolume"
+        }
     }
 
     # 2) Managed MCP configuration in the AI clients. Best-effort.
     if (Get-Command Invoke-McpOperation -ErrorAction SilentlyContinue) {
+        # The client list comes from the table that owns it (mcp.ps1) rather than
+        # being spelled out here: the dry-run line named three clients while the
+        # operation covered eight, so five configs were edited that nothing on
+        # screen ever mentioned. Twin of the exakit_mcp_clients_from_args call in
+        # exakit_uninstall_run.
+        $mcpClientList = "all managed clients"
+        if ($script:McpClientLabels) { $mcpClientList = (@($script:McpClientLabels.Keys) | Sort-Object) -join ' ' }
         if ($DryRun) {
-            Info "  will remove: managed MCP configuration in Claude (desktop + Claude Code CLI), Cursor, and Codex"
+            Info "  will remove: managed MCP configuration in the AI clients ($mcpClientList)"
         } else {
             Info "Removing managed MCP configuration from AI clients"
             try { [void](Invoke-McpOperation -Operation "uninstall" -InputArgs @()) }
             catch { Warn2 "Removing the managed MCP client config reported issues (continuing uninstall)" }
         }
+        RecordRemoved "MCP entry removed from the AI clients the kit manages: $mcpClientList"
     }
 
     # 3) Installed AI skills: the live kit list, or what the install recorded
@@ -651,6 +768,7 @@ function Invoke-ExakitUninstallRun {
     if (Test-Path $script:ExakitHome) {
         if ($DryRun) { Info "  will remove: kit home $script:ExakitHome (credentials, logs, manifest, snapshots)" }
         else { Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $script:ExakitHome }
+        RecordRemoved "Kit home removed: $script:ExakitHome (credentials, logs, manifest, snapshots, pyexasol venv, add-on state)"
     }
 
     # 6) CLI binaries. Removed last so earlier steps can still call them.
@@ -674,6 +792,19 @@ function Invoke-ExakitUninstallRun {
     }
     if (-not $DryRun -and $binPaths.Count -gt 0) {
         Remove-ExakitBinariesDeferred -Paths $binPaths
+        $binNamesGone = @($binPaths | ForEach-Object { Split-Path -Leaf $_ })
+        RecordRemoved "Commands removed from $($script:BinDir): $($binNamesGone -join ', ')"
+    }
+    } finally {
+        Stop-ExakitSpinner
+        $script:ExakitQuietDetail = $unPrevQuiet
+    }
+    # Said last, and said plainly, because it is the one thing the reader cannot
+    # find out afterwards: the logfile that held the per-path detail lived inside
+    # the kit home this run has just deleted, so the lines above are the only
+    # account of what was removed that still exists anywhere.
+    if (-not $DryRun) {
+        InfoStep "The lines above are the whole record of this uninstall - the install log lived in the kit home and went with it."
     }
 }
 
@@ -765,8 +896,11 @@ function Show-ExakitUninstallMenu {
     # one of them leaves a kit that looks installed and does not work. The two
     # honest choices for the core are keep it (Skip) or remove it (EVERYTHING).
     # Add-ons are optional by construction and nothing depends on them, so they
-    # are the only individually selectable rows. A single component can still be
-    # removed by name -- exakit uninstall mcp_configs -- as the hint below says.
+    # are the only individually selectable rows. There is no by-name form: this
+    # menu is the whole interface. The hint that used to sit under it named a
+    # syntax neither side accepts -- and where the shell at least answered
+    # "Unknown option", this dispatch tests only for flags, so a component name
+    # was silently ignored and the menu opened as if nothing had been typed.
 
     # Kit-managed add-ons, each removable on its own (registry-driven).
     $addons = @(Get-ExakitMarketplaceInstalledAddons)
@@ -790,16 +924,26 @@ function Show-ExakitUninstallMenu {
     $everyIdx = $labels.Count
 
     Write-Host ""
-    Write-Host "    One component on purpose: exakit uninstall <database|mcp_configs|skills|exapump|pyexasol>" -ForegroundColor DarkGray
 
     # EVERYTHING is a MASTER toggle over every row above it: picking it ticks
     # them all, and unticking any single row releases it - so the screen can
     # never claim "everything" while something sits unticked. Skip stays the
     # exclusive opt-out.
     if ($everyIdx -gt 2) {
+        # "Add-ons only" is itself a master over the add-ons drawn under it, so
+        # the row and its tree agree: ticking it ticks them, and ticking the last
+        # of them ticks it. Listed in -Groups because it nests INSIDE EVERYTHING,
+        # and an inner group must settle before the outer one reads its parent.
+        $innerGroups = @()
+        if ($everyIdx -gt 3) { $innerGroups = @("2:3:$($everyIdx - 1):all") }
+        # EVERYTHING is "master", not "all": it removes the database, which no
+        # row above it represents, so ticking every add-on must never come to
+        # mean "remove the kit". It still ticks them all when picked, and still
+        # releases the moment one is unticked.
         $selection = Read-ExakitCheckboxMenu -Title "Select what to uninstall" `
             -Options $labels.ToArray() -Defaults @(1) -ExclusiveIndex 1 `
-            -GroupParent $everyIdx -GroupFirst 2 -GroupLast ($everyIdx - 1) -GroupMode "all"
+            -Groups $innerGroups `
+            -GroupParent $everyIdx -GroupFirst 2 -GroupLast ($everyIdx - 1) -GroupMode "master"
     } else {
         $selection = Read-ExakitCheckboxMenu -Title "Select what to uninstall" `
             -Options $labels.ToArray() -Defaults @(1) -ExclusiveIndex 1
@@ -915,8 +1059,11 @@ function Invoke-ExakitUninstallComponent {
                 (Get-Command $addonEntry.UninstallFn -ErrorAction SilentlyContinue)) {
                 try { [void](& $addonEntry.UninstallFn) }
                 catch { Warn2 "Removing the $Key add-on reported issues" }
+                # ...and the skills it owns go with it. Here rather than in the
+                # module, so every add-on gets it without writing a line.
+                try { Remove-ExakitAddonSkills $Key } catch { }
             } else {
-                Warn2 "The $Key module carries no uninstall - update the kit: exakit update exakit"
+                Warn2 "The $Key module carries no uninstall - update the kit: exakit update"
             }
         }
     }
@@ -948,8 +1095,9 @@ function Invoke-CmdVersion {
 
     Start-ExakitPanel "Kit"
     Write-ExakitPanelLine ("{0,-14} {1}" -f "Version",   "$(Get-ExakitComponentCurrent 'exakit')")
-    Write-ExakitPanelLine ("{0,-14} {1}" -f "Level",     "$(Get-ExakitManifestValue 'kit_level')")
-    Write-ExakitPanelLine ("{0,-14} {1}" -f "Source",    "$(Get-ExakitManifestValue 'kit.source')")
+    # No "Level" row: an internal schema number, meaningless to the reader.
+    # No "Source" row either: an absolute path to the kit's own copy of itself,
+    # which answers a question nobody asks of a version screen.
     Write-ExakitPanelLine ("{0,-14} {1}" -f "Installed", "$(Format-ExakitLocalTime (Get-ExakitManifestValue 'installed_at'))")
     Complete-ExakitPanel
     Write-Host ""
@@ -1282,7 +1430,7 @@ function Write-ExakitVersionsSourceLine {
     if ($updated) { $text = "$text, updated $(Format-ExakitManifestDate $updated)" }
     Info "Available versions from $text"
     if (Test-ExakitVersionsSchemaAhead) {
-        Info "This kit is older than the published manifest - update it first: exakit update exakit"
+        Info "This kit is older than the published manifest - update it first: exakit update"
     }
     Write-ExakitOverrideLine
 }
@@ -1473,13 +1621,12 @@ function Invoke-ExakitRuntimeUpdateOffer {
     )
     if (Test-ExakitRuntimeUpdateStaged -Installed $Installed -Advertised $Advertised) {
         Warn2 "$Actual $Installed -> $Advertised is a major upgrade: it needs a backup and a data migration, so a routine update does not start it."
-        Info "See the steps first:  exakit update runtime --plan"
         return $false
     }
     $preanswer = Get-ExakitRuntimeUpdatePreanswer -AssumeYes $AssumeYes
     if ($preanswer -eq "no") {
         Warn2 "$Actual $Installed -> $Advertised was left alone: the runtime update is answered 'no' (EXAKIT_CONFIRM_RUNTIME_UPDATE)."
-        Info "Apply it when convenient:  exakit update runtime"
+        Info "Apply it when convenient:  exakit update"
         return $false
     }
     if ($preanswer -eq "yes") {
@@ -1490,13 +1637,13 @@ function Invoke-ExakitRuntimeUpdateOffer {
         # get exactly today's safe deferral.
         if (-not (Test-ExakitInteractive)) {
             Warn2 "$Actual $Installed -> $Advertised needs the database stopped, so it is not part of a routine update."
-            Info "Apply it when convenient:  exakit update runtime"
+            Info "Apply it when convenient:  exakit update"
             Info "Unattended runs can opt in:  exakit update -Yes  (or EXAKIT_CONFIRM_RUNTIME_UPDATE=1)"
             return $false
         }
         Write-ExakitRuntimeUpdateExplanation -Actual $Actual -Installed $Installed -Advertised $Advertised
         if (-not (Confirm-ExakitPrompt "Stop the database and update the runtime now?" $false)) {
-            Info "Nothing was stopped. Apply it when convenient:  exakit update runtime"
+            Info "Nothing was stopped. Apply it when convenient:  exakit update"
             return $false
         }
     }
@@ -1590,7 +1737,7 @@ function Invoke-CmdUpdate {
         # manifest's only hard compatibility lever would be advice nobody applies.
         $minKit = Get-ExakitComponentMinKit $actual
         if ($minKit -and -not (Test-ExakitMinKitSatisfied -Required $minKit)) {
-            Warn2 "$actual $available needs kit >= $minKit - update the kit first: exakit update exakit"
+            Warn2 "$actual $available needs kit >= $minKit - update the kit first: exakit update"
             if ($Target -eq "all") { continue }
             Fail "Refusing to install $actual $available on kit $(Get-ExakitComponentCurrent 'exakit')."
         }
@@ -1606,6 +1753,7 @@ function Invoke-CmdUpdate {
             "runtime" { Invoke-ExakitRuntimeComponentUpdate -Component "runtime" -Advertised $available }
             "nano"    { Invoke-ExakitRuntimeComponentUpdate -Component "nano" -Advertised $available }
             "personal" { Invoke-ExakitRuntimeComponentUpdate -Component "personal" -Advertised $available }
+            "skills" { Update-ExakitSkills -Advertised $available -Installed $current }
             "exapump" {
                 if ($available) {
                     $script:ExapumpVersion = $available
@@ -1642,7 +1790,7 @@ function Invoke-CmdUpdate {
             "pyexasol" {
                 if ($available) { Update-Pyexasol | Out-Null }
             }
-            "kit2" { Write-ExakitKit2NotAvailable -Command "exakit update kit2" }
+            "kit2" { Write-ExakitKit2NotAvailable }
             default {
                 # Marketplace add-ons dispatch to their module's update function.
                 $addon = Get-ExakitMarketplaceAddon $component
@@ -1668,8 +1816,13 @@ function Invoke-CmdUpdate {
 # rather than to fail with "unknown command" - the same treatment the Windows path
 # gave kit self-update until it was implemented.
 function Write-ExakitKit2NotAvailable {
-    param([string]$Command)
-    Warn2 "Kit 2 is not available on the Windows path yet ($Command)."
+    param([string]$Command = "")
+    # The command is echoed back only when the reader named one that does not
+    # exist here. The update path reaches this with nothing to echo: bare
+    # `exakit update` IS available on Windows, and naming it in this sentence
+    # would say the opposite.
+    if ($Command) { Warn2 "Kit 2 is not available on the Windows path yet ($Command)." }
+    else { Warn2 "Kit 2 is not available on the Windows path yet." }
     Info "The Kit 2 add-on ships with the macOS, Linux and WSL paths; it is planned for Windows."
 }
 
@@ -1923,13 +2076,6 @@ function Invoke-CmdMcpOperation {
     }
 }
 
-function Invoke-CmdMcpRestore {
-    param([string]$SnapshotId = "")
-    Assert-ExakitInstalled
-    Initialize-ExakitLogging
-    if (-not (Invoke-McpRestore -SnapshotId $SnapshotId)) { Fail "Could not restore managed MCP configuration" }
-}
-
 function Invoke-CmdCatalog {
     param([string]$Search = "", [switch]$Json)
     # Rendered from the same help documents every other screen uses
@@ -2081,7 +2227,6 @@ try {
                 # lives here rather than in Show-ExakitConnectionPanel because the
                 # install ends with that same panel, and someone finishing an
                 # install is not looking for a JSON dump.
-                Write-Host "  Machine-readable: exakit info --json"
                 Write-Host ""
             }
         }
@@ -2126,9 +2271,6 @@ try {
             Invoke-CmdMcpOperation -Operation "doctor" -OpArgs $doctorArgs
         }
         "mcp-status"   { Invoke-CmdMcpOperation -Operation "status" -OpArgs $RestArgs }
-        "mcp-validate" { Invoke-CmdMcpOperation -Operation "validate" -OpArgs $RestArgs }
-        "mcp-remove"   { Invoke-CmdMcpOperation -Operation "uninstall" -OpArgs $RestArgs }
-        "mcp-restore"  { Invoke-CmdMcpRestore -SnapshotId ($RestArgs | Select-Object -First 1) }
         "skills"       {
             if ($RestArgs -contains "--json" -or $RestArgs -contains "-j") {
                 # Same reason as `info --json`: a trailing update notice would
@@ -2175,8 +2317,8 @@ try {
     # where a notice on stdout would stop the output being parseable JSON.
     if (-not $script:JsonOutput -and
         @("status", "info", "guide", "start", "stop", "data-load", "preflight",
-          "skills", "skills-install", "marketplace", "autostart", "logs", "mcp-setup", "mcp-doctor", "mcp-status",
-          "mcp-validate", "mcp-restore", "mcp-remove") -contains $Command) {
+          "skills", "skills-install", "marketplace", "autostart", "logs", "mcp-setup", "mcp-doctor",
+          "mcp-status") -contains $Command) {
         Show-ExakitUpdateNotice
     }
 } catch [ExakitFailException] {

@@ -38,7 +38,7 @@ _pyexasol_not_installed() {
     # managed-Python cache makes `exakit update pyexasol` fail identically
     # forever, so "retry with" on its own is a loop, not a remedy.
     command -v exakit_explain_last_log_error >/dev/null 2>&1 && exakit_explain_last_log_error
-    warn "Everything else in the kit is unaffected. Retry with: exakit update pyexasol"
+    warn "Everything else in the kit is unaffected. Retry with: exakit update"
     # The reason has to outlive this subshell so the closing summary can print it
     # instead of a generic "did not finish" (see exakit_note_failure in common.sh).
     command -v exakit_note_failure >/dev/null 2>&1 && exakit_note_failure "$1"
@@ -65,6 +65,7 @@ pyexasol_install() {
     if [ -n "$_pyx_current" ] && [ "$_pyx_current" = "$EXAKIT_PYEXASOL_VERSION" ]; then
         ok "pyexasol $_pyx_current already installed: $EXAKIT_PYEXASOL_VENV"
     else
+        EXAKIT_ACTIVE_LABEL="Installing pyexasol $EXAKIT_PYEXASOL_VERSION"
         info "Installing pyexasol $EXAKIT_PYEXASOL_VERSION (Exasol Python driver)"
         if [ ! -x "$(pyexasol_venv_python)" ]; then
             if ! run_logged "$_pyx_uv" venv --python "$EXAKIT_MANAGED_PYTHON_VERSION" "$EXAKIT_PYEXASOL_VENV"; then
@@ -206,6 +207,8 @@ pyexasol_validate() {
     fi
 
     info "Validating pyexasol against the database (SELECT 1)"
+    _pyv_t0="$(date +%s 2>/dev/null || echo 0)"
+    EXAKIT_ACTIVE_LABEL="Validating pyexasol against the database"
     # The password travels via a file read inside python, never on a command
     # line. TLS mirrors the exapump profile posture (tls on, local cert not
     # validated); a plain connection is the fallback for non-TLS runtimes.
@@ -229,7 +232,11 @@ PY
     then
         ok "pyexasol works: SELECT 1 returned 1"
         manifest_set components.pyexasol.validated true
-        info "Use it from Python:  $_pyx_python  (import pyexasol)"
+        # Two lines for the step: what happened, and the interpreter to run it
+        # with. Installed-and-validated is one fact -- an install that failed
+        # validation says so through the warn below, which is never gated.
+        ok_step "pyexasol ${EXAKIT_PYEXASOL_VERSION} installed and validated against the database ($(( $(date +%s 2>/dev/null || echo 0) - _pyv_t0 ))s)"
+        info_step "Use it from Python:  $(ui_tilde "$_pyx_python")  (import pyexasol)"
     else
         warn "pyexasol could not complete SELECT 1 against the database (see log). Recorded validated=false; re-run setup to retry."
         manifest_set components.pyexasol.validated false

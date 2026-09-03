@@ -220,12 +220,34 @@ personal_install_launcher() {
     _base="$(personal_release_url)"
     _tmp="$(mktemp -d "${TMPDIR:-/tmp}/exakit-personal.XXXXXX")"
 
+    # The whole step on ONE line. begin_step already set a spinner label, and
+    # fetch/run_logged animate it, so every stage here was narrated twice: once
+    # live by the spinner, then permanently by an info/ok pair repeating it --
+    # four lines carrying two facts, each ✓ restating the bullet above it.
+    # EXAKIT_QUIET_DETAIL routes that pair to the LOGFILE and leaves the spinner
+    # as the narration. Same save-and-restore bracket as exakit_marketplace_install
+    # in common.sh, and for the same reason; warn/error stay ungated there, so a
+    # step that says nothing while it works still speaks when it goes wrong.
+    #
+    # Gated on a terminal: without one ui_spin_begin draws nothing, and quieting
+    # the detail as well would leave a CI log silent for the length of a
+    # download. Piped or redirected, the info lines stay and nothing changes.
+    _pil_prev_label="${EXAKIT_ACTIVE_LABEL:-}"
+    _pil_prev_quiet="${EXAKIT_QUIET_DETAIL:-0}"
+    [ -t 1 ] && EXAKIT_QUIET_DETAIL=1
+    _pil_t0="$(date +%s 2>/dev/null || echo 0)"
+
+    # Re-assigned per phase rather than printed: fetch and run_logged read this
+    # at their next ui_spin_begin, so the words change on the operation boundary
+    # without a second animator and without restarting the one already running.
+    EXAKIT_ACTIVE_LABEL="Downloading Exasol launcher v${EXAKIT_PERSONAL_VERSION}"
     info "Downloading Exasol launcher v${EXAKIT_PERSONAL_VERSION} ($_asset)"
     fetch "$_base/$_asset" "$_tmp/$_asset"
     fetch "$_base/exasol-personal_${EXAKIT_PERSONAL_VERSION}_checksums.txt" "$_tmp/checksums.txt"
     verify_sha256_from_file "$_tmp/$_asset" "$_tmp/checksums.txt"
 
-    info "Installing launcher to $EXAKIT_PERSONAL_BIN"
+    EXAKIT_ACTIVE_LABEL="Installing launcher to $(ui_tilde "$EXAKIT_PERSONAL_BIN")"
+    info "Installing launcher to $(ui_tilde "$EXAKIT_PERSONAL_BIN")"
     mkdir -p "$EXAKIT_BIN_DIR"
     run_logged tar -xzf "$_tmp/$_asset" -C "$_tmp" || die "Could not extract $_asset"
     _binary="$(find "$_tmp" -name exasol -type f | head -1)"
@@ -235,8 +257,13 @@ personal_install_launcher() {
     push_rollback "rm -f \"$EXAKIT_PERSONAL_BIN\""
     rm -rf "$_tmp"
 
+    EXAKIT_QUIET_DETAIL="$_pil_prev_quiet"
+    EXAKIT_ACTIVE_LABEL="$_pil_prev_label"
+    # After the restore, never inside it: this one can end in an `ok` reporting
+    # that the kit edited the user's shell profile, which is not a line to send
+    # to the logfile.
     ensure_path_hint "$EXAKIT_BIN_DIR"
-    ok "Launcher installed: $EXAKIT_PERSONAL_BIN"
+    ok "Exasol launcher v${EXAKIT_PERSONAL_VERSION} installed to $(ui_tilde "$EXAKIT_PERSONAL_BIN") ($(( $(date +%s 2>/dev/null || echo 0) - _pil_t0 ))s)"
 }
 
 personal_cli() {
@@ -368,21 +395,37 @@ personal_reap_orphan_daemon() {
 # the work: the bar moves only when the launcher has actually reached the next
 # stage, and the elapsed counter -- which ticks every second whatever the
 # launcher is doing -- is what says "still alive" in between.
+#
+# KEEP EVERY PHASE TO 21 CHARACTERS OR FEWER. The phase gets 30% of the progress
+# line: 21 columns on an 80-column terminal, 27 on a 100, and never more than 33
+# however wide the window is opened. Anything longer is ellipsed -- and a phrase
+# cut mid-word tells the reader less than a shorter one would have said whole.
 _personal_deploy_milestone() {
     case "$1" in
-        *"validating presets"*)                    printf '5|10|2|Preparing the deployment' ;;
-        *"extracting preset files"*)               printf '10|20|2|Preparing the deployment' ;;
-        *"successfully initialized deployment"*)   printf '20|35|5|Preparing the deployment' ;;
-        # The long one. On a warm cache the launcher says nothing at all between
-        # here and "waiting for database to start" -- about twenty-five seconds
-        # of VM boot -- so the ceiling is that next milestone rather than the
+        *"validating presets"*)                    printf '5|10|2|Preparing to deploy' ;;
+        *"extracting preset files"*)               printf '10|20|2|Preparing to deploy' ;;
+        *"successfully initialized deployment"*)   printf '20|35|5|Preparing to deploy' ;;
+        # The long one, and the only label that covers two different situations:
+        # the launcher emits one of these whether it DOWNLOADED the resource or
+        # found it already cached. It said "Fetching the Exasol runtime" for
+        # both, which was wrong on the warm path twice over -- nothing is
+        # fetched, and per the note below the launcher then goes quiet for the
+        # VM boot, so "fetching" sat on screen through twenty-five seconds of
+        # something else entirely. The wording now holds either way.
+        #
+        # On a warm cache the launcher says nothing at all between here and
+        # "waiting for database to start" -- about twenty-five seconds of VM
+        # boot -- so the ceiling is that next milestone rather than the
         # "starting deployment" one, which a warm run never emits. If it DOES
         # emit it, the line below picks the segment up mid-flight.
+        #
+        # It is also short, per the budget above: the first wording here ran to
+        # 33 characters and was ellipsed on every terminal but the very widest.
         *"fetching resource"*|*"found resource in cache"*)
-                                                   printf '35|65|25|Fetching the Exasol runtime' ;;
+                                                   printf '35|65|25|Getting Exasol ready' ;;
         *"starting deployment"*)                   printf '45|65|15|Starting the database' ;;
-        *"waiting for database to start"*)         printf '65|90|10|Waiting for the database' ;;
-        *"installing script language container"*)  printf '80|90|15|Installing script languages' ;;
+        *"waiting for database to start"*)         printf '65|90|10|Waiting for Exasol' ;;
+        *"installing script language container"*)  printf '80|90|15|Installing languages' ;;
         *"no installation steps defined"*)         printf '90|100|4|Finishing up' ;;
         *"Completed deploying"*)                   printf '100|100|0|Deployed' ;;
     esac
@@ -469,8 +512,8 @@ personal_deploy_local() {
     # (reuse), which is the safe, idempotent choice for automation. Set
     # EXAKIT_REUSE_DB=0 to force a fresh deployment, =1 to reuse without asking.
     if personal_deployment_running; then
-        info "An Exasol database is already running and reachable on port $EXAKIT_PERSONAL_PORT."
-        if confirm_env EXAKIT_REUSE_DB "Use the running database instead of deploying a new one?" y; then
+        info "An Exasol database is already running on port $EXAKIT_PERSONAL_PORT."
+        if confirm_env EXAKIT_REUSE_DB "Use it instead of deploying a new one?" y; then
             ok "Reusing the existing Exasol deployment"
             personal_record_manifest
             return 0
@@ -487,8 +530,8 @@ personal_deploy_local() {
     # the old deployment's data. A deployment that will not start (a crashed
     # VM) is replaced — announced, never silently.
     if personal_deployment_exists; then
-        info "An existing Exasol deployment was found (not running)."
-        if confirm_env EXAKIT_REUSE_DB "Start and reuse the existing database instead of deploying a new one?" y; then
+        info "An Exasol deployment was found, not running."
+        if confirm_env EXAKIT_REUSE_DB "Start it and use it instead of deploying a new one?" y; then
             if personal_launcher_supports start && run_logged "$(personal_cli)" start; then
                 ok "Reusing the existing Exasol deployment (started)"
                 personal_wait_ready
@@ -515,6 +558,22 @@ personal_deploy_local() {
             die "Port $EXAKIT_PERSONAL_PORT is in use by a process that is not a reachable Exasol Personal deployment. Stop that application and re-run (EXAKIT_DB_PORT does not apply to the macOS deployment)."
     fi
 
+    # Two points, not three. Deploying and then checking health are one fact to
+    # the reader -- the database is up and answering -- so they close on a single
+    # line, and the launcher's EULA notice follows as the step's own second
+    # point instead of being wedged between them.
+    #
+    # Safe to leave the notice until last: personal_wait_ready dies if the
+    # database never answers, die runs the EXIT trap, and the rollback pushed
+    # below destroys this deployment -- so the path that skips the notice is the
+    # path where no deployment survives to have accepted anything.
+    #
+    # Same bracket and the same terminal gate as personal_install_launcher: the
+    # progress bar narrates the deploy and the spinner narrates the health
+    # probe, so the info/ok pairs underneath are the second telling.
+    _pdl_prev_quiet="${EXAKIT_QUIET_DETAIL:-0}"
+    [ -t 1 ] && EXAKIT_QUIET_DETAIL=1
+
     info "Deploying Exasol Personal locally — super quick !"
     push_rollback "$(personal_cli) destroy --remove --auto-approve || true"
 
@@ -528,7 +587,7 @@ personal_deploy_local() {
     _deploy_tail="$_deploy_tmp/tail"
     _deploy_notice="$_deploy_tmp/notice"
     _deploy_t0="$(date +%s 2>/dev/null || echo 0)"
-    ui_progress_state "$_deploy_state" 0 5 3 "Preparing the deployment"
+    ui_progress_state "$_deploy_state" 0 5 3 "Preparing to deploy"
     : > "$_deploy_tail"
     : > "$_deploy_notice"
 
@@ -541,15 +600,27 @@ personal_deploy_local() {
     EXAKIT_DEPLOY_LIVE=0
 
     if [ "$_deploy_rc" -ne 0 ]; then
+        # Restored before anything explains the failure: the tail below prints
+        # through foreign_note, and a step that says nothing while it works must
+        # still say everything when it goes wrong.
+        EXAKIT_QUIET_DETAIL="$_pdl_prev_quiet"
         _personal_deploy_print_tail "$_deploy_tail"
         rm -rf "$_deploy_tmp"
         die "Local deployment failed. Re-running the installer retries it safely."
     fi
-    ok "Exasol Personal deployed locally ($(( $(date +%s 2>/dev/null || echo 0) - _deploy_t0 ))s)"
+
+    personal_wait_ready
+
+    EXAKIT_QUIET_DETAIL="$_pdl_prev_quiet"
+    # One line for both, and the elapsed covers both -- it is the step's time,
+    # not the deploy's alone. The endpoint is the literal fallback
+    # personal_record_manifest uses when deployment.json cannot be read; the
+    # real DSN is not parsed out of it until a few lines later, and this is the
+    # same address either way on the macOS deployment.
+    ok "Exasol Personal deployed and answering on 127.0.0.1:${EXAKIT_PERSONAL_PORT} ($(( $(date +%s 2>/dev/null || echo 0) - _deploy_t0 ))s)"
     _personal_deploy_print_notice "$_deploy_notice"
     rm -rf "$_deploy_tmp"
 
-    personal_wait_ready
     personal_record_manifest
 }
 
@@ -758,9 +829,7 @@ personal_upgrade_plan() {
     warn "Personal keeps runtime and database content together in the local deployment."
     info "No destructive action was taken."
     info "Deployment: $EXAKIT_PERSONAL_DEPLOY_DIR"
-    info "Step 1: exakit update personal --backup"
-    info "Step 2: follow the Exasol Personal $_latest migration/redeployment guidance for your data."
-    info "Step 3: exakit update personal --apply"
+    info "Follow the Exasol Personal $_latest migration/redeployment guidance for your data."
 }
 
 personal_upgrade_backup() {
@@ -807,7 +876,7 @@ personal_update() {
             --plan) _mode="plan" ;;
             --backup) _mode="backup" ;;
             --apply) _mode="apply" ;;
-            *) die "Unknown option '$1' for 'exakit update personal'." ;;
+            *) die "Unknown option '$1' for 'exakit update'." ;;
         esac
         shift
     done
@@ -839,10 +908,10 @@ personal_update() {
                 _backup_from="$(manifest_get backups.personal_upgrade.from 2>/dev/null || true)"
                 _backup_to="$(manifest_get backups.personal_upgrade.to 2>/dev/null || true)"
                 if [ -z "$_last_backup" ] || [ ! -f "$_last_backup" ]; then
-                    die "Create a backup first: exakit update personal --backup"
+                    die "Create a backup first."
                 fi
                 if [ "$_backup_from" != "${_current:-unknown}" ] || [ "$_backup_to" != "$_latest" ]; then
-                    die "The latest recorded Personal backup does not match this upgrade (${_current:-unknown} -> $_latest). Run: exakit update personal --backup"
+                    die "The latest recorded Personal backup does not match this upgrade (${_current:-unknown} -> $_latest)."
                 fi
                 info "Updating Exasol Personal launcher ${_current:-unknown} -> $_latest"
                 EXAKIT_PERSONAL_VERSION="$_latest"

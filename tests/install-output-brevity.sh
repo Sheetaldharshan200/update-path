@@ -78,17 +78,34 @@ cat > "$WORK/result.json" <<'JSONEOF'
  "selected_clients":["claude_desktop","claude_code","codex","vscode_copilot"],
  "artifacts":[{"client":"claude_desktop","path":"/h/Library/Application Support/Claude/claude_desktop_config.json"},
               {"client":"codex","path":"/h/.codex/config.toml"}],
- "findings":[{"message":"The database credential is stored as plaintext in the client configuration file."}],
- "next_actions":[{"message":"Restart Claude to load the updated MCP configuration."},
-                 {"message":"Start a new Claude Code session (or run /mcp in an existing one) to load the updated MCP configuration."}]}
+ "findings":[{"code":"plaintext_credential_reference","severity":"warning","message":"The database credential is stored as plaintext in the client configuration file."},
+             {"code":"some_other_finding","severity":"warning","message":"A finding the reader can actually act on."}],
+ "next_actions":[{"kind":"restart_client","message":"Restart Claude to load the updated MCP configuration."},
+                 {"kind":"restart_client","message":"Start a new Claude Code session (or run /mcp in an existing one) to load the updated MCP configuration."},
+                 {"kind":"repair_something","message":"An action that is not a restart."}]}
 JSONEOF
+# The fixture carries `code` and `kind` because the RENDERER filters on them.
+# Without those fields it exercised neither filter, so the suppression could
+# have been deleted outright and this block would still have passed.
+: > "$EXAKIT_LOG_FILE"
 SUMMARY="$(exakit_print_mcp_setup_summary "$WORK/result.json" 2>&1)"
+SUMMARY_LOG="$(cat "$EXAKIT_LOG_FILE")"
 
 has "the clients are named"        "MCP configured for Claude, Claude Code (CLI), Codex, GitHub Copilot" "$SUMMARY"
-has "the credential warning stays" "stored as plaintext"  "$SUMMARY"
-has "each client's next step stays" "Restart Claude to load" "$SUMMARY"
-has "including the /mcp one"        "run /mcp in an existing one" "$SUMMARY"
-has "and where the rest lives"      "exakit mcp-status" "$SUMMARY"
+# The plaintext credential is a standing property of how every client stores a
+# credential -- and it is the READ-ONLY user's password. Warning about it on
+# every install taught people to read past warnings.
+lacks "the credential warning is gone" "stored as plaintext"  "$SUMMARY"
+has "...but the log still answers for it" "stored as plaintext" "$SUMMARY_LOG"
+has "a finding that IS actionable still shows" "act on" "$SUMMARY"
+# One "restart your client" line per configured client is the same action said
+# four times; the skills step closes the install with the generic form.
+lacks "no per-client restart lines"  "Restart Claude to load" "$SUMMARY"
+lacks "...nor the /mcp one"          "run /mcp in an existing one" "$SUMMARY"
+has "...and the log keeps those too" "run /mcp in an existing one" "$SUMMARY_LOG"
+has "an action that is not a restart survives" "not a restart" "$SUMMARY"
+# Already in the closing panel as "MCP configs: ... (list: exakit mcp-status)".
+lacks "no duplicate mcp-status pointer" "exakit mcp-status" "$SUMMARY"
 
 lacks "no Mode row"      "Mode:"      "$SUMMARY"
 lacks "no Meaning row"   "Meaning:"   "$SUMMARY"
@@ -171,6 +188,8 @@ printf '\n== the PowerShell twin moves with it ==\n'
 
 MCP_PS1="$(cat "$ROOT/setup/lib/mcp.ps1")"
 COMMON_PS1="$(cat "$ROOT/setup/lib/exakit-common.ps1")"
+UI_SH_TEXT="$(cat "$ROOT/setup/lib/ui.sh")"
+UI_PS1_TEXT="$(cat "$ROOT/setup/lib/ui.ps1")"
 lacks "no MCP setup summary panel"  'Start-ExakitPanel "MCP setup summary"' "$MCP_PS1"
 lacks "no MCP is ready panel"       'Start-ExakitPanel "MCP is ready"'      "$MCP_PS1"
 has "the clients are named there too" 'Ok "MCP configured for $clientList"' "$MCP_PS1"
@@ -209,15 +228,23 @@ lacks "no 'Skip for now (no MCP client changes)'" "Skip for now (no MCP client c
 # table's own last row rather than an entry in a label array. Still one word.
 has "the MCP menu opts out with Skip"  'printf '"'"'plain|Skip|0|idle|||||| \n'"'"' >> "$EXAKIT_MCP_TABLE_STATE"' "$COMMON"
 has "...and its twin"                  'Add-ExakitTableRow -Kind "plain" -Label "Skip" -Table $script:McpTable' "$MCP_PS1_ALL"
-has "the bulk-format menu too"         '_bsl_labels+=("Skip")'             "$EXAPUMP_SH"
+# The bulk-format menu is gone entirely, so it has no opt-out to check: a folder
+# is the answer, and every loadable file in it is taken without a question.
+lacks "and the bulk-format menu is gone" '_bsl_labels' "$EXAPUMP_SH"
 
 printf '\n== the closing offer is two words and a question ==\n'
 
-has "the pitch"            'info "Supercharge starterkit with exasol add-ons"' "$COMMON"
-has "...on Windows too"    'Info "Supercharge starterkit with exasol add-ons"' "$COMMON_PS1"
+# A HEADING, not an action: the dim bullet marked the offer as one more thing
+# being done TO the machine, and sat level with the question it introduces.
+has "the pitch"            'heading "Supercharge Exasol with add-ons from marketplace"'          "$COMMON"
+has "...on Windows too"    'Write-ExakitHeading "Supercharge Exasol with add-ons from marketplace"' "$COMMON_PS1"
+# Two spaces, the same column as begin_step's own arrow: at four it sat in the
+# action gutter, level with the question it introduces.
+has "the heading is at the STEP indent" "printf '  %s%s%s %s" "$COMMON"
 lacks "no three-line pitch" "editor integration, extra data formats"          "$COMMON$COMMON_PS1"
-has "the question"         'ui_checkbox_menu "Explore ?" "1"'                 "$COMMON"
-has "...on Windows too"    '-Title "Explore ?"'                               "$COMMON_PS1"
+# The bare "Explore ?" never said what it was asking about.
+has "the question"         'ui_checkbox_menu "Explore marketplace ?" "1"'      "$COMMON"
+has "...on Windows too"    '-Title "Explore marketplace ?"'                    "$COMMON_PS1"
 lacks "no 'Browse it now?'" "Browse it now?"                                  "$COMMON$COMMON_PS1"
 lacks "no 'open the marketplace' row" "Yes, open the marketplace"             "$COMMON$COMMON_PS1"
 lacks "no 'maybe later' row"          "No, maybe later"                       "$COMMON$COMMON_PS1"
@@ -250,9 +277,13 @@ check "one divider line"          "1" "$(printf '%s\n' "$RULE" | grep -c "$UI_HR
 has "and air below it in the source" "'\\n  %s%s%s\\n\\n'" "$(cat "$ROOT/setup/lib/ui.sh")"
 has "and it draws a divider" "$UI_HR$UI_HR$UI_HR" "$RULE"
 has "the offer is behind the seam" 'ui_rule
-    info "Supercharge starterkit with exasol add-ons"' "$COMMON"
+    # A heading, not an action: what follows the rule is a separate offer, and
+    # the dim bullet marked it as one more thing being done TO the machine.
+    heading "Supercharge Exasol with add-ons from marketplace"' "$COMMON"
 has "...on Windows too" 'Write-ExakitRule
-    Info "Supercharge starterkit with exasol add-ons"' "$COMMON_PS1"
+    # A heading, not an action: what follows the rule is a separate offer, and
+    # the dim bullet marked it as one more thing being done TO the machine.
+    Write-ExakitHeading "Supercharge Exasol with add-ons from marketplace"' "$COMMON_PS1"
 has "ui.sh has the rule"  "ui_rule()"                  "$(cat "$ROOT/setup/lib/ui.sh")"
 has "ui.ps1 has its twin" "function Write-ExakitRule"  "$(cat "$ROOT/setup/lib/ui.ps1")"
 
@@ -347,12 +378,32 @@ printf '\n== exakit help lists each command once ==\n'
 HELP_OUT="$(NO_COLOR=1 EXAKIT_NO_UPDATE_NOTICE=1 /bin/bash "$ROOT/setup/exakit" help 2>&1)"
 HELP_ROWS="$(printf '%s\n' "$HELP_OUT" | grep -oE '^    exakit [a-z-]+' || true)"
 check "no command is listed twice" "" "$(printf '%s\n' "$HELP_ROWS" | sort | uniq -d)"
-# The catalog still names mcp-setup in two groups, so this proves the RENDERER
-# dedupes rather than the catalog having been edited to hide the overlap.
-check "the catalog still lists it twice" "2" \
-    "$(grep -c '^        "mcp-setup",' "$ROOT/setup/help/exakit.json")"
-has "the first group keeps it" "exakit mcp-setup" "$HELP_OUT"
+has "mcp-setup is listed" "exakit mcp-setup" "$HELP_OUT"
 check "and only once" "1" "$(printf '%s\n' "$HELP_ROWS" | grep -c 'exakit mcp-setup')"
+
+# The dedupe is proved against a FIXTURE, not against the shipped catalog. It
+# used to be proved by asserting the real catalog still named mcp-setup in two
+# groups -- so the day mcp-setup was moved into the MCP group and the overlap
+# disappeared, this failed while the behaviour it guards was perfectly fine. A
+# guard that breaks when unrelated data changes, and that quietly stops guarding
+# anything the moment the data no longer overlaps, is worse than no guard.
+DEDUPE_DIR="$(mktemp -d)"
+cp -R "$ROOT/setup" "$DEDUPE_DIR/setup"
+python3 - "$DEDUPE_DIR/setup/help/exakit.json" <<'EXAKIT_DEDUPE_PY'
+import json, sys
+path = sys.argv[1]
+doc = json.load(open(path))
+# Name a command that already exists in the first group in the LAST group too,
+# so the renderer has a real overlap to collapse and the first group is the one
+# that must keep it.
+doc["groups"][-1]["commands"].append("status")
+json.dump(doc, open(path, "w"), indent=2)
+EXAKIT_DEDUPE_PY
+check "the fixture lists a command twice" "2" "$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(sum(g["commands"].count("status") for g in d["groups"]))' "$DEDUPE_DIR/setup/help/exakit.json")"
+DEDUPE_OUT="$(NO_COLOR=1 EXAKIT_NO_UPDATE_NOTICE=1 /bin/bash "$DEDUPE_DIR/setup/exakit" help 2>&1)"
+check "the renderer collapses it to one row" "1" \
+    "$(printf '%s\n' "$DEDUPE_OUT" | grep -cE '^    exakit status')"
+rm -rf "$DEDUPE_DIR"
 # A group emptied by the dedupe must not leave its heading behind.
 check "no heading with nothing under it" "" "$(printf '%s\n' "$HELP_OUT" | awk '
     /^  [A-Z]/ { if (heading != "" && rows == 0) print heading; heading = $0; rows = 0; next }
@@ -395,8 +446,16 @@ printf '\n== ...but its one useful fact rides out on the result line ==\n'
 
 EXAKIT_DASH_SERVER_PORT=5100
 has "dash-server names its address"  "http://127.0.0.1:5100" "$(dash_server_summary)"
-has "json-tables names its command"  "exasol-json-tables ingest" "$(json_tables_summary)"
-has "exasol-vscode names where to look" "activity bar" "$(exasol_vscode_summary)"
+# Each summary must fit the finished cell, which has room for 33 -- that is
+# 44 minus the tick, the padded elapsed and two spaces, and the PLAIN palette's
+# tick is the four-character "[ok]", not a one-character glyph. Longer than that
+# and the cell truncates with an ellipsis, which is what these used to do.
+has "json-tables names its command"  "exasol-json-tables" "$(json_tables_summary)"
+has "exasol-vscode names where to look" "sidebar" "$(exasol_vscode_summary)"
+for _sum in "$(json_tables_summary)" "$(exasol_vscode_summary)" "$(dash_server_summary)"; do
+    check "\"$_sum\" fits the finished cell" "yes" \
+        "$([ "${#_sum}" -le 33 ] && echo yes || echo "no: ${#_sum} chars")"
+done
 
 # The hook is OPTIONAL and resolved generically: no add-on id appears in the
 # apply loop, so a new add-on gets this by defining the function and nothing in
@@ -404,7 +463,11 @@ has "exasol-vscode names where to look" "activity bar" "$(exasol_vscode_summary)
 has "the hook is resolved by name"   '_mp_summary_fn="$(_exakit_addon_fn "$_mp_id" summary)"' "$COMMON"
 has "and only used when it exists"   'command -v "$_mp_summary_fn" >/dev/null 2>&1' "$COMMON"
 has "the result line carries it"     'ok "$_mp_id installed${_mp_note:+ — $_mp_note}"' "$COMMON"
-has "one pointer for the detail"     "how to use one: exakit help <add-on>" "$COMMON"
+# "Browse again: exakit marketplace · how to use one: exakit help <add-on>"
+# stood here. The table above has just said what was installed and what each
+# gives you, and the closing support line already names `exakit help`.
+lacks "no browse-again pointer"      "how to use one: exakit help <add-on>" "$COMMON"
+lacks "...nor on Windows"            "how to use one: exakit help <add-on>" "$COMMON_PS1"
 
 printf '\n== the PowerShell twin does the same ==\n'
 
@@ -427,29 +490,18 @@ printf '\n== a folded description lines up under the one above it ==\n'
 # of prefix — and folded description lines have to start at that same column.
 # They were indented by a hand-counted 32, so every continuation sat two columns
 # to the right of the line above it.
-ROW_INDENT="$(printf '%-14s %-14s ' '' '')"
-check "the prefix is thirty columns" "30" "$(printf '%s' "$ROW_INDENT" | wc -c | tr -d ' ')"
-
-LONG="A Visual Studio Code extension for working with Exasol databases. Provides comprehensive database management, intelligent SQL editing, and powerful query execution capabilities."
-ROW="$(printf '%-14s %-14s %s' "exasol-vscode" "1.7.0" \
-    "$(exakit_about_wrap "$LONG" "$EXAKIT_ABOUT_WIDTH" "$ROW_INDENT")")"
-# Every line of the cell must begin its text at the same column: the first
-# because the printf put it there, the rest because the indent matches it.
-COLUMNS_USED="$(printf '%s\n' "$ROW" | awk '{ match($0, /[^ ]/); print RSTART - 1 }' | sort -u | tr '\n' ' ' | sed 's/ $//')"
-check "the first line starts at column 0" "0 30" "$COLUMNS_USED"
-check "it really did fold" "yes" \
-    "$([ "$(printf '%s\n' "$ROW" | grep -c .)" -gt 1 ] && echo yes || echo no)"
-# Nothing is dropped by the fold: the panel carries the About in full.
-check "the last word survives" "capabilities." \
-    "$(printf '%s\n' "$ROW" | tail -1 | awk '{print $NF}')"
-
-# The indent is MEASURED from the row format on both sides, so widening a column
-# cannot leave the fold behind again.
-has "the shell measures it"      "exakit_about_wrap \\" "$COMMON"
-has "...from the row format"     '"$(printf '"'"'%-14s %-14s '"'"' '"'"''"'"' '"'"''"'"')"' "$COMMON"
-lacks "and never counts by hand" "ui_repeat ' ' 32"  "$COMMON"
-has "the twin measures it too"   '$indent = "{0,-14} {1,-14} " -f "", ""' "$COMMON_PS1"
-lacks "no hand-counted twin"     '(" " * 32)'        "$COMMON_PS1"
+# The description is no longer folded into a panel cell by the marketplace: it
+# is a COLUMN of the one table, and the table wraps it at draw time. What has to
+# hold now is that the wrap never truncates, never forks, and is bounded.
+has "the table wraps, in full"      "_ui_wrap() {"                     "$UI_SH_TEXT"
+lacks "and never truncates a description" 'UI_TABLE_COL3_W - 1 ))}…'   "$UI_SH_TEXT"
+has "the width is fixed"            'UI_TABLE_COL3_FIXED="${UI_TABLE_COL3_FIXED:-44}"' "$UI_SH_TEXT"
+has "...and bounded when it grows"  'UI_TABLE_COL3_MAX="${UI_TABLE_COL3_MAX:-90}"'     "$UI_SH_TEXT"
+lacks "the wrap forks nothing"      'exakit_about_wrap' "$(sed -n "/^_ui_wrap()/,/^}/p" "$ROOT/setup/lib/ui.sh")"
+has "the twin wraps too"            "function Split-ExakitWrap"        "$UI_PS1_TEXT"
+# exakit_about_wrap itself stays -- it has its own tests in marketplace.sh and
+# is the renderer `exakit help` uses; it simply has no marketplace caller now.
+has "the helper still exists"       "exakit_about_wrap() {"            "$COMMON"
 
 printf '\n== every version is spelled the same way ==\n'
 
@@ -467,10 +519,136 @@ check "nothing in, nothing out"        ""      "$(exakit_version_plain '')"
 # Applied where versions are DISPLAYED, never where they are compared or stored.
 has "the version table spells it"   'exakit_version_plain "$(exakit_version_installed_cell' "$COMMON"
 has "...both columns"               'exakit_version_plain "$(exakit_component_available' "$COMMON"
+# The marketplace no longer formats rows of its own: the version is a COLUMN of
+# the one table, resolved by the caller that is already visiting every add-on
+# and handed to the row builder, which looks nothing up itself.
 has "the marketplace table too"     'exakit_version_plain "${_mm_adv:-unknown}"' "$COMMON"
-has "...for installed rows"         'exakit_version_plain "${_mm_ver:-?}"'       "$COMMON"
+# A covered add-on carries its version in the Version COLUMN now, and the word
+# on its own, so the row lines up with every other add-on instead of reading
+# "json-tables · Installed (0.2)" with the Version column empty beside it.
+has "...and a covered add-on fills the column" 'Installed|$(exakit_version_plain "${_mm_cv:-?}")' "$COMMON"
 has "the twin has the helper"       'function Get-ExakitVersionPlain'           "$COMMON_PS1"
 has "...and uses it in its table"   'Get-ExakitVersionPlain $advertised'        "$COMMON_PS1"
+
+printf '\n== a quieted step still shows it is working ==\n'
+
+# The brevity pass routed info/ok to the logfile while a step runs and moved the
+# phase names onto the spinner instead -- "the phases live on the spinner", as
+# Install-Mcp's own comment puts it. On the PowerShell side no spinner was ever
+# started, so step 3 printed its heading and then nothing at all for as long as
+# uvx took: 87 seconds of blank screen on a machine with a cold uv cache, with
+# nothing to tell it apart from a hang.
+#
+# Asserted per function rather than per file, because both phases of the step
+# can be slow and each has to spin on its own: a file-wide count would stay
+# green with one function spinning twice and the other not at all.
+sh_fn() { # sh_fn <file> <name> - one shell function, which closes at column 0
+    awk -v start="$2" 'index($0, start) == 1, /^\}/' "$1"
+}
+
+# PowerShell needs its own slicer: Test-McpServer embeds a Python here-string
+# whose json.dumps({...}) closes with "})" at column 0, so a range ending at the
+# first ^} stops halfway through the function and reports a spinner that is
+# there as missing. Ending at the NEXT top-level function has no such ambiguity.
+ps_fn() { # ps_fn <file> <name>
+    awk -v start="function $2 {" '
+        index($0, start) == 1 { inside = 1; print; next }
+        inside && /^function / { exit }
+        inside { print }
+    ' "$1"
+}
+
+MCP_INSTALL_SH="$(sh_fn "$ROOT/setup/lib/mcp.sh" "mcp_install() {")"
+MCP_VALIDATE_SH="$(sh_fn "$ROOT/setup/lib/mcp.sh" "mcp_validate() {")"
+MCP_INSTALL_PS="$(ps_fn "$ROOT/setup/lib/mcp.ps1" "Install-Mcp")"
+MCP_VALIDATE_PS="$(ps_fn "$ROOT/setup/lib/mcp.ps1" "Test-McpServer")"
+
+spins() { # spins <text> <begin-needle> <end-needle> -> "N/M"
+    printf '%s/%s' \
+        "$(printf '%s\n' "$1" | grep -c "$2")" \
+        "$(printf '%s\n' "$1" | grep -c "$3")"
+}
+
+# The download: the longest wait in the step, and the one that was silent.
+check "the download spins"       "1/1" "$(spins "$MCP_INSTALL_SH" 'ui_spin_begin' 'ui_spin_end')"
+check "...and its twin does too" "1/1" "$(spins "$MCP_INSTALL_PS" 'Start-ExakitSpinner' 'Stop-ExakitSpinner')"
+# The handshake: starting the server can still mean uvx materialising an
+# environment. Two ends to one begin here -- the loop closes the spinner on the
+# way out and before a retry, because a spinner owns its line.
+check "the handshake spins"      "1/2" "$(spins "$MCP_VALIDATE_SH" 'ui_spin_begin' 'ui_spin_end')"
+check "...and its twin does too" "1/1" "$(spins "$MCP_VALIDATE_PS" 'Start-ExakitSpinner' 'Stop-ExakitSpinner')"
+
+# The label is what the reader looks at for the whole wait, so it names the
+# phase and says the download happens once per machine.
+has "the label names the download"  'Downloading ${EXAKIT_MCP_PACKAGE}@${EXAKIT_MCP_VERSION} — first run only' "$MCP_INSTALL_SH"
+has "the twin's download label"     'Downloading $($script:McpPackage)@$($script:McpVersion) - first run only' "$MCP_INSTALL_PS"
+has "the handshake names itself"    'Starting the MCP server and checking it answers' "$MCP_VALIDATE_SH"
+has "...and on Windows"             'Starting the MCP server and checking it answers' "$MCP_VALIDATE_PS"
+
+# A spinner owns its line and rewrites it every 90ms, so the retry warning waits
+# until the spinner has been stopped.
+lacks "no warning under a spinner"  'Warn2 "Handshake attempt $attempt failed - retrying"; Start-Sleep' "$MCP_VALIDATE_PS"
+
+printf '\n== no question is asked under a live table ==\n'
+
+# There are TWO data-load loops -- the installer's in common.sh and `exakit
+# data-load`'s in exapump.sh -- and they drifted: one was fixed and the other
+# kept running the local file/folder row inside the loop, while the animator
+# repainted the frame every 80ms. The prompt was overwritten mid-question and
+# the typed path landed on top of the words; the install screen reprinted the
+# box twenty-two times.
+#
+# ui_table_detach is not the fix and never was: it stops a subshell's exit from
+# killing the animator, it does not take the frame off the screen. Asserted on
+# BOTH copies, because one of them being right is what hid this.
+COMMON_SRC="$(cat "$ROOT/setup/lib/common.sh")"
+EXAPUMP_SRC="$(cat "$ROOT/setup/lib/exapump.sh")"
+lacks "the installer does not prompt under its table" 'ui_table_detach; exakit_load_local_file' "$COMMON_SRC"
+lacks "...nor does exakit data-load"                  'ui_table_detach; exakit_load_local_file' "$EXAPUMP_SRC"
+has "the installer defers the local row"  '_data_has_local=1' "$COMMON_SRC"
+has "...and runs it after the table ends" 'if [ "$_data_has_local" = 1 ]; then' "$COMMON_SRC"
+has "exakit data-load defers it too"      '_menu_has_local=1' "$EXAPUMP_SRC"
+has "...and runs it after the table ends" 'if [ "$_menu_has_local" = 1 ]; then' "$EXAPUMP_SRC"
+# PowerShell already stopped its table on both paths; keep it that way.
+# The PAIRING, not a bare count: Stop-ExakitDataTableRun also appears in the
+# finally blocks and in its own definition, so counting the name says nothing
+# about whether the table is stopped before the prompt.
+check "both PowerShell paths stop the table before prompting" "2" \
+    "$(grep -A1 'Stop-ExakitDataTableRun$' "$ROOT/setup/lib/exapump.ps1" | grep -c 'Import-ExakitLocalFile')"
+
+printf '\n== the connection panel fits an 80-column terminal ==\n'
+# ui_panel_end sizes to its longest LINE and never consults the terminal width,
+# unlike ui_table_frame and ui_progress_line which both clamp. So the two
+# credential rows decide whether the whole panel fits, and with "stored in " in
+# them it came to 85 -- five past the default width of Terminal.app, where the
+# box breaks. Measured by RENDERING it, because the arithmetic is the thing at
+# issue; a grep for the wording would pass the day a longer path replaces it.
+PANEL_W="$(/bin/bash -c '. '"$ROOT"'/setup/lib/ui.sh; ui_detect >/dev/null 2>&1
+ui_panel_begin "Setup details"
+ui_panel_line "Admin pass:   ~/.exasol-starter-kit/credentials/personal_sys_password"
+ui_panel_line "MCP pass:     ~/.exasol-starter-kit/credentials/mcp_readonly_password"
+ui_panel_end' 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g' | awk '{ if (length($0) > m) m = length($0) } END { print m + 0 }')"
+if [ "${PANEL_W:-0}" -gt 0 ] && [ "$PANEL_W" -le 80 ]; then
+    check "the credential panel fits 80 columns" "$PANEL_W" "$PANEL_W"
+else
+    check "the credential panel fits 80 columns" "<=80" "$PANEL_W"
+fi
+# has/lacks in this suite take a HAYSTACK STRING, not a path: passing a filename
+# makes the check trivially true and it reports green having tested nothing.
+COMMON_SRC="$(cat "$ROOT/setup/lib/common.sh")"
+PSCOMMON_SRC="$(cat "$ROOT/setup/lib/exakit-common.ps1")"
+lacks "no 'stored in' padding the credential rows" 'Admin pass:   stored in' "$COMMON_SRC"
+lacks "...nor on the PowerShell side"              'Admin pass:   stored in' "$PSCOMMON_SRC"
+
+printf '\n== a failed soft step is named the way the reader knows it ==\n'
+# Both the mid-run warning and the closing summary print a LABEL, falling back
+# to the raw component id. exakit_soft_step passed none, so the screen said
+# "mcp did not finish" and then "mcp is not installed" -- an internal key, in a
+# sentence addressed to someone who sees keys nowhere else in the install.
+has "soft_step takes a label"           '_ss_label="$3"' "$COMMON_SRC"
+has "...and warns with it"              'warn "$_ss_label did not finish' "$COMMON_SRC"
+has "...and records it for the summary" 'exakit_take_failure_note)" "$_ss_label"' "$COMMON_SRC"
+lacks "no caller leaves it to the raw id" 'exakit_soft_step mcp "exakit update" _exakit_install_mcp' "$COMMON_SRC"
 
 printf '\n%s: %d passed, %d failed\n' "$(basename "$0")" "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
