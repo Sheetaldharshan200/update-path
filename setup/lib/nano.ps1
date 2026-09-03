@@ -509,7 +509,23 @@ function Test-NanoFirstDeployArgs {
 function Start-NanoExisting {
     $engine = Get-NanoEngine
     if (Test-NanoFirstDeployArgs) {
-        $image = & $engine container inspect -f "{{.Config.Image}}" $script:NanoContainer 2>$null
+        # Same hazard as Test-NanoVolumeExists: under the module-wide
+        # ErrorActionPreference of Stop, a native command that writes to stderr
+        # raises a TERMINATING error, and 2>$null does not prevent it - it only
+        # moves the text. This call normally succeeds (the container exists, or
+        # we would not be here), but a container removed between the check and
+        # this line is exactly the kind of race that should fall back rather
+        # than end the run.
+        $image = ""
+        $prevImgEAP = $ErrorActionPreference
+        try {
+            $ErrorActionPreference = "Continue"
+            $image = & $engine container inspect -f "{{.Config.Image}}" $script:NanoContainer 2>$null
+        } catch {
+            $image = ""
+        } finally {
+            $ErrorActionPreference = $prevImgEAP
+        }
         if (-not $image) { $image = Get-NanoImageRef }
         Info "Recreating the Nano container (first-deploy options are single-use; the data volume is kept)"
         $code = Invoke-ExakitLogged $engine "rm" "-f" $script:NanoContainer
@@ -662,9 +678,7 @@ function Install-Nano {
         # mounts a freshly generated password the volume will ignore, and hands
         # the image single-use init options over an initialised /exa, which it
         # refuses to boot with. Twin of the same probe in nano_install.
-        $volumeExisted = $false
-        & $engine volume inspect $script:NanoVolume 2>&1 | Out-Null
-        if ($LASTEXITCODE -eq 0) { $volumeExisted = $true }
+        $volumeExisted = Test-NanoVolumeExists
         if ($volumeExisted -and $env:EXAKIT_REUSE_DB -eq "0") {
             Warn2 "Replacing the existing database volume $($script:NanoVolume) (EXAKIT_REUSE_DB=0) - its data is being deleted."
             $rmCode = Invoke-ExakitLogged $engine "volume" "rm" $script:NanoVolume
@@ -703,6 +717,37 @@ function Install-Nano {
 
 
 # Wait-NanoReady - poll container logs until the database reports ready.
+# Test-NanoVolumeExists - does the data volume exist right now?
+#
+# Asking is not as simple as running the command, because of two things that
+# compound. `docker volume inspect` on a MISSING volume writes
+# "Error response from daemon: get <name>: no such volume" to stderr and exits
+# non-zero - and $ErrorActionPreference is Stop module-wide, so that stderr
+# write becomes a TERMINATING error. `2>&1 | Out-Null` does not prevent it: the
+# redirect changes where the text goes, not whether PowerShell raises. The
+# absence of a volume is a perfectly ordinary answer to this question, so it
+# must not be able to end the run - which is exactly what it did, surfacing as
+#     Unexpected error: Error response from daemon: get exasol-nano-data: no such volume
+# on a clean machine at step 1.
+#
+# Same hazard, and the same remedy, as the tar call in dash-server.ps1 and
+# Invoke-ExakitLogged: set Continue for the duration and read the exit code.
+function Test-NanoVolumeExists {
+    $engine = Get-NanoEngine
+    $prevEAP = $ErrorActionPreference
+    $exists = $false
+    try {
+        $ErrorActionPreference = "Continue"
+        & $engine volume inspect $script:NanoVolume 2>&1 | Out-Null
+        $exists = ($LASTEXITCODE -eq 0)
+    } catch {
+        $exists = $false
+    } finally {
+        $ErrorActionPreference = $prevEAP
+    }
+    return $exists
+}
+
 # Repair-NanoCredentials - clear the debris a container leaves behind when it
 # was started while the secret file was missing.
 #
@@ -983,11 +1028,7 @@ function Remove-Nano {
         Warn2 "No container named '$($script:NanoContainer)' found - nothing to remove (was it created under a different name?)"
     }
     if ($Data) {
-        $volumeExists = $false
-        try {
-            & $engine volume inspect $script:NanoVolume *> $null
-            $volumeExists = ($LASTEXITCODE -eq 0)
-        } catch { }
+        $volumeExists = Test-NanoVolumeExists
         if ($volumeExists) {
             Info "Removing data volume $($script:NanoVolume)"
             $code = Invoke-ExakitLogged $engine "volume" "rm" $script:NanoVolume
