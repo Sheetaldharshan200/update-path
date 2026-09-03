@@ -7057,6 +7057,13 @@ for finding in doc.get("findings", []):
         # deleted when this function returns.
         lines.append(f"log|{finding.get('message', 'Unknown issue')}")
         continue
+    # Severity decides the glyph. An INFO finding is a fact about a client, not
+    # a fault of this run -- "Claude has no config-file shape for a remote MCP
+    # server" printed under the warning glyph on every `exakit update` read as
+    # a failure and prompted the question "why is it so?". A note it is.
+    if finding.get("severity") == "info":
+        lines.append(f"info|{finding.get('message', 'Unknown issue')}")
+        continue
     lines.append(f"warn|{finding.get('message', 'Unknown issue')}")
 
 # One "restart your client" line per configured client says the same thing

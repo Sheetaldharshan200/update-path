@@ -895,6 +895,13 @@ function Show-McpSetupSummary {
             if ($f.message) { Write-ExakitLog "INFO" "$($f.message)" }
             continue
         }
+        # Severity decides the glyph - twin of the same rule in
+        # exakit_print_mcp_setup_summary. An INFO finding is a fact about a
+        # client, not a fault of this run, and is printed as a note.
+        if ($f.severity -eq "info") {
+            if ($f.message) { Info "$($f.message)" }
+            continue
+        }
         if ($f.message) { Warn2 "$($f.message)" }
     }
     # One "restart your client" line per configured client says the same thing

@@ -82,6 +82,25 @@ class AdditionalAdapterTests(unittest.TestCase):
         self.assertIn("[mcp_servers.exasol]", rendered.content or "")
         self.assertIn('command = "/tmp/uvx"', rendered.content or "")
 
+    def test_codex_adapter_renders_a_remote_server_as_url_only(self) -> None:
+        """The shape `codex mcp add <name> --url <url>` writes: one `url` key."""
+        adapter = self._registry.get("codex")
+        self.assertTrue(adapter.describe_capabilities().supports_http)
+        location = adapter.locate(self._environment)
+        inspection = adapter.inspect(location.path, "dash-server")  # type: ignore[arg-type]
+        server = ServerDefinition(
+            transport=DeploymentMode.HTTP,
+            name="dash-server",
+            url="http://127.0.0.1:5100/mcp",
+        )
+        rendered = adapter.render(server, inspection)
+        self.assertEqual(adapter.validate_render(rendered), [])
+        import tomllib
+        document = tomllib.loads(rendered.content or "")
+        self.assertEqual(document["mcp_servers"]["dash-server"], {"url": "http://127.0.0.1:5100/mcp"})
+        self.assertNotIn("command", rendered.content or "")
+        self.assertNotIn("env", rendered.content or "")
+
     def test_codex_adapter_escapes_windows_command_paths(self) -> None:
         adapter = self._registry.get("codex")
         location = adapter.locate(self._environment)
