@@ -61,7 +61,8 @@
       "commands": [
         "guide",
         "help",
-        "catalog"
+        "catalog",
+        "whats-new"
       ]
     }
   ],
@@ -312,6 +313,16 @@
         "exakit catalog",
         "exakit catalog mcp",
         "exakit catalog --json"
+      ]
+    },
+    {
+      "command": "whats-new",
+      "options": "[<version>]",
+      "summary": "What changed in this kit version.",
+      "description": "The what's-new card for the kit version you have installed, or for a named one. The installer shows the same cards, one per version crossed, after an upgrade; this prints them again any time.",
+      "examples": [
+        "exakit whats-new",
+        "exakit whats-new 0.2.0"
       ]
     }
   ],
