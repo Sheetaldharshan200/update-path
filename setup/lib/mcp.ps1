@@ -1074,6 +1074,32 @@ function Show-McpOperationSummary {
     # exakit_print_mcp_operation_summary in common.sh).
     $discovered = @()
     if ($doc.details -and $doc.details.discovered_clients) { $discovered = @($doc.details.discovered_clients) }
+    $clientStates = @()
+    if ($doc.details -and $doc.details.clients) { $clientStates = @($doc.details.clients) }
+    if ($doc.operation -eq "doctor" -and $clientStates.Count -gt 0) {
+        # The doctor derives each client's state from HEALTH (see _doctor in
+        # mcp/service.py); rebuilding it here from "an artifact exists" called a
+        # client connected with its entry deleted. Twin of the same branch in
+        # exakit_print_mcp_operation_summary.
+        $groups = [ordered]@{ "connected" = @(); "needs attention" = @(); "configured, not installed" = @(); "available" = @(); "not installed" = @() }
+        $stateToGroup = @{ connected = "connected"; needs_attention = "needs attention"; configured_client_missing = "configured, not installed"; not_set_up = "available"; not_installed = "not installed" }
+        foreach ($entry in $clientStates) {
+            $name = if ($script:McpClientLabels.ContainsKey($entry.client)) { $script:McpClientLabels[$entry.client] } else { $entry.client }
+            $group = "not installed"
+            if ($stateToGroup.ContainsKey("$($entry.state)")) { $group = $stateToGroup["$($entry.state)"] }
+            $groups[$group] += $name
+        }
+        $hints = @{ "available" = "-> connect with: exakit mcp-setup"; "needs attention" = "-> the findings below say what; exakit mcp-doctor repairs drift"; "configured, not installed" = "-> the client is gone; its entry stays until: exakit mcp-doctor" }
+        Write-Host ""; Write-Host "  Client state:"
+        foreach ($label in $groups.Keys) {
+            $names = $groups[$label]
+            if (@($names).Count -gt 0) {
+                $hint = if ($hints.ContainsKey($label)) { "   " + $hints[$label] } else { "" }
+                Write-Host ("    {0,-26} {1}{2}" -f $label, ($names -join ', '), $hint)
+            }
+        }
+        $discovered = @()
+    }
     if ($discovered.Count -gt 0) {
         $managed = @($doc.artifacts) | ForEach-Object { $_.client }
         $groups = [ordered]@{ "connected" = @(); "available" = @(); "needs attention" = @(); "not installed" = @() }
@@ -1175,6 +1201,24 @@ function Invoke-McpSetup {
         if (-not $clients) {
             Warn2 "EXAKIT_MCP_CLIENTS='$($env:EXAKIT_MCP_CLIENTS)' is not valid (use claude, codex, cursor, copilot, gemini, opencode, continue, all, skip, or numbers 1-7)."
             return $false
+        }
+        if ($env:EXAKIT_MCP_CLIENTS -match '^\s*(all|ALL|All)\s*$') {
+            # "all" means every client ON THIS MACHINE - the set the menu offers -
+            # not every client the kit knows. The full list wrote the read-only
+            # password into config files for tools that were not installed. A
+            # client named explicitly is still configured, installed or not.
+            # Twin of the same rule in exakit_mcp_setup.
+            $allStates = Get-McpClientStates
+            if ($allStates) {
+                $detectedClients = @($clients | Where-Object { $allStates[$_] -in @("connected", "pending") })
+                $skippedClients = @($clients | Where-Object { $_ -notin $detectedClients })
+                if ($detectedClients.Count -gt 0) {
+                    $clients = $detectedClients
+                    if ($skippedClients.Count -gt 0) {
+                        Info "EXAKIT_MCP_CLIENTS=all - not installed here, skipped: $($skippedClients -join ',') (name one explicitly to configure it anyway)"
+                    }
+                }
+            }
         }
         Info "Configuring MCP clients from EXAKIT_MCP_CLIENTS: $($clients -join ',')"
     }

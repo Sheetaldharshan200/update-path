@@ -262,6 +262,21 @@ class AdditionalAdapterTests(unittest.TestCase):
         self.assertFalse(removal.remove_file)
         self.assertEqual(json.loads(removal.content or "{}"), {})
 
+    def test_vscode_copilot_removal_keeps_the_file(self) -> None:
+        """mcp.json is VS Code's, not the kit's: removing the last kit entry
+        leaves an empty servers table, never a deleted file. An uninstall used
+        to remove the whole file once the kit's entries were the last in it."""
+        adapter = self._registry.get("vscode_copilot")
+        location = adapter.locate(self._environment)
+        inspection = adapter.inspect(location.path, "exasol")  # type: ignore[arg-type]
+        rendered = adapter.render(self._server, inspection)
+        location.path.parent.mkdir(parents=True, exist_ok=True)  # type: ignore[union-attr]
+        location.path.write_text(rendered.content or "", encoding="utf-8")  # type: ignore[union-attr]
+        inspection = adapter.inspect(location.path, "exasol")  # type: ignore[arg-type]
+        removal = adapter.render_removal(inspection, "exasol")
+        self.assertFalse(removal.remove_file)
+        self.assertEqual(json.loads(removal.content or "{}"), {"servers": {}})
+
     def test_vscode_copilot_renders_stdio_type(self) -> None:
         adapter = self._registry.get("vscode_copilot")
         location = adapter.locate(self._environment)

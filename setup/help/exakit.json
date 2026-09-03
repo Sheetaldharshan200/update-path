@@ -71,7 +71,7 @@
       "command": "status",
       "options": "[--json | -j]",
       "summary": "Is the database up and healthy?",
-      "description": "Shows what is installed, whether each component is healthy, which datasets are loaded, and whether add-on services are running.",
+      "description": "Shows what is installed, whether each component is healthy, which datasets are loaded, and whether add-on services are running. While the installer is still running the status is `installing` with the current step, exit 3, so a poll started in another shell can follow the install from its first seconds.",
       "exit_codes": {
         "0": "running",
         "3": "database stopped",
@@ -84,11 +84,12 @@
     },
     {
       "command": "version",
-      "options": "",
+      "options": "[--json | -j]",
       "summary": "What is installed, and what is newer.",
-      "description": "Kit source and install date, then one row per component and add-on: what is installed, and whether the maintainers advertise something newer. Applying what is waiting is `exakit update`.",
+      "description": "Kit source and install date, then one row per component and add-on: what is installed, and whether the maintainers advertise something newer. Applying what is waiting is `exakit update`. --json prints the same rows as one object (installed, advertised, status, severity per component) with the installed/status/remedy keys every state query carries.",
       "examples": [
-        "exakit version"
+        "exakit version",
+        "exakit version --json"
       ]
     },
     {
@@ -144,20 +145,21 @@
     },
     {
       "command": "sql",
-      "options": "'<statement>' [--write]",
+      "options": "'<statement>' | --file <path> | (stdin) [--write] [--help]",
       "summary": "Run one SQL statement, with the error translated.",
-      "description": "Runs a single statement and turns the three faults everyone hits first into their remedy (connection refused -> exakit start; FETCH FIRST/TOP -> LIMIT; object not found -> describe it). Reads only unless --write.",
+      "description": "Runs a single statement and turns the three faults everyone hits first into their remedy (connection refused -> exakit start; FETCH FIRST/TOP -> LIMIT; object not found -> describe it). Reads only unless --write. A saved statement runs with --file <path> or on stdin; comment lines (--) and a trailing ; are dropped first. The remedy is printed FIRST, on stdout with the error. A first word that is neither a read nor a known write is reported as unrecognised (a typo), not as a write.",
       "warning": "This connects with the starter-kit profile, which is the ADMIN user and is NOT sandboxed. The read-only boundary is the MCP user, not this command.",
       "examples": [
         "exakit sql 'SELECT CURRENT_TIMESTAMP'",
-        "exakit sql 'SELECT * FROM TPCH.NATION LIMIT 5'"
+        "exakit sql 'SELECT * FROM TPCH.NATION LIMIT 5'",
+        "exakit sql --file ~/.exasol-starter-kit/workflows/top3.sql"
       ]
     },
     {
       "command": "data-load",
       "options": "[--force | -Force] [<file-or-folder>]",
       "summary": "Load sample data, one file, or a whole folder.",
-      "description": "Opens the data-loading menu: bundled datasets (tpch, energy, weather) or your own data. Name a path to skip the menu. A FILE asks the same two things whatever its kind - the file, then SCHEMA.TABLE - and JSON is shredded into tables by an engine the kit installs for you. A FOLDER is a bulk load: every CSV / Parquet / JSON file at its top level, one table each named after the file, asking for the schema once. Subfolders are not scanned, files of other kinds are ignored, and duplicates - byte-identical files, or two names that resolve to the same table - are skipped with the reason. --force reloads bundled datasets instead of skipping what is already there. JSON is macOS, Linux and WSL only; on Windows a folder's JSON files are listed as skipped.",
+      "description": "Opens the data-loading menu: bundled datasets (tpch, energy, weather) or your own data. Name a path to skip the menu. A FILE asks the same two things whatever its kind - the file, then SCHEMA.TABLE - and JSON is shredded into tables by an engine the kit installs for you. A FOLDER is a bulk load: every CSV / Parquet / JSON file at its top level, one table each named after the file, asking for the schema once. Subfolders are not scanned, files of other kinds are ignored, and duplicates - byte-identical files, or two names that resolve to the same table - are skipped with the reason. --force reloads bundled datasets instead of skipping what is already there. JSON is macOS, Linux and WSL only; on Windows a folder's JSON files are listed as skipped. Unattended, EXAKIT_DATASETS=tpch,energy,weather loads only what is not loaded yet and exits 0 when everything named is already there.",
       "environment": [
         "EXAKIT_DATASETS=tpch,energy,weather names exactly which bundled datasets to load",
         "EXAKIT_DATA_FILE=/path/file.json or /path/folder answers the local-data question, so a run without a terminal loads that file or folder",
@@ -216,11 +218,12 @@
     },
     {
       "command": "mcp-status",
-      "options": "[clients]",
+      "options": "[clients] [--json | -j]",
       "summary": "Show managed MCP state per client.",
-      "description": "Which clients the kit manages, which config file each one uses, and the current snapshot id.",
+      "description": "Which clients the kit manages, which config file each one uses, and the current snapshot id. --json prints the operation result with a per-client state list (configured / not_set_up / not_installed).",
       "examples": [
-        "exakit mcp-status"
+        "exakit mcp-status",
+        "exakit mcp-status --json"
       ]
     },
     {

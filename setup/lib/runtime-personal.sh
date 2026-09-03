@@ -286,7 +286,29 @@ personal_deployment_exists() {
 # before the SQL listener exists, so require both signals before reusing an
 # existing database.
 personal_deployment_running() {
-    port_in_use "$EXAKIT_PERSONAL_PORT" && "$(personal_cli)" info >/dev/null 2>&1
+    port_in_use "$EXAKIT_PERSONAL_PORT" && personal_db_answers
+}
+
+# personal_db_answers — is the thing on the SQL port actually Exasol? A real
+# SELECT through the kit's exapump profile when that module is loaded (it is,
+# in the CLI and the installer); without it, the launcher's own view. Port
+# open alone is never the answer: see personal_status.
+personal_db_answers() {
+    if command -v exakit_db_reachable >/dev/null 2>&1 && \
+       [ -n "$(manifest_get components.exapump.profile 2>/dev/null)" ]; then
+        exakit_db_reachable
+        return $?
+    fi
+    "$(personal_cli)" info >/dev/null 2>&1
+}
+
+# personal_port_holder_hint — " (pid N, name)" for the process on the port, or
+# nothing when lsof cannot say. Suffix for a conflict message.
+personal_port_holder_hint() {
+    _pph_pid="$(personal_db_port_pids | head -1)"
+    [ -n "$_pph_pid" ] || return 0
+    _pph_name="$(ps -p "$_pph_pid" -o comm= 2>/dev/null | sed 's|.*/||')"
+    printf ' (pid %s%s)' "$_pph_pid" "${_pph_name:+, $_pph_name}"
 }
 
 # personal_db_port_pids — PIDs currently LISTENing on the deployment port.
@@ -746,8 +768,19 @@ personal_status() {
     elif personal_deployment_exists; then
         # `exasol info` answers even when the cluster is stopped — the SQL
         # port tells the truth about whether the database is actually up.
+        # A BUSY port is not the same truth: with the database stopped and
+        # another program listening on 8563, this said "running", `exakit
+        # start` said "already running" and exited 0, and `exakit status` sent
+        # the reader back to `exakit start` — a loop with no exit. When the
+        # port answers, ask the database itself (a real SELECT through the kit's
+        # profile); a port that is busy but does not answer as Exasol is a
+        # conflict, its own state with its own remedy.
         if port_in_use "$EXAKIT_PERSONAL_PORT"; then
-            echo "running"
+            if personal_db_answers; then
+                echo "running"
+            else
+                echo "conflict"
+            fi
         elif personal_deployment_wedged >/dev/null 2>&1; then
             # Not "stopped": start will fail, and saying stopped sends the
             # reader (and every agent) to a command that cannot work.
@@ -769,6 +802,9 @@ personal_start() {
             # to `exakit start` in a loop.
             if personal_deployment_wedged >/dev/null 2>&1; then
                 die "The deployment is interrupted and cannot be started — the launcher has to rebuild it. Repair it with: $(personal_repair_command) (this replaces the deployment; its data is not recoverable)."
+            fi
+            if [ "$(personal_status 2>/dev/null)" = "conflict" ]; then
+                die "Port $EXAKIT_PERSONAL_PORT is held by another process$(personal_port_holder_hint), so the database cannot start. Stop that process, then: exakit start"
             fi
             die "Failed to start the deployment. Check the log above, then retry with 'exakit start'; if it fails the same way, repair with: $(personal_repair_command)"
         fi

@@ -312,6 +312,28 @@ class DoctorClientStateTests(unittest.TestCase):
             self.assertEqual(len(doctor.artifacts), 1)
             self.assertEqual(doctor.artifacts[0].client, "claude_desktop")
 
+    def test_doctor_carries_a_health_derived_client_state_map(self) -> None:
+        """details.clients: one row per supported client, state from the checks.
+
+        The human screen used to call a client connected because a manifest
+        record existed -- with its entry deleted, and for clients that were
+        not installed -- and the JSON carried no per-client state at all.
+        """
+        with self._mock_connectivity():
+            configure = self.subsystem.execute(self._request("configure", ["claude_desktop"]))
+            self.assertEqual(configure.status, OperationStatus.SUCCESS)
+            doctor = self.subsystem.execute(self._request("doctor", ["claude_desktop", "cursor"]))
+            states = {row["client"]: row["state"] for row in doctor.details["clients"]}
+            self.assertEqual(states["claude_desktop"], "connected")
+            self.assertEqual(states["cursor"], "not_installed")
+            self.assertEqual(len(states), 8)   # one row per supported client
+
+            # The client vanishes after setup: still managed, no longer detected.
+            shutil.rmtree(self.config_path.parent)
+            doctor = self.subsystem.execute(self._request("doctor", ["claude_desktop"]))
+            states = {row["client"]: row["state"] for row in doctor.details["clients"]}
+            self.assertEqual(states["claude_desktop"], "configured_client_missing")
+
     def test_managed_entry_with_missing_client_warns(self) -> None:
         with self._mock_connectivity():
             configure = self.subsystem.execute(self._request("configure", ["claude_desktop"]))

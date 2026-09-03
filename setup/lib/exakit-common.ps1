@@ -414,29 +414,42 @@ function Write-ExakitError([string]$Msg) {
 # was a macOS-only promise.
 # twin: exakit_explain_db_error in setup/lib/common.sh. Keep the cases and the
 # wording in step.
-function Show-ExakitDbErrorRemedy {
+# Get-ExakitDbErrorRemedy <text> - the remedy lines for a raw database error, as
+# data (one string each), nothing when none applies. Twin of
+# exakit_db_error_remedy: `exakit sql` prints these FIRST and on the same stream
+# as the error.
+function Get-ExakitDbErrorRemedy {
     param([string]$Text)
-    if (-not $Text) { return }
+    $lines = @()
+    if (-not $Text) { return $lines }
     if ($Text -match 'onnection refused' -or $Text -match 'Errno 61' -or
         $Text -match 'Errno 111' -or $Text -match '(?i)could not connect') {
-        Warn2 "That is the database not answering - it is stopped or unreachable. Start it with: exakit start (then check: exakit status)"
+        $lines += "That is the database not answering - it is stopped or unreachable. Start it with: exakit start (then check: exakit status)"
     }
     if ($Text -match 'unexpected FETCH_' -or $Text -match 'unexpected TOP_' -or $Text -match 'FETCH FIRST') {
-        Warn2 "Exasol pages result sets with LIMIT <n> (optionally OFFSET) - not FETCH FIRST or TOP. Rewrite the query with LIMIT."
+        $lines += "Exasol pages result sets with LIMIT <n> (optionally OFFSET) - not FETCH FIRST or TOP. Rewrite the query with LIMIT."
     }
     if ($Text -match 'not found' -and
         ($Text -match '(?i)object' -or $Text -match '(?i)table' -or $Text -match '(?i)column' -or
          $Text -match '(?i)schema' -or $Text -match '(?i)view')) {
-        Warn2 "A named object does not exist as written. Check the spelling and the schema qualifier - describe it first (MCP: describe_exasol_table_or_view; SQL: DESCRIBE <schema>.<table>)."
+        $lines += "A named object does not exist as written. Check the spelling and the schema qualifier - describe it first (MCP: describe_exasol_table_or_view; SQL: DESCRIBE <schema>.<table>)."
     }
     # A write refused for lack of privilege is the read-only guardrail doing its
     # job, and the tempting next move - re-run it through `exapump -p
     # starter-kit`, which connects as admin - is the one thing that breaks the
     # trust model. Say so where the error appears, not only in the docs.
     if ($Text -match '(?i)insufficient privileges' -or $Text -match '42500') {
-        Warn2 "That write was refused by the DATABASE: the MCP user is read-only by design, and this is the guardrail working as intended."
-        Warn2 "Do NOT re-run it through 'exapump -p starter-kit' - that profile is the ADMIN user and is not sandboxed. If a write is genuinely wanted, say so and let the user decide."
+        $lines += "That write was refused by the DATABASE: the MCP user is read-only by design, and this is the guardrail working as intended."
+        $lines += "Do NOT re-run it through 'exapump -p starter-kit' - that profile is the ADMIN user and is not sandboxed. If a write is genuinely wanted, say so and let the user decide."
     }
+    return $lines
+}
+
+# The same remedies as warnings, for the lifecycle paths that print their own
+# output first. Twin of exakit_explain_db_error.
+function Show-ExakitDbErrorRemedy {
+    param([string]$Text)
+    foreach ($line in @(Get-ExakitDbErrorRemedy $Text)) { Warn2 $line }
 }
 # Menu rendering (mirrors ui.sh's ui_menu_option/ui_menu_hint): options nest
 # under the "Choose ..." action line with the number in the accent colour; the
@@ -2312,6 +2325,9 @@ function Get-ExakitStepArtifactState {
 function Begin-ExakitStep {
     param([Parameter(Mandatory)][string]$Name, [Parameter(Mandatory)][string]$Description)
     $script:ExakitActiveLabel = $Description   # spinner label for Invoke-ExakitLogged in this step
+    # On disk too, best-effort: `exakit status` reads it back as "installing
+    # (step X)" while the installer runs. Twin of the same write in begin_step.
+    try { Set-ExakitManifestValue "install.current_step" $Name } catch { }
     $rerun = $false
     if (Test-ExakitStepDone $Name) {
         # "unknown" (and "present") keep the manifest's answer: only a proven
