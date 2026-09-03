@@ -390,5 +390,29 @@ has   "the repair runs before the read" "if (-not (Repair-NanoCredentials))" "$N
 # read, inside a directory that kept poisoning the next run.
 has   "a directory target is refused" 'if (Test-Path $target -PathType Container) {' "$COMMON_PS1_R"
 
+printf '\n== asking the engine a question cannot end the run ==\n'
+
+NANO_PS1_N="$(cat "$ROOT/setup/lib/nano.ps1")"
+
+# $ErrorActionPreference is Stop module-wide, so a native command that writes to
+# stderr raises a TERMINATING error - and `2>$null` or `2>&1 | Out-Null` does not
+# prevent it, because a redirect only moves the text. This shipped once and
+# killed a clean install at step 1:
+#
+#   x Unexpected error: Error response from daemon: get exasol-nano-data: no such volume
+#
+# "the volume is not there" is an ordinary ANSWER to the question the code was
+# asking, and the probe now returns it instead of throwing.
+has   "the volume probe is a function"   "function Test-NanoVolumeExists"      "$NANO_PS1_N"
+has   "...that sets Continue"            'ErrorActionPreference = "Continue"'  "$NANO_PS1_N"
+has   "...and reads the exit code"       '$exists = ($LASTEXITCODE -eq 0)'     "$NANO_PS1_N"
+# Every caller goes through it: an inline probe is how the bug got in. Counted
+# on the INVOCATION, not the words - the helper's own comment explains the
+# hazard and names the command, and a comment is not a call.
+check "one probe, inside the helper"     "1" \
+    "$(printf '%s\n' "$NANO_PS1_N" | grep -c '& \$engine volume inspect')"
+check "and both callers use the helper"  "2" \
+    "$(printf '%s\n' "$NANO_PS1_N" | grep -c 'Test-NanoVolumeExists$')"
+
 printf '\n%s: %d passed, %d failed\n' "$(basename "$0")" "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
