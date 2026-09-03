@@ -418,15 +418,28 @@ function Write-ExakitError([string]$Msg) {
 # data (one string each), nothing when none applies. Twin of
 # exakit_db_error_remedy: `exakit sql` prints these FIRST and on the same stream
 # as the error.
+# Twin of exakit_db_error_remedy. $Statement is optional and exists for the one
+# fault the engine text does not name: `SELECT TOP n` fails as "unexpected
+# UNSIGNED_INTEGER_" (TOP parses as an alias), so only the statement can tell
+# it from any other syntax error.
 function Get-ExakitDbErrorRemedy {
-    param([string]$Text)
+    param([string]$Text, [string]$Statement = "")
     $lines = @()
     if (-not $Text) { return $lines }
     if ($Text -match 'onnection refused' -or $Text -match 'Errno 61' -or
         $Text -match 'Errno 111' -or $Text -match '(?i)could not connect') {
         $lines += "That is the database not answering - it is stopped or unreachable. Start it with: exakit start (then check: exakit status)"
+    } elseif ($Text -match '(?i)tls handshake' -or $Text -match 'TLS error') {
+        # The port answered but not with Exasol's TLS: something else listens
+        # there. `exakit status` reports that as a conflict and names the process.
+        $lines += "Something answered on the database port, but it is not Exasol (the TLS handshake failed). Check with: exakit status - a conflict names the process holding the port; stop it, then: exakit start"
     }
-    if ($Text -match 'unexpected FETCH_' -or $Text -match 'unexpected TOP_' -or $Text -match 'FETCH FIRST') {
+    $limit = ($Text -match 'unexpected FETCH_' -or $Text -match 'unexpected TOP_' -or $Text -match 'FETCH FIRST')
+    if (-not $limit -and $Text -match 'syntax error' -and $Statement) {
+        $flat = " " + (($Statement -replace '[\r\n\t]', ' ').ToUpperInvariant())
+        if ($flat -match ' TOP ' -or $flat -match '\(TOP ') { $limit = $true }
+    }
+    if ($limit) {
         $lines += "Exasol pages result sets with LIMIT <n> (optionally OFFSET) - not FETCH FIRST or TOP. Rewrite the query with LIMIT."
     }
     if ($Text -match 'not found' -and
@@ -1412,6 +1425,21 @@ function Write-ExakitFailureNote {
 
 # Read, not consumed: `status` reports the note without clearing it, exactly as
 # the bash status does. Both fields are empty when there is no note.
+# Twin of exakit_clear_runtime_failure_note: retire the note only if it is about
+# the database not starting. Once the database IS running that note is history,
+# but status --json kept reporting it as last_failure beside "running". A note
+# about an install step that never finished is a different fault and stays.
+function Clear-ExakitRuntimeFailureNote {
+    try {
+        if (-not (Test-Path $script:FailureNotePath)) { return }
+        $first = "$(@(Get-Content -Path $script:FailureNotePath -ErrorAction Stop)[0])"
+        if ($first -match 'exakit start' -or $first -match 'cannot start' -or
+            $first -match 'held by another process' -or $first -match 'not running') {
+            Remove-Item -Path $script:FailureNotePath -Force -ErrorAction SilentlyContinue
+        }
+    } catch { }
+}
+
 function Read-ExakitFailureNote {
     $empty = [pscustomobject]@{ reason = ""; at = "" }
     try {

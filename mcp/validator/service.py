@@ -31,6 +31,16 @@ from mcp.runtime.manifest import ManifestRepository
 from mcp.runtime.paths import RuntimePaths
 
 
+# Every drift finding names the SAME next step, and names it as a command the
+# reader can type. "Run repair" named an operation of this module that no
+# exakit command exposes by that name: the agent reading `mcp-doctor --json`
+# went looking for `exakit mcp-repair`, which does not exist, while the human
+# form of the very same command would have repaired it.
+REPAIR_ACTION = (
+    "Run: exakit mcp-doctor (it repairs drift and re-checks; --json only reports)"
+)
+
+
 class _ServerLaunchError(RuntimeError):
     """The configured MCP server started but did not behave like an MCP server."""
 
@@ -438,8 +448,12 @@ class ValidatorService:
                         code="managed_artifact_missing",
                         severity=Severity.WARNING,
                         message="Managed artifact is missing from disk.",
-                        scope={"path": artifact.path},
-                        recommended_action="Run repair or restore the latest snapshot.",
+                        # The client is in scope on EVERY per-artifact finding:
+                        # doctor's per-client state taints every managed client
+                        # for a finding that names none, so one client's file
+                        # read as four clients needing attention.
+                        scope={"path": artifact.path, "client": artifact.client},
+                        recommended_action=REPAIR_ACTION,
                     )
                 )
                 continue
@@ -450,9 +464,9 @@ class ValidatorService:
                         code="permission_drift",
                         severity=Severity.WARNING,
                         message="Managed client configuration is not restricted to owner read/write.",
-                        scope={"path": artifact.path},
+                        scope={"path": artifact.path, "client": artifact.client},
                         evidence=[format(mode, "04o")],
-                        recommended_action="Run repair to re-apply restrictive permissions.",
+                        recommended_action=REPAIR_ACTION,
                     )
                 )
             else:
@@ -495,7 +509,7 @@ class ValidatorService:
                         severity=Severity.ERROR,
                         message="Managed artifact recorded in the manifest is missing.",
                         scope={"path": artifact.path, "client": artifact.client},
-                        recommended_action="Restore the latest snapshot or rerun configure.",
+                        recommended_action=REPAIR_ACTION,
                     )
                 )
                 continue
@@ -510,7 +524,7 @@ class ValidatorService:
                             f"manifest={artifact.content_hash}",
                             f"current={inspection.managed_hash}",
                         ],
-                        recommended_action="Run repair or restore the last known-good snapshot.",
+                        recommended_action=REPAIR_ACTION,
                     )
                 )
                 continue

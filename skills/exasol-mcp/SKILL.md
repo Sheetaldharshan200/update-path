@@ -123,9 +123,20 @@ In this order:
    applies to you: your own MCP tools appear only after your process restarts.
    Use `exakit sql` in the meantime.
 4. **Has the config drifted?** `exakit mcp-doctor` puts it back to the
-   known-good state; it repairs what it finds, so there is nothing else to
-   reach for.
-5. Still stuck → `exakit logs`, then re-run the installer (safe and resumable).
+   known-good state — a deleted entry, a loosened file mode — and re-checks; each
+   finding names the client it is about, and only that client reads
+   `needs_attention`. `mcp-doctor --json` only *reports* (its `remedy` names the
+   repairing form); run the plain command to repair. `exakit mcp-setup` takes no
+   options — name clients with `EXAKIT_MCP_CLIENTS=...` — and offers a client
+   again once its file no longer holds the kit's entry.
+5. **Read the MCP tool's error for what it hides.** The server masks the engine:
+   `A database error occurred. Please try again later or contact your
+   administrator` almost always means the database is not running — run
+   `exakit status --json` and follow its `remedy`, do not retry. `The query is
+   invalid or not a SELECT statement` for a statement that *is* a `SELECT` means
+   the server's gate refused it before the engine saw it: `SELECT TOP n` (use
+   `LIMIT n`), a second statement, or a leading `--` comment line.
+6. Still stuck → `exakit logs`, then re-run the installer (safe and resumable).
 
 For scripted checks, `exakit mcp-doctor --json` prints the raw per-client
 result and nothing else on stdout.

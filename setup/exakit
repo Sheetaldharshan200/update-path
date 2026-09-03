@@ -294,6 +294,25 @@ if db.startswith("conflict"):
     remedies["database"] = "another process is listening on the database port — stop it, then: exakit start"
 if installing:
     remedies["install"] = "the installer is still running (step: %s) — poll exakit status --json until status is running" % (step or "unknown")
+# A step the installer never finished. With the installer gone (no live lock)
+# the manifest's steps_completed is the only trace, and `remedies` was empty
+# for it: a session that picked the machine up after a crashed install saw
+# "running" and nothing else. The map is documented as "component -> the exact
+# repair command", so each unfinished step names one. Order is the installer's.
+STEP_REMEDIES = [
+    ("launcher", "re-run the installer (it resumes at the unfinished step)"),
+    ("runtime", "re-run the installer (it resumes at the unfinished step)"),
+    ("exapump", "re-run the installer (it resumes at the unfinished step)"),
+    ("mcp", "exakit mcp-setup"),
+    ("pyexasol", "exakit update"),
+    ("exakit_helper", "re-run the installer (it resumes at the unfinished step)"),
+]
+steps_missing = []
+if not installing:
+    for step_id, fix in STEP_REMEDIES:
+        if step_id not in steps_list:
+            steps_missing.append(step_id)
+            remedies.setdefault(step_id, fix)
 payload = {
     "installed": True,
     # Top-level `status` and `remedy` are the keys EVERY --json answer from a
@@ -311,11 +330,15 @@ payload = {
     "autostart": autostart == "true",
     "datasets_loaded": datasets.split() if datasets else [],
     "steps_completed": steps_list,
+    "steps_missing": steps_missing,
     "pyexasol": pyx or None,
     "remedies": remedies,
     # The single most useful remedy, hoisted so it sits at the same key in every
     # state a state query can report. `remedies` keeps the full per-component map.
-    "remedy": remedies.get("install") or remedies.get("database"),
+    # An unfinished step ranks below a stopped database (start it first) and
+    # above nothing: a running machine with a step missing is not "remedy: null".
+    "remedy": remedies.get("install") or remedies.get("database")
+        or (remedies.get(steps_missing[0]) if steps_missing else None),
     "last_failure": note or None,
     "last_failure_at": note_at or None,
     "manifest": manifest,
@@ -583,6 +606,11 @@ cmd_start() {
         [ "$_start_id" = "database" ] && continue
         exakit_service_start "$_start_id" || true
     done
+    # The database is up, so a note left by an earlier start that could not
+    # ("Port 8563 is held by another process ...") is no longer true. Only a
+    # runtime note goes; an install-step note is a different fault and stays.
+    exakit_runtime_is_running 2>/dev/null && exakit_clear_runtime_failure_note
+    return 0
 }
 
 cmd_stop() {
@@ -946,6 +974,17 @@ cmd_data_load() {
 }
 
 cmd_mcp_setup() {
+    # Options are refused, not ignored. `exakit mcp-setup --clients vscode_copilot`
+    # ran the plain setup, said "already connected" and exited 0, so the agent
+    # that typed it believed the client had been re-applied. Clients are named
+    # through EXAKIT_MCP_CLIENTS, and the message says so. Exit 2 like every
+    # other command's unknown option.
+    for _cms_arg in "$@"; do
+        case "$_cms_arg" in
+            -*) reject "Unknown option '$_cms_arg' for mcp-setup (it takes none; name clients with EXAKIT_MCP_CLIENTS=claude,codex exakit mcp-setup)." ;;
+            *)  reject "mcp-setup takes no arguments; name clients with EXAKIT_MCP_CLIENTS=$_cms_arg exakit mcp-setup" ;;
+        esac
+    done
     _require_install
     exakit_init_logging
     exakit_mcp_setup || die "Could not complete MCP client setup"
@@ -1184,6 +1223,7 @@ EXAKIT_IJ_PY
 cmd_sql() {
     _require_install
     _sql_write=0
+    _sql_json=0
     _sql_text=""
     _sql_file=""
     _sql_expect_file=0
@@ -1196,9 +1236,10 @@ cmd_sql() {
                 [ "$#" -eq 1 ] && { exakit_help_render command sql; exit $?; }
                 reject "Pass ONE statement, quoted: exakit sql 'SELECT 1'" ;;
             --write) _sql_write=1 ;;
+            --json|-j) _sql_json=1 ;;
             --file|-f) _sql_expect_file=1 ;;
             --file=*) _sql_file="${_sql_arg#--file=}" ;;
-            --*) reject "Unknown option '$_sql_arg' for sql (supported: --file <path>, --write, --help)." ;;
+            --*) reject "Unknown option '$_sql_arg' for sql (supported: --file <path>, --json, --write, --help)." ;;
             *) [ -n "$_sql_text" ] && reject "Pass ONE statement, quoted: exakit sql 'SELECT 1'" ; _sql_text="$_sql_arg" ;;
         esac
     done
@@ -1242,6 +1283,49 @@ cmd_sql() {
         esac
     fi
 
+    if [ "$_sql_json" -eq 1 ]; then
+        # One JSON object on stdout, nothing else there. exapump's own
+        # `--format json` already puts the rows on stdout and every "[1/1] ..."
+        # and "1 statement executed" line on stderr, so the two are separable
+        # without parsing - the CSV mode interleaves them. Shape:
+        #   {"ok": true,  "rows": [...]}
+        #   {"ok": false, "error": "<engine text>", "remedy": "<...>" | null}
+        # The remedy is the same one the human form prints first; an agent gets
+        # it at a key instead of inside the text. Exit code unchanged.
+        _sql_err="$(mktemp "${TMPDIR:-/tmp}/exakit-sql-err.XXXXXX")"
+        _sql_rows="$("$(exapump_cli)" sql -p "$EXAKIT_EXAPUMP_PROFILE" -f json "$_sql_text" 2>"$_sql_err")"
+        _sql_rc=$?
+        _sql_out="$(cat "$_sql_err" 2>/dev/null)"
+        rm -f "$_sql_err"
+        _sql_remedy=""
+        [ "$_sql_rc" -ne 0 ] && _sql_remedy="$(exakit_db_error_remedy "$_sql_out" "$_sql_text")"
+        run_python - "$_sql_rc" "$_sql_rows" "$_sql_out" "$_sql_remedy" <<'EXAKIT_SQL_JSON_PY'
+import json, sys
+rc, rows, err, remedy = int(sys.argv[1]), sys.argv[2], sys.argv[3], sys.argv[4]
+if rc == 0:
+    try:
+        parsed = json.loads(rows) if rows.strip() else []
+    except ValueError:
+        parsed = []
+    print(json.dumps({"ok": True, "rows": parsed}))
+else:
+    # The engine's message, not exapump's framing: the first line that carries
+    # an error, with the generic "Hint:" left out because the remedy is the hint.
+    # exapump ends a failed run with one "Error: <engine text>" line; that is
+    # the message. Failing that, the first line that reads like a failure and
+    # is not exapump's own framing ("Error in statement 1:", "Hint: ...").
+    lines = [l.strip() for l in err.splitlines() if l.strip()]
+    summary = [l for l in lines if l.startswith("Error: ")]
+    if summary:
+        detail = summary[-1][len("Error: "):]
+    else:
+        detail = next((l for l in lines if ("rror" in l or "failed" in l)
+                       and not l.startswith("Hint:") and not l.startswith("Error in statement")),
+                      lines[0] if lines else "query failed")
+    print(json.dumps({"ok": False, "error": detail, "remedy": remedy.strip() or None}))
+EXAKIT_SQL_JSON_PY
+        return "$_sql_rc"
+    fi
     _sql_out="$("$(exapump_cli)" sql -p "$EXAKIT_EXAPUMP_PROFILE" "$_sql_text" 2>&1)"
     _sql_rc=$?
     if [ "$_sql_rc" -ne 0 ]; then
@@ -1250,7 +1334,7 @@ cmd_sql() {
         # saw the remedy, and one capturing both read exapump's generic "Hint:"
         # before the real fix. When the kit has a specific remedy, the generic
         # hint is noise and is dropped.
-        _sql_remedy="$(exakit_db_error_remedy "$_sql_out")"
+        _sql_remedy="$(exakit_db_error_remedy "$_sql_out" "$_sql_text")"
         if [ -n "$_sql_remedy" ]; then
             printf '%s\n' "$_sql_remedy" | sed 's/^/! /'
             printf '%s\n' "$_sql_out" | grep -v '^[[:space:]]*Hint: '
@@ -1374,7 +1458,7 @@ case "${1:-help}" in
     repair-runtime) shift; cmd_repair_runtime "$@" ;;
     autostart) shift; _with_notice cmd_autostart "$@" ;;
     data-load) shift; _with_notice cmd_data_load "${1:-}" ;;
-    mcp-setup) _with_notice cmd_mcp_setup ;;
+    mcp-setup) shift; _with_notice cmd_mcp_setup "$@" ;;
     mcp-doctor) shift; _with_notice cmd_mcp_doctor "$@" ;;
     mcp-status) shift; _with_notice cmd_mcp_status "$@" ;;
     skills)   shift

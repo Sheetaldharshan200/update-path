@@ -164,6 +164,13 @@ ASK  ->  INSPECT (show the SQL first)  ->  RUN (read-only)  ->  VALIDATE (indepe
 
 1. **Discover.** Ask the user's assistant to list schemas/tables and describe the
    `TPCH` tables first — ground in the *real* schema, do not guess column names.
+   Without MCP tools (always the case in the session that ran the install) the
+   system tables answer the same questions in well under a second:
+   `SELECT TABLE_SCHEMA, TABLE_NAME, TABLE_ROW_COUNT FROM SYS.EXA_ALL_TABLES WHERE TABLE_SCHEMA NOT LIKE 'SYS%'`
+   lists every table, `SYS.EXA_ALL_COLUMNS` (filter on `COLUMN_SCHEMA`) gives
+   columns and types, and `~/.exasol-starter-kit/kit/data/data-dictionary.md`
+   describes each bundled dataset. Run them through `exakit sql` (`--json` for
+   one parseable object).
 2. **Ask, but show the SQL first.** For a question like *"which product category generated
    the most revenue?"*, present the SQL and a plain-English explanation **before executing**.
    Call out the judgment calls: what defines "revenue" (price × quantity? an amount column?),

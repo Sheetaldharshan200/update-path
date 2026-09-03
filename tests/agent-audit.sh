@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# agent-audit.sh — the twelve findings of the 2026-09-03 agent-operability audit,
+# agent-audit.sh — the findings of the 2026-09-03 agent-operability audits (round 1: twelve, round 2: ten),
 # each pinned so it cannot come back. The audit drove the kit the way an agent
 # with no TTY does: unattended install and uninstall, the sql path, the state
 # queries, deliberate breakage. Every check here is the shape of one of those
@@ -164,6 +164,80 @@ lacks "the client-name error no longer lists three of eight" "claude_desktop, cu
 
 echo "12. a successful repair clears the failure note:"
 has "cmd_mcp_doctor clears it" "exakit_clear_failure_note" "$(sed -n '/^cmd_mcp_doctor()/,/^}/p' "$CLI")"
+
+# --- Round 2 (kit 0.2.3 audit) ---------------------------------------------
+
+echo "R2-1. mcp-setup refuses options and arguments instead of ignoring them:"
+check "mcp-setup --bogus exits 2" "2" "$(bash "$CLI" mcp-setup --bogus >/dev/null 2>&1; echo $?)"
+has "...and names the EXAKIT_MCP_CLIENTS form" "EXAKIT_MCP_CLIENTS=" "$(bash "$CLI" mcp-setup --clients vscode_copilot 2>&1)"
+check "a bare client name exits 2 too" "2" "$(bash "$CLI" mcp-setup vscode_copilot >/dev/null 2>&1; echo $?)"
+lacks "nothing was set up on the way out" "MCP setup will edit" "$(bash "$CLI" mcp-setup --bogus 2>&1)"
+
+echo "R2-2. status --json names a remedy for every install step that never finished:"
+_sj="$(bash "$CLI" status --json 2>/dev/null)"
+check "steps_missing lists the four unfinished steps" "exapump,mcp,pyexasol,exakit_helper" \
+    "$(printf '%s' "$_sj" | python3 -c 'import json,sys; print(",".join(json.load(sys.stdin)["steps_missing"]))' 2>/dev/null)"
+check "remedies.mcp is exakit mcp-setup" "exakit mcp-setup" "$(printf '%s' "$_sj" | python3 -c 'import json,sys; print(json.load(sys.stdin)["remedies"]["mcp"])' 2>/dev/null)"
+check "remedies.pyexasol is exakit update" "exakit update" "$(printf '%s' "$_sj" | python3 -c 'import json,sys; print(json.load(sys.stdin)["remedies"]["pyexasol"])' 2>/dev/null)"
+check "a stopped database still ranks first in the hoisted remedy" "exakit start" "$(printf '%s' "$_sj" | python3 -c 'import json,sys; print(json.load(sys.stdin)["remedy"])' 2>/dev/null)"
+_sj_full="$(python3 - "$EXAKIT_MANIFEST" "$CLI" <<'PY'
+import json, os, subprocess, sys
+manifest, cli = sys.argv[1:3]
+doc = json.load(open(manifest))
+saved = doc["steps_completed"]
+doc["steps_completed"] = ["launcher", "runtime", "exapump", "mcp", "pyexasol", "exakit_helper"]
+json.dump(doc, open(manifest, "w"))
+try:
+    out = subprocess.run(["bash", cli, "status", "--json"], capture_output=True, text=True).stdout
+finally:
+    doc["steps_completed"] = saved
+    json.dump(doc, open(manifest, "w"))
+d = json.loads(out)
+print("%s|%s" % (",".join(d["steps_missing"]), "mcp" in d["remedies"]))
+PY
+)"
+check "with every step done, nothing is missing and no step remedy appears" "|False" "$_sj_full"
+
+echo "R2-3. the remedy matcher reads the statement for TOP, and knows a TLS handshake failure:"
+has "SELECT TOP n (engine: unexpected UNSIGNED_INTEGER_) gets the LIMIT remedy" "LIMIT" \
+    "$(exakit_db_error_remedy 'Query execution failed: Protocol error: syntax error, unexpected UNSIGNED_INTEGER_, expecting UNION_' 'SELECT TOP 3 * FROM TPCH.NATION')"
+check "a column called TOPIC is not TOP" "" "$(exakit_db_error_remedy 'syntax error, unexpected ;' 'SELECT TOPIC FROM T GROUP BY')"
+check "a non-syntax error with TOP in the text stays quiet" "" "$(exakit_db_error_remedy 'some other failure' 'SELECT TOP 3 * FROM T')"
+has "tls handshake eof points at exakit status" "exakit status" "$(exakit_db_error_remedy 'Error: Failed to connect to 127.0.0.1:8563: TLS error: tls handshake eof')"
+lacks "...and is not mistaken for a stopped database" "stopped or unreachable" "$(exakit_db_error_remedy 'TLS error: tls handshake eof')"
+has "cmd_sql hands the statement to the matcher" 'exakit_db_error_remedy "$_sql_out" "$_sql_text"' "$(sed -n '/^cmd_sql()/,/^}/p' "$CLI")"
+
+echo "R2-4. a successful start retires only a runtime failure note:"
+exakit_note_failure "Port 8563 is held by another process (pid 1, Python), not by Exasol, so the database cannot start. Stop that process, then: exakit start"
+exakit_clear_runtime_failure_note
+check "the port-conflict note is gone" "absent" "$([ -f "$EXAKIT_HOME/.last-failure" ] && echo present || echo absent)"
+exakit_note_failure "the AI client configuration did not finish (see the log)"
+exakit_clear_runtime_failure_note
+check "an install-step note stays" "present" "$([ -f "$EXAKIT_HOME/.last-failure" ] && echo present || echo absent)"
+exakit_clear_failure_note
+has "cmd_start calls it once the database runs" "exakit_clear_runtime_failure_note" "$(sed -n '/^cmd_start()/,/^}/p' "$CLI")"
+
+echo "R2-5. exakit sql --json is an option, and the gate still runs first:"
+check "sql --json 'SELCT 1' exits 2 (typo gate before any connection)" "2" "$(bash "$CLI" sql --json 'SELCT 1' >/dev/null 2>&1; echo $?)"
+has "the unknown-option message lists --json" "--json" "$(bash "$CLI" sql --bogus 'SELECT 1' 2>&1)"
+has "the --json branch uses exapump's own json format" "-f json" "$(sed -n '/^cmd_sql()/,/^}/p' "$CLI")"
+has "help names --json" "--json" "$(python3 -c 'import json; d=json.load(open("'"$ROOT"'/setup/help/exakit.json")); print([c for c in d["commands"] if c["command"]=="sql"][0]["options"])' 2>/dev/null)"
+
+echo "R2-6. doctor names the client on every per-artifact finding, and the remedy names the command:"
+check "no per-artifact finding is left without a client in scope" "0" "$(grep -c 'scope={"path": artifact.path}' "$ROOT/mcp/validator/service.py")"
+check "no finding says the bare 'Run repair' any more" "0" "$(grep -c 'recommended_action="Run repair' "$ROOT/mcp/validator/service.py")"
+has "the shared remedy names exakit mcp-doctor" "exakit mcp-doctor" "$(grep -A2 '^REPAIR_ACTION' "$ROOT/mcp/validator/service.py")"
+has "discover-clients checks the file, not only the record" "_managed_entry_present" "$(cat "$ROOT/mcp/cli.py")"
+
+echo "R2-7. the docs and skills carry the texts an agent actually sees:"
+has "AGENTS.md: the TOP engine text" "UNSIGNED_INTEGER_" "$(cat "$ROOT/AGENTS.md")"
+has "AGENTS.md: the masked MCP error" "A database error occurred" "$(cat "$ROOT/AGENTS.md")"
+has "AGENTS.md: the TLS conflict text" "tls handshake" "$(cat "$ROOT/AGENTS.md")"
+has "exasol-mcp skill: the masked MCP error" "A database error occurred" "$(cat "$ROOT/skills/exasol-mcp/SKILL.md")"
+has "exasol-exapump skill: exakit sql --file" "exakit sql --file" "$(cat "$ROOT/skills/exasol-exapump/SKILL.md")"
+has "exasol-exapump skill: discovery via SYS.EXA_ALL_TABLES" "SYS.EXA_ALL_TABLES" "$(cat "$ROOT/skills/exasol-exapump/SKILL.md")"
+has "starter skill: discovery without MCP" "SYS.EXA_ALL_TABLES" "$(cat "$ROOT/skills/local-agent-ready-starter/SKILL.md")"
+lacks "exasol-exapump skill no longer sends script files to exapump wholesale" "Drop to \`exapump\` for script files" "$(cat "$ROOT/skills/exasol-exapump/SKILL.md")"
 
 printf '\npassed: %d, failed: %d\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
