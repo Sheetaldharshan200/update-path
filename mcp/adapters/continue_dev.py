@@ -137,39 +137,17 @@ class ContinueAdapter(ClientAdapter):
         )
 
     def detect(self, environment: ExecutionEnvironment) -> DetectionResult:
-        location = self.locate(environment)
-        evidence = list(location.evidence)
-        if not location.available or location.path is None:
-            return DetectionResult(
-                detected=False,
-                confidence="none",
-                location=location,
-                evidence=evidence,
-            )
-        if location.path.exists():
-            evidence.append("Block file exists.")
-            return DetectionResult(
-                detected=True,
-                confidence="high",
-                location=location,
-                evidence=evidence,
-            )
-        if (environment.home / ".continue").exists() or shutil.which("continue"):
-            evidence.append("Continue is installed but has no Exasol block file yet.")
-            return DetectionResult(
-                detected=True,
-                confidence="medium",
-                location=location,
-                evidence=evidence,
-            )
-        evidence.append("No Continue evidence was found.")
-        return DetectionResult(
-            detected=False,
-            confidence="low",
-            location=location,
-            evidence=evidence,
+        # The block file is kit-owned by definition, so it is never evidence;
+        # Continue's own files under ~/.continue (config.yaml, sessions) are.
+        return self.detect_from_evidence(
+            environment,
+            client_label="Continue",
+            programs=("cn", "continue"),
+            client_dir=lambda env, path: env.home / ".continue",
+            kit_only=lambda path: True,
+            kit_paths=lambda path: set(path.parent.glob("exasol-starter-kit*.yaml")) | {path},
+            override_env=self._CONFIG_ENV_NAME,
         )
-
     def inspect(self, path: Path, server_name: str) -> AdapterInspection:
         # The block file is kit-owned, so "inspection" is deliberately simple:
         # its identity is the hash of the whole file (drift = any manual edit).

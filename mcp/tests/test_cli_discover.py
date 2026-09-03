@@ -86,6 +86,9 @@ class DiscoverClientsTests(unittest.TestCase):
             "HOME": str(bare_home),
             "PATH": "/usr/bin:/bin",
             "PYTHONPATH": str(repo_root),
+            # No app bundles either: the developer's real /Applications must
+            # not count as this bare machine's.
+            "EXAKIT_MCP_APP_ROOTS": str(bare_home / "Applications"),
         }
         result = subprocess.run(
             [sys.executable, "-m", "mcp", "discover-clients", "--runtime-root", str(self._temp_dir)],

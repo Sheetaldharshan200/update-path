@@ -19,6 +19,7 @@ from .base import (
     DetectionResult,
     LocationResult,
     RenderResult,
+    json_config_is_kit_only,
 )
 
 # The canonical schema URL OpenCode ships; added to a freshly created config so
@@ -79,39 +80,16 @@ class OpenCodeAdapter(ClientAdapter):
         )
 
     def detect(self, environment: ExecutionEnvironment) -> DetectionResult:
-        location = self.locate(environment)
-        evidence = list(location.evidence)
-        if not location.available or location.path is None:
-            return DetectionResult(
-                detected=False,
-                confidence="none",
-                location=location,
-                evidence=evidence,
-            )
-        if location.path.exists():
-            evidence.append("Config file exists.")
-            return DetectionResult(
-                detected=True,
-                confidence="high",
-                location=location,
-                evidence=evidence,
-            )
-        if (environment.home / ".config" / "opencode").exists() or shutil.which("opencode"):
-            evidence.append("OpenCode is installed but has no config file yet.")
-            return DetectionResult(
-                detected=True,
-                confidence="medium",
-                location=location,
-                evidence=evidence,
-            )
-        evidence.append("No OpenCode evidence was found.")
-        return DetectionResult(
-            detected=False,
-            confidence="low",
-            location=location,
-            evidence=evidence,
+        # The kit writes a "$schema" key beside "mcp"; that key alone is still
+        # the kit's own work, not the user's.
+        return self.detect_from_evidence(
+            environment,
+            client_label="OpenCode",
+            programs=("opencode",),
+            client_dir=lambda env, path: env.home / ".config" / "opencode",
+            kit_only=lambda path: json_config_is_kit_only(path, "mcp", ignore_keys=("$schema",)),
+            override_env=self._CONFIG_ENV_NAME,
         )
-
     def inspect(self, path: Path, server_name: str) -> AdapterInspection:
         if not path.exists():
             return AdapterInspection(
