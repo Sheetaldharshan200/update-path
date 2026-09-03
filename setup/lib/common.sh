@@ -4449,7 +4449,10 @@ _exakit_notice_say() {
         printf '%s%s update is available for %s — requires stopping the database, details:  exakit version%s\n' \
             "${UI_DIM:-}" "$(_exakit_notice_word "$_notice_heavy_worst")" "$_notice_heavy" "${UI_RESET:-}" >&2
     fi
-    printf '%sSilence this with EXAKIT_NO_UPDATE_NOTICE=1%s\n' "${UI_DIM:-}" "${UI_RESET:-}" >&2
+    # No "silence this with ..." footer: the notice is one line, once a day, and
+    # a line telling the reader how to switch it off is longer than the notice
+    # itself. EXAKIT_NO_UPDATE_NOTICE=1 still works; the help page and AGENTS.md
+    # document it for whoever goes looking.
     exakit_notice_record
     return 0
 }

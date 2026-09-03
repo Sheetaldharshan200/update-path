@@ -1961,7 +1961,9 @@ has "a critical heavy bump is announced as critical" \
     "A critical update is available for nano" "$flagged"
 has "as a database stop, not a one-liner" "requires stopping the database" "$flagged"
 lacks "and never told to just run update" "nano — apply in seconds" "$flagged"
-has "the kill switch is advertised" "EXAKIT_NO_UPDATE_NOTICE=1" "$flagged"
+# The kill switch is documented (help page, AGENTS.md), not printed: a footer
+# explaining how to turn the notice off was longer than the notice.
+lacks "the kill switch is not printed under the notice" "EXAKIT_NO_UPDATE_NOTICE" "$flagged"
 # Every severity is announced now, so the routine one appears too - and appears
 # WITHOUT borrowing urgency it was never given.
 has "a normal-severity bump is announced too" "mcp" "$flagged"
