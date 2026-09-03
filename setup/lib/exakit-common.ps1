@@ -2895,6 +2895,15 @@ function Set-ExakitCredential {
     param([Parameter(Mandatory)][string]$Name, [Parameter(Mandatory)][string]$Value)
     New-Item -ItemType Directory -Force -Path $script:CredsDir | Out-Null
     $target = Join-Path $script:CredsDir $Name
+    # A DIRECTORY at the target is not a stale credential, it is debris - a
+    # container was started while this file was missing and the engine created
+    # the mount source as a folder. Move-Item -Force would then drop the .tmp
+    # INSIDE it and report success, leaving a password nothing can read and a
+    # directory that still poisons the next run. Refuse instead: the caller
+    # that owns the runtime repairs it (Repair-NanoCredentials).
+    if (Test-Path $target -PathType Container) {
+        Fail "The credential path $target is a directory, not a file. Delete it and re-run."
+    }
     $tmp = "$target.tmp"
     [System.IO.File]::WriteAllText($tmp, $Value)
     Protect-ExakitFile $tmp
