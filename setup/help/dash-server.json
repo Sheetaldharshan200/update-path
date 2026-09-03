@@ -9,7 +9,7 @@
   "package": "dash-server",
   "binary": "~/.local/bin/dash-server",
   "url": "http://127.0.0.1:5100 by default. If something else already holds that port the install moves to the next free one and records it - so to see where yours is actually serving, run dash-server: it prints the address, and if a copy is already up it says so and prints that one's address rather than starting a second.",
-  "control_plane": "The same address with /mcp on the end. exakit mcp-setup registers it as an MCP server named dash-server, so its tools sit beside the exasol ones once the client restarts - Cursor, Claude Code, GitHub Copilot, Gemini CLI, OpenCode and Continue. Codex and Claude Desktop are skipped: neither takes a remote MCP server in the shape the kit writes, so setup names the URL instead and the run still succeeds.",
+  "control_plane": "The same address with /mcp on the end. exakit mcp-setup registers it as an MCP server named dash-server, so its tools sit beside the exasol ones once the client restarts - Cursor, Claude Code, Codex, GitHub Copilot, Gemini CLI, OpenCode and Continue. Claude Desktop is the one left out: its config file has no shape for a remote MCP server (the app takes those through its own Connectors settings), so setup prints one note naming the URL and the run is not affected.",
   "installed_by": "Never by the installer. Only through exakit marketplace.",
   "db_user": "Reuses the kit's read-only mcp_readonly user - dashboards read, they do not write.",
   "quickstart": [

@@ -68,9 +68,9 @@ add-on is installed, a second entry named **`dash-server`** for that add-on's
 MCP control plane (Streamable HTTP on the port dash-server recorded). A second
 managed entry in a client config is expected, not drift.
 
-Codex and Claude Desktop are skipped for the `dash-server` entry — they cannot
-express a remote MCP server in the shape the kit writes — and a skipped client
-never fails the run. Everything about that entry lives in the `dash-server`
+Claude Desktop is left out of the `dash-server` entry — its config file cannot
+express a remote MCP server; the app takes those through its own Connectors
+settings — and that is printed as a note, never a failure of the run. Everything about that entry lives in the `dash-server`
 skill; the rest of this page is the database path.
 
 ## What the connection actually is

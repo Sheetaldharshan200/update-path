@@ -54,11 +54,11 @@ tools then appear in your session alongside the `exasol` ones.
 exakit mcp-setup     # writes the exasol entry, and the dash-server one
 ```
 
-Which clients get it: **Cursor**, **Claude Code**, **GitHub Copilot (VS Code)**,
-**Gemini CLI**, **OpenCode** and **Continue**. **Codex and Claude Desktop are
-skipped** — neither can express a remote MCP server in the config shape this kit
-writes, so setup reports them as skipped and names the URL, which a user can add
-by hand if their release supports it. A skipped client never fails the run.
+Which clients get it: **Cursor**, **Claude Code**, **Codex**, **GitHub Copilot
+(VS Code)**, **Gemini CLI**, **OpenCode** and **Continue**. **Claude Desktop is
+the one left out** — its config file knows only `command`/`args`, and the app
+takes remote MCP servers through its own Connectors settings instead — so setup
+prints one note naming the URL, not a warning, and the run is not affected by it.
 
 **The client must restart or reload before the tools appear.** The same rule as
 the `exasol` server, and the same trap: if *you* just ran `exakit mcp-setup`,

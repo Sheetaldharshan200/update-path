@@ -48,16 +48,21 @@ _CONFIG_PATH_ENV_NAMES = {
     "continue": "CONTINUE_MCP_CONFIG_PATH",
 }
 
-# The clients that can express a remote MCP server, and the two that cannot.
+# The clients that can express a remote MCP server, and the one that cannot.
+# Codex joined the capable set once its CLI made streamable HTTP first-class
+# (`[mcp_servers.<name>] url = "..."`, verified against Codex CLI 0.147.0);
+# Claude Desktop's config file still knows only command/args, remote servers
+# are added through the app's own Connectors settings.
 _HTTP_CAPABLE_CLIENTS = (
     "claude_code",
     "cursor",
+    "codex",
     "vscode_copilot",
     "gemini_cli",
     "opencode",
     "continue",
 )
-_HTTP_INCAPABLE_CLIENTS = ("claude_desktop", "codex")
+_HTTP_INCAPABLE_CLIENTS = ("claude_desktop",)
 
 # A setup run against this fixture reports warnings for a plaintext credential
 # and a DSN that is not in host:port form, so "the run did not fail" is a set of
@@ -326,6 +331,11 @@ class DashServerRegistrationCLITests(_DashServerFixture):
             self._read_json("opencode")["mcp"]["dash-server"],
             {"type": "remote", "url": url, "enabled": True},
         )
+        # Codex: one key, the shape `codex mcp add <name> --url <url>` writes.
+        import tomllib
+        codex_document = tomllib.loads(self.client_paths["codex"].read_text(encoding="utf-8"))
+        self.assertEqual(codex_document["mcp_servers"]["dash-server"], {"url": url})
+        self.assertEqual(codex_document["mcp_servers"]["exasol"]["env"]["EXA_USER"], "mcp_readonly")
         dash_block = self._continue_block_file("dash-server").read_text(encoding="utf-8")
         self.assertIn("name: dash-server", dash_block)
         self.assertIn("type: streamable-http", dash_block)
@@ -350,11 +360,13 @@ class DashServerRegistrationCLITests(_DashServerFixture):
         self.assertIn("name: exasol", self.client_paths["continue"].read_text(encoding="utf-8"))
 
     def test_setup_reports_clients_without_remote_support_as_skipped_not_failed(self) -> None:
-        """Codex and Claude Desktop cannot hold a URL, and that is not a failure.
+        """Claude Desktop cannot hold a URL, and that is not a failure.
 
-        Both are skipped rather than half-configured, the run still exits 0 with
+        It is skipped rather than half-configured, the run still exits 0 with
         the exasol pass's status, and the control plane nobody could take is
-        recorded as a warning so the install record says why.
+        recorded as a warning so the install record says why. The per-client
+        finding itself is INFO and worded as a note, not a fault: it is a
+        standing fact about the client and is printed on every refresh.
         """
         self._write_manifest(dash_server={"version": "0.4.0", "port": 5137})
         result = self._run(
@@ -376,12 +388,13 @@ class DashServerRegistrationCLITests(_DashServerFixture):
         )
         findings = {finding["code"]: finding for finding in payload["findings"]}
         self.assertEqual(findings["dash_server_not_registered"]["severity"], "warning")
-        self.assertEqual(findings["client_transport_unsupported"]["severity"], "info")
+        note = findings["client_transport_unsupported"]
+        self.assertEqual(note["severity"], "info")
+        self.assertIn("has no config-file shape for a remote MCP server", note["message"])
+        self.assertIn("http://127.0.0.1:5137/mcp", note["message"])
+        self.assertNotIn("cannot be configured", note["message"])
 
-        # Both files hold their exasol entry and nothing dash-shaped.
-        codex_document = self.client_paths["codex"].read_text(encoding="utf-8")
-        self.assertIn("[mcp_servers.exasol]", codex_document)
-        self.assertNotIn("dash", codex_document)
+        # The file holds its exasol entry and nothing dash-shaped.
         self.assertEqual(list(self._read_json("claude_desktop")["mcpServers"]), ["exasol"])
 
     def test_continue_keeps_the_two_servers_in_separate_block_files(self) -> None:

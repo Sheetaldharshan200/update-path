@@ -748,14 +748,19 @@ class MCPAccessSubsystem:
             # Not every client can express a remote server, and the ones that
             # cannot are skipped rather than half-configured: an entry this
             # adapter cannot render is an entry the user would have to clean up.
-            # The URL is in the message so it can be added by hand.
+            # This is a standing fact about the client, not something this run
+            # did wrong, so it is INFO and worded as a note -- "cannot be
+            # configured ... (skipped)" under a warning glyph on every update
+            # read as a failure and prompted support questions. The URL is in
+            # the message so it can be added through the client's own settings.
             findings.append(
                 Finding(
                     code="client_transport_unsupported",
                     severity=Severity.INFO,
                     message=(
-                        f"{adapter.display_name()} cannot be configured for the "
-                        f"'{server_definition.name}' server over HTTP (skipped)."
+                        f"{adapter.display_name()} has no config-file shape for a remote "
+                        f"MCP server, so the '{server_definition.name}' endpoint "
+                        f"({server_definition.url}) is not registered there."
                     ),
                     scope={
                         "client": adapter.adapter_id(),
@@ -764,8 +769,8 @@ class MCPAccessSubsystem:
                     },
                     evidence=[f"Endpoint: {server_definition.url}"],
                     recommended_action=(
-                        f"Add {server_definition.url} to {adapter.display_name()} by hand "
-                        "if its release supports remote MCP servers."
+                        f"Add {server_definition.url} in {adapter.display_name()}'s own settings "
+                        "if it supports remote MCP servers; nothing else is affected."
                     ),
                 )
             )
