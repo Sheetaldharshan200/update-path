@@ -378,15 +378,15 @@ printf '\n== the Windows-on-ARM install says what it is skipping ==\n'
 
 # $exapumpSupported gates the exapump and AI bridge steps, and Begin-ExakitStep
 # is the only thing that prints a step label -- so the screen jumped from
-# "Step 1/5" to "Step 4/5", which reads as output that got lost rather than as
+# "Step 2/6" to "Step 5/6", which reads as output that got lost rather than as
 # two steps this machine does not need. bash names the step it is not running.
 _has "$ROOT/setup/lib/common.sh" 'not part of this installation, skipping' \
     "bash names a step it is not running" \
     "bash no longer names a skipped step - the wording the Windows twin copies is gone"
-_has "$_SWD" 'Info "Step 2/5  exapump - not part of this installation, skipping"' \
+_has "$_SWD" 'Info "Step 3/6  exapump - not part of this installation, skipping"' \
     "the Windows path names the skipped exapump step" \
-    "Windows-on-ARM jumps from Step 1/5 to Step 4/5 again"
-_has "$_SWD" 'Info "Step 3/5  AI bridge (MCP server, clients and skills) - not part of this installation, skipping"' \
+    "Windows-on-ARM jumps from Step 2/6 to Step 5/6 again"
+_has "$_SWD" 'Info "Step 4/6  AI bridge (MCP server, clients and skills) - not part of this installation, skipping"' \
     "...and the skipped AI bridge step" \
     "Windows-on-ARM skips the AI bridge step without printing it"
 

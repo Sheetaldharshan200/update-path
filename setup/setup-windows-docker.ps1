@@ -50,7 +50,16 @@ try {
     Test-NanoRequirements
 
     # --- step 2: Nano container -----------------------------------------------
-    if (Begin-ExakitStep "runtime" "Step 1/5  Exasol Nano container") {
+    # Its own step, matching the macOS shape and heading. What it fetches is the
+    # Nano image rather than a native launcher, so the lines UNDER the heading
+    # name the image - the two platforms install different things through the
+    # same step. Twin of the same split in setup-wsl.sh.
+    if (Begin-ExakitStep "launcher" "Step 1/6  Exasol launcher") {
+        Install-NanoImage
+        Set-ExakitStepDone "launcher"
+    }
+
+    if (Begin-ExakitStep "runtime" "Step 2/6  Local database deployment") {
         Install-Nano
         Set-ExakitStepDone "runtime"
     } elseif ((Get-NanoStatus) -ne "running") {
@@ -77,7 +86,7 @@ try {
     }
 
     # --- step 3: exapump (data loading CLI) ------------------------------------
-    if ($exapumpSupported -and (Begin-ExakitStep "exapump" "Step 2/5  exapump (data loading CLI)")) {
+    if ($exapumpSupported -and (Begin-ExakitStep "exapump" "Step 3/6  exapump (data loading CLI)")) {
         # Three lines for this step, not nine. Invoke-ExakitLogged animates the
         # label Begin-ExakitStep set, so the Info bullets under it were the
         # second telling. What survives goes through OkStep: what was installed
@@ -100,11 +109,11 @@ try {
     } elseif (-not $exapumpSupported) {
         # Say which step is not happening. Begin-ExakitStep is the only thing
         # that prints a step label, so gating the whole call made the screen
-        # jump from "Step 1/5" to "Step 4/5" - which reads as output that got
+        # jump from "Step 2/6" to "Step 5/6" - which reads as output that got
         # lost, not as two steps this machine does not need. Twin of
         # kit_shared_steps (common.sh), which prints this same line when a
         # step is not part of the installation.
-        Info "Step 2/5  exapump - not part of this installation, skipping"
+        Info "Step 3/6  exapump - not part of this installation, skipping"
     }
 
     # Load the sample data before any MCP configuration. exapump is now up
@@ -123,7 +132,7 @@ try {
     }
 
     # --- step 3: AI bridge (server, clients, skills) ----------------------------
-    if ($exapumpSupported -and (Begin-ExakitStep "mcp" "Step 3/5  AI bridge (MCP server, clients and skills)")) {
+    if ($exapumpSupported -and (Begin-ExakitStep "mcp" "Step 4/6  AI bridge (MCP server, clients and skills)")) {
         if (Invoke-ExakitSoftStep -Component "mcp" -Repair "exakit update" -Body {
                 # One line for this step's server work: the spinner narrates
                 # the prime and the handshake, so the Info/Ok pairs beneath
@@ -143,7 +152,7 @@ try {
             Set-ExakitStepDone "mcp"
         }
     } elseif (-not $exapumpSupported) {
-        Info "Step 3/5  AI bridge (MCP server, clients and skills) - not part of this installation, skipping"
+        Info "Step 4/6  AI bridge (MCP server, clients and skills) - not part of this installation, skipping"
     }
 
     # The AI bridge is finished HERE, in the step that says it is being built:
@@ -189,7 +198,7 @@ try {
     # soft in name only: the driver could install fine and any Fail() raised while
     # validating (an unwritable manifest, say) still ended the run before the
     # exakit helper below existed. Install and validate are one isolated unit.
-    if (Begin-ExakitStep "pyexasol" "Step 4/5  pyexasol (Exasol Python driver)") {
+    if (Begin-ExakitStep "pyexasol" "Step 5/6  pyexasol (Exasol Python driver)") {
         # Two lines for this step, not five: the outcome, and the interpreter to
         # run it with. Everything between is in the logfile, and the spinner
         # covered it live. Twin of _exakit_install_pyexasol (common.sh).
@@ -213,7 +222,7 @@ try {
     # testing, older builds), a re-run must reinstall it rather than skip -
     # and the PATH check must run either way, since the PATH entry can be
     # missing even when the step is marked done.
-    $helperNeeded = Begin-ExakitStep "exakit_helper" "Step 5/5  exakit helper command"
+    $helperNeeded = Begin-ExakitStep "exakit_helper" "Step 6/6  exakit helper command"
     if (-not $helperNeeded -and -not (Test-Path (Join-Path $script:BinDir "exakit.cmd"))) {
         Info "exakit command is missing - reinstalling it"
         $helperNeeded = $true

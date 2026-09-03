@@ -346,6 +346,21 @@ function Write-ExakitHeading([string]$Msg) {
     Write-ExakitLog "INFO" $Msg
 }
 function Warn2([string]$Msg) {
+    # A LIVE ADD-ON TABLE OWNS THE SCREEN. It redraws its own frame, so anything
+    # printed underneath is written INTO it - and the whole point of a warning is
+    # that it can be read. Observed for real: a json-tables download failure
+    # arrived as "...eleases/download/..." spliced through the table's rows and
+    # "ownloaded or verified (see log)" hanging off the Skip line, with the reason
+    # effectively unreadable.
+    #
+    # Write-ExakitAddonNote already defers for this, but every add-on module calls
+    # Warn2 directly - 29 sites across three modules - so deferring HERE fixes all
+    # of them, and any future one, instead of asking each to remember.
+    if ($script:ExakitAddonTableLive) {
+        $script:ExakitAddonNotes += @{ Kind = "warn"; Text = $Msg }
+        Write-ExakitLog "WARN" $Msg
+        return
+    }
     if ($script:UiFancy) { Write-Host ("      {0}!{1} {2}" -f $script:UiWarn, $script:UiReset, $Msg) }
     else { Write-Host "      ! $Msg" -ForegroundColor Yellow }
     Write-ExakitLog "WARN" $Msg
@@ -371,6 +386,13 @@ function Warn2([string]$Msg) {
 # the same reason OkStep pauses it. Six-space indent and the shared palette, so
 # an error sits in the same gutter as the ok and the warning it replaces.
 function Write-ExakitError([string]$Msg) {
+    # Same reason as Warn2 above: ungated by the quiet flag, so it is one of the
+    # two printers that can land inside a live add-on table.
+    if ($script:ExakitAddonTableLive) {
+        $script:ExakitAddonNotes += @{ Kind = "warn"; Text = $Msg }
+        Write-ExakitLog "ERROR" $Msg
+        return
+    }
     Suspend-ExakitSpinner
     if ($script:UiFancy) {
         Write-Host ("      {0}{1}{2} {3}" -f $script:UiErr, $script:UiCross, $script:UiReset, $Msg)
