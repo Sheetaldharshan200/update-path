@@ -613,6 +613,13 @@ function Install-Nano {
         if (-not $pulled) { Fail "Image pull failed after 3 attempts: $image (network/Docker Hub issue - see log)" }
         Ok "Image pulled"
 
+        # Before anything reads or writes the secret: a container started while
+        # the file was missing leaves a DIRECTORY at that path, and every step
+        # after this one misreads it. Twin of the nano_repair_creds call in
+        # nano_install.
+        if (-not (Repair-NanoCredentials)) {
+            Fail "The database password path could not be repaired automatically."
+        }
         $password = Get-ExakitCredential "nano_sys_password"
         if (-not $password) {
             $password = New-ExakitPassword
@@ -696,6 +703,48 @@ function Install-Nano {
 
 
 # Wait-NanoReady - poll container logs until the database reports ready.
+# Repair-NanoCredentials - clear the debris a container leaves behind when it
+# was started while the secret file was missing.
+#
+# Docker creates a missing bind-mount SOURCE as a directory, so
+# credentials\nano_sys_password becomes a folder. Everything downstream then
+# misbehaves in a way that is hard to read: Test-Path answers $true for a
+# directory, Get-Content -Raw returns $null (so the password reads as absent),
+# and Set-ExakitCredential's Move-Item drops its .tmp INSIDE the folder instead
+# of replacing it - which is how a real machine ended up holding
+# credentials\nano_sys_password\nano_sys_password.tmp and an install that could
+# not proceed.
+#
+# The shell side has had nano_creds_poisoned/nano_repair_creds for this all
+# along; Windows only learned to DETECT it, which left the user correctly
+# informed and still stuck. Windows needs no container to fix it - there are no
+# root-owned files here, the path belongs to the user.
+# Twin of nano_repair_creds in runtime-nano.sh.
+function Repair-NanoCredentials {
+    $pwPath = Join-Path $script:CredsDir "nano_sys_password"
+    if (-not (Test-Path $pwPath -PathType Container)) { return $true }
+
+    # A stray .tmp in there is a password this kit generated and never applied:
+    # the deploy that would have used it is the thing that failed. Nothing here
+    # is recoverable, so all of it goes.
+    Warn2 "Found leftovers from an interrupted install: $pwPath is a directory, not the password file."
+    Info "Removing them and generating a new password."
+    try {
+        Remove-Item -Recurse -Force $pwPath -ErrorAction Stop
+    } catch {
+        Write-ExakitError "Could not remove $pwPath automatically: $_"
+        Info "Delete that folder by hand, then re-run the installer."
+        return $false
+    }
+    if (Test-Path $pwPath) {
+        Write-ExakitError "Could not remove $pwPath automatically."
+        Info "Delete that folder by hand, then re-run the installer."
+        return $false
+    }
+    Ok "Credentials directory repaired"
+    return $true
+}
+
 # Get-ExakitPortHolder <port> - "name (pid N)" for whatever is listening, or "".
 #
 # "Stop it or set EXAKIT_DB_PORT" is unactionable when "it" is never named, and

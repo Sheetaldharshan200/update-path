@@ -370,5 +370,25 @@ for _dup_sh in "$ROOT"/setup/lib/*.sh; do
     esac
 done
 
+printf '\n== a poisoned credential path is repaired, not just reported ==\n'
+
+NANO_PS1_R="$(cat "$ROOT/setup/lib/nano.ps1")"
+COMMON_PS1_R="$(cat "$ROOT/setup/lib/exakit-common.ps1")"
+NANO_SH_R="$(cat "$ROOT/setup/lib/runtime-nano.sh")"
+
+# Docker creates a missing bind-mount source as a DIRECTORY, so
+# credentials\nano_sys_password becomes a folder. It happened on a real machine
+# and blocked the install outright: the guard detected it correctly and then
+# had nothing to offer, because only the shell side could repair it.
+has   "the shell repairs it"          "nano_repair_creds"           "$NANO_SH_R"
+has   "...and now Windows does too"   "function Repair-NanoCredentials" "$NANO_PS1_R"
+has   "the repair runs before the read" "if (-not (Repair-NanoCredentials))" "$NANO_PS1_R"
+
+# Move-Item -Force onto a DIRECTORY moves the file INSIDE it and reports
+# success, which is how the real machine ended up holding
+# credentials\nano_sys_password\nano_sys_password.tmp - a password nothing could
+# read, inside a directory that kept poisoning the next run.
+has   "a directory target is refused" 'if (Test-Path $target -PathType Container) {' "$COMMON_PS1_R"
+
 printf '\n%s: %d passed, %d failed\n' "$(basename "$0")" "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
