@@ -81,7 +81,7 @@ Then continue with the [first workflow](../demo/first-revenue-analysis.md).
 ```bash
 exakit version         # installed vs the versions the maintainers advertise
 exakit update          # the quick ones in seconds, then it asks before touching the database
-exakit update runtime  # just the database; the Nano container is recreated and the data volume kept
+exakit update --yes    # unattended: also recreates the Nano container on the same data volume, no question asked
 ```
 
 A waiting database update is offered inline — `Stop the database and update the

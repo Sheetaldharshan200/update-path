@@ -3791,9 +3791,13 @@ EXAKIT_MM_EOF
         info "Everything available is already covered."
         # Named, not just counted: "everything is covered" without saying WHICH
         # things, or how, is the whole of what this path prints.
-        while IFS='|' read -r _mm_cid _mm_cwhy; do
+        # Three fields per line (id|why|version), so the version has to be read
+        # into its own name: with two names the third field rode along inside
+        # the second and every line ended in a stray "|" ("managed outside the
+        # kit|"). An installed add-on shows its version, the others show why.
+        while IFS='|' read -r _mm_cid _mm_cwhy _mm_cver; do
             [ -n "$_mm_cid" ] || continue
-            info "$(printf '%-14s %s' "$_mm_cid" "$_mm_cwhy")"
+            info "$(printf '%-14s %s' "$_mm_cid" "$_mm_cwhy${_mm_cver:+ $_mm_cver}")"
         done <<EXAKIT_MM_COVERED
 $_mm_covered
 EXAKIT_MM_COVERED

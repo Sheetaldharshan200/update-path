@@ -327,15 +327,11 @@ class LoadWiringTests(unittest.TestCase):
         for menu_name, local_file_flow in local_file_blocks:
             with self.subTest(menu=menu_name):
                 self.assertIn("type back to return", local_file_flow)
-                # Same platform split as the menu label above: bash names JSON,
-                # PowerShell does not because the add-on that handles it is not
-                # available there.
-                # The prompt takes a FOLDER as readily as a file (the bulk
-                # load), so both halves name both.
-                if menu_name == EXAPUMP_PS1.name:
-                    self.assertIn("Please enter a local CSV/Parquet file, a folder of them", local_file_flow)
-                else:
-                    self.assertIn("Please enter a local CSV, Parquet or JSON file, a folder of them", local_file_flow)
+                # Both halves name JSON: the compiled cargo shim made the
+                # json-tables add-on installable on Windows x86_64, so the
+                # platform split this once asserted is gone. The prompt takes a
+                # FOLDER as readily as a file (the bulk load), so both name both.
+                self.assertIn("Please enter a local CSV, Parquet or JSON file, a folder of them", local_file_flow)
                 self.assertIn("back to return", local_file_flow)
                 self.assertIn("Returning to data loading options.", local_file_flow)
 
