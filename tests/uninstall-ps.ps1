@@ -51,7 +51,7 @@ $script:ExakitHome = Join-Path $fakeHome ".exasol-starter-kit"
 $script:BinDir     = Join-Path $fakeHome ".local\bin"
 
 $script:markers = @{}
-function Info($m) {}; function Ok($m) {}; function Warn2($m) {}; function Fail($m) { throw $m }
+function Info($m) {}; function Ok($m) {}; function OkStep($m) {}; function InfoStep($m) {}; function Warn2($m) {}; function Fail($m) { throw $m }
 function Get-RuntimeType { "nano" }
 function Get-ExakitRepoRoot { return $null }   # force fallback skill list
 function Remove-Nano { param([switch]$Data) $script:markers.nano = [bool]$Data }
