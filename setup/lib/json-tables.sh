@@ -21,10 +21,12 @@
 #     is visible ONLY to processes started by the kit's launcher — the user's
 #     real cargo, if any, is untouched everywhere else.
 #
-# Nothing is compiled here: the engine binaries and the wheel are built once by
-# .github/workflows/pkg-json-tables.yml and published to the kit repository as
-# ONE IMMUTABLE RELEASE PER BUILD, tagged `json-tables-<version>`, so a user
-# never needs Rust or cargo. versions.json names the release, the wheel and the
+# Nothing is compiled here: .github/workflows/pkg-json-tables.yml assembles the
+# engine binaries and the wheel — since v0.3 the ones upstream publishes are
+# downloaded and verified against upstream's SHA256SUMS, and only the rest
+# (linux-aarch64, windows-x86_64, the Windows cargo shim) are built — and
+# publishes them to the kit repository as ONE IMMUTABLE RELEASE PER BUILD,
+# tagged `json-tables-<version>`, so a user never needs Rust or cargo. versions.json names the release, the wheel and the
 # digest of every asset, and that document is the only authority on what gets
 # installed. A release is never rewritten once published: the packaging
 # workflow refuses to touch an existing tag, so the artefacts a pinned kit
@@ -538,7 +540,7 @@ json_tables_install() {
                 _json_tables_not_installed "GitHub refused the lookup — its API allows 60 requests an hour without a token and this install has used them. Wait for the hour to turn over, then run: exakit marketplace$_jti_tok"
                 ;;
             404)
-                _json_tables_not_installed "the prebuilt release '$(json_tables_release_tag)' was not found in $(json_tables_mirror_repo). Run the 'pkg / json-tables' workflow to publish it (it builds the engine for every platform so nobody needs Rust)."
+                _json_tables_not_installed "the prebuilt release '$(json_tables_release_tag)' was not found in $(json_tables_mirror_repo). Run the 'pkg / json-tables' workflow to publish it (it assembles the engine for every platform - fetching what upstream prebuilds, building the rest - so nobody needs Rust)."
                 ;;
             *)
                 _json_tables_not_installed "GitHub could not be reached to find the prebuilt engine${_jti_http:+ (HTTP $_jti_http)}. Check the network, then run: exakit marketplace"
