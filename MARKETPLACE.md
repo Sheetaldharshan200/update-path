@@ -85,11 +85,15 @@ Pick your reference by what the tool is:
 - **A tool users cannot install as shipped** (needs a toolchain, ships no
   binaries, hardcodes a build step) → copy **json-tables**: a packaging
   workflow in this repo (`.github/workflows/pkg-json-tables.yml`) builds the
-  artifacts once for every platform and publishes them to a `mirror-<id>`
-  release here; the module downloads the prebuilt pair digest-verified,
-  resolves "latest" from that release (`<id>_latest` hook) so nothing is ever
-  advertised before it is built, and the workflow's `advertise` job bumps
-  versions.json by pull request only after a successful publish.
+  artifacts once for every platform and publishes them as **one immutable
+  release per build** (`<id>-<version>`, never rewritten); the module downloads
+  the prebuilt pair from the release versions.json names and verifies each
+  against the digest pinned there, "latest" is the advertised version
+  (`<id>_latest` hook) so nothing is ever offered before it is built, and the
+  workflow's `advertise` job writes the whole pin — version, release tag,
+  wheel, digests — by pull request only after a successful publish. A rolling
+  tag is the one shape to avoid: overwriting its assets breaks every pinned
+  install until the pins catch up.
 
 ### 1. Ship the module pair
 
@@ -196,8 +200,10 @@ my_tool_uninstall() {
 
 # OPTIONAL — only when "installable" is stricter than "released upstream".
 # json-tables is the model: the kit prebuilds its artifacts in a packaging
-# workflow, so what CAN be installed is what that workflow has published, not
-# what upstream tagged. The generic upstream lookup calls this hook first.
+# workflow, so what CAN be installed is what that workflow has published and
+# versions.json advertises, not what upstream tagged. The generic upstream
+# lookup calls this hook first; json_tables_latest answers from versions.json
+# alone, with no network call.
 # my_tool_latest() { ... }   # print the newest INSTALLABLE version
 ```
 

@@ -180,17 +180,23 @@ fi
 say "8/9 json-tables installs from the kit's own mirror release and a real JSON file becomes tables"
 # The whole point of this add-on is the no-Rust story: the engine and the wheel
 # are prebuilt by .github/workflows/pkg-json-tables.yml and served from the
-# `mirror-json-tables` release. Until that workflow has been run once the
-# release does not exist -- then this stage SKIPS (with the reason) instead of
-# failing, so the rest of the e2e stays meaningful.
+# immutable json-tables-<version> release versions.json names. Until that
+# workflow has published the advertised build the release does not exist --
+# then this stage SKIPS (with the reason) instead of failing, so the rest of
+# the e2e stays meaningful.
 _jt_repo="$(
     . "$ROOT/setup/lib/common.sh" >/dev/null 2>&1
     . "$ROOT/setup/lib/json-tables.sh" >/dev/null 2>&1
     json_tables_mirror_repo
 )"
+_jt_tag="$(
+    . "$ROOT/setup/lib/common.sh" >/dev/null 2>&1
+    . "$ROOT/setup/lib/json-tables.sh" >/dev/null 2>&1
+    json_tables_release_tag
+)"
 if ! curl -fsSIL --max-time 15 \
-        "https://github.com/$_jt_repo/releases/tag/mirror-json-tables" >/dev/null 2>&1; then
-    echo "  SKIP  the mirror-json-tables release does not exist in $_jt_repo yet"
+        "https://github.com/$_jt_repo/releases/tag/$_jt_tag" >/dev/null 2>&1; then
+    echo "  SKIP  the $_jt_tag release does not exist in $_jt_repo yet"
     echo "        run the 'pkg / json-tables' workflow once, then this stage goes live"
 elif ! (
     . "$ROOT/setup/lib/common.sh" >/dev/null 2>&1

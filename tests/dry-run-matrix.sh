@@ -793,11 +793,14 @@ else
 fi
 
 # json-tables: the no-Rust chain. The packaging workflow builds the engine and
-# the wheel, the module downloads them from the mirror release and puts a cargo
-# shim in front of the CLI, and versions.json is only bumped AFTER a successful
-# publish -- so no installed kit is ever offered a version whose artifacts do
-# not exist. Each of those is load-bearing.
-if grep -q 'mirror-json-tables' "$ROOT/.github/workflows/pkg-json-tables.yml" && \
+# the wheel, publishes them as one immutable json-tables-<version> release (a
+# fixed rolling tag is exactly the shape that broke: overwritten binaries under
+# pinned digests), the module downloads them from the release versions.json
+# names and puts a cargo shim in front of the CLI, and versions.json is only
+# bumped AFTER a successful publish -- so no installed kit is ever offered a
+# version whose artifacts do not exist. Each of those is load-bearing.
+if grep -q 'tag_name: ${{ needs.check.outputs.tag }}' "$ROOT/.github/workflows/pkg-json-tables.yml" && \
+   ! grep -q 'tag_name: mirror-json-tables' "$ROOT/.github/workflows/pkg-json-tables.yml" && \
    grep -q 'version=${{ needs.check.outputs.sha }}' "$ROOT/.github/workflows/pkg-json-tables.yml" && \
    grep -qE '^  advertise:' "$ROOT/.github/workflows/pkg-json-tables.yml" && \
    grep -q 'needs: \[check, publish\]' "$ROOT/.github/workflows/pkg-json-tables.yml" && \
