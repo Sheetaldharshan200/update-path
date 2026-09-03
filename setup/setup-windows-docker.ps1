@@ -45,6 +45,19 @@ Set-ExakitKitUpgradeNote -KitRoot $KitRoot
 $kitVersion = Get-ExakitKitVersionAt -KitRoot $KitRoot
 if ($kitVersion) { Set-ExakitManifestValue "kit.version" $kitVersion }
 
+# The `exakit` command first, so `exakit status` answers from the first seconds
+# of this install (AGENTS.md tells an agent to poll it). It used to be written
+# by the LAST step. install.ps1 has already staged the kit copy the shim points
+# at; step 6 still records the tick. Twin of exakit_install_helper_early.
+$earlyPs1 = Join-Path $script:ExakitHome "kit\setup\exakit.ps1"
+if (Test-Path $earlyPs1) {
+    try {
+        New-Item -ItemType Directory -Force -Path $script:BinDir | Out-Null
+        [void](Set-ExakitCmdShim -PsTarget $earlyPs1)
+        Info "exakit command ready - follow this install from another shell with: exakit status"
+    } catch { }
+}
+
 try {
     # --- step 1: requirements ------------------------------------------------
     Test-NanoRequirements
@@ -325,6 +338,9 @@ try {
     # left, and run together with whatever the marketplace printed it read as
     # one more of its bullets. The rule gives it air; the green arrow says it
     # is not a step.
+    # The install is complete: the step marker `exakit status` reads back as
+    # "installing" goes with it. Twin of the same clear in exakit_finish.
+    try { Remove-ExakitManifestValue "install.current_step" } catch { }
     Write-ExakitRule
     Write-ExakitHeading "Run ""exakit help"" for support"
     # Two blank lines before the console prompt returns. The installer's last

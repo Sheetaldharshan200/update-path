@@ -159,6 +159,10 @@ function Invoke-CmdStatus {
     }
     $running = "$status".StartsWith("running")
     $steps = @(Get-ExakitManifestValue "steps_completed")
+    # An install in progress is its own state: Begin-ExakitStep records the step
+    # and the setup script clears it when done. Twin of the same read in cmd_status.
+    $installStep = "$(Get-ExakitManifestValue 'install.current_step')"
+    $installing = ($installStep -ne "" -and -not ($steps -contains "exakit_helper"))
     $datasets = @(Invoke-ExakitWithSpinner -Quiet:$Json -Label "Checking which datasets are loaded" -Body {
         ,@(Get-ExakitLoadedDatasets)
     })
@@ -176,8 +180,14 @@ function Invoke-CmdStatus {
     } | Out-Null
 
     if ($Json) {
+        $statusWord = $status
+        if ($installing) { $statusWord = "installing" }
         [ordered]@{
             installed       = $true
+            status          = $statusWord
+            installing      = $installing
+            install_step    = $(if ($installing) { $installStep } else { $null })
+            remedy          = $(if ($installing) { "the installer is still running (step: $installStep) - poll exakit status --json until status is running" } elseif ($running) { $null } else { "exakit start" })
             kit_level       = "$(Get-ExakitManifestValue 'kit_level')"
             runtime         = [ordered]@{ type = $type; status = $status }
             running         = $running
@@ -194,6 +204,9 @@ function Invoke-CmdStatus {
             last_failure_at = $(if ($failureNote.at) { $failureNote.at } else { $null })
             manifest        = $script:ManifestPath
         } | ConvertTo-Json -Depth 4
+        # 0 means healthy AND complete: while the installer runs, a poller that
+        # reads the exit code must not see success off a half-built kit.
+        if ($installing) { exit 3 }
         if ($running) { exit 0 } else { exit 3 }
     }
 
@@ -766,6 +779,17 @@ function Invoke-ExakitUninstallRun {
 
     # 5) Kit home: credentials, logs, manifest, cached kit copy, MCP snapshots.
     if (Test-Path $script:ExakitHome) {
+        # The MCP snapshots taken in step 2 are the only copy of each client
+        # config as it was BEFORE this uninstall edited it. Keep them beside the
+        # home, not inside it. Twin of the same move in exakit_uninstall_run.
+        $backupsDir = Join-Path $script:ExakitHome "backups"
+        if (-not $DryRun -and (Test-Path $backupsDir) -and @(Get-ChildItem -Path $backupsDir -Force -ErrorAction SilentlyContinue).Count -gt 0) {
+            $keep = "$($script:ExakitHome)-backups-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
+            try {
+                Move-Item -Path $backupsDir -Destination $keep -ErrorAction Stop
+                Info "MCP client config snapshots kept at $keep (delete it when you are sure)"
+            } catch { }
+        }
         if ($DryRun) { Info "  will remove: kit home $script:ExakitHome (credentials, logs, manifest, snapshots)" }
         else { Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $script:ExakitHome }
         RecordRemoved "Kit home removed: $script:ExakitHome (credentials, logs, manifest, snapshots, pyexasol venv, add-on state)"
@@ -1091,16 +1115,22 @@ function Invoke-ExakitUninstallComponent {
 # Twin of cmd_version in setup/exakit and exakit_print_version_table in
 # setup/lib/common.sh.
 function Invoke-CmdVersion {
-    if (-not (Test-Path $script:ManifestPath)) { Write-Host "Not installed (no manifest at $script:ManifestPath)"; exit 4 }
+    param([switch]$Json)
+    if (-not (Test-Path $script:ManifestPath)) {
+        if ($Json) { Write-ExakitNotInstalledAnswer -Json }
+        Write-Host "Not installed (no manifest at $script:ManifestPath)"; exit 4
+    }
 
-    Start-ExakitPanel "Kit"
-    Write-ExakitPanelLine ("{0,-14} {1}" -f "Version",   "$(Get-ExakitComponentCurrent 'exakit')")
-    # No "Level" row: an internal schema number, meaningless to the reader.
-    # No "Source" row either: an absolute path to the kit's own copy of itself,
-    # which answers a question nobody asks of a version screen.
-    Write-ExakitPanelLine ("{0,-14} {1}" -f "Installed", "$(Format-ExakitLocalTime (Get-ExakitManifestValue 'installed_at'))")
-    Complete-ExakitPanel
-    Write-Host ""
+    if (-not $Json) {
+        Start-ExakitPanel "Kit"
+        Write-ExakitPanelLine ("{0,-14} {1}" -f "Version",   "$(Get-ExakitComponentCurrent 'exakit')")
+        # No "Level" row: an internal schema number, meaningless to the reader.
+        # No "Source" row either: an absolute path to the kit's own copy of itself,
+        # which answers a question nobody asks of a version screen.
+        Write-ExakitPanelLine ("{0,-14} {1}" -f "Installed", "$(Format-ExakitLocalTime (Get-ExakitManifestValue 'installed_at'))")
+        Complete-ExakitPanel
+        Write-Host ""
+    }
 
     if ($script:VersionPolicy -eq "manifest") {
         # The one phase that can reach the network, so the one most worth
@@ -1222,7 +1252,45 @@ function Invoke-CmdVersion {
             S = (Get-ExakitStatusCell -Status $status -Severity $severity)
             N = $rowNote
             M = "$(Get-ExakitComponentNote $actual)"
+            A = $available
+            R = $status
+            Sev = $(if ($severity) { $severity } else { "normal" })
         })
+    }
+
+    if ($Json) {
+        # The same rows as one object - twin of the --json form of
+        # exakit_print_version_table. `exakit version --json` used to print the
+        # decorated table and exit 0.
+        $components = @()
+        foreach ($r in $rows) {
+            $components += [ordered]@{
+                component       = $r.C
+                installed       = $(if ($r.V -in @("not installed", "not available", "")) { $null } else { $r.V })
+                installed_label = $r.V
+                advertised      = $(if ($r.A -in @("unknown", "")) { $null } else { $r.A })
+                status          = $r.R
+                severity        = $r.Sev
+                note            = $(if ($r.M) { $r.M } else { $null })
+                platform_note   = $(if ($r.N) { $r.N } else { $null })
+            }
+        }
+        $statusWord = "current"
+        $remedy = $null
+        if ($pending -gt 0) { $statusWord = "updates_pending"; $remedy = "exakit update" }
+        [ordered]@{
+            installed       = $true
+            status          = $statusWord
+            remedy          = $remedy
+            pending         = $pending
+            kit             = [ordered]@{ version = "$(Get-ExakitComponentCurrent 'exakit')"; installed_at = "$(Get-ExakitManifestValue 'installed_at')" }
+            versions_source = "$(Get-ExakitVersionsSource)"
+            components      = $components
+        } | ConvertTo-Json -Depth 5
+        if ($script:NoticePlanPath -and (Test-Path $script:NoticePlanPath)) {
+            Remove-Item -Force $script:NoticePlanPath -ErrorAction SilentlyContinue
+        }
+        return
     }
 
     # A card, like every other framed answer the kit gives. Complete-ExakitPanel
@@ -2056,6 +2124,32 @@ function Invoke-CmdDataLoad {
         }
         Info "Reloading the bundled sample dataset (log: $script:LogFile)"
         Invoke-ExakitSampleDataLoad -KitRoot $kitRoot -Force
+    } elseif ($env:EXAKIT_DATASETS -and -not $env:EXAKIT_DATA_FILE) {
+        # Named datasets, unattended: load the ones not yet loaded, say so for
+        # the rest, exit 0. This used to fall through to the interactive menu,
+        # whose non-interactive default row is the local file. Twin of the same
+        # branch in cmd_data_load.
+        $kitRoot = Get-ExakitRepoRoot
+        if (-not $kitRoot) { Fail "Could not find the kit's sql/ and data/ files to load." }
+        $known = @(Get-ExakitBundledDatasets | ForEach-Object { $_.Id })
+        $pendingIds = @(Get-ExakitPendingDatasets | ForEach-Object { $_.Id })
+        $any = $false
+        $failed = $false
+        foreach ($id in ($env:EXAKIT_DATASETS -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ })) {
+            if ($known -contains $id) {
+                $any = $true
+                if ($pendingIds -contains $id) {
+                    Info "Loading dataset '$id' (EXAKIT_DATASETS)."
+                    try { Invoke-ExakitDatasetLoad -KitRoot $kitRoot -Id $id } catch { $failed = $true; Warn2 "Dataset '$id' did not load: $_" }
+                } else {
+                    Ok "Dataset '$id' is already loaded - nothing to do (reload it with: exakit data-load --force)"
+                }
+            } else {
+                Warn2 "Unknown dataset id '$id' in EXAKIT_DATASETS (available: $($known -join ', '))."
+            }
+        }
+        if (-not $any) { Fail "EXAKIT_DATASETS='$($env:EXAKIT_DATASETS)' matched no bundled dataset - nothing was loaded." }
+        if ($failed) { exit 1 }
     } else {
         Show-ExakitDataLoadMenu
     }
@@ -2125,12 +2219,26 @@ function Invoke-CmdInfoJson {
     if ([string]::IsNullOrWhiteSpace($raw)) {
         Write-ExakitNotInstalledAnswer -Json
     }
-    Write-Output $raw.TrimEnd("`r", "`n")
-    # THE SAME TRI-STATE AS `status`. AGENTS.md documents 0/3/4 for this command
-    # and it only ever answered 0 or 4, so an agent that branched on the exit code
-    # the way it was told read "healthy" off a stopped database. The record on
-    # stdout is unchanged either way; only the code was lying.
-    if ((Get-ExakitRuntimeStatus) -ne "running") { exit 3 }
+    # THE SAME TRI-STATE AS `status`, in the exit code AND in the document.
+    # AGENTS.md promises `installed`, `status` and `remedy` in every --json
+    # answer; this one printed the raw manifest, so a parser branching on
+    # .status the way it was told hit a KeyError on exactly the state worth
+    # branching on. Twin of cmd_info_json.
+    $running = ((Get-ExakitRuntimeStatus) -eq "running")
+    try {
+        $doc = $raw | ConvertFrom-Json
+        $doc | Add-Member -NotePropertyName "installed" -NotePropertyValue $true -Force
+        $statusText = "database not running"
+        if ($running) { $statusText = "running" }
+        $doc | Add-Member -NotePropertyName "status" -NotePropertyValue $statusText -Force
+        $remedyText = "exakit start"
+        if ($running) { $remedyText = $null }
+        $doc | Add-Member -NotePropertyName "remedy" -NotePropertyValue $remedyText -Force
+        Write-Output ($doc | ConvertTo-Json -Depth 8)
+    } catch {
+        Write-Output $raw.TrimEnd("`r", "`n")
+    }
+    if (-not $running) { exit 3 }
     exit 0
 }
 
@@ -2141,14 +2249,36 @@ function Invoke-CmdInfoJson {
 # sandbox - the starter-kit profile is the ADMIN connection, and the real
 # boundary is the read-only MCP user.
 function Invoke-CmdSql {
-    param([string]$Statement, [switch]$Write)
+    param([string]$Statement, [switch]$Write, [string]$File = "")
     Assert-ExakitInstalled
-    if (-not $Statement) { Fail "Nothing to run. Usage: exakit sql 'SELECT ...' [--write]" }
+    # The saved-workflow path the skill teaches: `exakit sql --file <path>`.
+    # A file's leading "-- comment" line used to be parsed as an option, so the
+    # only way to rerun a saved statement was exapump on the admin connection.
+    # Twin of the same handling in cmd_sql.
+    if ($File) {
+        if ($Statement) { Fail "Pass either a statement or --file, not both." }
+        if (-not (Test-Path $File)) { Fail "No such file: $File" }
+        $Statement = Get-Content -Raw -Encoding UTF8 -Path $File
+    }
+    if ($Statement) {
+        $kept = @(($Statement -split "`r?`n") | Where-Object { $_ -notmatch '^\s*--' -and $_ -notmatch '^\s*$' })
+        $Statement = ($kept -join "`n") -replace ';\s*$', ''
+    }
+    if (-not $Statement) { Fail "Nothing to run. Usage: exakit sql 'SELECT ...'   or   exakit sql --file <path>   [--write]" }
 
     if (-not $Write) {
         $probe = ($Statement -replace '[\r\n\t]', ' ').TrimStart()
-        if ($probe -notmatch '^(?i)\s*(SELECT|WITH|DESCRIBE|EXPLAIN|SHOW)\b') {
+        $word = (($probe -replace '[^A-Za-z].*$', '')).ToUpperInvariant()
+        if ($word -in @("SELECT", "WITH", "DESCRIBE", "DESC", "EXPLAIN", "SHOW")) {
+            # a read
+        } elseif ($word -in @("INSERT", "UPDATE", "DELETE", "MERGE", "CREATE", "DROP", "ALTER", "TRUNCATE", "GRANT", "REVOKE", "COMMIT", "ROLLBACK", "IMPORT", "EXPORT", "EXECUTE", "CALL", "SET", "OPEN", "CLOSE", "KILL", "FLUSH", "RENAME", "COMMENT", "RECOMPRESS", "REORGANIZE", "PRELOAD", "ENFORCE")) {
             Fail "That is not a read statement, and 'exakit sql' defaults to reads. Re-run with --write if you mean it - and note the profile it uses is the ADMIN connection, not the read-only MCP user."
+        } else {
+            # Neither a read nor a known write is almost always a typo. This used
+            # to be reported as a write attempt and pointed at --write, the one
+            # hint that sends an agent to the admin connection.
+            if (-not $word) { $word = $probe.Substring(0, [Math]::Min(12, $probe.Length)) }
+            Fail "'$word' is not an SQL statement this command recognises - check the spelling. Reads start with SELECT, WITH, DESCRIBE, EXPLAIN or SHOW; a write needs --write."
         }
         # Reject a second statement outright. The MCP tool gate lets
         # "SELECT 1; DROP TABLE T" through because it only inspects the opening
@@ -2159,12 +2289,22 @@ function Invoke-CmdSql {
     }
 
     $result = Invoke-Exapump @("sql", "-p", $script:ExapumpProfile, $Statement)
-    if ($result.Output) { Write-Output $result.Output }
     if (-not $result.Success) {
-        # The whole point: say what to do about it.
-        Show-ExakitDbErrorRemedy $result.Output
+        # The whole point: say what to do about it - FIRST, and on the output
+        # stream with the error, not as a warning after it. When the kit has a
+        # specific remedy, exapump's generic "Hint:" line is noise and is dropped.
+        $remedy = @(Get-ExakitDbErrorRemedy $result.Output)
+        if ($remedy.Count -gt 0) {
+            foreach ($line in $remedy) { Write-Output "! $line" }
+            if ($result.Output) {
+                Write-Output ((($result.Output -split "`r?`n") | Where-Object { $_ -notmatch '^\s*Hint: ' }) -join "`n")
+            }
+        } elseif ($result.Output) {
+            Write-Output $result.Output
+        }
         exit 1
     }
+    if ($result.Output) { Write-Output $result.Output }
     exit 0
 }
 
@@ -2207,7 +2347,13 @@ try {
             if ($statusUnknown.Count -gt 0) { Fail "Unknown option '$($statusUnknown[0])' for status (supported: --json)." }
             Invoke-CmdStatus -Json:$statusJson
         }
-        "version"      { Invoke-CmdVersion }
+        "version"      {
+            $versionJson = ($RestArgs -contains "--json" -or $RestArgs -contains "-j")
+            $versionUnknown = @($RestArgs | Where-Object { $_ -notin @("--json", "-j") })
+            if ($versionUnknown.Count -gt 0) { Fail "Unknown option '$($versionUnknown[0])' for version (supported: --json)." }
+            if ($versionJson) { $script:JsonOutput = $true }
+            Invoke-CmdVersion -Json:$versionJson
+        }
         "--version"    { Invoke-CmdVersion }
         "-v"           { Invoke-CmdVersion }
         "update"        {
@@ -2234,9 +2380,25 @@ try {
         "start"        { Invoke-CmdStart }
         "stop"         { Invoke-CmdStop }
         "sql" {
+            # A lone --help is unambiguous; a statement may contain the text.
+            if (@($RestArgs).Count -eq 1 -and ($RestArgs[0] -eq "--help" -or $RestArgs[0] -eq "-h")) { Show-ExakitUsage -Topic "sql"; break }
             $sqlWrite = ($RestArgs -contains "--write" -or $RestArgs -contains "-Write")
-            $sqlText = @($RestArgs | Where-Object { $_ -notin @("--write", "-Write") }) | Select-Object -First 1
-            Invoke-CmdSql -Statement $sqlText -Write:$sqlWrite
+            $sqlFile = ""
+            $sqlRest = @()
+            $expectFile = $false
+            foreach ($a in @($RestArgs)) {
+                if ($expectFile) { $sqlFile = $a; $expectFile = $false; continue }
+                if ($a -in @("--write", "-Write")) { continue }
+                if ($a -in @("--file", "-f", "-File")) { $expectFile = $true; continue }
+                if ($a -like "--file=*") { $sqlFile = $a.Substring(7); continue }
+                if ($a -like "--*") { Fail "Unknown option '$a' for sql (supported: --file <path>, --write, --help)." }
+                $sqlRest += $a
+            }
+            if ($expectFile) { Fail "--file needs a path: exakit sql --file ~\.exasol-starter-kit\workflows\query.sql" }
+            if ($sqlRest.Count -gt 1) { Fail "Pass ONE statement, quoted: exakit sql 'SELECT 1'" }
+            $sqlText = ""
+            if ($sqlRest.Count -eq 1) { $sqlText = $sqlRest[0] }
+            Invoke-CmdSql -Statement $sqlText -Write:$sqlWrite -File $sqlFile
         }
         "repair-runtime" {
             Invoke-CmdRepairRuntime -Yes:([bool]($RestArgs -contains "--yes" -or $RestArgs -contains "-y" -or $RestArgs -contains "-Yes"))
@@ -2270,7 +2432,15 @@ try {
             if ($doctorJson) { $env:EXAKIT_MCP_RESULT_JSON = "1" }
             Invoke-CmdMcpOperation -Operation "doctor" -OpArgs $doctorArgs
         }
-        "mcp-status"   { Invoke-CmdMcpOperation -Operation "status" -OpArgs $RestArgs }
+        "mcp-status"   {
+            # The JSON form existed behind an env var the doctor sets for itself;
+            # here "--json" was read as a client name.
+            $mcpStatusJson = ($RestArgs -contains "--json" -or $RestArgs -contains "-j")
+            $mcpStatusArgs = @($RestArgs | Where-Object { $_ -notin @("--json", "-j") })
+            foreach ($a in $mcpStatusArgs) { if ($a -like "-*") { Fail "Unknown option '$a' for mcp-status (supported: --json)." } }
+            if ($mcpStatusJson) { $env:EXAKIT_MCP_RESULT_JSON = "1"; $script:JsonOutput = $true }
+            Invoke-CmdMcpOperation -Operation "status" -OpArgs $mcpStatusArgs
+        }
         "skills"       {
             if ($RestArgs -contains "--json" -or $RestArgs -contains "-j") {
                 # Same reason as `info --json`: a trailing update notice would

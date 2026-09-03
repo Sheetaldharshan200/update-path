@@ -39,6 +39,10 @@ if [ -f "$LIB_DIR/pyexasol.sh" ]; then . "$LIB_DIR/pyexasol.sh" || die "Could no
 exakit_init_logging
 manifest_init
 exakit_enable_failure_handling
+# The `exakit` command first, so `exakit status` answers from the first seconds
+# of this install (AGENTS.md tells an agent to poll it). It used to be written
+# by the LAST step, 105 s into a 107 s install.
+exakit_install_helper_early "$SCRIPT_DIR"
 
 [ "${EXAKIT_BANNER_SHOWN:-0}" = 1 ] || ui_banner "Personal Local Starter Kit"
 
