@@ -713,6 +713,18 @@ function Install-Nano {
         if ($code -ne 0) { Fail "Could not start existing container $($script:NanoContainer) (see log)" }
     }
     Wait-NanoReady
+    # RECORDING THE RUNTIME IS PART OF INSTALLING IT. Removing a duplicated copy
+    # of this function took this tail with it, because the two copies were not
+    # identical - and the result was the worst kind of failure: the container
+    # started, the database came up, the step reported completed, and every step
+    # after it died on "No runtime DSN in the manifest". A running database the
+    # kit cannot describe is indistinguishable from no database at all.
+    Set-NanoManifest
+
+    $script:ExakitQuietDetail = $prevQuiet
+    $script:ExakitActiveLabel = $prevLabel
+    $niSecs = [int]((Get-Date) - $niT0).TotalSeconds
+    Ok "Exasol Nano $($script:NanoTag) running on 127.0.0.1:$($script:DbPort) (${niSecs}s)"
 }
 
 

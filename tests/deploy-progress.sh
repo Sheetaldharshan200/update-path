@@ -412,7 +412,46 @@ has   "...and reads the exit code"       '$exists = ($LASTEXITCODE -eq 0)'     "
 check "one probe, inside the helper"     "1" \
     "$(printf '%s\n' "$NANO_PS1_N" | grep -c '& \$engine volume inspect')"
 check "and both callers use the helper"  "2" \
-    "$(printf '%s\n' "$NANO_PS1_N" | grep -c 'Test-NanoVolumeExists$')"
+    "$(printf '%s\n' "$NANO_PS1_N" | grep -c '= Test-NanoVolumeExists')"
+
+printf '\n== installing the runtime also records it ==\n'
+
+# The worst failure of this whole effort was silent. Removing a DUPLICATED copy
+# of Install-Nano took its tail with it, because the two copies were not
+# identical: the container started, the database came up in 5s, the step
+# reported "completed: runtime" - and every step after it died on
+#     No runtime DSN in the manifest - install the database first.
+# A running database the kit cannot describe is indistinguishable from no
+# database, and nothing in the suite could see it: the file parsed, the
+# encoding held, no function was duplicated any more, and 130 checks passed.
+#
+# Asserted on the FUNCTION BODY, because the recorder is also called from the
+# adopt-and-return paths higher up - a whole-file grep proves nothing here.
+ps_install_nano() {
+    awk 'index($0, "function Install-Nano {") == 1 { inside = 1 }
+         inside { print }
+         inside && /^\}/ { exit }' "$ROOT/setup/lib/nano.ps1"
+}
+sh_nano_install() {
+    awk 'index($0, "nano_install() {") == 1 { inside = 1 }
+         inside { print }
+         inside && /^\}/ { exit }' "$ROOT/setup/lib/runtime-nano.sh"
+}
+
+INSTALL_PS="$(ps_install_nano)"
+INSTALL_SH="$(sh_nano_install)"
+
+has   "the shell records the runtime"   "nano_record_manifest"  "$INSTALL_SH"
+has   "...and Windows does too"         "Set-NanoManifest"      "$INSTALL_PS"
+# It has to come after the wait: recording a DSN for a database that never came
+# up is the same lie in the other direction.
+check "the shell records it after waiting" "yes" \
+    "$(printf '%s\n' "$INSTALL_SH" | grep -nE '^[[:space:]]*(nano_wait_ready|nano_record_manifest)[[:space:]]*$' | tr '\n' ' ' | grep -q 'nano_wait_ready.*nano_record_manifest' && echo yes || echo no)"
+check "...and so does Windows"             "yes" \
+    "$(printf '%s\n' "$INSTALL_PS" | grep -nE '^[[:space:]]*(Wait-NanoReady|Set-NanoManifest)[[:space:]]*$' | tr '\n' ' ' | grep -q 'Wait-NanoReady.*Set-NanoManifest' && echo yes || echo no)"
+# And it says so on screen, which is the only reason a human notices the step ran.
+has   "the shell announces the runtime" "running on 127.0.0.1" "$INSTALL_SH"
+has   "...and Windows announces it"     "running on 127.0.0.1" "$INSTALL_PS"
 
 printf '\n%s: %d passed, %d failed\n' "$(basename "$0")" "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
