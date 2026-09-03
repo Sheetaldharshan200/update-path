@@ -2513,7 +2513,8 @@ function Write-ExakitNoticeLines {
         $word = Get-ExakitNoticeWord $HeavyWorst
         [Console]::Error.WriteLine("$dim$word update is available for $($Heavy -join ', ') - requires stopping the database, details:  exakit version$reset")
     }
-    [Console]::Error.WriteLine("${dim}Silence this with EXAKIT_NO_UPDATE_NOTICE=1$reset")
+    # No "silence this with ..." footer - twin of _exakit_notice_say. The env var
+    # still works; the help page documents it.
     Set-ExakitNoticeShown
 }
 
