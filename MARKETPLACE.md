@@ -84,8 +84,9 @@ Pick your reference by what the tool is:
   the user installed themselves).
 - **A tool users cannot install as shipped** (needs a toolchain, ships no
   binaries, hardcodes a build step) → copy **json-tables**: a packaging
-  workflow in this repo (`.github/workflows/pkg-json-tables.yml`) builds the
-  artifacts once for every platform and publishes them as **one immutable
+  workflow in this repo (`.github/workflows/pkg-json-tables.yml`) assembles the
+  artifacts once for every platform — downloading and digest-verifying the ones
+  upstream prebuilds, building only the rest — and publishes them as **one immutable
   release per build** (`<id>-<version>`, never rewritten); the module downloads
   the prebuilt pair from the release versions.json names and verifies each
   against the digest pinned there, "latest" is the advertised version

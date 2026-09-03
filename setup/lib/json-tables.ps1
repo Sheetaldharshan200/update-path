@@ -25,7 +25,7 @@
 #
 # The answer is the one the old comment named: a compiled launcher. The shim is
 # now a real Windows executable, built from setup/shim/json-tables-cargo by the
-# same workflow that builds the engine and published beside it. The toolchain
+# same workflow that assembles the engines and published beside them. The toolchain
 # requirement moves to OUR build machine, which is exactly the trade this
 # add-on exists to make - the user still installs nothing but prebuilt bytes.
 #
@@ -381,7 +381,7 @@ function Install-JsonTables {
             return (Write-JsonTablesNotInstalled "GitHub refused the lookup - its API allows 60 requests an hour without a token and this install has used them. Wait for the hour to turn over, then run: exakit marketplace$tok")
         }
         if ($script:JsonTablesMirrorHttp -eq "404") {
-            return (Write-JsonTablesNotInstalled "the prebuilt release '$(Get-JsonTablesReleaseTag)' was not found in $(Get-JsonTablesMirrorRepo). Run the 'pkg / json-tables' workflow to publish it (it builds the engine and the cargo shim for every platform so nobody needs Rust).")
+            return (Write-JsonTablesNotInstalled "the prebuilt release '$(Get-JsonTablesReleaseTag)' was not found in $(Get-JsonTablesMirrorRepo). Run the 'pkg / json-tables' workflow to publish it (it assembles the engine and the cargo shim for every platform - fetching what upstream prebuilds, building the rest - so nobody needs Rust).")
         }
         $extra = ""
         if ($script:JsonTablesMirrorHttp) { $extra = " (HTTP $($script:JsonTablesMirrorHttp))" }

@@ -1,11 +1,20 @@
 name: pkg / json-tables
 
 # JSON Tables (exasol-labs/exasol-json-tables) is a Python package plus a Rust
-# ingest engine (crate `json_to_parquet`). We cross-build the engine for every
-# distribution ONCE here and publish the binaries + wheel as ONE IMMUTABLE
-# RELEASE PER BUILD, tagged `json-tables-<version>`, so end users never need
-# Rust/cargo — the kit just downloads the prebuilt artifacts and verifies them
-# against the digests versions.json pins.
+# ingest engine (crate `json_tables_ingest`). Everything a user installs comes
+# from ONE IMMUTABLE RELEASE PER BUILD in this repository, tagged
+# `json-tables-<version>`, so end users never need Rust/cargo — the kit just
+# downloads the prebuilt artifacts and verifies them against the digests
+# versions.json pins.
+#
+# Since v0.3 upstream publishes prebuilt engines of its own, so this workflow
+# only BUILDS what upstream does not ship — the linux-aarch64 and
+# windows-x86_64 engines, and the Windows cargo shim (which is this
+# repository's own source and could never come from upstream). The engines and
+# wheel upstream does publish are DOWNLOADED, verified against upstream's
+# SHA256SUMS, and republished here under the kit's own asset names — one
+# release, one naming scheme, one digest authority for the installer either
+# way.
 #
 # A published release is never touched again. versions.json pins the digest of
 # every asset on it, so rewriting those assets would turn every pinned install
@@ -142,12 +151,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # macOS x86 (macos-13) dropped — that runner is the slow one. The rest
-        # of the distributions stay.
+        # ONLY the engines upstream does not publish. linux-x86_64 and
+        # macos-arm64 come prebuilt from upstream's release (the `upstream`
+        # job); these two are built here because nobody else builds them.
+        # (macOS x86 was dropped earlier still — that runner is the slow one.)
         include:
-          - { os: ubuntu-22.04, label: linux-x86_64, ext: "" }
           - { os: ubuntu-22.04-arm, label: linux-aarch64, ext: "" }
-          - { os: macos-14, label: macos-aarch64, ext: "" }
           - { os: windows-latest, label: windows-x86_64, ext: ".exe" }
     runs-on: ${{ matrix.os }}
     steps:
@@ -179,25 +188,80 @@ jobs:
           name: ingest-${{ matrix.label }}
           path: out/*
 
-  wheel:
+  upstream:
+    # WHAT UPSTREAM ALREADY BUILT IS NOT REBUILT. Since v0.3 the upstream
+    # release carries prebuilt engines for linux-x86_64 and macos-arm64 plus
+    # the wheel, each listed in a SHA256SUMS it publishes alongside them. This
+    # job downloads those three, refuses anything the sums file does not
+    # vouch for, unpacks the engines (upstream ships tar.gz archives with a
+    # README and LICENSE inside; the kit installs a bare binary), and stages
+    # everything under the kit's own asset names — upstream says macos-arm64
+    # where the kit says macos-aarch64, and the kit's names are the contract
+    # versions.json pins digests against.
+    #
+    # If the upstream release is missing any of the three, this fails NAMING
+    # the gap instead of quietly building it locally: a silent fallback would
+    # hide the day upstream stops shipping binaries, and the fix (restore the
+    # matrix row, or ask upstream) is a decision a person should make.
     needs: check
     if: needs.check.outputs.changed == 'true'
+    name: upstream prebuilts
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-        with:
-          repository: exasol-labs/exasol-json-tables
-          ref: ${{ needs.check.outputs.ref }}
-      - uses: astral-sh/setup-uv@v5
-      - name: Build wheel
+      - name: Download and verify upstream's prebuilt assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          set -euxo pipefail
-          uv build --wheel || uv pip wheel . -w dist --no-deps
-          ls -la dist
+          set -euo pipefail
+          ref="${{ needs.check.outputs.ref }}"
+          api="https://api.github.com/repos/$UPSTREAM/releases/tags/$ref"
+          assets=$(curl -fsSL -H "Authorization: Bearer $GH_TOKEN" "$api" | jq -r '.assets[].name')
+          # The wheel's filename carries upstream's own version string (0.3.0
+          # for tag v0.3), so it is read from the release listing, never
+          # derived from the tag.
+          wheel=$(printf '%s\n' "$assets" | grep -E '\.whl$' | head -1) || wheel=""
+          linux="json_to_parquet-$ref-linux-x86_64.tar.gz"
+          macos="json_to_parquet-$ref-macos-arm64.tar.gz"
+          missing=""
+          for need in "$linux" "$macos" "SHA256SUMS"; do
+            printf '%s\n' "$assets" | grep -qxF "$need" || missing="$missing $need"
+          done
+          [ -n "$wheel" ] || missing="$missing <wheel>"
+          if [ -n "$missing" ]; then
+            echo "::error::upstream release $ref does not carry:$missing. Either upstream stopped publishing prebuilts (restore the matrix rows in the ingest job) or the release is incomplete (ask upstream)."
+            exit 1
+          fi
+          mkdir -p dl out
+          base="https://github.com/$UPSTREAM/releases/download/$ref"
+          for asset in "$linux" "$macos" "$wheel" "SHA256SUMS"; do
+            curl -fsSL -o "dl/$asset" "$base/$asset"
+          done
+          # Every downloaded file must be vouched for by upstream's own sums
+          # file — a file it does not list is refused, not waved through.
+          cd dl
+          for f in "$linux" "$macos" "$wheel"; do
+            awk -v f="$f" '$2 == f' SHA256SUMS >> tocheck.sums
+            grep -qF "$f" tocheck.sums || { echo "::error::$f is not listed in upstream's SHA256SUMS"; exit 1; }
+          done
+          sha256sum -c tocheck.sums
+          # Unpack each engine and stage the binary under the kit's name. The
+          # archive layout is upstream's to change, so the binary is FOUND by
+          # name rather than assumed at a fixed path.
+          stage() {
+            mkdir -p "unpack-$2"
+            tar -xzf "$1" -C "unpack-$2"
+            bin=$(find "unpack-$2" -type f -name json_to_parquet | head -1)
+            test -n "$bin" || { echo "::error::no json_to_parquet binary inside $1"; exit 1; }
+            install -m 755 "$bin" "../out/$2"
+          }
+          stage "$linux" exasol-json-tables-ingest-linux-x86_64
+          stage "$macos" exasol-json-tables-ingest-macos-aarch64
+          cp "$wheel" ../out/
+          ls -la ../out
       - uses: actions/upload-artifact@v4
         with:
-          name: wheel
-          path: dist/*.whl
+          name: upstream-prebuilts
+          path: out/*
 
   shim:
     # THE WINDOWS UNBLOCK. Upstream's CLI reaches its engine only through
@@ -248,7 +312,7 @@ jobs:
           path: out/*
 
   publish:
-    needs: [check, ingest, wheel, shim]
+    needs: [check, ingest, upstream, shim]
     if: needs.check.outputs.changed == 'true'
     runs-on: ubuntu-latest
     steps:
@@ -281,11 +345,12 @@ jobs:
           tag_name: ${{ needs.check.outputs.tag }}
           name: json-tables ${{ needs.check.outputs.sha }} (prebuilt by CI)
           body: |
-            Prebuilt JSON Tables ingest engine (all distributions) + Python wheel,
-            built once from ${{ env.UPSTREAM }} ${{ needs.check.outputs.sha }} so users
-            need no Rust/cargo, plus the compiled `cargo` shim Windows needs to reach
-            that engine (CreateProcess resolves .exe only, so a script shim cannot
-            work there).
+            Prebuilt JSON Tables ingest engine (all distributions) + Python wheel
+            from ${{ env.UPSTREAM }} ${{ needs.check.outputs.sha }} so users need no
+            Rust/cargo — the engines and wheel upstream publishes are downloaded and
+            verified against its SHA256SUMS, the rest are built here — plus the
+            compiled `cargo` shim Windows needs to reach that engine (CreateProcess
+            resolves .exe only, so a script shim cannot work there).
 
             This release is immutable: versions.json pins the digest of every asset.
             version=${{ needs.check.outputs.sha }}
