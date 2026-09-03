@@ -366,6 +366,46 @@ nano_repair_creds() {
 
 # nano_install — pull the resolved image and start the container (first run
 # deploys the database with a generated SYS password). Idempotent.
+# nano_pull_image — fetch the pinned Runtime image, and nothing else.
+#
+# Its own STEP on the container platforms, so the two things that used to share
+# one heading are separated: this is network-bound and fails on connectivity or
+# a bad digest, while deploying the database is local and fails on a port
+# clash, a poisoned credential, an already-initialised volume or a readiness
+# timeout. They were the longest silent stretch of the install and its most
+# failure-prone phase, reported under one line.
+#
+# Idempotent, because the step boundary is not a promise about ordering: an
+# image already on the machine is not pulled again, and a container that
+# already exists needs no image at all. Both cases return 0 having said so in
+# the log, so nano_install can call this too and a skipped step 1 costs
+# nothing.
+nano_pull_image() {
+    _npi_engine="$(nano_engine)"
+    _npi_image="$(nano_image_ref)"
+    if nano_container_exists; then
+        _exakit_log_file "INFO  Container $EXAKIT_NANO_CONTAINER already exists; no image pull needed"
+        return 0
+    fi
+    if "$_npi_engine" image inspect "$_npi_image" >/dev/null 2>&1; then
+        _exakit_log_file "INFO  Image $_npi_image is already present; not pulling again"
+        return 0
+    fi
+    EXAKIT_ACTIVE_LABEL="Pulling image $_npi_image"
+    info "Pulling image $_npi_image"
+    _npi_pulled=0
+    for _npi_attempt in 1 2 3; do
+        if run_logged "$_npi_engine" pull "$_npi_image"; then
+            _npi_pulled=1
+            break
+        fi
+        [ "$_npi_attempt" -lt 3 ] && { warn "Pull attempt $_npi_attempt failed — retrying in $((_npi_attempt * 10))s"; sleep $((_npi_attempt * 10)); }
+    done
+    [ "$_npi_pulled" -eq 1 ] || die "Image pull failed after 3 attempts: $_npi_image (network/Docker Hub issue — see log)"
+    ok_step "Runtime image ready: $_npi_image"
+    return 0
+}
+
 nano_install() {
     _engine="$(nano_engine)"
     _image="$(nano_image_ref)"
@@ -434,21 +474,10 @@ nano_install() {
 ' "$(exakit_install_command 2>/dev/null || echo 'bash setup/setup-wsl.sh')" >&2
             die "Port $EXAKIT_DB_PORT is not available."
         fi
-        # Re-assigned per phase rather than printed: run_logged reads this at its
-        # next ui_spin_begin, so the words change on the operation boundary
-        # without starting a second animator.
-        EXAKIT_ACTIVE_LABEL="Pulling image $_image"
-        info "Pulling image $_image"
-        _pulled=0
-        for _attempt in 1 2 3; do
-            if run_logged "$_engine" pull "$_image"; then
-                _pulled=1
-                break
-            fi
-            [ "$_attempt" -lt 3 ] && { warn "Pull attempt $_attempt failed — retrying in $((_attempt * 10))s"; sleep $((_attempt * 10)); }
-        done
-        [ "$_pulled" -eq 1 ] || die "Image pull failed after 3 attempts: $_image (network/Docker Hub issue — see log)"
-        ok "Image pulled"
+        # The pull is its own STEP now, and this is the same function that step
+        # calls - so a direct nano_install (an update, a repair) still fetches the
+        # image, and neither path can drift from the other.
+        nano_pull_image
 
         # DOES THE DATA VOLUME ALREADY EXIST? This branch only knows that the
         # CONTAINER is absent, which is a different question - a removed

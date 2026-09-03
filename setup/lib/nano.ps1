@@ -545,6 +545,54 @@ function Start-NanoExisting {
 
 # Install-Nano - pull the pinned image and start the container (first run
 # deploys the database with a generated SYS password). Idempotent.
+# Install-NanoImage - fetch the pinned Runtime image, and nothing else.
+#
+# Its own STEP, so the two things that used to share one heading are separated:
+# this is network-bound and fails on connectivity or a bad digest, while
+# deploying the database is local and fails on a port clash, a poisoned
+# credential, an already-initialised volume or a readiness timeout. They were
+# the longest silent stretch of the install and its most failure-prone phase,
+# reported under one line.
+#
+# Idempotent, because a step boundary is not a promise about ordering: an image
+# already on the machine is not pulled again, and a container that already
+# exists needs no image at all. Both cases return having said so in the log, so
+# Install-Nano calls this too and a skipped step 1 costs nothing.
+# Twin of nano_pull_image in runtime-nano.sh.
+function Install-NanoImage {
+    $engine = Get-NanoEngine
+    $image = Get-NanoImageRef
+    if (Test-NanoContainerExists) {
+        Write-ExakitLog "INFO" "Container $($script:NanoContainer) already exists; no image pull needed"
+        return
+    }
+    $present = $false
+    $prevImgEAP = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = "Continue"
+        & $engine image inspect $image 2>&1 | Out-Null
+        $present = ($LASTEXITCODE -eq 0)
+    } catch {
+        $present = $false
+    } finally {
+        $ErrorActionPreference = $prevImgEAP
+    }
+    if ($present) {
+        Write-ExakitLog "INFO" "Image $image is already present; not pulling again"
+        return
+    }
+    $script:ExakitActiveLabel = "Pulling image $image"
+    Info "Pulling image $image"
+    $pulled = $false
+    for ($attempt = 1; $attempt -le 3; $attempt++) {
+        $code = Invoke-ExakitLogged $engine "pull" $image
+        if ($code -eq 0) { $pulled = $true; break }
+        if ($attempt -lt 3) { Warn2 "Pull attempt $attempt failed - retrying in $($attempt * 10)s"; Start-Sleep -Seconds ($attempt * 10) }
+    }
+    if (-not $pulled) { Fail "Image pull failed after 3 attempts: $image (network/Docker Hub issue - see log)" }
+    OkStep "Runtime image ready: $image"
+}
+
 function Install-Nano {
     $engine = Get-NanoEngine
     $image = Get-NanoImageRef
@@ -618,16 +666,10 @@ function Install-Nano {
         # Re-assigned per phase rather than printed: Invoke-ExakitLogged reads
         # this at its next Start-ExakitSpinner, so the words change on the
         # operation boundary without starting a second animator.
-        $script:ExakitActiveLabel = "Pulling image $image"
-        Info "Pulling image $image"
-        $pulled = $false
-        for ($attempt = 1; $attempt -le 3; $attempt++) {
-            $code = Invoke-ExakitLogged $engine "pull" $image
-            if ($code -eq 0) { $pulled = $true; break }
-            if ($attempt -lt 3) { Warn2 "Pull attempt $attempt failed - retrying in $($attempt * 10)s"; Start-Sleep -Seconds ($attempt * 10) }
-        }
-        if (-not $pulled) { Fail "Image pull failed after 3 attempts: $image (network/Docker Hub issue - see log)" }
-        Ok "Image pulled"
+        # The pull is its own STEP now, and this is the same function that step
+        # calls - so a direct Install-Nano (an update, a repair) still fetches the
+        # image, and neither path can drift from the other.
+        Install-NanoImage
 
         # Before anything reads or writes the secret: a container started while
         # the file was missing leaves a DIRECTORY at that path, and every step

@@ -59,8 +59,17 @@ exakit_resolve_install_versions
 EXAKIT_CURRENT_STEP="requirements"
 nano_check_requirements
 
-# --- step 2: Nano container --------------------------------------------------
-if begin_step runtime "Step 1/5  Exasol Nano container"; then
+# --- step 2: the Runtime image ----------------------------------------------
+# Its own step, matching the macOS shape and heading. What it fetches is the
+# Nano image rather than a native launcher, so the lines UNDER the heading name
+# the image - the two platforms install different things through the same step.
+if begin_step launcher "Step 1/6  Exasol launcher"; then
+    nano_pull_image
+    mark_step launcher
+fi
+
+# --- step 3: local deployment ------------------------------------------------
+if begin_step runtime "Step 2/6  Local database deployment"; then
     nano_install
     mark_step runtime
 else
@@ -76,8 +85,8 @@ else
     fi
 fi
 
-# --- steps 2-5: exapump, MCP server, pyexasol, exakit helper (shared) ---------
-kit_shared_steps 2 5 "$SCRIPT_DIR" "$KIT_ROOT"
+# --- steps 3-6: exapump, MCP server, pyexasol, exakit helper (shared) ---------
+kit_shared_steps 3 6 "$SCRIPT_DIR" "$KIT_ROOT"
 
 exakit_finish
 connection_summary

@@ -1820,5 +1820,28 @@ has "...and on Windows"                  'Bearer $($env:GITHUB_TOKEN)'    "$JT_P
 has "the add-on failure is only logged"  '_exakit_log_file "WARN  $_mp_id did not finish installing"' "$CO_SH"
 lacks "no note is printed under the frame" '_exakit_addon_note warn \\' "$CO_SH"
 
+printf '\n== a failing add-on is readable, not spliced through the table ==\n'
+
+# A json-tables download failure arrived on a real machine as
+#   | [v] exasol-vscode  ok Exasol view in VS Code's sidebar (3s) |eleases/download/...
+#   | [ ] Skip                                                    |ownloaded or verified (see log)
+# - the reason written straight through the frame of the live add-on table and
+# effectively unreadable. warn and error are the two printers the quiet flag
+# deliberately does NOT gate, which is exactly why they are the two that reach
+# it, and every add-on module calls them directly rather than the deferring
+# helper. So they defer themselves.
+COMMON_D="$(cat "$ROOT/setup/lib/common.sh")"
+COMMON_PS_D="$(cat "$ROOT/setup/lib/exakit-common.ps1")"
+
+has   "the shell defers under a table"  "_exakit_defer_under_addon_table" "$COMMON_D"
+check "...from both printers"           "2" \
+    "$(printf '%s\n' "$COMMON_D" | grep -c 'if _exakit_defer_under_addon_table')"
+has   "Warn2 defers too"                'if ($script:ExakitAddonTableLive) {' "$COMMON_PS_D"
+check "...and so does the error printer" "2" \
+    "$(printf '%s\n' "$COMMON_PS_D" | grep -c 'Kind = "warn"; Text = $Msg')"
+# The log still gets every line: deferring must never mean losing.
+check "the shell still logs both"       "2" \
+    "$(printf '%s\n' "$COMMON_D" | grep -cE 'if _exakit_defer_under_addon_table .*_exakit_log_file')"
+
 echo "passed: $PASS, failed: $FAIL"
 [ "$FAIL" -eq 0 ]

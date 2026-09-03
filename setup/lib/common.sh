@@ -231,8 +231,32 @@ heading() {
     printf '  %s%s%s %s\n' "${UI_OK:-}" "${UI_ARROW:->}" "${UI_RESET:-}" "$*"
     _exakit_log_file "INFO  $*"
 }
-warn() { printf '      %s!%s %s\n'  "${UI_WARN:-}" "${UI_RESET:-}" "$*" >&2;        _exakit_log_file "WARN  $*"; }
-error(){ printf '      %s%s%s %s\n' "${UI_ERR:-}"  "${UI_CROSS:-[x]}" "${UI_RESET:-}" "$*" >&2; _exakit_log_file "ERROR $*"; }
+# A LIVE ADD-ON TABLE OWNS THE SCREEN: it redraws its own frame, so anything
+# printed underneath is written INTO it, and a warning that cannot be read is
+# not a warning. Observed for real - a json-tables download failure arrived as
+# "...eleases/download/..." spliced through the table rows, with the reason lost.
+#
+# _exakit_addon_note already defers for this, but every add-on module calls
+# warn/error directly, so deferring HERE covers all of them and any future one.
+# warn and error are exactly the two printers the quiet flag does NOT gate,
+# which is why they are the two that reach the frame.
+# twins: Warn2 and Write-ExakitError in exakit-common.ps1.
+_exakit_defer_under_addon_table() {
+    [ "${EXAKIT_ADDON_TABLE_LIVE:-0}" = 1 ] || return 1
+    EXAKIT_ADDON_NOTES="${EXAKIT_ADDON_NOTES}warn|$1
+"
+    return 0
+}
+warn() {
+    if _exakit_defer_under_addon_table "$*"; then _exakit_log_file "WARN  $*"; return 0; fi
+    printf '      %s!%s %s\n'  "${UI_WARN:-}" "${UI_RESET:-}" "$*" >&2
+    _exakit_log_file "WARN  $*"
+}
+error() {
+    if _exakit_defer_under_addon_table "$*"; then _exakit_log_file "ERROR $*"; return 0; fi
+    printf '      %s%s%s %s\n' "${UI_ERR:-}"  "${UI_CROSS:-[x]}" "${UI_RESET:-}" "$*" >&2
+    _exakit_log_file "ERROR $*"
+}
 
 # Menu rendering: options nest under the "Choose ..." action line with the
 # number in the accent colour; the how-to-answer hint is a dim afterthought.

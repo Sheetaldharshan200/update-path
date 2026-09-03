@@ -453,5 +453,54 @@ check "...and so does Windows"             "yes" \
 has   "the shell announces the runtime" "running on 127.0.0.1" "$INSTALL_SH"
 has   "...and Windows announces it"     "running on 127.0.0.1" "$INSTALL_PS"
 
+printf '\n== all three platforms install in the same six steps ==\n'
+
+MAC_SH="$(cat "$ROOT/setup/setup-macos.sh")"
+WSL_SH="$(cat "$ROOT/setup/setup-wsl.sh")"
+WIN_PS="$(cat "$ROOT/setup/setup-windows-docker.ps1")"
+
+# The container platforms used to fold "fetch the image" and "deploy the
+# database" into one step, so Step 1/5 covered an 18-second network download AND
+# the whole deploy - the longest silent stretch of the install and its most
+# failure-prone phase, under one heading. macOS had always split them.
+for _six_h in "Exasol launcher" "Local database deployment"; do
+    has "macOS has: $_six_h"   "$_six_h" "$MAC_SH"
+    has "WSL has: $_six_h"     "$_six_h" "$WSL_SH"
+    has "Windows has: $_six_h" "$_six_h" "$WIN_PS"
+done
+
+# Six on every platform, and the shared tail told the right total.
+# Counted as DECLARATIONS, not as label text: the two shell installers declare
+# their first two steps and delegate the remaining four to kit_shared_steps, so
+# a raw count of 'Step n/6' strings would differ by platform for a reason that
+# has nothing to do with the shape being the same.
+check "macOS declares two, then delegates" "2" \
+    "$(printf '%s\n' "$MAC_SH" | grep -c '^if begin_step ')"
+check "WSL declares two, then delegates" "2" \
+    "$(printf '%s\n' "$WSL_SH" | grep -c '^if begin_step ')"
+check "Windows declares all six itself" "6" \
+    "$(printf '%s\n' "$WIN_PS" | grep -c 'Begin-ExakitStep "')"
+# The shared tail must be told the right start and total, or the four steps it
+# owns would number themselves against the old five.
+check "macOS hands over at 3 of 6" "1" \
+    "$(printf '%s\n' "$MAC_SH" | grep -c 'kit_shared_steps 3 6')"
+check "WSL hands over at 3 of 6"   "1" \
+    "$(printf '%s\n' "$WSL_SH" | grep -c 'kit_shared_steps 3 6')"
+# And no installer still advertises a five-step run.
+lacks "macOS has no stale total"   "/5  " "$MAC_SH"
+lacks "WSL has no stale total"     "/5  " "$WSL_SH"
+lacks "Windows has no stale total" "/5  " "$WIN_PS"
+
+# The pull is idempotent, because a step boundary is not a promise about
+# ordering: a re-run, an update or a repair calls the deploy directly.
+NANO_SH_6="$(cat "$ROOT/setup/lib/runtime-nano.sh")"
+NANO_PS_6="$(cat "$ROOT/setup/lib/nano.ps1")"
+has "the shell pull is a function"  "nano_pull_image() {"        "$NANO_SH_6"
+has "...and Windows too"            "function Install-NanoImage" "$NANO_PS_6"
+has "the shell deploy delegates"    "        nano_pull_image"    "$NANO_SH_6"
+has "...and Windows too"            "        Install-NanoImage"  "$NANO_PS_6"
+has "an existing image is not refetched" "already present; not pulling again" "$NANO_SH_6"
+has "...and Windows says so too"         "already present; not pulling again" "$NANO_PS_6"
+
 printf '\n%s: %d passed, %d failed\n' "$(basename "$0")" "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
