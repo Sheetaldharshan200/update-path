@@ -84,6 +84,9 @@ EXAKIT_PYEXASOL_VERSION_FALLBACK="${EXAKIT_PYEXASOL_VERSION_FALLBACK:-2.3.2}"
 EXAKIT_PERSONAL_REPO="exasol/exasol-personal"
 EXAKIT_EXAPUMP_REPO="exasol-labs/exapump"
 EXAKIT_NANO_IMAGE="exasol/nano"
+# Captured before the default lands: the manifest resolution below must never
+# outrank an answer the caller gave in the environment.
+_EXAKIT_KIT_REPO_FROM_ENV="${EXAKIT_KIT_REPO:-${EXAKIT_REPO:-}}"
 EXAKIT_KIT_REPO="${EXAKIT_KIT_REPO:-${EXAKIT_REPO:-krishna-exasol/update-path}}"
 EXAKIT_VERSION_LOOKUP_CONNECT_TIMEOUT="${EXAKIT_VERSION_LOOKUP_CONNECT_TIMEOUT:-5}"
 EXAKIT_VERSION_LOOKUP_MAX_TIME="${EXAKIT_VERSION_LOOKUP_MAX_TIME:-12}"
@@ -94,7 +97,52 @@ EXAKIT_VERSION_LOOKUP_MAX_TIME="${EXAKIT_VERSION_LOOKUP_MAX_TIME:-12}"
 # trust domain that already serves install.sh — and cached under the kit home.
 # Nothing is collected on our side: the request carries a User-Agent header and
 # no query string, and no third party is involved.
+_EXAKIT_VERSIONS_URL_FROM_ENV="${EXAKIT_VERSIONS_URL:-}"
 EXAKIT_VERSIONS_URL="${EXAKIT_VERSIONS_URL:-https://raw.githubusercontent.com/${EXAKIT_KIT_REPO}/main/versions.json}"
+
+# --- an installed kit follows its own source ---------------------------------
+#
+# EXAKIT_KIT_REPO names the repository this kit copy talks to at runtime: the
+# versions manifest above, `exakit update exakit` (which replaces this very
+# kit), and the skills refresh all download from it. Its default is the
+# repository the product is published from - right for a fresh curl|sh, and
+# silently wrong for every kit installed from a fork. The manifest records
+# where a kit really came from (kit.source), and the release assets already
+# follow it (json_tables_mirror_repo) - but these URLs kept pointing at the
+# default. The result was a split brain no fork install could verify: add-on
+# assets downloaded from the fork, digest pins fetched from the default, and
+# every install ending in a checksum mismatch that looked like corruption.
+# Worse, `exakit update exakit` would quietly replace a fork's kit with the
+# default repository's code.
+#
+# So when the environment named no repository, the manifest decides. An
+# explicit EXAKIT_KIT_REPO / EXAKIT_REPO / EXAKIT_VERSIONS_URL still outranks
+# it - pointing one command somewhere else is a deliberate act. Self-contained
+# on purpose: manifest_get is not defined yet and requires python3 fatally,
+# while a kit source is three fields of one line - and a machine with no
+# python3, or no manifest, simply keeps the default.
+if [ -z "$_EXAKIT_KIT_REPO_FROM_ENV" ] && [ -f "$EXAKIT_MANIFEST" ] && \
+   command -v python3 >/dev/null 2>&1; then
+    _ekr_src="$(python3 - "$EXAKIT_MANIFEST" <<'EXAKIT_KIT_SRC_PY' 2>/dev/null
+import json, sys
+try:
+    doc = json.load(open(sys.argv[1]))
+except Exception:
+    raise SystemExit(1)
+src = ((doc.get("kit") or {}).get("source") or "").strip()
+repo = src.split("@", 1)[0]
+parts = repo.split("/")
+ok = (len(parts) == 2 and all(p and all(c.isalnum() or c in "._-" for c in p)
+                              for p in parts))
+print(repo if ok else "")
+EXAKIT_KIT_SRC_PY
+)" || _ekr_src=""
+    if [ -n "$_ekr_src" ]; then
+        EXAKIT_KIT_REPO="$_ekr_src"
+        [ -z "$_EXAKIT_VERSIONS_URL_FROM_ENV" ] && \
+            EXAKIT_VERSIONS_URL="https://raw.githubusercontent.com/${EXAKIT_KIT_REPO}/main/versions.json"
+    fi
+fi
 # The public install entry point, which is NOT the raw repository URL: someone
 # reinstalling months from now should be sent to the address the product
 # publishes, not to a branch of whichever repository built their copy.

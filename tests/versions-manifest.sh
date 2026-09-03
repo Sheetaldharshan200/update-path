@@ -2608,6 +2608,42 @@ else
     done
 fi
 
+# ---------------------------------------------------------------------------
+echo "an installed kit follows its own source:"
+# THE BUG: EXAKIT_KIT_REPO defaulted to the published repository and never read
+# the manifest, while json_tables_mirror_repo already followed kit.source. A
+# kit installed from a fork downloaded release assets from the fork and digest
+# pins from the default - a split brain where every add-on install died on a
+# checksum mismatch that looked like corruption - and `exakit update exakit`
+# would have replaced the fork's kit with the default repository's code.
+_SRC_HOME="$WORK/kit-source-home"
+mkdir -p "$_SRC_HOME"
+printf '{"kit":{"source":"owner-a/fork-b@main"}}\n' > "$_SRC_HOME/manifest.json"
+check "the manifest's kit.source decides the repo" "owner-a/fork-b" "$(
+    EXAKIT_HOME="$_SRC_HOME" bash -c '. "'"$ROOT"'/setup/lib/common.sh" >/dev/null 2>&1; printf %s "$EXAKIT_KIT_REPO"')"
+check "and the versions URL follows it" \
+    "https://raw.githubusercontent.com/owner-a/fork-b/main/versions.json" "$(
+    EXAKIT_HOME="$_SRC_HOME" bash -c '. "'"$ROOT"'/setup/lib/common.sh" >/dev/null 2>&1; printf %s "$EXAKIT_VERSIONS_URL"')"
+check "an explicit EXAKIT_KIT_REPO still outranks the manifest" "someone/else" "$(
+    EXAKIT_HOME="$_SRC_HOME" EXAKIT_KIT_REPO="someone/else" bash -c '. "'"$ROOT"'/setup/lib/common.sh" >/dev/null 2>&1; printf %s "$EXAKIT_KIT_REPO"')"
+check "an explicit versions URL is never recomputed" "https://example.invalid/v.json" "$(
+    EXAKIT_HOME="$_SRC_HOME" EXAKIT_VERSIONS_URL="https://example.invalid/v.json" bash -c '. "'"$ROOT"'/setup/lib/common.sh" >/dev/null 2>&1; printf %s "$EXAKIT_VERSIONS_URL"')"
+check "no manifest keeps the published default" "krishna-exasol/update-path" "$(
+    EXAKIT_HOME="$WORK/kit-source-none" bash -c '. "'"$ROOT"'/setup/lib/common.sh" >/dev/null 2>&1; printf %s "$EXAKIT_KIT_REPO"')"
+# kit.source is interpolated into download URLs, so a value that is not
+# owner/name is refused whole, never repaired into something plausible.
+printf '{"kit":{"source":"evil.example/x;id@main"}}\n' > "$_SRC_HOME/manifest.json"
+check "a hostile kit.source is refused, not repaired" "krishna-exasol/update-path" "$(
+    EXAKIT_HOME="$_SRC_HOME" bash -c '. "'"$ROOT"'/setup/lib/common.sh" >/dev/null 2>&1; printf %s "$EXAKIT_KIT_REPO"')"
+if command -v pwsh >/dev/null 2>&1; then
+    printf '{"kit":{"source":"owner-a/fork-b@main"}}\n' > "$_SRC_HOME/manifest.json"
+    check "powershell: the manifest's kit.source decides the repo" "owner-a/fork-b" "$(
+        EXAKIT_HOME="$_SRC_HOME" pwsh -NoProfile -Command '. "'"$ROOT"'/setup/lib/exakit-common.ps1" 2>$null; $script:KitRepo' 2>/dev/null | tail -1)"
+    printf '{"kit":{"source":"evil.example/x;id@main"}}\n' > "$_SRC_HOME/manifest.json"
+    check "powershell: a hostile kit.source is refused" "krishna-exasol/update-path" "$(
+        EXAKIT_HOME="$_SRC_HOME" pwsh -NoProfile -Command '. "'"$ROOT"'/setup/lib/exakit-common.ps1" 2>$null; $script:KitRepo' 2>/dev/null | tail -1)"
+fi
+
 echo
 echo "passed: $PASS, failed: $FAIL"
 [ "$FAIL" -eq 0 ]

@@ -194,7 +194,29 @@ $script:DbPort          = if ($env:EXAKIT_DB_PORT) { $env:EXAKIT_DB_PORT } else 
 # no query string, and no third party is involved.
 if ($env:EXAKIT_KIT_REPO) { $script:KitRepo = $env:EXAKIT_KIT_REPO }
 elseif ($env:EXAKIT_REPO) { $script:KitRepo = $env:EXAKIT_REPO }
-else { $script:KitRepo = "krishna-exasol/update-path" }
+else {
+    # AN INSTALLED KIT FOLLOWS ITS OWN SOURCE. Twin of the manifest resolution
+    # in common.sh: the default repository is right for a fresh irm|iex and
+    # silently wrong for every kit installed from a fork - versions pins, the
+    # kit self-update and the skills refresh would all talk to the default
+    # while the release assets follow the manifest, a split brain no fork
+    # install can verify. The environment still outranks the manifest, and a
+    # source that does not look like owner/name is refused, not repaired -
+    # this value is interpolated into download URLs.
+    $script:KitRepo = "krishna-exasol/update-path"
+    $manifestPath = Join-Path $script:ExakitHome "manifest.json"
+    if (Test-Path $manifestPath) {
+        try {
+            $manifestDoc = Get-Content -Raw -Path $manifestPath -Encoding UTF8 | ConvertFrom-Json
+            $kitSource = ""
+            if ($manifestDoc.kit -and $manifestDoc.kit.source) { $kitSource = [string]$manifestDoc.kit.source }
+            $kitSourceRepo = ($kitSource -split "@", 2)[0]
+            if ($kitSourceRepo -match '^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$') {
+                $script:KitRepo = $kitSourceRepo
+            }
+        } catch { }
+    }
+}
 $script:VersionsUrl = if ($env:EXAKIT_VERSIONS_URL) { $env:EXAKIT_VERSIONS_URL } else { "https://raw.githubusercontent.com/$($script:KitRepo)/main/versions.json" }
 # The public install entry point for Windows. Twin of EXAKIT_INSTALL_URL in
 # common.sh, pointing at the PowerShell installer rather than the shell one.
