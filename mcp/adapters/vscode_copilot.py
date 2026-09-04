@@ -19,6 +19,7 @@ from .base import (
     DetectionResult,
     LocationResult,
     RenderResult,
+    json_config_is_kit_only,
 )
 
 
@@ -80,39 +81,16 @@ class VSCodeCopilotAdapter(ClientAdapter):
         )
 
     def detect(self, environment: ExecutionEnvironment) -> DetectionResult:
-        location = self.locate(environment)
-        evidence = list(location.evidence)
-        if not location.available or location.path is None:
-            return DetectionResult(
-                detected=False,
-                confidence="none",
-                location=location,
-                evidence=evidence,
-            )
-        if location.path.exists():
-            evidence.append("Config file exists.")
-            return DetectionResult(
-                detected=True,
-                confidence="high",
-                location=location,
-                evidence=evidence,
-            )
-        if location.path.parent.exists() or shutil.which("code"):
-            evidence.append("VS Code is installed but has no global MCP config yet.")
-            return DetectionResult(
-                detected=True,
-                confidence="medium",
-                location=location,
-                evidence=evidence,
-            )
-        evidence.append("No VS Code evidence was found.")
-        return DetectionResult(
-            detected=False,
-            confidence="low",
-            location=location,
-            evidence=evidence,
+        # VS Code's User directory holds settings.json and more when the editor
+        # is installed; one mcp.json of ours alone is not the editor.
+        return self.detect_from_evidence(
+            environment,
+            client_label="VS Code",
+            programs=("code", "code-insiders"),
+            bundles=("Visual Studio Code", "Visual Studio Code - Insiders"),
+            kit_only=lambda path: json_config_is_kit_only(path, "servers"),
+            override_env=self._CONFIG_ENV_NAME,
         )
-
     def inspect(self, path: Path, server_name: str) -> AdapterInspection:
         if not path.exists():
             return AdapterInspection(

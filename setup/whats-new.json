@@ -33,5 +33,16 @@
     "exakit version --json and mcp-status --json return objects.",
     "EXAKIT_MCP_CLIENTS=all now means the clients installed here.",
     "A busy database port is reported as a conflict, not running."
+  ],
+  "0.2.3": [
+    "EXAKIT_MCP_CLIENTS=all skips clients the kit only wrote a file for.",
+    "A client counts as installed by its program or app, not its config."
+  ],
+  "0.2.4": [
+    "exakit sql --json returns one object: rows, or error plus remedy.",
+    "exakit status --json names a remedy for each unfinished step.",
+    "mcp-doctor blames only the client whose config drifted.",
+    "mcp-setup re-offers a client whose config lost the kit's entry.",
+    "SELECT TOP and a busy-port TLS failure now come with a hint."
   ]
 }

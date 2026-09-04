@@ -182,12 +182,41 @@ function Invoke-CmdStatus {
     if ($Json) {
         $statusWord = $status
         if ($installing) { $statusWord = "installing" }
+        # Remedies are additive, one per component that needs one. Twin of the
+        # map in cmd_status: a step the installer never finished names its
+        # repair here, so a session that picks the machine up after a crashed
+        # install sees more than "running".
+        $remedies = [ordered]@{}
+        if (-not $pyexasol) { $remedies["pyexasol"] = "exakit update" }
+        if (-not $running) { $remedies["database"] = "exakit start" }
+        if ($installing) { $remedies["install"] = "the installer is still running (step: $installStep) - poll exakit status --json until status is running" }
+        $stepsMissing = @()
+        if (-not $installing) {
+            $stepRemedies = @(
+                @("launcher", "re-run the installer (it resumes at the unfinished step)"),
+                @("runtime", "re-run the installer (it resumes at the unfinished step)"),
+                @("exapump", "re-run the installer (it resumes at the unfinished step)"),
+                @("mcp", "exakit mcp-setup"),
+                @("pyexasol", "exakit update"),
+                @("exakit_helper", "re-run the installer (it resumes at the unfinished step)")
+            )
+            foreach ($pair in $stepRemedies) {
+                if (-not ($steps -contains $pair[0])) {
+                    $stepsMissing += $pair[0]
+                    if (-not $remedies.Contains($pair[0])) { $remedies[$pair[0]] = $pair[1] }
+                }
+            }
+        }
+        $topRemedy = $null
+        if ($remedies.Contains("install")) { $topRemedy = $remedies["install"] }
+        elseif ($remedies.Contains("database")) { $topRemedy = $remedies["database"] }
+        elseif ($stepsMissing.Count -gt 0) { $topRemedy = $remedies[$stepsMissing[0]] }
         [ordered]@{
             installed       = $true
             status          = $statusWord
             installing      = $installing
             install_step    = $(if ($installing) { $installStep } else { $null })
-            remedy          = $(if ($installing) { "the installer is still running (step: $installStep) - poll exakit status --json until status is running" } elseif ($running) { $null } else { "exakit start" })
+            remedy          = $topRemedy
             kit_level       = "$(Get-ExakitManifestValue 'kit_level')"
             runtime         = [ordered]@{ type = $type; status = $status }
             running         = $running
@@ -195,7 +224,9 @@ function Invoke-CmdStatus {
             autostart       = ((Get-ExakitManifestValue "autostart.enabled") -eq $true)
             datasets_loaded = $datasets
             steps_completed = $steps
+            steps_missing   = $stepsMissing
             pyexasol        = $(if ($pyexasol) { "$pyexasol" } else { $null })
+            remedies        = $remedies
             # Both keys, always. A reason with no date cannot be told from a
             # current one, and an undated note that outlived its cause is exactly
             # how a healthy machine comes to look broken - which is why the note
@@ -567,6 +598,9 @@ function Invoke-CmdStart {
         if ($id -eq "database") { continue }
         Start-ExakitService -Id $id
     }
+    # The database is up, so a note left by an earlier start that could not is
+    # no longer true. Only a runtime note goes; an install-step note stays.
+    try { if ((Get-ExakitRuntimeStatus) -like "running*") { Clear-ExakitRuntimeFailureNote } } catch { }
 }
 
 function Invoke-CmdStop {
@@ -2249,7 +2283,7 @@ function Invoke-CmdInfoJson {
 # sandbox - the starter-kit profile is the ADMIN connection, and the real
 # boundary is the read-only MCP user.
 function Invoke-CmdSql {
-    param([string]$Statement, [switch]$Write, [string]$File = "")
+    param([string]$Statement, [switch]$Write, [string]$File = "", [switch]$Json)
     Assert-ExakitInstalled
     # The saved-workflow path the skill teaches: `exakit sql --file <path>`.
     # A file's leading "-- comment" line used to be parsed as an option, so the
@@ -2288,12 +2322,61 @@ function Invoke-CmdSql {
         }
     }
 
+    if ($Json) {
+        # One JSON object on stdout, nothing else there. exapump's own
+        # `--format json` puts the rows on stdout and every "[1/1] ..." and
+        # "1 statement executed" line on stderr, so the two are separable
+        # without parsing. Twin of the --json branch in cmd_sql:
+        #   {"ok": true,  "rows": [...]}
+        #   {"ok": false, "error": "<engine text>", "remedy": "<...>" | null}
+        $errFile = Join-Path ([System.IO.Path]::GetTempPath()) ("exakit-sql-err-" + [System.IO.Path]::GetRandomFileName())
+        $rowsText = ""
+        $code = 1
+        $previousEap = $ErrorActionPreference
+        try {
+            $ErrorActionPreference = "Continue"
+            $rowsText = & (Get-ExapumpCli) @("sql", "-p", $script:ExapumpProfile, "-f", "json", $Statement) 2>$errFile | Out-String
+            $code = $LASTEXITCODE
+        } catch {
+            $rowsText = ""
+        } finally {
+            $ErrorActionPreference = $previousEap
+        }
+        $errText = ""
+        if (Test-Path $errFile) { $errText = Get-Content -Raw -Path $errFile -ErrorAction SilentlyContinue; Remove-Item -Path $errFile -Force -ErrorAction SilentlyContinue }
+        if ($code -eq 0) {
+            $rows = @()
+            if ("$rowsText".Trim()) { try { $rows = @("$rowsText" | ConvertFrom-Json) } catch { $rows = @() } }
+            [ordered]@{ ok = $true; rows = $rows } | ConvertTo-Json -Depth 6 -Compress | Write-Output
+            exit 0
+        }
+        $remedyLines = @(Get-ExakitDbErrorRemedy -Text $errText -Statement $Statement)
+        $errLines = @(("$errText" -split "`r?`n") | Where-Object { $_.Trim() })
+        # exapump ends a failed run with one "Error: <engine text>" line; that
+        # is the message. Failing that, the first failure-looking line that is
+        # not exapump's own framing ("Error in statement 1:", "Hint: ...").
+        $detail = "query failed"
+        $summary = @($errLines | Where-Object { $_.Trim().StartsWith("Error: ") })
+        if ($summary.Count -gt 0) {
+            $detail = $summary[$summary.Count - 1].Trim().Substring(7)
+        } else {
+            foreach ($l in $errLines) {
+                $t = $l.Trim()
+                if (($t -match 'rror' -or $t -match 'failed') -and $t -notlike 'Hint:*' -and $t -notlike 'Error in statement*') { $detail = $t; break }
+            }
+            if ($detail -eq "query failed" -and $errLines.Count -gt 0) { $detail = $errLines[0].Trim() }
+        }
+        $remedyText = $null
+        if ($remedyLines.Count -gt 0) { $remedyText = ($remedyLines -join " ") }
+        [ordered]@{ ok = $false; error = $detail; remedy = $remedyText } | ConvertTo-Json -Depth 3 -Compress | Write-Output
+        exit 1
+    }
     $result = Invoke-Exapump @("sql", "-p", $script:ExapumpProfile, $Statement)
     if (-not $result.Success) {
         # The whole point: say what to do about it - FIRST, and on the output
         # stream with the error, not as a warning after it. When the kit has a
         # specific remedy, exapump's generic "Hint:" line is noise and is dropped.
-        $remedy = @(Get-ExakitDbErrorRemedy $result.Output)
+        $remedy = @(Get-ExakitDbErrorRemedy -Text $result.Output -Statement $Statement)
         if ($remedy.Count -gt 0) {
             foreach ($line in $remedy) { Write-Output "! $line" }
             if ($result.Output) {
@@ -2383,29 +2466,38 @@ try {
             # A lone --help is unambiguous; a statement may contain the text.
             if (@($RestArgs).Count -eq 1 -and ($RestArgs[0] -eq "--help" -or $RestArgs[0] -eq "-h")) { Show-ExakitUsage -Topic "sql"; break }
             $sqlWrite = ($RestArgs -contains "--write" -or $RestArgs -contains "-Write")
+            $sqlJson = ($RestArgs -contains "--json" -or $RestArgs -contains "-j")
             $sqlFile = ""
             $sqlRest = @()
             $expectFile = $false
             foreach ($a in @($RestArgs)) {
                 if ($expectFile) { $sqlFile = $a; $expectFile = $false; continue }
-                if ($a -in @("--write", "-Write")) { continue }
+                if ($a -in @("--write", "-Write", "--json", "-j")) { continue }
                 if ($a -in @("--file", "-f", "-File")) { $expectFile = $true; continue }
                 if ($a -like "--file=*") { $sqlFile = $a.Substring(7); continue }
-                if ($a -like "--*") { Fail "Unknown option '$a' for sql (supported: --file <path>, --write, --help)." }
+                if ($a -like "--*") { Fail "Unknown option '$a' for sql (supported: --file <path>, --json, --write, --help)." }
                 $sqlRest += $a
             }
             if ($expectFile) { Fail "--file needs a path: exakit sql --file ~\.exasol-starter-kit\workflows\query.sql" }
             if ($sqlRest.Count -gt 1) { Fail "Pass ONE statement, quoted: exakit sql 'SELECT 1'" }
             $sqlText = ""
             if ($sqlRest.Count -eq 1) { $sqlText = $sqlRest[0] }
-            Invoke-CmdSql -Statement $sqlText -Write:$sqlWrite -File $sqlFile
+            Invoke-CmdSql -Statement $sqlText -Write:$sqlWrite -File $sqlFile -Json:$sqlJson
         }
         "repair-runtime" {
             Invoke-CmdRepairRuntime -Yes:([bool]($RestArgs -contains "--yes" -or $RestArgs -contains "-y" -or $RestArgs -contains "-Yes"))
         }
         "autostart"    { Invoke-CmdAutostart -Action (($RestArgs | Select-Object -First 1)) }
         "data-load"    { Invoke-CmdDataLoad -Argument ($RestArgs | Select-Object -First 1) }
-        "mcp-setup"    { Invoke-CmdMcpSetup }
+        "mcp-setup"    {
+            # Options are refused, not ignored: `mcp-setup --clients x` used to run
+            # the plain setup, say "already connected" and exit 0. Twin of cmd_mcp_setup.
+            foreach ($a in @($RestArgs)) {
+                if ("$a" -like "-*") { Write-Host ""; Write-Host "  [x] Unknown option '$a' for mcp-setup (it takes none; name clients with EXAKIT_MCP_CLIENTS=claude,codex exakit mcp-setup)."; exit 2 }
+                Write-Host ""; Write-Host "  [x] mcp-setup takes no arguments; name clients with EXAKIT_MCP_CLIENTS=$a exakit mcp-setup"; exit 2
+            }
+            Invoke-CmdMcpSetup
+        }
         "mcp-doctor"   {
             # Diagnosis order: a stopped database is diagnosed as exactly that
             # (exit 3, remedy named) before anything that needs it runs - the

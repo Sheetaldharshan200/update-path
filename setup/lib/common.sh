@@ -843,6 +843,22 @@ exakit_clear_failure_note() {
     rm -f "$(exakit_failure_note_file)" 2>/dev/null
     return 0
 }
+# exakit_clear_runtime_failure_note — retire the note only if it is about the
+# database not starting. `exakit start` dies with a note when the port is held
+# by another process; once the database IS running that note is history, but
+# `status --json` kept reporting it as `last_failure` beside "running". Clearing
+# every note here would be wrong the other way: a note about an install step
+# that never finished ("the AI client configuration did not finish") is still
+# true after a start, and start must not hide it. ⇄ twin: Clear-ExakitRuntimeFailureNote.
+exakit_clear_runtime_failure_note() {
+    _crf_file="$(exakit_failure_note_file)"
+    [ -f "$_crf_file" ] || return 0
+    case "$(head -n 1 "$_crf_file" 2>/dev/null)" in
+        *"exakit start"*|*"cannot start"*|*"held by another process"*|*"not running"*)
+            rm -f "$_crf_file" 2>/dev/null ;;
+    esac
+    return 0
+}
 
 # reject <message> — refuse BAD INPUT and stop, without recording a failure note.
 #
@@ -896,23 +912,43 @@ die() {
 # unexpected FETCH_", "object X not found"); each match here appends the one
 # line that names the fix. Callers pass whatever output they captured; unknown
 # errors print nothing extra, so this can never make a message worse.
-# exakit_db_error_remedy <engine text> — the remedy lines for a raw database
-# error, one per line on stdout, nothing when none applies. Data, not
+# exakit_db_error_remedy <engine text> [statement] — the remedy lines for a raw
+# database error, one per line on stdout, nothing when none applies. Data, not
 # presentation: `exakit sql` prints these FIRST and on the same stream as the
 # error, because on stderr after the output an agent capturing stdout never
 # saw them, and one capturing both read exapump's generic "Hint:" first.
+# The statement is optional and exists for the one fault the engine text does
+# not name: `SELECT TOP n` fails as "unexpected UNSIGNED_INTEGER_" (TOP parses
+# as an alias, the number after it is the surprise), so the text alone cannot
+# tell it from any other syntax error - the statement can.
 # ⇄ twin: Get-ExakitDbErrorRemedy.
 exakit_db_error_remedy() {
+    _dber_stmt="$(printf '%s' "${2:-}" | tr '[:lower:]' '[:upper:]' | tr '\n\t' '  ')"
     case "$1" in
         *"onnection refused"*|*"Errno 61"*|*"Errno 111"*|*"could not connect"*|*"Could not connect"*)
             printf '%s\n' "That is the database not answering — it is stopped or unreachable. Start it with: exakit start (then check: exakit status)"
             ;;
-    esac
-    case "$1" in
-        *"unexpected FETCH_"*|*"unexpected TOP_"*|*"FETCH FIRST"*)
-            printf '%s\n' "Exasol pages result sets with LIMIT <n> (optionally OFFSET) — not FETCH FIRST or TOP. Rewrite the query with LIMIT."
+        *"tls handshake"*|*"TLS handshake"*|*"TLS error"*)
+            # The port answered but not with Exasol's TLS: something else is
+            # listening there. `exakit status` reports that as a conflict and
+            # names the process; `exakit start` alone cannot help until it is gone.
+            printf '%s\n' "Something answered on the database port, but it is not Exasol (the TLS handshake failed). Check with: exakit status — a conflict names the process holding the port; stop it, then: exakit start"
             ;;
     esac
+    _dber_limit=0
+    case "$1" in
+        *"unexpected FETCH_"*|*"unexpected TOP_"*|*"FETCH FIRST"*) _dber_limit=1 ;;
+    esac
+    case "$1" in
+        *"syntax error"*)
+            case " $_dber_stmt" in
+                *" TOP "*|*"(TOP "*) _dber_limit=1 ;;
+            esac
+            ;;
+    esac
+    if [ "$_dber_limit" -eq 1 ]; then
+        printf '%s\n' "Exasol pages result sets with LIMIT <n> (optionally OFFSET) — not FETCH FIRST or TOP. Rewrite the query with LIMIT."
+    fi
     case "$1" in
         *"not found"*)
             case "$1" in

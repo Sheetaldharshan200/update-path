@@ -23,6 +23,7 @@ from .base import (
     DetectionResult,
     LocationResult,
     RenderResult,
+    KIT_MANAGED_SERVER_NAMES,
 )
 
 
@@ -69,19 +70,14 @@ class CodexAdapter(ClientAdapter):
         )
 
     def detect(self, environment: ExecutionEnvironment) -> DetectionResult:
-        location = self.locate(environment)
-        evidence = list(location.evidence)
-        if location.path is None:
-            return DetectionResult(False, "none", location, evidence)
-        if location.path.exists():
-            evidence.append("Config file exists.")
-            return DetectionResult(True, "high", location, evidence)
-        if location.path.parent.exists():
-            evidence.append("Config directory exists.")
-            return DetectionResult(True, "medium", location, evidence)
-        evidence.append("No local config evidence was found.")
-        return DetectionResult(False, "low", location, evidence)
-
+        return self.detect_from_evidence(
+            environment,
+            client_label="Codex",
+            programs=("codex",),
+            client_dir=lambda env, path: env.home / ".codex",
+            kit_only=_toml_is_kit_only,
+            override_env=self._CONFIG_ENV_NAME,
+        )
     def inspect(self, path: Path, server_name: str) -> AdapterInspection:
         if not path.exists():
             return AdapterInspection(path=path, exists=False, document={}, file_valid=True)
@@ -232,6 +228,20 @@ class CodexAdapter(ClientAdapter):
                 message="Restart Codex or reload the client to load the updated MCP configuration.",
             )
         ]
+
+
+def _toml_is_kit_only(path: Path) -> bool:
+    """True when config.toml carries nothing but kit-managed mcp_servers entries."""
+    if tomllib is None:
+        return False
+    try:
+        document = tomllib.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    if set(document) - {"mcp_servers"}:
+        return False
+    servers = document.get("mcp_servers") or {}
+    return isinstance(servers, dict) and set(servers) <= KIT_MANAGED_SERVER_NAMES
 
 
 def _dump_toml(document: dict) -> str:

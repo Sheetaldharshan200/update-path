@@ -310,6 +310,67 @@ class AdditionalAdapterTests(unittest.TestCase):
         self.assertEqual(payload["theme"], "dark")
         self.assertNotIn("exasol", payload.get("mcpServers", {}))
 
+    def _env_without_overrides(self, home, path=""):
+        """An environment with NO config-path overrides: detection runs the real rule."""
+        return ExecutionEnvironment(os_name="darwin", home=home, env={"PATH": path}, cwd=home)
+
+    def test_kit_only_config_is_not_evidence_of_the_client(self) -> None:
+        """THE BUG: detection was 'the config file exists'. The kit writes that
+        file, so a client it had configured once counted as installed forever --
+        including clients that were never on the machine."""
+        home = self._temp_dir / "home-kit-only"
+        (home / ".cursor").mkdir(parents=True)
+        (home / ".cursor" / "mcp.json").write_text(
+            json.dumps({"mcpServers": {"exasol": {"command": "uvx", "args": ["exasol-mcp-server@2.2.0"]}}}),
+            encoding="utf-8",
+        )
+        detection = self._registry.get("cursor").detect(self._env_without_overrides(home))
+        self.assertFalse(detection.detected)
+        self.assertIn("not evidence", " ".join(detection.evidence))
+
+    def test_config_with_the_users_own_settings_is_evidence(self) -> None:
+        home = self._temp_dir / "home-own-settings"
+        (home / ".gemini").mkdir(parents=True)
+        (home / ".gemini" / "settings.json").write_text(
+            json.dumps({"theme": "dark", "mcpServers": {"exasol": {"command": "uvx"}}}), encoding="utf-8"
+        )
+        detection = self._registry.get("gemini_cli").detect(self._env_without_overrides(home))
+        self.assertTrue(detection.detected)
+        self.assertEqual(detection.confidence, "high")
+
+    def test_a_program_on_path_is_evidence_even_with_no_config(self) -> None:
+        home = self._temp_dir / "home-program"
+        bindir = home / "bin"
+        bindir.mkdir(parents=True)
+        program = bindir / "codex"
+        program.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        program.chmod(0o755)
+        detection = self._registry.get("codex").detect(self._env_without_overrides(home, path=str(bindir)))
+        self.assertTrue(detection.detected)
+        self.assertEqual(detection.confidence, "medium")   # installed, no config yet
+        # And a kit-only config beside a real program reads as high.
+        (home / ".codex").mkdir()
+        (home / ".codex" / "config.toml").write_text('[mcp_servers.exasol]\ncommand = "uvx"\n', encoding="utf-8")
+        detection = self._registry.get("codex").detect(self._env_without_overrides(home, path=str(bindir)))
+        self.assertTrue(detection.detected)
+        self.assertEqual(detection.confidence, "high")
+
+    def test_the_clients_own_files_beside_a_kit_only_config_are_evidence(self) -> None:
+        home = self._temp_dir / "home-own-files"
+        (home / ".continue" / "mcpServers").mkdir(parents=True)
+        (home / ".continue" / "mcpServers" / "exasol-starter-kit.yaml").write_text("name: exasol\n", encoding="utf-8")
+        env = self._env_without_overrides(home)
+        self.assertFalse(self._registry.get("continue").detect(env).detected)   # the block file alone: the kit's
+        (home / ".continue" / "config.yaml").write_text("name: mine\n", encoding="utf-8")
+        self.assertTrue(self._registry.get("continue").detect(env).detected)    # Continue's own config: installed
+
+    def test_an_override_path_keeps_the_file_rule(self) -> None:
+        """An explicit config path is the caller vouching for the client."""
+        (self._temp_dir / "cursor").mkdir(parents=True, exist_ok=True)   # the overridden path's directory
+        detection = self._registry.get("cursor").detect(self._environment)
+        self.assertTrue(detection.detected)
+        self.assertIn("path overridden", " ".join(detection.evidence))
+
     def test_discover_reports_supported_adapters(self) -> None:
         for adapter_id in (
             "claude_desktop",
