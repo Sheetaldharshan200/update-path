@@ -87,7 +87,8 @@ jobs:
               problems.append("updated must be an ISO date (YYYY-MM-DD)")
 
           expected = {"personal", "nano", "exapump", "mcp", "pyexasol", "skills",
-                      "dash-server", "exasol-vscode", "json-tables"}
+                      "dash-server", "exasol-vscode", "json-tables",
+                      "exasol-scheduler"}
           components = doc.get("components") or {}
           if set(components) != expected:
               problems.append("components must be exactly %s, found %s"
@@ -374,6 +375,55 @@ jobs:
                                           % (key, pinned, name, release, published or "unknown"))
               if len(problems) == before:
                   print("  ok  json-tables: release %s carries every pinned asset with the pinned digest"
+
+          # exasol-scheduler follows the same immutable-release contract as
+          # json-tables, minus the wheel and the cargo shim: bare binaries per
+          # platform on a release tagged exasol-scheduler-<version>, digests
+          # pinned here by the pkg workflow's advertise job. One allowance the
+          # json-tables arm no longer needs: with NO sha256 block at all this
+          # is the bootstrap state - the add-on merged before its first
+          # release was published - and users are safe (the module refuses an
+          # unverifiable download), so it is a loud notice rather than a merge
+          # blocker. The moment pins exist, the full gate applies.
+          es = components.get("exasol-scheduler") or {}
+          if es.get("version"):
+              before = len(problems)
+              release = es.get("release") or "exasol-scheduler-%s" % es["version"]
+              if not release.startswith("exasol-scheduler-%s" % es["version"]):
+                  problems.append("exasol-scheduler: release %s does not belong to version %s"
+                                  % (release, es["version"]))
+              es_required = {"linux-x86_64", "linux-arm64", "macos-arm64",
+                             "macos-x86_64", "windows-x86_64"}
+              es_pins = es.get("sha256") or {}
+              if not es_pins:
+                  print("::warning::exasol-scheduler: no digests pinned yet (bootstrap) -- "
+                        "run the 'pkg / exasol-scheduler' workflow to publish %s, and merge "
+                        "the advertise PR it opens" % release)
+              else:
+                  if set(es_pins) != es_required:
+                      problems.append("exasol-scheduler: sha256 must cover exactly %s, found %s"
+                                      % (sorted(es_required), sorted(es_pins)))
+                  body, reason = fetch("https://api.github.com/repos/%s/releases/tags/%s"
+                                       % (os.environ.get("GITHUB_REPOSITORY", ""), release), token=True)
+                  if body is None:
+                      problems.append("exasol-scheduler: release %s does not exist (%s) -- the "
+                                      "'pkg / exasol-scheduler' workflow publishes the release "
+                                      "BEFORE the version is advertised" % (release, reason))
+                  else:
+                      assets = {a.get("name", ""): a for a in body.get("assets") or []}
+                      for key, pinned in sorted(es_pins.items()):
+                          name = "exasol-scheduler-%s%s" % (key, ".exe" if "windows" in key else "")
+                          asset = assets.get(name)
+                          if asset is None:
+                              problems.append("exasol-scheduler: release %s has no asset %s (pinned as sha256.%s)"
+                                              % (release, name, key))
+                              continue
+                          published = str(asset.get("digest") or "").replace("sha256:", "")
+                          if published != pinned:
+                              problems.append("exasol-scheduler: sha256.%s pins %s but %s on %s is %s"
+                                              % (key, pinned, name, release, published or "unknown"))
+              if len(problems) == before:
+                  print("  ok  exasol-scheduler: the pinned release checks out")
                         % release)
 
           for addon in ("dash-server", "exasol-vscode"):

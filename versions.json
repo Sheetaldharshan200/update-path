@@ -46,6 +46,11 @@
       "package": "dash-server",
       "severity": "normal"
     },
+    "exasol-scheduler": {
+      "version": "v0.2",
+      "release": "exasol-scheduler-v0.2",
+      "severity": "normal"
+    },
     "exasol-vscode": {
       "version": "1.7.0",
       "repo": "exasol-labs/exasol-vscode",

@@ -327,6 +327,10 @@ jobs:
               ],
               # Marketplace add-ons keep their constants in their own module
               # pair, not in the shared libraries.
+              "exasol-scheduler": [
+                  ("setup/lib/exasol-scheduler.sh", "bash", "EXAKIT_EXASOL_SCHEDULER_VERSION_FALLBACK"),
+                  ("setup/lib/exasol-scheduler.ps1", "pwsh", "ExasolSchedulerVersionFallback"),
+              ],
               "dash-server": [
                   ("setup/lib/dash-server.sh", "bash", "EXAKIT_DASH_SERVER_VERSION_FALLBACK"),
                   ("setup/lib/dash-server.ps1", "pwsh", "DashServerVersionFallback"),

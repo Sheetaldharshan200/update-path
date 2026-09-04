@@ -93,6 +93,7 @@ export EXAKIT_ABOUT_OFFLINE
 . "$ROOT/setup/lib/dash-server.sh"
 . "$ROOT/setup/lib/exasol-vscode.sh"
 . "$ROOT/setup/lib/json-tables.sh"
+. "$ROOT/setup/lib/exasol-scheduler.sh"
 
 # ...and its own port. The default 5100 is where a developer's REAL dash-server
 # listens, and the ownership probe would rightly call that a foreign process
@@ -113,7 +114,7 @@ cover_every_addon() {
 }
 
 echo "registry:"
-check "addons list carries every registered add-on" "dash-server exasol-vscode json-tables" \
+check "addons list carries every registered add-on" "dash-server exasol-scheduler exasol-vscode json-tables" \
     "$(exakit_marketplace_addons | cut -d'|' -f1 | tr '\n' ' ' | sed 's/ $//')"
 check "addon module is loaded" "yes" "$(exakit_marketplace_addon_available dash-server && echo yes || echo no)"
 check "component block" "components.dash-server" "$(_exakit_component_block dash-server)"
@@ -192,13 +193,15 @@ run_menu() ( # run_menu <env-answer> — echoes "installed:<ids>" + menu output
     exasol_vscode_validate() { return 0; }
     json_tables_install() { _CALLED="${_CALLED} json-tables"; return 0; }
     json_tables_validate() { return 0; }
+    exasol_scheduler_install() { _CALLED="${_CALLED} exasol-scheduler"; return 0; }
+    exasol_scheduler_validate() { return 0; }
     EXAKIT_MARKETPLACE_ADDONS="$1"
     exakit_marketplace_menu >/dev/null 2>&1
     printf 'rc=%s called=%s' "$?" "${_CALLED# }"
 )
 check "none installs nothing" "rc=0 called=" "$(run_menu none)"
 check "naming one addon installs only it" "rc=0 called=dash-server" "$(run_menu dash-server)"
-check "all installs every pending addon" "rc=0 called=dash-server exasol-vscode json-tables" "$(run_menu all)"
+check "all installs every pending addon" "rc=0 called=dash-server exasol-scheduler exasol-vscode json-tables" "$(run_menu all)"
 _unknown_out="$( (run_menu not-a-tool) 2>&1 || true)"
 check "an unknown id refuses" "yes" "$( (EXAKIT_MARKETPLACE_ADDONS=not-a-tool exakit_marketplace_menu >/dev/null 2>&1); [ $? -ne 0 ] && echo yes || echo no )"
 # An installer that fails must not report success.

@@ -54,6 +54,7 @@ tool that is not on the machine is worse than not shipping the skill at all.
 | [`exasol-marketplace`](exasol-marketplace/SKILL.md) | Choosing, installing, updating or removing add-ons; explaining why one is not offered at all. |
 | [`dash-server`](dash-server/SKILL.md) | Building live dashboards the agent drives over an MCP control plane while the user opens a browser URL. |
 | [`json-tables`](json-tables/SKILL.md) | Loading JSON into the database (exapump takes CSV and Parquet only); the prebuilt engine that means no Rust toolchain. |
+| [`exasol-scheduler`](exasol-scheduler/SKILL.md) | Scheduling SQL jobs in SCHED.SCHED_TASKS; the scheduler_svc trust boundary, task chains, and why missed runs are never replayed. |
 | [`exasol-vscode`](exasol-vscode/SKILL.md) | SQL editing and schema browsing inside VS Code; why the kit refuses to manage a copy the user installed themselves. |
 
 The set is versioned as one component (`components.skills` in `versions.json`),

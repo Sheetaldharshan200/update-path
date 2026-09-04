@@ -103,6 +103,7 @@ fi
 [ -f "$_lib_dir/dash-server.sh" ] && . "$_lib_dir/dash-server.sh"
 [ -f "$_lib_dir/exasol-vscode.sh" ] && . "$_lib_dir/exasol-vscode.sh"
 [ -f "$_lib_dir/json-tables.sh" ] && . "$_lib_dir/json-tables.sh"
+[ -f "$_lib_dir/exasol-scheduler.sh" ] && . "$_lib_dir/exasol-scheduler.sh"
 
 _runtime_type() {
     manifest_get runtime.type 2>/dev/null
