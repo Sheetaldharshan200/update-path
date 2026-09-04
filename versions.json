@@ -37,13 +37,18 @@
       "severity": "normal"
     },
     "skills": {
-      "version": "1.6.0",
+      "version": "1.7.0",
       "severity": "normal"
     },
     "dash-server": {
       "version": "0.1.0",
       "repo": "exasol-labs/dash-server",
       "package": "dash-server",
+      "severity": "normal"
+    },
+    "exasol-scheduler": {
+      "version": "v0.2",
+      "release": "exasol-scheduler-v0.2",
       "severity": "normal"
     },
     "exasol-vscode": {

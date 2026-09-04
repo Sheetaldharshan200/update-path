@@ -3635,6 +3635,25 @@ function Get-ExakitMarketplaceAddons {
             FallbackVar = "DashServerVersionFallback"
         },
         [pscustomobject]@{
+            Id          = "exasol-scheduler"
+            Label       = "Exasol Scheduler (SQL jobs on a schedule)"
+            InstallFn   = "Install-ExasolScheduler"
+            ValidateFn  = "Test-ExasolScheduler"
+            UpdateFn    = "Update-ExasolScheduler"
+            VersionFn   = "Get-ExasolSchedulerInstalledVersion"
+            UninstallFn = "Uninstall-ExasolScheduler"
+            StatusFn    = "Get-ExasolSchedulerStatus"
+            StartFn     = "Start-ExasolScheduler"
+            StopFn      = "Stop-ExasolScheduler"
+            AutostartFn = "Get-ExasolSchedulerAutostartCommand"
+            LogFn       = "Get-ExasolSchedulerLogPath"
+            SummaryFn   = "Get-ExasolSchedulerSummary"
+            ApplicableFn = "Test-ExasolSchedulerApplicable"
+            ReasonFn     = "Get-ExasolSchedulerApplicableReason"
+            EnvVar      = "EXAKIT_EXASOL_SCHEDULER_VERSION"
+            FallbackVar = "ExasolSchedulerVersionFallback"
+        },
+        [pscustomobject]@{
             Id          = "exasol-vscode"
             Label       = "Exasol for VS Code (editor extension)"
             InstallFn   = "Install-ExasolVscode"

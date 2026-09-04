@@ -88,6 +88,7 @@ if (Test-Path (Join-Path $scriptDir "lib\exakit-common.ps1")) {
 if (Test-Path (Join-Path $libDir "dash-server.ps1")) { . (Join-Path $libDir "dash-server.ps1") }
 if (Test-Path (Join-Path $libDir "exasol-vscode.ps1")) { . (Join-Path $libDir "exasol-vscode.ps1") }
 if (Test-Path (Join-Path $libDir "json-tables.ps1")) { . (Join-Path $libDir "json-tables.ps1") }
+if (Test-Path (Join-Path $libDir "exasol-scheduler.ps1")) { . (Join-Path $libDir "exasol-scheduler.ps1") }
 if (Test-Path (Join-Path $libDir "help.ps1")) { . (Join-Path $libDir "help.ps1") }
 
 
