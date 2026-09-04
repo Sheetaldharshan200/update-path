@@ -490,7 +490,9 @@ function Update-ExasolScheduler {
     } finally {
         $env:EXAKIT_FORCE_COMPONENT_INSTALL = ""
     }
-    if ($wasRunning) { [void](Test-ExasolScheduler) }
+    # Twin of the shell side: a fresh install through the repair path must be
+    # validated too - that is what revokes the bootstrap privileges.
+    if ($wasRunning -or -not $current) { [void](Test-ExasolScheduler) }
     Set-ExakitManifestValue "desired.exasol_scheduler" $available
     Ok "exasol-scheduler updated; your job definitions and history were not changed"
     return $true

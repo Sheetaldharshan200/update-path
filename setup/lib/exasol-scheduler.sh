@@ -679,7 +679,13 @@ exasol_scheduler_update() {
     if ! exasol_scheduler_install; then
         die "exasol-scheduler could not be installed — see the warning above and ${EXAKIT_LOG_FILE:-the log}."
     fi
-    if [ "$_esu_was_running" = "1" ]; then
+    # Validate after a FRESH install too, not only when the service was
+    # running before: validate is what starts the service, waits for the
+    # schema bootstrap, and revokes the bootstrap privileges - `exakit update
+    # exasol-scheduler` is the documented repair path after a failed
+    # marketplace install, and a repair that leaves CREATE SCHEMA granted
+    # forever repaired nothing. Only a same-version refresh skips it.
+    if [ "$_esu_was_running" = "1" ] || [ -z "$_esu_current" ]; then
         exasol_scheduler_validate || true
     fi
     manifest_set desired.exasol_scheduler "$EXAKIT_EXASOL_SCHEDULER_VERSION"
