@@ -84,6 +84,9 @@ function Get-ExakitSkillRoots {
     @((Join-Path $HOME ".claude\skills"), (Join-Path $HOME ".agents\skills"))
 }
 function Write-ExakitLog { param($Level, $Message) }
+# The allowlist removal lives in exakit-common.ps1, which this harness does not
+# load; the uninstall run calls it beside the skills step.
+function Remove-ExakitReadonlyAllowlist { return "REMOVED 0" }
 # The one-line narration the real run wraps itself in. Stubbed rather than
 # driven: this suite asserts what uninstall REMOVES, and an animation in a
 # harness with no console would only get in the way.
