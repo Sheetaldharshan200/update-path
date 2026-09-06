@@ -440,7 +440,14 @@ class ValidatorService:
     ) -> StageResult:
         findings: list[Finding] = []
         evidence: list[VerificationEvidence] = []
+        # One finding per FILE. Two managed entries in the same file (exasol and
+        # an add-on's) are two artifacts on one path, and a loosened mode was
+        # reported once per artifact - the same sentence twice in doctor's output.
+        seen_paths: set[str] = set()
         for artifact in artifacts:
+            if artifact.path in seen_paths:
+                continue
+            seen_paths.add(artifact.path)
             path = Path(artifact.path)
             if not path.exists():
                 findings.append(

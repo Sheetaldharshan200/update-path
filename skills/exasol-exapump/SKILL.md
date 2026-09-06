@@ -68,6 +68,15 @@ SELECT COLUMN_NAME, COLUMN_TYPE, COLUMN_COMMENT FROM SYS.EXA_ALL_COLUMNS WHERE C
 
 Each bundled dataset is also described in `~/.exasol-starter-kit/kit/data/data-dictionary.md`.
 
+**Tables loaded from a file keep the file's column names as written, quoted.**
+`EXAKIT_DATA_FILE=visits.csv exakit data-load` with a header `id,city,visits`
+creates `STARTER_KIT.VISITS` with columns `"id"`, `"city"`, `"visits"`. An
+unquoted name in SQL is upper-cased, so `SELECT SUM(VISITS)` fails with
+`object VISITS not found` although the spelling was right. Quote them:
+`SELECT SUM("visits") FROM STARTER_KIT.VISITS`, or `DESCRIBE` the table first
+and copy the names as shown. Upper-casing the header before loading avoids the
+quotes altogether.
+
 `exakit sql` is **not** a sandbox: it is the same admin connection, and its
 statement gate is a seatbelt against a typo. The enforced read-only boundary is
 the MCP user.

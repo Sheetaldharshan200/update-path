@@ -906,6 +906,15 @@ exakit_db_error_remedy() {
             case "$1" in
                 *object*|*table*|*column*|*schema*|*view*)
                     printf '%s\n' "A named object does not exist as written. Check the spelling and the schema qualifier — describe it first (MCP: describe_exasol_table_or_view; SQL: DESCRIBE <schema>.<table>)."
+                    # A table loaded from a file keeps the file's column names
+                    # AS WRITTEN, quoted - "visits", not VISITS - while an
+                    # unquoted name in SQL is upper-cased. "Check the spelling"
+                    # sent the reader to re-read a name that was already right.
+                    case "$_dber_stmt" in
+                        *STARTER_KIT*)
+                            printf '%s\n' "If the table was loaded from a file, its columns keep the file's exact spelling and case and must be quoted: SELECT \"visits\" ..., not VISITS. DESCRIBE the table to see them."
+                            ;;
+                    esac
                     ;;
             esac
             ;;
@@ -5477,7 +5486,10 @@ exakit_update() {
             *) die "Update options are only supported for Personal runtime updates." ;;
         esac
     fi
-    _targets="$(exakit_update_targets "$_target")" || die "Unknown update target: $_target"
+    case "$_target" in
+        -*) reject "Unknown option '$_target' for update (supported: --yes; a component name selects what to update)." ;;
+    esac
+    _targets="$(exakit_update_targets "$_target")" || reject "Unknown update target '$_target' (see: exakit version)"
     exakit_init_logging
     # An explicit update applies what is advertised right NOW, so ask upstream
     # once and resolve in this shell — the loop below reads the same document.
@@ -6574,6 +6586,59 @@ print("ADDED %d" % added)
 EXAKIT_RAL_PY
 }
 
+# exakit_remove_readonly_allowlist - the exact mirror of exakit_apply_readonly_allowlist:
+# remove precisely the entries the kit added, nothing else. Uninstall left them
+# behind - 42 allow rules and 3 deny rules for a command that no longer existed.
+# Entries the user added themselves are not the kit's to touch, so only the
+# kit's own spellings go. Best-effort; a malformed file is left alone.
+exakit_remove_readonly_allowlist() {
+    exakit_can_run_python || return 0
+    _rral_file="$HOME/.claude/settings.json"
+    [ -f "$_rral_file" ] || { printf 'REMOVED 0\n'; return 0; }
+    run_python - "$_rral_file" <<'EXAKIT_RRAL_PY'
+import json, os, sys
+path = sys.argv[1]
+READONLY = [
+    "status", "info", "version", "mcp-doctor", "logs", "catalog", "preflight",
+    "guide", "mcp-status", "help",
+]
+PREFIXES = ["exakit", "~/.local/bin/exakit", "$HOME/.local/bin/exakit"]
+ALLOW = []
+for prefix in PREFIXES:
+    for command in READONLY:
+        ALLOW.append("Bash(%s %s:*)" % (prefix, command))
+    ALLOW.append("Bash(%s skills)" % prefix)
+    ALLOW.append("Bash(%s skills --json)" % prefix)
+ALLOW.append("mcp__exasol")
+DENY = ["Bash(%s uninstall:*)" % prefix for prefix in PREFIXES]
+try:
+    with open(path) as handle:
+        doc = json.load(handle)
+except (ValueError, OSError):
+    print("SKIP unreadable")
+    sys.exit(0)
+permissions = doc.get("permissions") if isinstance(doc, dict) else None
+if not isinstance(permissions, dict):
+    print("REMOVED 0")
+    sys.exit(0)
+removed = 0
+for key, ours in (("allow", ALLOW), ("deny", DENY)):
+    existing = permissions.get(key)
+    if not isinstance(existing, list):
+        continue
+    kept = [entry for entry in existing if entry not in ours]
+    removed += len(existing) - len(kept)
+    permissions[key] = kept
+if removed:
+    tmp = path + ".exakit-tmp"
+    with open(tmp, "w") as handle:
+        json.dump(doc, handle, indent=2)
+        handle.write("\n")
+    os.replace(tmp, path)
+print("REMOVED %d" % removed)
+EXAKIT_RRAL_PY
+}
+
 # exakit_maybe_offer_skills_install — after setup, place the skills where CLI
 # agents can find them. Always installs — no prompt — so the skills are
 # present without requiring interactive confirmation. Non-fatal and
@@ -7103,6 +7168,28 @@ exakit_configure_mcp_readonly_access() {
 # status. That is the difference between "the runtime ran and is telling you
 # something" and "the runtime never got far enough to say anything", which the
 # exit code alone cannot express.
+# _exakit_mcp_result_repairable <file> - true when a WARNING or ERROR finding
+# carries a code the repair operation acts on.
+_exakit_mcp_result_repairable() {
+    [ -s "${1:-}" ] || return 1
+    exakit_can_run_python 2>/dev/null || return 1
+    run_python - "$1" <<'PY' >/dev/null 2>&1
+import json, sys
+REPAIRABLE = {"permission_drift", "manifest_drift_hash_mismatch", "manifest_drift_missing_artifact",
+              "managed_artifact_missing", "managed_entry_outdated"}
+try:
+    with open(sys.argv[1], encoding="utf-8") as handle:
+        doc = json.load(handle)
+except Exception:
+    raise SystemExit(1)
+for finding in (doc.get("findings") or []) if isinstance(doc, dict) else []:
+    if isinstance(finding, dict) and finding.get("code") in REPAIRABLE \
+            and str(finding.get("severity", "")).lower() in ("warning", "error", "critical"):
+        raise SystemExit(0)
+raise SystemExit(1)
+PY
+}
+
 _exakit_mcp_reported() {
     [ -s "${1:-}" ] || return 1
     exakit_can_run_python 2>/dev/null || return 1
@@ -8227,13 +8314,21 @@ if "remedy" not in doc:
     # From a WARNING or ERROR finding only. Taking the first next_action made a
     # healthy machine answer "Install the client..." off an INFO finding about
     # a client that is not installed, so `remedy != null` could not be branched on.
-    remedy = None
-    for finding in doc.get("findings") or []:
-        if not isinstance(finding, dict):
+    # Worst first, and a finding about a FILE before one about a client that
+    # is merely absent: with a loosened mode on Codex and a stale Cursor
+    # record, the hoisted remedy used to be the Cursor one because it came
+    # first in the list.
+    RANK = {"critical": 0, "error": 1, "warning": 2}
+    candidates = []
+    for index, finding in enumerate(doc.get("findings") or []):
+        if not isinstance(finding, dict) or not finding.get("recommended_action"):
             continue
-        if str(finding.get("severity", "")).lower() in ("warning", "error", "critical") and finding.get("recommended_action"):
-            remedy = finding["recommended_action"]
-            break
+        severity = str(finding.get("severity", "")).lower()
+        if severity not in RANK:
+            continue
+        scope = finding.get("scope") if isinstance(finding.get("scope"), dict) else {}
+        candidates.append((RANK[severity], 0 if scope.get("path") else 1, index, finding["recommended_action"]))
+    remedy = min(candidates)[3] if candidates else None
     doc["remedy"] = remedy
 print(json.dumps(doc, indent=2, sort_keys=True))
 EXAKIT_MCP_STAMP_PY
@@ -8285,6 +8380,15 @@ EXAKIT_MCP_STAMP_PY
     EXAKIT_QUIET_DETAIL="$_mos_prev_quiet"
     if [ -s "$_result_file" ]; then
         exakit_print_mcp_operation_summary "$_result_file"
+    fi
+    # Whether the report holds something repair can put right - a loosened
+    # file mode, a drifted or missing entry - even when the run's status was
+    # only "success with warnings" and the exit code 0. Doctor reads this to
+    # decide to repair: a warning it can fix and does not is a warning the
+    # reader has to fix by hand, and the report told them doctor repairs drift.
+    EXAKIT_MCP_LAST_REPAIRABLE=0
+    if [ -s "$_result_file" ] && _exakit_mcp_result_repairable "$_result_file"; then
+        EXAKIT_MCP_LAST_REPAIRABLE=1
     fi
     rm -f "$_result_file"
 
@@ -9456,6 +9560,16 @@ _exakit_remove_installed_skills() {
             info "$_rs_found AI $_rs_word from $(ui_tilde "$_root")"
         fi
     done
+    # The permission rules skills-install merged into ~/.claude/settings.json go
+    # with the skills. Only the kit's own entries; the user's stay.
+    if [ "$_rs_dry" = "1" ]; then
+        info "  will remove: the exakit permission rules from ~/.claude/settings.json"
+    else
+        case "$(exakit_remove_readonly_allowlist 2>/dev/null)" in
+            REMOVED\ 0|"") ;;
+            REMOVED\ *) info "exakit permission rules removed from ~/.claude/settings.json" ;;
+        esac
+    fi
     return 0
 }
 
