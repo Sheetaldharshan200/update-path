@@ -370,6 +370,9 @@ if [ -f "$PIDFILE" ]; then
 fi
 printf '%s\n' "$$" > "$PIDFILE" 2>/dev/null || true
 trap 'rm -f "$PIDFILE"' EXIT
+# A fresh start is a fresh chance: the give-up marker below only ever
+# describes the CURRENT stretch of supervision.
+rm -f "@GIVEUP@" 2>/dev/null || true
 
 # The scheduler talks to the kit's local database over TLS with the
 # deployment's self-signed certificate. Everything is a setdefault: anything
@@ -419,6 +422,11 @@ while :; do
     if [ "$_fails" -ge 5 ]; then
         printf 'exasol-scheduler: engine failed %s times in quick succession (last exit %s) - giving up.\n' "$_fails" "$_rc" >&2
         printf 'Diagnose with: exakit logs exasol-scheduler   then restart with: exakit start\n' >&2
+        # The log line above is read by nobody whose jobs just stopped. The
+        # marker is what makes `exakit status` say WHY the service is down
+        # instead of a bare "stopped" that reads like a choice someone made.
+        printf 'gave up after %s rapid failures (last exit %s) at %s\n' \
+            "$_fails" "$_rc" "$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)" > "@GIVEUP@" 2>/dev/null || true
         exit "$_rc"
     fi
     printf 'exasol-scheduler: engine exited (%s) - restarting in 5s (attempt %s/5)\n' "$_rc" "$_fails" >&2
@@ -430,6 +438,7 @@ EXAKIT_ES_EOF
     # above is quoted so the credential read expands at RUN time.
     _esw_tmp="$EXAKIT_EXASOL_SCHEDULER_BIN.tmp.$$"
     sed -e "s|@PIDFILE@|$EXAKIT_EXASOL_SCHEDULER_PIDFILE|g" \
+        -e "s|@GIVEUP@|$EXAKIT_EXASOL_SCHEDULER_HOME/gave-up|g" \
         -e "s|@ENGINE@|$(exasol_scheduler_engine_path)|g" \
         -e "s|@LOG@|$EXAKIT_EXASOL_SCHEDULER_LOG|g" \
         -e "s|@HOST@|$_esw_host|g" \
@@ -543,9 +552,17 @@ exasol_scheduler_status() {
     fi
     if [ -n "$(_exasol_scheduler_pids)" ]; then
         printf '%s\n' "running"
-    else
-        printf '%s\n' "stopped"
+        return 0
     fi
+    # "stopped" reads like a choice someone made; a supervisor that gave up is
+    # a different state and the row must say so, with the diagnosis one paste
+    # away. Same posture as dash-server's "port held by another process" row.
+    if [ -f "$EXAKIT_EXASOL_SCHEDULER_HOME/gave-up" ]; then
+        printf 'stopped (%s — diagnose: exakit logs exasol-scheduler, restart: exakit start)\n' \
+            "$(head -1 "$EXAKIT_EXASOL_SCHEDULER_HOME/gave-up" 2>/dev/null | cut -d' ' -f1-6)"
+        return 0
+    fi
+    printf '%s\n' "stopped"
 }
 
 # The supervising launcher (whose pid the pidfile holds) plus any engine it
@@ -581,6 +598,7 @@ exasol_scheduler_start() {
         return 0
     fi
     mkdir -p "$EXAKIT_EXASOL_SCHEDULER_HOME" "$EXAKIT_LOG_DIR" 2>/dev/null || true
+    rm -f "$EXAKIT_EXASOL_SCHEDULER_HOME/gave-up" 2>/dev/null || true
     info "Starting exasol-scheduler"
     nohup "$EXAKIT_EXASOL_SCHEDULER_BIN" >> "$EXAKIT_EXASOL_SCHEDULER_LOG" 2>&1 &
     disown 2>/dev/null || true

@@ -88,7 +88,7 @@
   "troubleshooting": [
     {
       "symptom": "exakit status says stopped right after login",
-      "remedy": "The launcher waits up to two minutes for the database, then the engine retries with backoff; five rapid failures stop it. Check exakit logs exasol-scheduler, then exakit start."
+      "remedy": "The launcher waits up to two minutes for the database, then the engine retries with backoff; five rapid failures stop it and the status row then says 'stopped (gave up after N rapid failures ...)' so a dead scheduler never reads like a stop you chose. Diagnose with exakit logs exasol-scheduler, restart with exakit start (which clears the give-up state)."
     },
     {
       "symptom": "A job did not run while the machine was off or asleep",
