@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# agent-audit.sh — the findings of the 2026-09-03 agent-operability audits (round 1: twelve, round 2: ten),
+# agent-audit.sh — the findings of the 2026-09-03/04 agent-operability audits (round 1: twelve, round 2: ten, round 3: seven),
 # each pinned so it cannot come back. The audit drove the kit the way an agent
 # with no TTY does: unattended install and uninstall, the sql path, the state
 # queries, deliberate breakage. Every check here is the shape of one of those
@@ -132,7 +132,7 @@ has "the service builds details.clients" 'details["clients"] = client_states' "$
 has "...with the five states" "configured_client_missing" "$(cat "$ROOT/mcp/service.py")"
 has "the shell renders that map for doctor" 'if doc.get("operation") == "doctor" and client_states:' "$(cat "$ROOT/setup/lib/common.sh")"
 has "the twin renders it too" 'configured_client_missing = "configured, not installed"' "$(cat "$ROOT/setup/lib/mcp.ps1")"
-has "remedy comes from a warning or error only" 'in ("warning", "error", "critical") and finding.get("recommended_action")' "$(cat "$ROOT/setup/lib/common.sh")"
+has "remedy comes from a warning or error only" 'RANK = {"critical": 0, "error": 1, "warning": 2}' "$(cat "$ROOT/setup/lib/common.sh")"
 
 echo "9. sql reruns a saved file, reads stdin, answers --help:"
 printf -- '-- saved by the skill\n-- second comment\nDROP TABLE T;\n' > "$WORK/saved.sql"
@@ -238,6 +238,61 @@ has "exasol-exapump skill: exakit sql --file" "exakit sql --file" "$(cat "$ROOT/
 has "exasol-exapump skill: discovery via SYS.EXA_ALL_TABLES" "SYS.EXA_ALL_TABLES" "$(cat "$ROOT/skills/exasol-exapump/SKILL.md")"
 has "starter skill: discovery without MCP" "SYS.EXA_ALL_TABLES" "$(cat "$ROOT/skills/local-agent-ready-starter/SKILL.md")"
 lacks "exasol-exapump skill no longer sends script files to exapump wholesale" "Drop to \`exapump\` for script files" "$(cat "$ROOT/skills/exasol-exapump/SKILL.md")"
+
+# --- Round 3 (fresh 0.2.4 install audit) -----------------------------------
+
+echo "R3-1. every command refuses an unknown option with exit 2, before doing anything:"
+for _c in stop start info guide whats-new skills-install marketplace help catalog mcp-doctor mcp-remove update skills preflight; do
+    check "exakit $_c --bogus exits 2" "2" "$(bash "$CLI" $_c --bogus >/dev/null 2>&1 </dev/null; echo $?)"
+done
+check "update with an unknown target exits 2" "2" "$(bash "$CLI" update nosuch-component >/dev/null 2>&1; echo $?)"
+check "...and records no failure note" "absent" "$([ -f "$EXAKIT_HOME/.last-failure" ] && echo present || echo absent)"
+has "help --bogus is a refusal, not a grep usage error" "Unknown option" "$(bash "$CLI" help --bogus 2>&1)"
+check "info --json still answers" "yes" "$(bash "$CLI" info --json 2>/dev/null | python3 -c 'import json,sys; json.load(sys.stdin); print("yes")' 2>/dev/null || echo no)"
+
+echo "R3-2. sql --json refusals are JSON on stdout:"
+_rj="$(bash "$CLI" sql --json 'SELCT 1' 2>/dev/null)"
+check "a typo is {ok:false, rejected:true}" "False True" "$(printf '%s' "$_rj" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["ok"], d["rejected"])' 2>/dev/null)"
+check "...exit 2" "2" "$(bash "$CLI" sql --json 'SELCT 1' >/dev/null 2>&1; echo $?)"
+check "two statements: JSON too" "False" "$(bash "$CLI" sql --json 'SELECT 1; SELECT 2' 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin)["ok"])' 2>/dev/null)"
+check "an unknown option with --json: JSON too" "False" "$(bash "$CLI" sql --json --bogus 'SELECT 1' 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin)["ok"])' 2>/dev/null)"
+check "without --json the refusal is still the human line" "" "$(bash "$CLI" sql 'SELCT 1' 2>/dev/null)"
+
+echo "R3-3. exakit mcp-remove exists and takes client names:"
+check "no client named: exit 2" "2" "$(bash "$CLI" mcp-remove >/dev/null 2>&1; echo $?)"
+check "'all' refused: exit 2" "2" "$(bash "$CLI" mcp-remove all >/dev/null 2>&1; echo $?)"
+has "help documents it" '"command": "mcp-remove"' "$(cat "$ROOT/setup/help/exakit.json")"
+has "the doctor remedy that names it is now true" "exakit mcp-remove" "$(cat "$ROOT/mcp/validator/service.py")"
+has "AGENTS.md names it" "exakit mcp-remove" "$(cat "$ROOT/AGENTS.md")"
+
+echo "R3-4. the not-found hint knows file-loaded columns keep their case:"
+has "STARTER_KIT table: says to quote" 'must be quoted' "$(exakit_db_error_remedy 'Query execution failed: object VISITS not found [line 1, column 12]' 'SELECT SUM(VISITS) FROM STARTER_KIT.VISITS')"
+lacks "a bundled TPCH table: no such line" 'must be quoted' "$(exakit_db_error_remedy 'object N_NAM not found' 'SELECT N_NAM FROM TPCH.NATION')"
+has "the exapump skill says the same" 'keep the file' "$(cat "$ROOT/skills/exasol-exapump/SKILL.md")"
+
+echo "R3-5. uninstall removes exactly the permission rules the kit added:"
+mkdir -p "$HOME/.claude"
+printf '%s\n' '{"permissions": {"allow": ["Bash(exakit status:*)", "Bash(git status:*)", "mcp__exasol"], "deny": ["Bash(exakit uninstall:*)", "Bash(rm -rf:*)"]}, "theme": "dark"}' > "$HOME/.claude/settings.json"
+check "reports what it removed" "REMOVED 3" "$(exakit_remove_readonly_allowlist)"
+check "the user's own rules and settings stay" "Bash(git status:*)|Bash(rm -rf:*)|dark" \
+    "$(python3 -c 'import json; d=json.load(open("'"$HOME"'/.claude/settings.json")); print("|".join(d["permissions"]["allow"]+d["permissions"]["deny"]+[d["theme"]]))')"
+check "a second run removes nothing" "REMOVED 0" "$(exakit_remove_readonly_allowlist)"
+has "the uninstall step calls it" "exakit_remove_readonly_allowlist" "$(sed -n '/^_exakit_remove_installed_skills()/,/^}/p' "$ROOT/setup/lib/common.sh")"
+
+echo "R3-6. doctor repairs a repairable WARNING, and blames one file once:"
+_rr="$WORK/result.json"
+printf '%s' '{"operation":"doctor","status":"success_with_warnings","findings":[{"code":"permission_drift","severity":"warning","scope":{"path":"/x","client":"codex"}}]}' > "$_rr"
+check "a loosened mode is repairable" "yes" "$(_exakit_mcp_result_repairable "$_rr" && echo yes || echo no)"
+printf '%s' '{"operation":"doctor","status":"success_with_warnings","findings":[{"code":"managed_client_missing","severity":"warning","scope":{"client":"cursor"}}]}' > "$_rr"
+check "an absent client is not" "no" "$(_exakit_mcp_result_repairable "$_rr" && echo yes || echo no)"
+has "cmd_mcp_doctor acts on the flag" "EXAKIT_MCP_LAST_REPAIRABLE" "$(sed -n '/^cmd_mcp_doctor()/,/^}/p' "$CLI")"
+has "one finding per file in the validator" "seen_paths" "$(cat "$ROOT/mcp/validator/service.py")"
+has "the hoisted remedy ranks the worst finding about a file first" "RANK = " "$(cat "$ROOT/setup/lib/common.sh")"
+
+echo "R3-7. add-on endpoints go only to connected clients; configured means the exasol entry:"
+has "repair scopes the add-on to connected clients" "_connected_clients(repository" "$(cat "$ROOT/mcp/cli.py")"
+lacks "...and never to the whole supported list" "clients=clients or list(SETUP_CLIENT_IDS)" "$(cat "$ROOT/mcp/cli.py")"
+has "discover counts the exasol entry only" '_record_entry_name(record) != "exasol"' "$(cat "$ROOT/mcp/cli.py")"
 
 printf '\npassed: %d, failed: %d\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

@@ -558,7 +558,7 @@ if grep -q 'exakit_marketplace_addons()' "$ROOT/setup/lib/common.sh" && \
    grep -q 'exakit_marketplace_installed_addons' "$ROOT/setup/lib/common.sh" && \
    grep -q 'dash_server_update' "$ROOT/setup/lib/dash-server.sh" && \
    grep -q 'dash_server_install' "$ROOT/setup/lib/dash-server.sh" && \
-   grep -q 'marketplace) shift; _with_notice cmd_marketplace' "$ROOT/setup/exakit" && \
+   grep -q 'marketplace) shift; .*_with_notice cmd_marketplace' "$ROOT/setup/exakit" && \
    grep -q 'function Get-ExakitMarketplaceAddons' "$ROOT/setup/lib/exakit-common.ps1" && \
    grep -q 'Get-ExakitMarketplaceInstalledAddons' "$ROOT/setup/lib/exakit-common.ps1" && \
    grep -q 'function Update-DashServer' "$ROOT/setup/lib/dash-server.ps1" && \
@@ -573,7 +573,7 @@ if grep -q 'exakit_marketplace_addons()' "$ROOT/setup/lib/common.sh" && \
    grep -q 'function Update-JsonTables' "$ROOT/setup/lib/json-tables.ps1" && \
    grep -q 'function Install-JsonTables' "$ROOT/setup/lib/json-tables.ps1" && \
    grep -q '"json-tables"' "$ROOT/setup/lib/exakit-common.ps1" && \
-   grep -q '"marketplace"  { Invoke-CmdMarketplace }' "$ROOT/setup/exakit.ps1"; then
+   grep -q '"marketplace"  { .*Invoke-CmdMarketplace }' "$ROOT/setup/exakit.ps1"; then
     check "marketplace(twins)" "yes" "yes"
 else
     check "marketplace(twins)" "yes" "no"

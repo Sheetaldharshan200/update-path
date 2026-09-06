@@ -126,7 +126,10 @@ In this order:
    known-good state — a deleted entry, a loosened file mode — and re-checks; each
    finding names the client it is about, and only that client reads
    `needs_attention`. `mcp-doctor --json` only *reports* (its `remedy` names the
-   repairing form); run the plain command to repair. `exakit mcp-setup` takes no
+   repairing form); run the plain command to repair, which also acts on a
+   warning it can fix, such as a loosened file mode. A client that is gone from
+   the machine but still has the kit's entries is `configured_client_missing`:
+   `exakit mcp-remove <client>` takes the entries out and forgets them. `exakit mcp-setup` takes no
    options — name clients with `EXAKIT_MCP_CLIENTS=...` — and offers a client
    again once its file no longer holds the kit's entry.
 5. **Read the MCP tool's error for what it hides.** The server masks the engine:
