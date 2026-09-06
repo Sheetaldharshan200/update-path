@@ -1367,6 +1367,42 @@ check "with nothing advertised the module's fallback answers, not a guess" "$EXA
     exakit_versions_value() { return 1; }
     exakit_component_latest json-tables 2>/dev/null
 ) )"
+echo "the scheduler's give-up state is visible, not a bare stopped:"
+# THE BUG CLASS: the launcher stops after five rapid engine failures - correct -
+# but the only trace was a log line nobody whose jobs just stopped was reading.
+# The marker it now writes is what turns `exakit status` from "stopped" (reads
+# like a choice someone made) into the reason plus the two commands that act on
+# it. A deliberate restart clears the marker: a fresh start is a fresh chance.
+_SG_HOME="$WORK/sched-giveup"
+_sg_out="$( (
+    EXAKIT_EXASOL_SCHEDULER_HOME="$_SG_HOME"
+    EXAKIT_EXASOL_SCHEDULER_BIN="$_SG_HOME/launcher"
+    mkdir -p "$_SG_HOME"
+    : > "$_SG_HOME/launcher"; chmod 755 "$_SG_HOME/launcher"
+    _exasol_scheduler_pids() { printf ''; }
+    printf 'gave up after 5 rapid failures (last exit 7) at earlier\n' > "$_SG_HOME/gave-up"
+    exasol_scheduler_status
+) )"
+has "a gave-up scheduler says so" "gave up after 5 rapid failures" "$_sg_out"
+has "and names the diagnosis" "exakit logs exasol-scheduler" "$_sg_out"
+check "a start clears the give-up state" "cleared" "$( (
+    EXAKIT_EXASOL_SCHEDULER_HOME="$_SG_HOME"
+    EXAKIT_EXASOL_SCHEDULER_BIN="$_SG_HOME/launcher"
+    printf 'gave up\n' > "$_SG_HOME/gave-up"
+    _exasol_scheduler_pids() { printf ''; }
+    info() { :; }; ok() { :; }; warn() { :; }
+    nohup() { :; }
+    exasol_scheduler_start >/dev/null 2>&1 || true
+    [ -f "$_SG_HOME/gave-up" ] && echo present || echo cleared
+) )"
+check "an ordinary stop stays a plain stopped" "stopped" "$( (
+    EXAKIT_EXASOL_SCHEDULER_HOME="$_SG_HOME"
+    EXAKIT_EXASOL_SCHEDULER_BIN="$_SG_HOME/launcher"
+    rm -f "$_SG_HOME/gave-up"
+    _exasol_scheduler_pids() { printf ''; }
+    exasol_scheduler_status
+) )"
+
 echo "data-load's default row when every bundled dataset is in:"
 # THE BUG: with nothing left to load from the bundle, the pre-selected row was
 # the final "Skip" one -- so Enter did nothing, on the one

@@ -45,6 +45,10 @@ function Get-ExasolSchedulerLogPath {
     return (Join-Path $script:LogDir "exasol-scheduler.log")
 }
 
+function Get-ExasolSchedulerGiveUpMarker {
+    return (Join-Path (Get-ExasolSchedulerHome) "gave-up")
+}
+
 function Get-ExasolSchedulerCredentialPath {
     return (Join-Path $script:CredsDir "exasol_scheduler_password")
 }
@@ -256,6 +260,9 @@ function Write-ExasolSchedulerLauncher {
         '    }'
         '}'
         'Set-Content -Path $pidFile -Value $PID'
+        '# A fresh start is a fresh chance: the marker only describes the current stretch.'
+        '$giveUp = "' + '@GIVEUP@' + '"'
+        'Remove-Item -Force -ErrorAction SilentlyContinue $giveUp'
         'try {'
         '    if (-not $env:EXA_HOST) { $env:EXA_HOST = "' + $dbHost + '" }'
         '    if (-not $env:EXA_PORT) { $env:EXA_PORT = "' + $dbPort + '" }'
@@ -288,6 +295,8 @@ function Write-ExasolSchedulerLauncher {
         '        if (((Get-Date) - $t0).TotalSeconds -lt 60) { $fails += 1 } else { $fails = 1 }'
         '        if ($fails -ge 5) {'
         '            Write-Error "exasol-scheduler: engine failed $fails times in quick succession (last exit $rc) - giving up. Diagnose: exakit logs exasol-scheduler"'
+        '            # The marker is what makes exakit status say WHY instead of a bare stopped.'
+        '            Set-Content -Path $giveUp -Value ("gave up after $fails rapid failures (last exit $rc) at " + (Get-Date -Format o))'
         '            exit $rc'
         '        }'
         '        Write-Host "exasol-scheduler: engine exited ($rc) - restarting in 5s (attempt $fails/5)"'
@@ -297,7 +306,8 @@ function Write-ExasolSchedulerLauncher {
         '    Remove-Item -Force -ErrorAction SilentlyContinue $pidFile'
         '}'
     )
-    Set-Content -Path (Get-ExasolSchedulerLauncherPath) -Value ($lines -join "`r`n") -Encoding ASCII
+    $text = ($lines -join "`r`n") -replace "@GIVEUP@", (Get-ExasolSchedulerGiveUpMarker)
+    Set-Content -Path (Get-ExasolSchedulerLauncherPath) -Value $text -Encoding ASCII
     return $true
 }
 
@@ -392,6 +402,14 @@ function Get-ExasolSchedulerProcessIds {
 function Get-ExasolSchedulerStatus {
     if (-not (Test-Path (Get-ExasolSchedulerLauncherPath))) { return "not installed" }
     if ((Get-ExasolSchedulerProcessIds).Count -gt 0) { return "running" }
+    # A supervisor that gave up is a different state from a stop someone chose,
+    # and the row must say so. Twin of the shell side.
+    if (Test-Path (Get-ExasolSchedulerGiveUpMarker)) {
+        $why = (Get-Content -TotalCount 1 (Get-ExasolSchedulerGiveUpMarker) -ErrorAction SilentlyContinue)
+        if (-not $why) { $why = "gave up after repeated failures" }
+        $short = ($why -split " at ")[0]
+        return ("stopped (" + $short + " - diagnose: exakit logs exasol-scheduler, restart: exakit start)")
+    }
     return "stopped"
 }
 
@@ -405,6 +423,7 @@ function Start-ExasolScheduler {
         return $true
     }
     New-Item -ItemType Directory -Force -Path (Get-ExasolSchedulerHome), $script:LogDir | Out-Null
+    Remove-Item -Force -ErrorAction SilentlyContinue (Get-ExasolSchedulerGiveUpMarker)
     Info "Starting exasol-scheduler"
     Start-Process -WindowStyle Hidden -FilePath "powershell.exe" `
         -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", (Get-ExasolSchedulerLauncherPath)) `
