@@ -1001,6 +1001,23 @@ cmd_mcp_setup() {
 # Doctor also REPAIRS what it finds. There is no separate repair command: being
 # told a client is broken and then handed a second command to type is the tool
 # asking the user to do the obvious next step by hand.
+# cmd_mcp_remove <client...> — take the kit's managed entries out of the named
+# clients and forget them. The remedy doctor prints for a client that is no
+# longer on the machine ("remove the stale entry with 'exakit mcp-remove
+# <client>'") named this command before it existed; the module has always had
+# the operation. Clients only, by name; the server entries are the kit's.
+cmd_mcp_remove() {
+    [ "$#" -gt 0 ] || reject "Name the client(s) to remove the kit's MCP entries from: exakit mcp-remove cursor (see: exakit mcp-status)"
+    for _cmr_arg in "$@"; do
+        case "$_cmr_arg" in
+            all) reject "mcp-remove takes client names, not 'all' — the full removal is: exakit uninstall" ;;
+        esac
+    done
+    _require_install
+    exakit_init_logging
+    exakit_mcp_operation uninstall "$@" || die "Could not remove the MCP entries"
+}
+
 cmd_mcp_doctor() {
     # Parse BEFORE the install check: the check's own answer has to honour
     # --json, and it has to exit 4 rather than 1. Reversing these two lines is
@@ -1037,10 +1054,17 @@ cmd_mcp_doctor() {
     # shellcheck disable=SC2086 — client names are single tokens by contract
     exakit_mcp_operation doctor $_cmd_rest
     _cmd_rc=$?
-    [ "$_cmd_rc" = 0 ] && return 0
+    # A clean run, or one whose only findings are warnings repair cannot act
+    # on, ends here. A run that exited 0 but reported a repairable WARNING - a
+    # loosened file mode is the common one - goes on to the repair below: it
+    # used to stop here, so doctor said "repairs drift", printed the warning,
+    # and left the mode at 644.
+    if [ "$_cmd_rc" = 0 ] && [ "${EXAKIT_MCP_LAST_REPAIRABLE:-0}" != 1 ]; then
+        return 0
+    fi
     # Anything other than "ran and reported" is the subsystem failing to run at
     # all, which is the only case that deserves the word "could not".
-    [ "$_cmd_rc" = 2 ] || die "Could not run MCP diagnostics"
+    [ "$_cmd_rc" = 0 ] || [ "$_cmd_rc" = 2 ] || die "Could not run MCP diagnostics"
 
     # The diagnosis found something. Repair it here rather than printing a
     # second command to type: someone runs mcp-doctor to be told their clients
@@ -1051,6 +1075,7 @@ cmd_mcp_doctor() {
     # --json callers get the diagnosis unchanged: a machine parsing the report
     # must not have a second document appended to it.
     if [ "$_cmd_json" -eq 1 ]; then
+        [ "$_cmd_rc" = 0 ] && exit 0
         exit 1
     fi
     # The repair runs QUIETLY. Its own summary panel repeats the client list and
@@ -1221,10 +1246,31 @@ EXAKIT_IJ_PY
 # connection; the statement gate below is a seatbelt against a typo, not a
 # security boundary. The boundary is the MCP read-only user, which the database
 # itself enforces. --write is how you say you meant it.
+# _sql_reject <message> — a refusal, in the shape the caller asked for. In
+# --json mode a typo, a write without --write or a second statement used to
+# print the human "[x]" line on stderr and leave stdout empty; a parser got
+# nothing. Exit 2 either way, and still nothing recorded as a failure.
+_sql_reject() {
+    if [ "${_sql_json:-0}" -eq 1 ]; then
+        run_python - "$1" <<'EXAKIT_SQL_REJECT_PY'
+import json, sys
+print(json.dumps({"ok": False, "error": sys.argv[1], "remedy": None, "rejected": True}))
+EXAKIT_SQL_REJECT_PY
+        _exakit_log_file "REJECT $1"
+        exit 2
+    fi
+    reject "$1"
+}
+
 cmd_sql() {
     _require_install
     _sql_write=0
     _sql_json=0
+    # Known before the arguments are walked, so a refusal raised WHILE walking
+    # them (an unknown option, two statements) already answers in JSON.
+    for _sql_pre in "$@"; do
+        case "$_sql_pre" in --json|-j) _sql_json=1 ;; esac
+    done
     _sql_text=""
     _sql_file=""
     _sql_expect_file=0
@@ -1235,23 +1281,23 @@ cmd_sql() {
                 # The universal --help hook skips this command because a statement
                 # may contain "--help" as text; a lone flag is unambiguous.
                 [ "$#" -eq 1 ] && { exakit_help_render command sql; exit $?; }
-                reject "Pass ONE statement, quoted: exakit sql 'SELECT 1'" ;;
+                _sql_reject "Pass ONE statement, quoted: exakit sql 'SELECT 1'" ;;
             --write) _sql_write=1 ;;
             --json|-j) _sql_json=1 ;;
             --file|-f) _sql_expect_file=1 ;;
             --file=*) _sql_file="${_sql_arg#--file=}" ;;
-            --*) reject "Unknown option '$_sql_arg' for sql (supported: --file <path>, --json, --write, --help)." ;;
-            *) [ -n "$_sql_text" ] && reject "Pass ONE statement, quoted: exakit sql 'SELECT 1'" ; _sql_text="$_sql_arg" ;;
+            --*) _sql_reject "Unknown option '$_sql_arg' for sql (supported: --file <path>, --json, --write, --help)." ;;
+            *) [ -n "$_sql_text" ] && _sql_reject "Pass ONE statement, quoted: exakit sql 'SELECT 1'" ; _sql_text="$_sql_arg" ;;
         esac
     done
-    [ "$_sql_expect_file" -eq 0 ] || reject "--file needs a path: exakit sql --file ~/.exasol-starter-kit/workflows/query.sql"
+    [ "$_sql_expect_file" -eq 0 ] || _sql_reject "--file needs a path: exakit sql --file ~/.exasol-starter-kit/workflows/query.sql"
     # The saved-workflow path the skill teaches: `exakit sql --file <path>` or
     # `exakit sql < file`. Neither worked — stdin was never read, and a file's
     # leading "-- comment" line was parsed as an option — so the only way to
     # rerun a saved statement was exapump on the admin connection.
     if [ -n "$_sql_file" ]; then
-        [ -z "$_sql_text" ] || reject "Pass either a statement or --file, not both."
-        [ -f "$_sql_file" ] || reject "No such file: $_sql_file"
+        [ -z "$_sql_text" ] || _sql_reject "Pass either a statement or --file, not both."
+        [ -f "$_sql_file" ] || _sql_reject "No such file: $_sql_file"
         _sql_text="$(cat "$_sql_file")"
     elif [ -z "$_sql_text" ] && ! exakit_stdin_is_tty; then
         _sql_text="$(cat)"
@@ -1259,7 +1305,7 @@ cmd_sql() {
     # Comment lines and a trailing ';' are what a saved file carries; drop them
     # so the gate below sees the statement.
     _sql_text="$(printf '%s\n' "$_sql_text" | sed -e '/^[[:space:]]*--/d' -e '/^[[:space:]]*$/d' | sed -e '$ s/;[[:space:]]*$//')"
-    [ -n "$_sql_text" ] || reject "Nothing to run. Usage: exakit sql 'SELECT ...'   or   exakit sql --file <path>   [--write]"
+    [ -n "$_sql_text" ] || _sql_reject "Nothing to run. Usage: exakit sql 'SELECT ...'   or   exakit sql --file <path>   [--write]"
 
     if [ "$_sql_write" -ne 1 ]; then
         # Normalise for the check only; the statement runs exactly as given.
@@ -1268,19 +1314,19 @@ cmd_sql() {
         case "$_sql_word" in
             SELECT|WITH|DESCRIBE|DESC|EXPLAIN|SHOW) : ;;
             INSERT|UPDATE|DELETE|MERGE|CREATE|DROP|ALTER|TRUNCATE|GRANT|REVOKE|COMMIT|ROLLBACK|IMPORT|EXPORT|EXECUTE|CALL|SET|OPEN|CLOSE|KILL|FLUSH|RENAME|COMMENT|RECOMPRESS|REORGANIZE|PRELOAD|ENFORCE)
-                reject "That is not a read statement, and 'exakit sql' defaults to reads. Re-run with --write if you mean it — and note the profile it uses is the ADMIN connection, not the read-only MCP user." ;;
+                _sql_reject "That is not a read statement, and 'exakit sql' defaults to reads. Re-run with --write if you mean it — and note the profile it uses is the ADMIN connection, not the read-only MCP user." ;;
             *)
                 # Neither a read nor a known write is almost always a typo. This
                 # used to be reported as a write attempt and pointed at --write,
                 # the one hint that sends an agent to the admin connection.
-                reject "'${_sql_word:-$(printf '%s' "$_sql_probe" | cut -c1-12)}' is not an SQL statement this command recognises — check the spelling. Reads start with SELECT, WITH, DESCRIBE, EXPLAIN or SHOW; a write needs --write." ;;
+                _sql_reject "'${_sql_word:-$(printf '%s' "$_sql_probe" | cut -c1-12)}' is not an SQL statement this command recognises — check the spelling. Reads start with SELECT, WITH, DESCRIBE, EXPLAIN or SHOW; a write needs --write." ;;
         esac
         # Reject a second statement outright. The MCP tool gate lets
         # "SELECT 1; DROP TABLE T" through because it only inspects the opening
         # keyword — the engine happens to refuse it, but nothing above the engine
         # does. Refusing it here costs nothing and removes the same footgun.
         case "$(printf '%s' "$_sql_probe" | sed 's/;* *$//')" in
-            *";"*) reject "Only one statement at a time. A trailing ';' is fine; a second statement is not." ;;
+            *";"*) _sql_reject "Only one statement at a time. A trailing ';' is fine; a second statement is not." ;;
         esac
     fi
 
@@ -1430,16 +1476,42 @@ if [ $# -ge 2 ] && [ "$1" != "sql" ]; then
     done
 fi
 
+# _exakit_refuse_unknown_options <command> <allowed csv> <args...> — the ONE
+# rule for options the command does not take: exit 2, nothing runs. Twelve
+# commands used to accept any flag and do their work anyway: `exakit stop
+# --bogus` stopped the database, `skills-install --bogus` installed, `help
+# --bogus` handed the flag to grep. Bad input is refused before the command
+# starts, the way status and sql already did. Commands with their own option
+# parser (sql, status, version, logs, autostart, data-load, repair-runtime,
+# mcp-setup, mcp-status) keep it; this covers the rest.
+_exakit_refuse_unknown_options() {
+    _ruo_cmd="$1"; _ruo_allowed="$2"; shift 2
+    for _ruo_arg in "$@"; do
+        case "$_ruo_arg" in
+            -*)
+                case ",$_ruo_allowed," in
+                    *",$_ruo_arg,"*) ;;
+                    *) if [ -n "$_ruo_allowed" ]; then
+                           reject "Unknown option '$_ruo_arg' for $_ruo_cmd (supported: $(printf '%s' "$_ruo_allowed" | tr ',' ' '))."
+                       else
+                           reject "Unknown option '$_ruo_arg' for $_ruo_cmd (it takes none)."
+                       fi ;;
+                esac ;;
+        esac
+    done
+}
+
 case "${1:-help}" in
-    preflight) _with_notice preflight_report ;;
+    preflight) shift; _exakit_refuse_unknown_options preflight "" "$@"; _with_notice preflight_report ;;
     status)   shift
               case "${1:-}" in
                   --json|-j) cmd_status --json ;;
                   *) _with_notice cmd_status "$@" ;;
               esac ;;
     version|--version|-v)  shift; cmd_version "$@" ;;
-    update) shift; cmd_update "$@" ;;
+    update) shift; _exakit_refuse_unknown_options update "--yes,-y" "$@"; cmd_update "$@" ;;
     info)     shift
+              _exakit_refuse_unknown_options info "--json,-j" "$@"
               case "${1:-}" in
                   --json|-j) cmd_info_json ;;
                   # The --json form was reachable only from `exakit help`, so a
@@ -1453,30 +1525,32 @@ case "${1:-help}" in
                   # reader is already looking.
                   *) _with_notice connection_panel ;;
               esac ;;
-    guide)    _with_notice exakit_guide ;;
-    start)    _with_notice cmd_start ;;
-    stop)     _with_notice cmd_stop ;;
+    guide)    shift; _exakit_refuse_unknown_options guide "" "$@"; _with_notice exakit_guide ;;
+    start)    shift; _exakit_refuse_unknown_options start "" "$@"; _with_notice cmd_start ;;
+    stop)     shift; _exakit_refuse_unknown_options stop "" "$@"; _with_notice cmd_stop ;;
     repair-runtime) shift; cmd_repair_runtime "$@" ;;
     autostart) shift; _with_notice cmd_autostart "$@" ;;
     data-load) shift; _with_notice cmd_data_load "${1:-}" ;;
     mcp-setup) shift; _with_notice cmd_mcp_setup "$@" ;;
-    mcp-doctor) shift; _with_notice cmd_mcp_doctor "$@" ;;
+    mcp-doctor) shift; _exakit_refuse_unknown_options mcp-doctor "--json,-j" "$@"; _with_notice cmd_mcp_doctor "$@" ;;
+    mcp-remove) shift; _exakit_refuse_unknown_options mcp-remove "" "$@"; _with_notice cmd_mcp_remove "$@" ;;
     mcp-status) shift; _with_notice cmd_mcp_status "$@" ;;
     skills)   shift
+              _exakit_refuse_unknown_options skills "--json,-j" "$@"
               case "${1:-}" in
                   --json|-j) cmd_skills --json ;;
                   *) _with_notice cmd_skills ;;
               esac ;;
-    skills-install) _with_notice cmd_skills_install ;;
-    marketplace) shift; _with_notice cmd_marketplace "$@" ;;
+    skills-install) shift; _exakit_refuse_unknown_options skills-install "" "$@"; _with_notice cmd_skills_install ;;
+    marketplace) shift; _exakit_refuse_unknown_options marketplace "" "$@"; _with_notice cmd_marketplace "$@" ;;
     upgrade-kit2)  cmd_kit2_script upgrade-kit2.sh ;;
     rollback-kit2) cmd_kit2_script rollback-kit2.sh ;;
     uninstall) shift; cmd_uninstall "$@" ;;
-    whats-new) shift; cmd_whats_new "${1:-}" ;;
+    whats-new) shift; _exakit_refuse_unknown_options whats-new "" "$@"; cmd_whats_new "${1:-}" ;;
     sql)      shift; cmd_sql "$@" ;;
     logs)     shift; cmd_logs "$@" ;;
-    catalog)  shift; cmd_catalog "$@" ;;
-    help|-h|--help) shift; usage "$@" ;;
+    catalog)  shift; _exakit_refuse_unknown_options catalog "--json,-j" "$@"; cmd_catalog "$@" ;;
+    help|-h|--help) shift; _exakit_refuse_unknown_options help "--json,-j,--all,-a" "$@"; usage "$@" ;;
     *) # A component name on its own is a reasonable thing to type, and the
        # answer is its page - not "unknown command" followed by the whole menu.
        if exakit_help_is_id "${1}"; then

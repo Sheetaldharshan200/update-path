@@ -468,6 +468,11 @@ function Get-ExakitDbErrorRemedy {
         ($Text -match '(?i)object' -or $Text -match '(?i)table' -or $Text -match '(?i)column' -or
          $Text -match '(?i)schema' -or $Text -match '(?i)view')) {
         $lines += "A named object does not exist as written. Check the spelling and the schema qualifier - describe it first (MCP: describe_exasol_table_or_view; SQL: DESCRIBE <schema>.<table>)."
+        # A table loaded from a file keeps the file's column names as written,
+        # quoted - "visits", not VISITS - while an unquoted name is upper-cased.
+        if ($Statement -and $Statement.ToUpperInvariant() -match 'STARTER_KIT') {
+            $lines += 'If the table was loaded from a file, its columns keep the file''s exact spelling and case and must be quoted: SELECT "visits" ..., not VISITS. DESCRIBE the table to see them.'
+        }
     }
     # A write refused for lack of privilege is the read-only guardrail doing its
     # job, and the tempting next move - re-run it through `exapump -p
@@ -3286,6 +3291,42 @@ function Set-ExakitReadonlyAllowlist {
 # hardcoded list: every directory under skills\ carrying a SKILL.md is a skill,
 # and its identity comes from that file's own frontmatter. Adding a skill stays
 # a one-folder change with no code edit on either side.
+
+# Remove-ExakitReadonlyAllowlist - the exact mirror of Set-ExakitReadonlyAllowlist:
+# remove precisely the entries the kit added, nothing else. Uninstall left them
+# behind. Returns "REMOVED <n>" or "SKIP ...".
+function Remove-ExakitReadonlyAllowlist {
+    $readonly = @(
+        "status", "info", "version", "mcp-doctor", "logs", "catalog", "preflight",
+        "guide", "mcp-status", "help"
+    )
+    $prefixes = @("exakit", "~/.local/bin/exakit", "`$HOME/.local/bin/exakit")
+    $ours = @()
+    foreach ($prefix in $prefixes) {
+        foreach ($command in $readonly) { $ours += "Bash($prefix $command`:*)" }
+        $ours += "Bash($prefix skills)"
+        $ours += "Bash($prefix skills --json)"
+        $ours += "Bash($prefix uninstall`:*)"
+    }
+    $ours += "mcp__exasol"
+    $path = Join-Path (Join-Path $HOME ".claude") "settings.json"
+    if (-not (Test-Path $path)) { return "REMOVED 0" }
+    try { $doc = Get-Content -Raw $path | ConvertFrom-Json } catch { return "SKIP unreadable" }
+    if ($null -eq $doc -or -not $doc.PSObject.Properties["permissions"]) { return "REMOVED 0" }
+    $permissions = $doc.permissions
+    $removed = 0
+    foreach ($key in @("allow", "deny")) {
+        if (-not $permissions.PSObject.Properties[$key]) { continue }
+        $existing = @($permissions.$key)
+        $kept = @($existing | Where-Object { $ours -notcontains $_ })
+        $removed += ($existing.Count - $kept.Count)
+        $permissions.$key = $kept
+    }
+    if ($removed -gt 0) {
+        try { $doc | ConvertTo-Json -Depth 8 | Set-Content -Path $path -Encoding UTF8 } catch { return "SKIP unwritable" }
+    }
+    return "REMOVED $removed"
+}
 
 # Get-ExakitSkillRoots - the per-user discovery folders CLI agents read.
 function Get-ExakitSkillRoots {

@@ -155,6 +155,13 @@ def _discover_clients(args: argparse.Namespace) -> int:
             client = record.get("client")
             if not client:
                 continue
+            # Only the kit's own `exasol` entry says a client is connected. An
+            # add-on's entry (dash-server) in the same file kept a client
+            # "configured" after the user had deleted the exasol entry, so
+            # setup said "already connected" and did nothing - the round-2 fix
+            # counted any managed record, and a file can carry two.
+            if _record_entry_name(record) != "exasol":
+                continue
             if _managed_entry_present(registry, record):
                 configured.add(str(client))
     except Exception:  # no managed state yet → nothing is configured
@@ -173,6 +180,45 @@ def _discover_clients(args: argparse.Namespace) -> int:
         )
     print(json.dumps({"clients": clients}, indent=2, sort_keys=True))
     return 0
+
+
+def _record_entry_name(record: dict) -> str:
+    metadata = record.get("metadata") or {}
+    if not isinstance(metadata, dict):
+        return "exasol"
+    return str(metadata.get("entry_name", "exasol"))
+
+
+def _connected_clients(
+    repository: ManifestRepository, registry: AdapterRegistry, environment: ExecutionEnvironment
+) -> list[str]:
+    """Clients that are connected: detected on this machine AND their file still
+    carries the kit's `exasol` entry.
+
+    This is the only set an add-on endpoint may be written into. Repair used to
+    hand `register-addon-servers` every supported client, which CREATED config
+    files for four clients that were not installed - and doctor then warned about
+    each of them, forever, with a remedy pointing at a stale entry the repair
+    itself had just written.
+    """
+    connected: list[str] = []
+    try:
+        records = repository.list_active_artifacts()
+    except Exception:
+        return connected
+    for record in records:
+        client = str(record.get("client") or "")
+        if not client or client in connected or _record_entry_name(record) != "exasol":
+            continue
+        if not _managed_entry_present(registry, record):
+            continue
+        try:
+            if not registry.get(client).detect(environment).detected:
+                continue
+        except Exception:
+            continue
+        connected.append(client)
+    return connected
 
 
 def _managed_entry_present(registry: AdapterRegistry, record: dict) -> bool:
@@ -314,13 +360,20 @@ def _run_runtime_operation(args: argparse.Namespace) -> int:
             loader = ExakitRuntimeLoader(environment=environment, filesystem=filesystem)
             dash_definition = loader.load_dash_server(runtime_root)
             if dash_definition is not None:
-                addon_result = _register_dash_server(
-                    subsystem=subsystem,
-                    runtime_root=runtime_root,
-                    clients=clients or list(SETUP_CLIENT_IDS),
-                    definition=dash_definition,
-                    payload=addon_payload,
-                )
+                # Into CONNECTED clients only (detected, exasol entry present),
+                # narrowed further by an explicit selection. Never the whole
+                # supported list: that wrote add-on entries into config files
+                # for clients that were not on the machine.
+                connected = _connected_clients(repository, AdapterRegistry(), environment)
+                addon_targets = [c for c in (clients or connected) if c in connected]
+                if addon_targets:
+                    addon_result = _register_dash_server(
+                        subsystem=subsystem,
+                        runtime_root=runtime_root,
+                        clients=addon_targets,
+                        definition=dash_definition,
+                        payload=addon_payload,
+                    )
         result = subsystem.execute(raw_request)
         payload = result.to_dict()
         payload.update(

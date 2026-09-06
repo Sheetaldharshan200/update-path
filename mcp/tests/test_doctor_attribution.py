@@ -112,3 +112,23 @@ class DoctorAttributionTests(unittest.TestCase):
         self.assertTrue(actions, "the missing file must produce a warning or error")
         for action in actions:
             self.assertIn("exakit mcp-doctor", action or "")
+
+
+    @unittest.skipIf(os.name == "nt", "file modes are a POSIX concept")
+    def test_one_loose_file_is_one_finding(self) -> None:
+        # Two managed entries in one file (exasol plus an add-on's) are two
+        # artifacts on one path; the loosened mode was reported once per
+        # artifact. One file, one finding.
+        with self._mock_connectivity():
+            self.subsystem.execute(self._request("configure"))
+            second = dict(self._request("configure"))
+            second["server_definition"] = dict(second["server_definition"], name="dash-server",
+                                               transport="http", command=None, args=[],
+                                               url="http://127.0.0.1:5100/mcp", env={})
+            second["deployment_mode"] = "http"
+            second["target_clients"] = ["cursor"]
+            self.subsystem.execute(second)
+            os.chmod(self.cursor_path, 0o644)
+            doctor = self.subsystem.execute(self._request("doctor"))
+        drift = [f for f in doctor.findings if f.code == "permission_drift"]
+        self.assertEqual(len(drift), 1, [f.scope for f in drift])

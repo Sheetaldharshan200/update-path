@@ -804,6 +804,14 @@ function Invoke-ExakitUninstallRun {
         if ($DryRun) { Info "  will remove: $found AI $word from $root" }
         else { Info "$found AI $word from $root" }
     }
+    # The permission rules skills-install merged into ~\.claude\settings.json go
+    # with the skills; only the kit's own entries. Twin of the same step in
+    # _exakit_remove_installed_skills.
+    if ($DryRun) { Info "  will remove: the exakit permission rules from ~\.claude\settings.json" }
+    else {
+        $removedRules = Remove-ExakitReadonlyAllowlist
+        if ("$removedRules" -match '^REMOVED ([1-9]\d*)$') { Info "exakit permission rules removed from ~\.claude\settings.json" }
+    }
 
     # 4) exapump profile store (the kit created it; the binary goes in step 6).
     $exapumpDir = Join-Path $HOME ".exapump"
@@ -2285,21 +2293,30 @@ function Invoke-CmdInfoJson {
 # boundary is the read-only MCP user.
 function Invoke-CmdSql {
     param([string]$Statement, [switch]$Write, [string]$File = "", [switch]$Json)
+    # Twin of _sql_reject: in --json mode a refusal is one JSON object on stdout
+    # (exit 2 either way, nothing recorded as a failure).
+    function Write-ExakitSqlReject([string]$Msg) {
+        if ($Json) {
+            [ordered]@{ ok = $false; error = $Msg; remedy = $null; rejected = $true } | ConvertTo-Json -Compress | Write-Output
+            exit 2
+        }
+        Write-Host ""; Write-Host "  [x] $Msg"; exit 2
+    }
     Assert-ExakitInstalled
     # The saved-workflow path the skill teaches: `exakit sql --file <path>`.
     # A file's leading "-- comment" line used to be parsed as an option, so the
     # only way to rerun a saved statement was exapump on the admin connection.
     # Twin of the same handling in cmd_sql.
     if ($File) {
-        if ($Statement) { Fail "Pass either a statement or --file, not both." }
-        if (-not (Test-Path $File)) { Fail "No such file: $File" }
+        if ($Statement) { Write-ExakitSqlReject "Pass either a statement or --file, not both." }
+        if (-not (Test-Path $File)) { Write-ExakitSqlReject "No such file: $File" }
         $Statement = Get-Content -Raw -Encoding UTF8 -Path $File
     }
     if ($Statement) {
         $kept = @(($Statement -split "`r?`n") | Where-Object { $_ -notmatch '^\s*--' -and $_ -notmatch '^\s*$' })
         $Statement = ($kept -join "`n") -replace ';\s*$', ''
     }
-    if (-not $Statement) { Fail "Nothing to run. Usage: exakit sql 'SELECT ...'   or   exakit sql --file <path>   [--write]" }
+    if (-not $Statement) { Write-ExakitSqlReject "Nothing to run. Usage: exakit sql 'SELECT ...'   or   exakit sql --file <path>   [--write]" }
 
     if (-not $Write) {
         $probe = ($Statement -replace '[\r\n\t]', ' ').TrimStart()
@@ -2307,19 +2324,19 @@ function Invoke-CmdSql {
         if ($word -in @("SELECT", "WITH", "DESCRIBE", "DESC", "EXPLAIN", "SHOW")) {
             # a read
         } elseif ($word -in @("INSERT", "UPDATE", "DELETE", "MERGE", "CREATE", "DROP", "ALTER", "TRUNCATE", "GRANT", "REVOKE", "COMMIT", "ROLLBACK", "IMPORT", "EXPORT", "EXECUTE", "CALL", "SET", "OPEN", "CLOSE", "KILL", "FLUSH", "RENAME", "COMMENT", "RECOMPRESS", "REORGANIZE", "PRELOAD", "ENFORCE")) {
-            Fail "That is not a read statement, and 'exakit sql' defaults to reads. Re-run with --write if you mean it - and note the profile it uses is the ADMIN connection, not the read-only MCP user."
+            Write-ExakitSqlReject "That is not a read statement, and 'exakit sql' defaults to reads. Re-run with --write if you mean it - and note the profile it uses is the ADMIN connection, not the read-only MCP user."
         } else {
             # Neither a read nor a known write is almost always a typo. This used
             # to be reported as a write attempt and pointed at --write, the one
             # hint that sends an agent to the admin connection.
             if (-not $word) { $word = $probe.Substring(0, [Math]::Min(12, $probe.Length)) }
-            Fail "'$word' is not an SQL statement this command recognises - check the spelling. Reads start with SELECT, WITH, DESCRIBE, EXPLAIN or SHOW; a write needs --write."
+            Write-ExakitSqlReject "'$word' is not an SQL statement this command recognises - check the spelling. Reads start with SELECT, WITH, DESCRIBE, EXPLAIN or SHOW; a write needs --write."
         }
         # Reject a second statement outright. The MCP tool gate lets
         # "SELECT 1; DROP TABLE T" through because it only inspects the opening
         # keyword; refusing it here costs nothing and removes the same footgun.
         if (($probe -replace ';*\s*$', '') -match ';') {
-            Fail "Only one statement at a time. A trailing ';' is fine; a second statement is not."
+            Write-ExakitSqlReject "Only one statement at a time. A trailing ';' is fine; a second statement is not."
         }
     }
 
@@ -2423,8 +2440,23 @@ if ($Command -and $Command -ne "sql" -and ($RestArgs -contains "--help" -or $Res
 }
 
 try {
+    # Twin of _exakit_refuse_unknown_options: the ONE rule for options a command
+    # does not take - exit 2, nothing runs. Commands with their own option
+    # parser (sql, status, version, logs, autostart, data-load, mcp-setup,
+    # mcp-status, uninstall) keep it; this covers the rest.
+    function Assert-ExakitKnownOptions {
+        param([string]$CommandName, [string[]]$Allowed, [string[]]$Arguments)
+        foreach ($a in @($Arguments)) {
+            if ("$a" -like "-*" -and ($Allowed -notcontains "$a")) {
+                Write-Host ""
+                if ($Allowed.Count -gt 0) { Write-Host "  [x] Unknown option '$a' for $CommandName (supported: $($Allowed -join ' '))." }
+                else { Write-Host "  [x] Unknown option '$a' for $CommandName (it takes none)." }
+                exit 2
+            }
+        }
+    }
     switch ($Command) {
-        "preflight"    { Test-NanoRequirements }
+        "preflight"    { Assert-ExakitKnownOptions -CommandName "preflight" -Allowed @() -Arguments $RestArgs; Test-NanoRequirements }
         "status"       {
             $statusJson = ($RestArgs -contains "--json" -or $RestArgs -contains "-j")
             $statusUnknown = @($RestArgs | Where-Object { $_ -notin @("--json", "-j") })
@@ -2441,6 +2473,7 @@ try {
         "--version"    { Invoke-CmdVersion }
         "-v"           { Invoke-CmdVersion }
         "update"        {
+            Assert-ExakitKnownOptions -CommandName "update" -Allowed @("--yes", "-y", "-Yes") -Arguments $RestArgs
             # -y/--yes/-Yes answers the runtime offer, so it must not be mistaken
             # for the target when it is the only argument given.
             $updateYes = ($RestArgs -contains "-Yes" -or $RestArgs -contains "--yes" -or $RestArgs -contains "-y")
@@ -2448,6 +2481,7 @@ try {
             Invoke-CmdUpdate -Target ($updateArgs | Select-Object -First 1) -AssumeYes $updateYes
         }
         "info"         {
+            Assert-ExakitKnownOptions -CommandName "info" -Allowed @("--json", "-j") -Arguments $RestArgs
             if ($RestArgs -contains "--json" -or $RestArgs -contains "-j") {
                 $script:JsonOutput = $true
                 Invoke-CmdInfoJson
@@ -2460,14 +2494,15 @@ try {
                 Write-Host ""
             }
         }
-        "guide"        { Show-ExakitGuide }
-        "start"        { Invoke-CmdStart }
-        "stop"         { Invoke-CmdStop }
+        "guide"        { Assert-ExakitKnownOptions -CommandName "guide" -Allowed @() -Arguments $RestArgs; Show-ExakitGuide }
+        "start"        { Assert-ExakitKnownOptions -CommandName "start" -Allowed @() -Arguments $RestArgs; Invoke-CmdStart }
+        "stop"         { Assert-ExakitKnownOptions -CommandName "stop" -Allowed @() -Arguments $RestArgs; Invoke-CmdStop }
         "sql" {
             # A lone --help is unambiguous; a statement may contain the text.
             if (@($RestArgs).Count -eq 1 -and ($RestArgs[0] -eq "--help" -or $RestArgs[0] -eq "-h")) { Show-ExakitUsage -Topic "sql"; break }
             $sqlWrite = ($RestArgs -contains "--write" -or $RestArgs -contains "-Write")
             $sqlJson = ($RestArgs -contains "--json" -or $RestArgs -contains "-j")
+            $sqlBad = ""
             $sqlFile = ""
             $sqlRest = @()
             $expectFile = $false
@@ -2476,11 +2511,15 @@ try {
                 if ($a -in @("--write", "-Write", "--json", "-j")) { continue }
                 if ($a -in @("--file", "-f", "-File")) { $expectFile = $true; continue }
                 if ($a -like "--file=*") { $sqlFile = $a.Substring(7); continue }
-                if ($a -like "--*") { Fail "Unknown option '$a' for sql (supported: --file <path>, --json, --write, --help)." }
+                if ($a -like "--*") { $sqlBad = "Unknown option '$a' for sql (supported: --file <path>, --json, --write, --help)."; break }
                 $sqlRest += $a
             }
-            if ($expectFile) { Fail "--file needs a path: exakit sql --file ~\.exasol-starter-kit\workflows\query.sql" }
-            if ($sqlRest.Count -gt 1) { Fail "Pass ONE statement, quoted: exakit sql 'SELECT 1'" }
+            if (-not $sqlBad -and $expectFile) { $sqlBad = "--file needs a path: exakit sql --file ~\.exasol-starter-kit\workflows\query.sql" }
+            if (-not $sqlBad -and $sqlRest.Count -gt 1) { $sqlBad = "Pass ONE statement, quoted: exakit sql 'SELECT 1'" }
+            if ($sqlBad) {
+                if ($sqlJson) { [ordered]@{ ok = $false; error = $sqlBad; remedy = $null; rejected = $true } | ConvertTo-Json -Compress | Write-Output; exit 2 }
+                Write-Host ""; Write-Host "  [x] $sqlBad"; exit 2
+            }
             $sqlText = ""
             if ($sqlRest.Count -eq 1) { $sqlText = $sqlRest[0] }
             Invoke-CmdSql -Statement $sqlText -Write:$sqlWrite -File $sqlFile -Json:$sqlJson
@@ -2507,6 +2546,7 @@ try {
             # --json and exit 4 rather than 1. Reversing these two lines is what
             # made `mcp-doctor --json` print nothing on an uninstalled machine.
             $doctorJson = ($RestArgs -contains "--json" -or $RestArgs -contains "-j")
+            Assert-ExakitKnownOptions -CommandName "mcp-doctor" -Allowed @("--json", "-j") -Arguments $RestArgs
             if (-not (Test-Path $script:ManifestPath) -or -not (Get-RuntimeType)) {
                 Write-ExakitNotInstalledAnswer -Json:$doctorJson
             }
@@ -2525,6 +2565,15 @@ try {
             if ($doctorJson) { $env:EXAKIT_MCP_RESULT_JSON = "1" }
             Invoke-CmdMcpOperation -Operation "doctor" -OpArgs $doctorArgs
         }
+        "mcp-remove"   {
+            # Twin of cmd_mcp_remove: the kit's managed entries out of the named
+            # clients, and forgotten. The remedy doctor prints for a client that
+            # is gone names this command.
+            Assert-ExakitKnownOptions -CommandName "mcp-remove" -Allowed @() -Arguments $RestArgs
+            if (@($RestArgs).Count -eq 0) { Write-Host ""; Write-Host "  [x] Name the client(s) to remove the kit's MCP entries from: exakit mcp-remove cursor (see: exakit mcp-status)"; exit 2 }
+            if ($RestArgs -contains "all") { Write-Host ""; Write-Host "  [x] mcp-remove takes client names, not 'all' - the full removal is: exakit uninstall"; exit 2 }
+            Invoke-CmdMcpOperation -Operation "uninstall" -OpArgs $RestArgs
+        }
         "mcp-status"   {
             # The JSON form existed behind an env var the doctor sets for itself;
             # here "--json" was read as a client name.
@@ -2535,6 +2584,7 @@ try {
             Invoke-CmdMcpOperation -Operation "status" -OpArgs $mcpStatusArgs
         }
         "skills"       {
+            Assert-ExakitKnownOptions -CommandName "skills" -Allowed @("--json", "-j") -Arguments $RestArgs
             if ($RestArgs -contains "--json" -or $RestArgs -contains "-j") {
                 # Same reason as `info --json`: a trailing update notice would
                 # stop the output being parseable JSON.
@@ -2544,14 +2594,15 @@ try {
                 Invoke-CmdSkills
             }
         }
-        "skills-install" { Invoke-CmdSkillsInstall }
-        "marketplace"  { Invoke-CmdMarketplace }
+        "skills-install" { Assert-ExakitKnownOptions -CommandName "skills-install" -Allowed @() -Arguments $RestArgs; Invoke-CmdSkillsInstall }
+        "marketplace"  { Assert-ExakitKnownOptions -CommandName "marketplace" -Allowed @() -Arguments $RestArgs; Invoke-CmdMarketplace }
         "upgrade-kit2"  { Write-ExakitKit2NotAvailable -Command "exakit upgrade-kit2" }
         "rollback-kit2" { Write-ExakitKit2NotAvailable -Command "exakit rollback-kit2" }
         "uninstall"    { Invoke-CmdUninstall -AssumeYes:($RestArgs -contains "-Yes" -or $RestArgs -contains "--yes" -or $RestArgs -contains "-y") -DryRun:($RestArgs -contains "-DryRun" -or $RestArgs -contains "--dry-run" -or $RestArgs -contains "-n") }
-        "whats-new"    { Invoke-CmdWhatsNew -Version ($RestArgs | Select-Object -First 1) }
+        "whats-new"    { Assert-ExakitKnownOptions -CommandName "whats-new" -Allowed @() -Arguments $RestArgs; Invoke-CmdWhatsNew -Version ($RestArgs | Select-Object -First 1) }
         "logs"         { Invoke-CmdLogs -LogArgs $RestArgs }
         "catalog"      {
+            Assert-ExakitKnownOptions -CommandName "catalog" -Allowed @("--json", "-j") -Arguments $RestArgs
             $catJson = ($RestArgs -contains "--json" -or $RestArgs -contains "-j" -or $RestArgs -contains "-Json")
             $catSearch = @($RestArgs | Where-Object { $_ -notin @("--json", "-j", "-Json") }) | Select-Object -First 1
             Invoke-CmdCatalog -Search $catSearch -Json:$catJson
