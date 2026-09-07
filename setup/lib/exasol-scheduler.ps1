@@ -184,17 +184,32 @@ function Get-ExasolSchedulerVerifiedAsset {
 
 function Invoke-ExasolSchedulerSql {
     param([Parameter(Mandatory)][string]$Sql)
-    # SQL over stdin, never argv: CREATE/ALTER USER carries a password, and an
-    # argv is visible to every local process for the life of the call.
-    $result = ($Sql | & (Get-ExapumpBinPath) sql -p $script:ExapumpProfile 2>&1)
-    return @{ Success = ($LASTEXITCODE -eq 0); Output = ($result | Out-String) }
+    $bin = Get-ExakitExapumpBin
+    if (-not $bin) { return @{ Success = $false; Output = "exapump was not found" } }
+    $previousErrorActionPreference = $ErrorActionPreference
+    try {
+        # Native exapump can write successful summaries to stderr on Windows;
+        # with 2>&1 under the global Stop preference that becomes a
+        # terminating exception before the exit code is seen (same guard as
+        # Invoke-ExapumpAdminSql).
+        $ErrorActionPreference = "Continue"
+        # SQL over stdin, never argv: CREATE/ALTER USER carries a password,
+        # and an argv is visible to every local process for the life of the
+        # call.
+        $result = ($Sql | & $bin sql -p $script:ExapumpProfile 2>&1)
+        return @{ Success = ($LASTEXITCODE -eq 0); Output = ($result | Out-String) }
+    } catch {
+        return @{ Success = $false; Output = "$_" }
+    } finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
 }
 
 function Confirm-ExasolSchedulerDbUser {
-    $password = Read-ExakitCredential "exasol_scheduler_password"
+    $password = Get-ExakitCredential "exasol_scheduler_password"
     if (-not (Test-ExakitSqlPasswordToken $password)) {
         $password = New-ExakitSqlPasswordToken
-        Save-ExakitCredential "exasol_scheduler_password" $password
+        Set-ExakitCredential "exasol_scheduler_password" $password
     }
     $userUc = $script:ExasolSchedulerDbUser.ToUpperInvariant()
     $probe = Invoke-ExasolSchedulerSql ("SELECT CASE WHEN EXISTS (SELECT 1 FROM EXA_DBA_USERS WHERE USER_NAME = '" + $userUc + "') THEN 'EXAKIT_SCHED_USER_PRESENT' ELSE 'EXAKIT_SCHED_USER_MISSING' END AS STATUS")
