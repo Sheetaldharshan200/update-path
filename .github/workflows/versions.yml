@@ -477,6 +477,13 @@ jobs:
       - name: PowerShell available
         run: command -v pwsh >/dev/null 2>&1 && pwsh --version || echo "pwsh not installed - PowerShell checks will report skipped"
       - run: bash tests/ps-encoding-guard.sh
+      # PowerShell resolves command names at call time, so a script calling a
+      # function that exists nowhere parses clean and dies only on a real
+      # Windows machine - that is how the exasol-scheduler install shipped
+      # broken while every brace-balance guard stayed green. This walks the
+      # AST of every shipped .ps1 and fails on any static Verb-Noun call that
+      # resolves to nothing.
+      - run: bash tests/ps-undefined-functions.sh
       - run: bash tests/versions-manifest.sh
       - run: bash tests/dry-run-matrix.sh
       - run: bash tests/noninteractive-answers.sh

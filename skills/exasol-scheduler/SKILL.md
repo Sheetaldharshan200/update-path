@@ -1,7 +1,7 @@
 ---
 name: exasol-scheduler
 addon: exasol-scheduler
-description: Schedule SQL jobs on the local Exasol database with the Exasol Scheduler add-on — jobs are rows in SCHED.SCHED_TASKS, history is a table, and the whole surface is plain SQL. Covers installing it from the marketplace, the dedicated scheduler_svc user and why the MCP user cannot write tasks, cron schedules with timezones, task chains via AFTER, granting job privileges, and the laptop realities: missed runs are never replayed, one instance per task table, the engine restarts itself and says so when it gives up. Triggers — "schedule a SQL job", "run this query every night", "cron for Exasol", "install exasol-scheduler", "my scheduled job did not run", "SCHED_TASKS", "task history", "chain SQL jobs", "pause a scheduled job", "scheduler gave up", "insufficient privileges in a scheduled task".
+description: Schedule SQL jobs on the local Exasol database with the Exasol Scheduler add-on — jobs are rows in SCHED.SCHED_TASKS, history is a table, and the whole surface is plain SQL. Covers installing it from the marketplace, the dedicated scheduler_svc user and why the MCP user cannot write tasks, cron schedules with timezones, task chains via AFTER, granting job privileges, and the laptop realities — missed runs are never replayed, one instance per task table, the engine restarts itself and says so when it gives up. Triggers — "schedule a SQL job", "run this query every night", "cron for Exasol", "install exasol-scheduler", "my scheduled job did not run", "SCHED_TASKS", "task history", "chain SQL jobs", "pause a scheduled job", "scheduler gave up", "insufficient privileges in a scheduled task".
 ---
 
 # Exasol Scheduler — SQL jobs on a schedule

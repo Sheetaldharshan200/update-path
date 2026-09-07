@@ -230,7 +230,7 @@ _exasol_scheduler_fetch_verified() {
     _esf_expected="$(_exasol_scheduler_digest "$_esf_asset" 2>/dev/null || true)"
     if [ -z "$_esf_expected" ]; then
         rm -f "$_esf_dest"
-        warn "No checksum is available for $_esf_asset; refusing an unverified artifact."
+        warn "No checksum is available for $_esf_asset; refusing an unverified artifact. Usually the release is still publishing or the GitHub API was unreachable - retry with: exakit update exasol-scheduler"
         return 1
     fi
     _esf_actual="$(sha256_of "$_esf_dest")"

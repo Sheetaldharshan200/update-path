@@ -80,6 +80,32 @@ for _dir in "$ROOT"/skills/*/; do
         check "$_id: summary is non-empty" "yes" "EMPTY"
     fi
     lacks "$_id: summary drops the triggers" "Triggers" "$_sum"
+    # The kit's own reader is tolerant, but agents load this file with real
+    # YAML parsers, and a ": " inside an unquoted plain scalar terminates the
+    # scalar there — the skill silently drops out of every standards-compliant
+    # loader while `exakit skills` keeps reporting it healthy. Assert the one
+    # rule that class of parser enforces and awk cannot see.
+    _yaml_safe="$(python3 - "$_dir/SKILL.md" <<'PYEOF'
+import sys
+lines = open(sys.argv[1], encoding="utf-8").read().splitlines()
+if not lines or lines[0] != "---":
+    print("no frontmatter"); raise SystemExit
+problems = []
+for line in lines[1:]:
+    if line == "---":
+        break
+    key, sep, value = line.partition(": ")
+    if not sep or not key or " " in key:
+        continue
+    value = value.strip()
+    if value[:1] in ("'", '"'):
+        continue
+    if ": " in value or value.endswith(":"):
+        problems.append(key)
+print("clean" if not problems else "unparseable value for: " + ", ".join(problems))
+PYEOF
+)"
+    check "$_id: frontmatter survives a real YAML parser" "clean" "$_yaml_safe"
 done
 
 # Guards against the whole point of this feature being quietly lost: the kit

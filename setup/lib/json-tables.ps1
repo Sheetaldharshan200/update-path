@@ -324,7 +324,7 @@ function Get-JsonTablesVerifiedAsset {
         return $true
     }
     Remove-Item -Force -ErrorAction SilentlyContinue $Destination
-    Warn2 "No checksum is available for $Asset; refusing an unverified artifact."
+    Warn2 "No checksum is available for $Asset; refusing an unverified artifact. Usually the release is still publishing or the GitHub API was unreachable - retry with: exakit update json-tables"
     return $false
 }
 

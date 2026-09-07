@@ -1932,8 +1932,12 @@ function Set-ExakitKitUpgradeNote {
         # A first-ever install has no previous version, and nothing to announce.
         if (-not $was -or -not $now -or $was -eq $now) { return }
         # Only forward. A downgrade has no notes to read out anyway, and recording
-        # one would leave a pending marker no later run could resolve.
-        if ((Compare-ExakitDottedVersion -A $now -B $was) -le 0) { return }
+        # one would leave a pending marker no later run could resolve. A version
+        # that is not a dotted number cannot be ordered, so nothing is recorded.
+        $nowKey = ConvertTo-ExakitVersionKey $now
+        $wasKey = ConvertTo-ExakitVersionKey $was
+        if (-not $nowKey -or -not $wasKey) { return }
+        if ((Compare-ExakitVersionKey $nowKey $wasKey) -le 0) { return }
         Set-ExakitManifestValue "kit.whats_new_from" $was
     } catch { }
 }
