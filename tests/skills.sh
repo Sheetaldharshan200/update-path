@@ -351,7 +351,35 @@ import json
 doc = json.load(open('$ROOT/setup/help/exakit.json'))
 print(chr(10).join(c['command'] for c in doc['commands']))")"
 has "catalog lists exakit skills"         "skills" "$CATALOG"
-has "catalog lists exakit skills-install" "skills-install" "$CATALOG"
+# skills-install is a REPAIR command, not a discovery one: the installer places
+# the skills and `exakit update` fetches a newer set, so the help screen, the
+# catalogue and the JSON surfaces leave it out. It keeps its page.
+has "the help document still carries skills-install" "skills-install" "$CATALOG"
+check "...marked hidden" "True" "$(python3 -c "
+import json
+doc = json.load(open('$ROOT/setup/help/exakit.json'))
+print([c for c in doc['commands'] if c['command'] == 'skills-install'][0].get('hidden'))")"
+check "...and in no help group" "0" "$(python3 -c "
+import json
+doc = json.load(open('$ROOT/setup/help/exakit.json'))
+print(sum('skills-install' in g['commands'] for g in doc['groups']))")"
+check "skills sits in the Reference group" "True" "$(python3 -c "
+import json
+doc = json.load(open('$ROOT/setup/help/exakit.json'))
+print('skills' in [g for g in doc['groups'] if g['title'] == 'Reference'][0]['commands'])")"
+lacks "the overview screen does not list skills-install" "skills-install" "$(bash "$ROOT/setup/exakit" help 2>/dev/null)"
+lacks "neither does exakit help --all" "skills-install" "$(bash "$ROOT/setup/exakit" help --all 2>/dev/null)"
+lacks "nor the catalogue" "skills-install" "$(bash "$ROOT/setup/exakit" catalog 2>/dev/null)"
+check "nor catalog --json (as a command; the skills entry may still name it as the repair)" "0" \
+    "$(bash "$ROOT/setup/exakit" catalog --json 2>/dev/null | python3 -c 'import json,sys; d=json.load(sys.stdin); print(sum(1 for c in d["commands"] if c["command"]=="skills-install") + sum(1 for c in d["documents"]["exakit"]["commands"] if c["command"]=="skills-install"))' 2>/dev/null)"
+has "but exakit skills-install --help still renders its page" "The installer already does this" "$(bash "$ROOT/setup/exakit" skills-install --help 2>/dev/null)"
+has "the PowerShell renderer filters hidden entries the same way" 'Get-ExakitHelpVisibleCommands' "$(cat "$ROOT/setup/lib/help.ps1")"
+has "exakit skills names the repair only when a skill is missing" 'exakit skills-install' "$(sed -n '/^exakit_skills_list()/,/^}/p' "$ROOT/setup/lib/common.sh")"
+has "skills --json carries the verdict" '"installed_version"' "$(sed -n '/^exakit_skills_list()/,/^}/p' "$ROOT/setup/lib/common.sh")"
+has "info --json carries the skills block" 'doc["skills"] = {' "$(sed -n '/^cmd_info_json()/,/^}/p' "$ROOT/setup/exakit")"
+has "the info panel has a Skills row" 'ui_panel_line "Skills:' "$(cat "$ROOT/setup/lib/common.sh")"
+has "PowerShell info carries the skills block" '"skills" -NotePropertyValue' "$(cat "$ROOT/setup/exakit.ps1")"
+lacks "no document tells a reader to run skills-install after the install" "Run \`exakit skills-install\`" "$(cat "$ROOT/AGENTS.md" "$ROOT/README.md" "$ROOT/QUICKSTART.md")"
 has "the bash CLI dispatches skills"      "skills)" "$(cat "$ROOT/setup/exakit")"
 has "the PowerShell CLI dispatches skills" '"skills"' "$(cat "$ROOT/setup/exakit.ps1")"
 

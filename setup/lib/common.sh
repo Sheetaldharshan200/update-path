@@ -180,6 +180,10 @@ EXAKIT_ABOUT_MAX_LEN="${EXAKIT_ABOUT_MAX_LEN:-200}"
 # The table's rule is 74 columns and the two leading cells spend 30 of them.
 EXAKIT_ABOUT_WIDTH="${EXAKIT_ABOUT_WIDTH:-44}"
 
+# Remember whether the environment named the port: an explicit value wins
+# everywhere, but the default must yield to the port the install RECORDED
+# (runtime.dsn) once there is one - see nano_adopt_recorded_settings.
+EXAKIT_DB_PORT_EXPLICIT="${EXAKIT_DB_PORT:+1}"
 EXAKIT_DB_PORT="${EXAKIT_DB_PORT:-8563}"
 
 # ---------------------------------------------------------------------------
@@ -925,7 +929,11 @@ die() {
 exakit_db_error_remedy() {
     _dber_stmt="$(printf '%s' "${2:-}" | tr '[:lower:]' '[:upper:]' | tr '\n\t' '  ')"
     case "$1" in
-        *"onnection refused"*|*"Errno 61"*|*"Errno 111"*|*"could not connect"*|*"Could not connect"*)
+        *"onnection refused"*|*"Errno 61"*|*"Errno 111"*|*"could not connect"*|*"Could not connect"*|*"Failed to connect to"*|*"failed to connect to"*|*"actively refused"*|*"os error 10061"*)
+            # The last four are how exapump and Windows spell a refused socket
+            # ("Failed to connect to 127.0.0.1:8563", "No connection could be
+            # made because the target machine actively refused it (os error
+            # 10061)"); without them the first remedy every agent needs was null.
             printf '%s\n' "That is the database not answering — it is stopped or unreachable. Start it with: exakit start (then check: exakit status)"
             ;;
         *"tls handshake"*|*"TLS handshake"*|*"TLS error"*)
@@ -5126,7 +5134,9 @@ exakit_install_helper_early() {
     if [ ! -x "$EXAKIT_BIN_DIR/exakit" ] || ! cmp -s "$_ihe_src" "$EXAKIT_BIN_DIR/exakit" 2>/dev/null; then
         install -m 755 "$_ihe_src" "$EXAKIT_BIN_DIR/exakit" 2>/dev/null || return 0
     fi
-    info "exakit command ready — follow this install from another shell with: exakit status"
+    # Recorded in the log, not on the screen: the command being ready is a
+    # fact for the log and for `exakit status` itself, not news for the reader.
+    _exakit_log_file "INFO  exakit command ready (~/.local/bin/exakit) — exakit status answers from here on"
     return 0
 }
 
@@ -5998,15 +6008,37 @@ exakit_acquire_lock() {
     _lock="$EXAKIT_HOME/.install.lock"
     mkdir -p "$EXAKIT_HOME"
     if [ -f "$_lock" ]; then
-        _pid="$(cat "$_lock" 2>/dev/null)"
-        if [ -n "$_pid" ] && kill -0 "$_pid" 2>/dev/null; then
+        _pid="$(sed -n 1p "$_lock" 2>/dev/null)"
+        if exakit_lock_holder_alive "$_lock"; then
             die "Another setup run is already in progress (pid $_pid). Wait for it to finish; if you are sure it is dead, remove $_lock and re-run."
         fi
         warn "Found a lock from an interrupted run — removing it and continuing"
         rm -f "$_lock"
     fi
-    printf '%s' "$$" > "$_lock"
+    # Line 1 the pid, line 2 the process start time. A pid alone is reused by
+    # the OS, and a crashed installer's pid landing on an unrelated process kept
+    # `exakit status` saying "installing" until that process exited.
+    printf '%s\n%s\n' "$$" "$(exakit_process_start_time "$$")" > "$_lock"
     EXAKIT_LOCK_FILE="$_lock"
+}
+
+# exakit_process_start_time <pid> — the start time ps reports, trimmed; empty
+# when ps cannot say. `lstart` is the one column macOS and Linux ps share.
+exakit_process_start_time() {
+    ps -o lstart= -p "$1" 2>/dev/null | sed 's/^ *//;s/ *$//' | head -n 1
+}
+
+# exakit_lock_holder_alive <lockfile> — true only when the pid in the lock is
+# alive AND (if the lock recorded one) started when the lock says it did. An
+# old one-line lock without a start time falls back to the pid check.
+exakit_lock_holder_alive() {
+    [ -f "${1:-}" ] || return 1
+    _lha_pid="$(sed -n 1p "$1" 2>/dev/null)"
+    _lha_start="$(sed -n 2p "$1" 2>/dev/null)"
+    [ -n "$_lha_pid" ] || return 1
+    kill -0 "$_lha_pid" 2>/dev/null || return 1
+    [ -n "$_lha_start" ] || return 0
+    [ "$(exakit_process_start_time "$_lha_pid")" = "$_lha_start" ]
 }
 
 exakit_release_lock() {
@@ -6404,7 +6436,29 @@ exakit_skills_list() {
         done <<EXAKIT_SKL_EOF
 $(exakit_skills_registry)
 EXAKIT_SKL_EOF
-        printf ']}\n'
+        # The same verdict the panel prints, as data: which set is placed,
+        # which is advertised, and the one command to run if they differ or a
+        # placed skill has gone missing. Nothing here touches the network -
+        # the advertised number comes from the cached versions document.
+        _skj_have="$(manifest_get components.skills.version 2>/dev/null || true)"
+        _skj_want="$(exakit_versions_value components.skills.version 2>/dev/null || true)"
+        _skj_missing=0
+        while IFS='|' read -r _skj_id _skj_sum; do
+            [ -n "$_skj_id" ] || continue
+            [ "$(exakit_skill_state "$_skj_id")" = "installed" ] || _skj_missing=$((_skj_missing + 1))
+        done <<EXAKIT_SKJ_EOF
+$(exakit_skills_registry)
+EXAKIT_SKJ_EOF
+        _skj_status="current"; _skj_next="null"
+        if [ -n "$_skj_have" ] && [ -n "$_skj_want" ] && [ "$_skj_have" != "$_skj_want" ]; then
+            _skj_status="update_pending"; _skj_next='"exakit update"'
+        elif [ "$_skj_missing" -gt 0 ]; then
+            _skj_status="missing"; _skj_next='"exakit skills-install"'
+        fi
+        printf '],"installed_version":%s,"advertised_version":%s,"status":"%s","next":%s}\n' \
+            "$([ -n "$_skj_have" ] && printf '"%s"' "$_skj_have" || printf null)" \
+            "$([ -n "$_skj_want" ] && printf '"%s"' "$_skj_want" || printf null)" \
+            "$_skj_status" "$_skj_next"
         return 0
     fi
 
@@ -8625,6 +8679,11 @@ exakit_maybe_offer_data_load() {
         if [ "$_local_status" -eq 2 ]; then
             _data_notes="${_data_notes}info|Local file load skipped.
 "
+        elif [ "$_local_status" -eq 3 ]; then
+            # Refused as bad input (the file, not the install): say so, but
+            # do not book it as a failed step.
+            _data_notes="${_data_notes}warn|The local file was refused (see above). Load another any time with: exakit data-load
+"
         elif [ "$_local_status" -ne 0 ]; then
             _data_notes="${_data_notes}warn|Data loading did not finish cleanly. Retry any time with: exakit data-load
 "
@@ -9385,6 +9444,18 @@ _EXAKIT_CONN_EOF
         ui_panel_line "MCP configs:  in each AI client's config (list: exakit mcp-status)"
         ui_panel_line "MCP backups:  $(ui_tilde "$EXAKIT_MCP_DIR")"
     fi
+    # The skill set, from the manifest and the CACHED versions document: info
+    # stays offline and cheap, and still says when `exakit update` has a newer
+    # set to fetch. The row is the same verdict `exakit skills` prints.
+    _cp_skills_have="$(manifest_get components.skills.version 2>/dev/null || true)"
+    _cp_skills_want="$(exakit_versions_value components.skills.version 2>/dev/null || true)"
+    if [ -n "$_cp_skills_have" ]; then
+        if [ -n "$_cp_skills_want" ] && [ "$_cp_skills_want" != "$_cp_skills_have" ]; then
+            ui_panel_line "Skills:       $_cp_skills_have ($_cp_skills_want available: exakit update)"
+        else
+            ui_panel_line "Skills:       $_cp_skills_have (list: exakit skills)"
+        fi
+    fi
 
     # The JSON form rides on the Manifest row rather than trailing the panel as
     # a sentence of its own: it is the same fact -- where this screen's contents
@@ -10040,6 +10111,10 @@ _exakit_autostart_register() {
                 printf '  <key>StandardErrorPath</key><string>%s/autostart-%s.log</string>\n' "$EXAKIT_LOG_DIR" "$_ar_id"
                 printf '</dict>\n</plist>\n'
             } > "$_ar_plist" || { warn "Could not write $_ar_plist"; return 1; }
+            # launchd creates the log with the default umask (0644). Every other
+            # kit log is owner-only; create these first so they are too.
+            ( umask 077; : >> "$EXAKIT_LOG_DIR/autostart-$_ar_id.log" ) 2>/dev/null
+            chmod 600 "$EXAKIT_LOG_DIR/autostart-$_ar_id.log" 2>/dev/null
             # Load it now so the entry is live without a logout, and so a
             # rewritten plist replaces the old registration.
             launchctl unload "$_ar_plist" >/dev/null 2>&1

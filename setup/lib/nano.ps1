@@ -216,6 +216,11 @@ function Resolve-NanoNames {
         $mv = Get-ExakitManifestValue "runtime.volume"
         if ($mv) { $script:NanoVolume = $mv }
     }
+    # The port and image tag the install recorded, unless the environment names
+    # them - every start, stop and recreate goes through here first.
+    if (Get-Command Sync-ExakitRuntimeDefaultsFromManifest -ErrorAction SilentlyContinue) {
+        Sync-ExakitRuntimeDefaultsFromManifest
+    }
 }
 
 # Get-DockerDataRoot - the Windows directory where Docker actually stores its
@@ -561,6 +566,14 @@ function Start-NanoExisting {
 # Twin of nano_pull_image in runtime-nano.sh.
 function Install-NanoImage {
     $engine = Get-NanoEngine
+    # The tag comes from the version resolution the INSTALLER runs; a later
+    # `exakit start` that had to (re)create the container arrived here with none
+    # and pulled "docker.io/exasol/nano:", which docker refuses as an invalid
+    # reference - and this step then blamed the network.
+    if (-not $script:NanoTag) {
+        if (Get-Command Sync-ExakitRuntimeDefaultsFromManifest -ErrorAction SilentlyContinue) { Sync-ExakitRuntimeDefaultsFromManifest }
+        if (-not $script:NanoTag -and $script:NanoTagFallback) { $script:NanoTag = $script:NanoTagFallback }
+    }
     $image = Get-NanoImageRef
     if (Test-NanoContainerExists) {
         Write-ExakitLog "INFO" "Container $($script:NanoContainer) already exists; no image pull needed"
@@ -589,7 +602,7 @@ function Install-NanoImage {
         if ($code -eq 0) { $pulled = $true; break }
         if ($attempt -lt 3) { Warn2 "Pull attempt $attempt failed - retrying in $($attempt * 10)s"; Start-Sleep -Seconds ($attempt * 10) }
     }
-    if (-not $pulled) { Fail "Image pull failed after 3 attempts: $image (network/Docker Hub issue - see log)" }
+    if (-not $pulled) { Fail "Image pull failed after 3 attempts: $image (network/Docker Hub issue, or an invalid image reference - see log)" }
     OkStep "Runtime image ready: $image"
 }
 
@@ -657,10 +670,24 @@ function Install-Nano {
             $suffix = ""
             if ($who) { $suffix = " by $who" }
             Write-ExakitError "Port $($script:DbPort) is already taken$suffix."
-            if ($who -match "wslrelay|vmmem|docker") {
-                Info "That is a WSL or Docker relay still holding the port from an earlier container. Free it with: wsl --shutdown"
+            # The non-destructive remedy first: the port is recorded at install
+            # and every later `exakit start` reuses it, so this is a one-time choice.
+            # Warn2, not Info: this step runs quiet on a terminal (Info goes to
+            # the log only), and a user watching the install saw the two error
+            # lines with no remedy under them - the remedy was in the log.
+            Warn2 "Run the database on another port: `$env:EXAKIT_DB_PORT = '8564'  then re-run (the kit records it; later commands reuse it)."
+            $wslHolder = ""
+            if ($who -match "wslrelay|vmmem") { $wslHolder = Get-ExakitWslPortPublisher -Port ([int]$script:DbPort) }
+            if ($wslHolder) {
+                # wslrelay is only the messenger: a container inside a WSL distro
+                # publishes this port - seen live as a rootless Podman Exasol,
+                # invisible to the Windows Docker engine, so the shared-engine
+                # adoption does not apply and `wsl --shutdown` would stop THAT
+                # database.
+                Warn2 "The port is published by the container '$wslHolder' inside WSL (probably another Exasol). Leave it and take another port, or stop it from inside WSL."
+            } elseif ($who -match "wslrelay|vmmem|docker") {
+                Warn2 "That is a WSL or Docker relay still holding the port from an earlier container. If nothing in WSL needs it: wsl --shutdown"
             }
-            Info "Or run the database on another port: `$env:EXAKIT_DB_PORT = '8564'  then re-run."
             Fail "Port $($script:DbPort) is not available."
         }
         # Re-assigned per phase rather than printed: Invoke-ExakitLogged reads
@@ -842,6 +869,36 @@ function Repair-NanoCredentials {
     }
     Ok "Credentials directory repaired"
     return $true
+}
+
+# Get-ExakitWslPortPublisher <port> - the name of a rootless podman container
+# inside the default WSL distro that publishes <port>, or "". Podman only: a
+# docker inside the distro is Docker Desktop's shared engine (the same one
+# Windows uses, which adoption already handles) or the Windows CLI over interop.
+# wsl.exe answers in UTF-16, hence the NUL strip. Bounded, so a hung distro
+# cannot stall the install.
+function Get-ExakitWslPortPublisher {
+    param([Parameter(Mandatory)][int]$Port)
+    try {
+        $wsl = Get-Command wsl.exe -ErrorAction SilentlyContinue
+        if (-not $wsl) { return "" }
+        # No shell variables: wsl.exe hands its command line to the distro's
+        # default shell, which expands them BEFORE the inner shell runs (a
+        # `for e in ...; $e ps` loop ran Linux ps with an empty name). A login
+        # shell first: rootless podman needs the session environment the
+        # profile sets up, and in a bare `sh -c` it lists nothing.
+        $probe = "podman ps --format '{{.Names}} {{.Ports}}' 2>/dev/null; true"
+        foreach ($shell in @("bash -lc", "sh -c")) {
+            # Verbatim: wsl.exe wants a bare -- and the shell wants ONE quoted
+            # command; the probe itself carries no double quotes.
+            $out = Invoke-ExakitBounded -FilePath $wsl.Source -ArgumentString ('-- ' + $shell + ' "' + $probe + '"') -TimeoutSeconds 15
+            if (-not $out) { continue }
+            foreach ($line in (("$out" -replace "`0", "") -split "`r?`n")) {
+                if ($line -match ":$Port->") { return (($line.Trim() -split '\s+')[0]) }
+            }
+        }
+    } catch { }
+    return ""
 }
 
 # Get-ExakitPortHolder <port> - "name (pid N)" for whatever is listening, or "".

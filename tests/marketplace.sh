@@ -641,6 +641,20 @@ else
     ) )"
 fi
 
+# A Windows CLI cannot open a file that lives on the WSL side - Node refuses the
+# UNC host (ERR_UNC_HOST_NOT_ALLOWED: "UNC host 'wsl.localhost' access is not
+# allowed"), seen live on a WSL install - so the install stages the .vsix on a
+# Windows drive (the user's %TEMP%, over /mnt) and removes both copies after.
+EV_SRC="$(cat "$ROOT/setup/lib/exasol-vscode.sh")"
+has "a Windows code CLI gets a copy staged on a Windows drive, not a wsl.localhost path" \
+    '_evi_stage="$(_exasol_vscode_windows_stage_dir 2>/dev/null || true)"' "$EV_SRC"
+has "both the WSL download and the staged copy are removed after the install" \
+    '_exasol_vscode_cleanup_vsix "$_evi_local" "$_evi_vsix"' "$EV_SRC"
+check "the stage dir falls back to the system temp folders when cmd.exe is absent" "" "$( (
+    command() { if [ "$1" = "-v" ] && [ "$2" = "cmd.exe" ]; then return 1; fi; builtin command "$@"; }
+    _exasol_vscode_windows_stage_dir 2>/dev/null | grep -v '^/mnt/c/'
+) )"
+
 echo "a stdin-draining host CLI must not eat the add-on registry:"
 # The VS Code CLI reads and DRAINS whatever stdin it inherits. Every loop over
 # the add-on registry calls into the add-on modules, and the exasol-vscode row

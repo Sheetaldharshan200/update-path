@@ -154,8 +154,23 @@ def cmd_line(prefix, command, options, summary, pad=22, indent="    "):
         if summary:
             para(summary, indent=indent + "  ")
 
-def commands_of(doc):
-    return doc.get("commands", []) or []
+def commands_of(doc, include_hidden=False):
+    """The commands a document lists. An entry marked "hidden": true still has
+    a page (`exakit <cmd> --help` finds it through find_command) but is left
+    off the overview, `--all`, the catalogue and the JSON surfaces: it exists
+    for repair, not for discovery. skills-install is the first such command -
+    the installer places the skills itself and `exakit update` fetches a newer
+    set, so advertising it only sent readers to a step they did not need."""
+    entries = doc.get("commands", []) or []
+    if include_hidden:
+        return entries
+    return [entry for entry in entries if not entry.get("hidden")]
+
+def without_hidden(doc):
+    """A copy of a document with its hidden commands removed, for JSON dumps."""
+    copy = dict(doc)
+    copy["commands"] = commands_of(doc)
+    return copy
 
 # Every binary the kit documents. A command whose first word is one of these is
 # already spelled out ("exakit start" on the runtime page); anything else is a
@@ -182,7 +197,7 @@ def invocation_with_options(doc_id, entry):
 def find_command(doc, name):
     name = name.strip().lower()
     exact, prefix = [], []
-    for entry in commands_of(doc):
+    for entry in commands_of(doc, include_hidden=True):
         key = entry.get("command", "").lower()
         if key == name:
             exact.append(entry)
@@ -535,9 +550,9 @@ def render_json(which):
         row["invocation"] = ("%s %s" % (row["tool"], row["command"])).strip()
     if which in ("", "all"):
         payload = {"schema_version": 1, "search": None, "count": len(rows),
-                   "commands": rows, "documents": docs}
+                   "commands": rows, "documents": {k: without_hidden(d) for k, d in docs.items()}}
     elif which in docs:
-        payload = docs[which]
+        payload = without_hidden(docs[which])
     else:
         needle = which.lower()
         hit = [r for r in rows if needle in

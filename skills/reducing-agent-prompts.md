@@ -44,12 +44,20 @@ rather than clobber a settings file it cannot parse).
       "Bash(exakit status:*)",
       "Bash(~/.local/bin/exakit status:*)",
       "Bash($HOME/.local/bin/exakit status:*)",
+      "Bash(exakit.cmd status:*)",
+      "Bash(~/.local/bin/exakit.cmd status:*)",
+      "Bash($HOME/.local/bin/exakit.cmd status:*)",
+      "PowerShell(exakit status:*)",
       "mcp__exasol"
     ],
     "deny": [
       "Bash(exakit uninstall:*)",
       "Bash(~/.local/bin/exakit uninstall:*)",
-      "Bash($HOME/.local/bin/exakit uninstall:*)"
+      "Bash($HOME/.local/bin/exakit uninstall:*)",
+      "Bash(exakit.cmd uninstall:*)",
+      "Bash(~/.local/bin/exakit.cmd uninstall:*)",
+      "Bash($HOME/.local/bin/exakit.cmd uninstall:*)",
+      "PowerShell(exakit uninstall:*)"
     ]
   }
 }
@@ -62,6 +70,16 @@ absolute path. Listing only the bare `exakit` form therefore covered the one
 invocation the docs steer agents away from, and every "pre-approved" command kept
 prompting anyway. The deny needs all three for the mirror-image reason: a rule that
 names only `exakit uninstall` is sidestepped by typing the full path.
+
+**Windows adds three more spellings, and the PowerShell tool.** The command there
+is `exakit.cmd`: PowerShell resolves the bare name, but Git Bash — Claude Code's
+shell on Windows — does not, and `~/.local/bin/exakit` does not exist, so the Unix
+spellings above matched nothing an agent on that machine could type and every
+status call kept prompting. The Windows list carries `Bash(exakit.cmd …)` in the
+same three spellings plus `PowerShell(exakit …)` for Claude Code's PowerShell tool,
+which has its own rule namespace. Rules for commands that no longer exist
+(`update-check`, `mcp-validate`) are swept out on the way through, and the file is
+written without a UTF-8 BOM, which strict JSON readers reject.
 
 The real list covers the whole read-only surface — `status`, `info`, `version`,
 `mcp-doctor`, `logs`, `catalog`, `preflight`, `guide`, `mcp-status`,

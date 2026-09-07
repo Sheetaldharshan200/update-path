@@ -118,6 +118,39 @@ _exasol_vscode_host_path() {
 # Measured on WSL, a `while read` loop over three lines: 1 line read with this
 # call in the body, 3 with </dev/null. CI never saw it because a runner has no
 # VS Code, so exasol_vscode_code_cli fails and nothing is ever run.
+# _exasol_vscode_windows_stage_dir - a directory on a WINDOWS drive, reachable
+# from WSL, where a file can be put for the Windows VS Code CLI to open. The
+# user's %TEMP% first (asked of cmd.exe over interop), then the two fixed
+# system temp folders. Empty when there is none.
+_exasol_vscode_windows_stage_dir() {
+    _ews_tmp=""
+    if command -v cmd.exe >/dev/null 2>&1; then
+        _ews_tmp="$(cmd.exe /c 'echo %TEMP%' 2>/dev/null | tr -d '\r\n')"
+    fi
+    if [ -n "$_ews_tmp" ] && command -v wslpath >/dev/null 2>&1; then
+        _ews_dir="$(wslpath -u "$_ews_tmp" 2>/dev/null || true)"
+        if [ -n "$_ews_dir" ] && [ -d "$_ews_dir" ] && [ -w "$_ews_dir" ]; then
+            printf '%s\n' "$_ews_dir"
+            return 0
+        fi
+    fi
+    for _ews_dir in /mnt/c/Windows/Temp /mnt/c/Temp; do
+        if [ -d "$_ews_dir" ] && [ -w "$_ews_dir" ]; then
+            printf '%s\n' "$_ews_dir"
+            return 0
+        fi
+    done
+    return 1
+}
+
+# _exasol_vscode_cleanup_vsix <local> [staged] - remove the downloaded file and,
+# when one was staged on a Windows drive, that copy too.
+_exasol_vscode_cleanup_vsix() {
+    rm -f "$1"
+    if [ -n "${2:-}" ] && [ "$2" != "$1" ]; then rm -f "$2"; fi
+    return 0
+}
+
 _exasol_vscode_code() {
     _evr_cli="$(exasol_vscode_code_cli)" || return 1
     if [ -n "$EXAKIT_EXASOL_VSCODE_EXTDIR" ]; then
@@ -307,17 +340,30 @@ exasol_vscode_install() {
             _exasol_vscode_not_installed "could not stage the downloaded extension file"
             return 1
         }
+        # The Windows VS Code CLI refuses a file that lives on the WSL side:
+        # Node turns \\wsl.localhost\<distro>\... into file://wsl.localhost/...
+        # and fails with ERR_UNC_HOST_NOT_ALLOWED ("UNC host 'wsl.localhost'
+        # access is not allowed" - seen live on a WSL install whose `code` is
+        # the Windows build). Stage the file on a Windows drive first and hand
+        # the CLI a C:\ path; the WSL copy goes either way.
+        _evi_local="$_evi_vsix"
+        if _exasol_vscode_code_is_windows "$_evi_cli"; then
+            _evi_stage="$(_exasol_vscode_windows_stage_dir 2>/dev/null || true)"
+            if [ -n "$_evi_stage" ] && cp "$_evi_local" "$_evi_stage/$(basename "$_evi_local")" 2>/dev/null; then
+                _evi_vsix="$_evi_stage/$(basename "$_evi_local")"
+            fi
+        fi
         info "Installing the extension into VS Code"
         # run_logged rather than a bare redirect: `code --install-extension`
         # takes tens of seconds with nothing to show for it, and run_logged is
         # the one hook that animates a silent command. Same logfile either way.
         if ! run_logged _exasol_vscode_code --install-extension \
                 "$(_exasol_vscode_host_path "$_evi_vsix")" --force; then
-            rm -f "$_evi_vsix"
-            _exasol_vscode_not_installed "code --install-extension failed (see log)"
+            _exasol_vscode_cleanup_vsix "$_evi_local" "$_evi_vsix"
+            _exasol_vscode_not_installed "code --install-extension failed (see log). Install it from VS Code's Extensions view instead: search for 'Exasol'"
             return 1
         fi
-        rm -f "$_evi_vsix"
+        _exasol_vscode_cleanup_vsix "$_evi_local" "$_evi_vsix"
         # The install is not done until VS Code can answer for the version.
         _evi_now="$(_exasol_vscode_live_version 2>/dev/null || true)"
         if [ -z "$_evi_now" ]; then

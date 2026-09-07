@@ -986,8 +986,9 @@ _ij_out="$(EXAKIT_HOME="$_ij/have" bash "$ROOT/setup/exakit" info --json 2>"$_ij
 _ij_alias="$(EXAKIT_HOME="$_ij/have" bash "$ROOT/setup/exakit" info -j 2>/dev/null)"
 _ij_none="$(EXAKIT_HOME="$_ij/none" bash "$ROOT/setup/exakit" info --json 2>/dev/null)"; _ij_rc=$?
 # The record verbatim PLUS the three keys every state query carries
-# (installed/status/remedy): strip those and what is left must be the manifest.
-if python3 -c 'import json,sys; d=json.loads(sys.argv[2]); r=json.load(open(sys.argv[1])); [d.pop(k, None) for k in ("installed","status","remedy")]; sys.exit(0 if d == r else 1)' "$_ij/have/manifest.json" "$_ij_out" && \
+# (installed/status/remedy) and the `skills` verdict block: strip those and
+# what is left must be the manifest.
+if python3 -c 'import json,sys; d=json.loads(sys.argv[2]); r=json.load(open(sys.argv[1])); [d.pop(k, None) for k in ("installed","status","remedy","skills")]; sys.exit(0 if d == r else 1)' "$_ij/have/manifest.json" "$_ij_out" && \
    [ "$_ij_alias" = "$_ij_out" ] && \
    [ ! -s "$_ij/err" ] && \
    printf '%s' "$_ij_none" | python3 -m json.tool >/dev/null 2>&1 && \

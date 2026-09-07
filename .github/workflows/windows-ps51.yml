@@ -1,0 +1,24 @@
+name: windows-ps51
+
+# The Windows CLI runs under Windows PowerShell 5.1 - the exakit.cmd shim invokes
+# powershell.exe - and 5.1 serializes differently from pwsh 7: ConvertFrom-Json
+# hands an array back as one object, a one-element array becomes a bare string,
+# Set-Content -Encoding UTF8 writes a BOM. Every --json shape bug of the fourth
+# agent-operability audit passed the pwsh-only suites. This job runs the contract
+# test under both engines on a real Windows runner.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  json-contracts:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: contracts under Windows PowerShell 5.1
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File tests/ps51-json-contracts.ps1
+      - name: contracts under PowerShell 7
+        shell: pwsh
+        run: pwsh -NoProfile -File tests/ps51-json-contracts.ps1

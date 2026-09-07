@@ -2,6 +2,29 @@
 
 This repo installs a complete local analytics stack with one command: an Exasol database on the user's machine, the `exapump` data/SQL CLI, an MCP server with a dedicated read-only database user, and the `pyexasol` Python driver. If a user asks you to "install this repo", this file is your runbook.
 
+## The contract in 20 lines
+
+Everything below expands on this. If you read nothing else, this is enough to install, verify and recover.
+
+```bash
+# 1. Install, unattended, in the background; answer choices with env vars (names, never menu numbers).
+EXAKIT_DATASETS=tpch,energy,weather EXAKIT_MCP_CLIENTS=all EXAKIT_MARKETPLACE_ADDONS=none \
+  sh -c 'curl -fsSL https://raw.githubusercontent.com/krishna-exasol/update-path/main/install.sh | sh' </dev/null &
+# 2. Poll until it answers running (exit 0). While it installs: status "installing", install_step, exit 3.
+~/.local/bin/exakit status --json
+# 3. Prove it end to end, then discover the data from the system tables.
+exakit sql --json 'SELECT CURRENT_TIMESTAMP'
+exakit sql --json "SELECT TABLE_SCHEMA, TABLE_NAME, TABLE_ROW_COUNT FROM SYS.EXA_ALL_TABLES WHERE TABLE_SCHEMA NOT LIKE 'SYS%'"
+```
+
+- **Exit codes.** `0` running / healthy · `2` bad input (unknown command or option, a refused statement; nothing is recorded) · `3` database not running, or still installing · `4` not installed.
+- **Every state query** (`status`, `info`, `version`, `mcp-status`, `mcp-doctor`, all with `--json`) carries `installed`, `status` and `remedy`. When `remedy` is not null, run it.
+- **Every refusal names its remedy** in the message, first, on stdout. If you are guessing, read `exakit status --json` again.
+- **Two connections.** `exakit sql` and `exapump` are the **admin** user. The MCP server is the **read-only** user, enforced by the database. Never route a write around the MCP user.
+- **Never print a password.** They live in `~/.exasol-starter-kit/credentials/` and inside each AI client's MCP config.
+- **Your own MCP tools appear only after your client restarts.** Use `exakit sql` in the session that ran the install.
+- Call the binary by absolute path (`~/.local/bin/exakit`) when your PATH is bare. Where a command takes `--json` (the state queries, `sql`, `skills`, `catalog`, `logs`, `help`), the answer is one object on stdout and nothing else there.
+
 ## Install (one command)
 
 macOS / Linux / WSL:
@@ -17,6 +40,8 @@ irm https://raw.githubusercontent.com/krishna-exasol/update-path/main/install.ps
 ```
 
 The installer is **fully unattended-safe**. With no TTY attached (the normal case for an agent shell) every question takes a safe default: all bundled datasets are loaded, and every AI client that is installed on the machine but not yet connected gets an MCP config. Nothing ever hangs waiting for input.
+
+Two things the unattended path does that are easy to miss. **A closed stdin is not enough to be headless:** when a controlling terminal exists (an agent launched from a user's shell), the installer reattaches its menus to `/dev/tty` so a human can still answer; pre-answer with the env vars below and it never waits. **`exakit marketplace` without a terminal installs every add-on**, because the pre-ticked defaults stand; that is by design. To only look, read `exakit version --json`; to answer, set `EXAKIT_MARKETPLACE_ADDONS=none` or a list of ids.
 
 One caveat when driving a **WSL** install from the Windows side (`wsl.exe -- bash -c "curl ... | sh"`): wsl.exe can attach a console that looks interactive but never delivers keypresses, so menus render and block. Either run the command detached (`setsid sh -c '...' < /dev/null` on Linux/WSL; `setsid` does **not** exist on macOS, where `nohup sh -c '...' </dev/null &` is the equivalent) or pre-answer everything with the env vars below.
 
@@ -36,7 +61,7 @@ Flags do not travel through a pipe, so choices are env vars. They work on all pl
 | `EXAKIT_REUSE_DB=0\|1` | Adopt an existing database (`1`, the default) or destroy it and deploy fresh (`0`). Honoured on **both** runtimes: on macOS it pre-answers the adoption question; on the container path (Linux, WSL, Windows) `=0` removes the Nano container **and its data volume**, and that volume is the database — its data is deleted and cannot be recovered |
 | `EXAKIT_PREFLIGHT=1` | Check machine requirements only, installs nothing. Both installers: `... \| EXAKIT_PREFLIGHT=1 sh`, or `$env:EXAKIT_PREFLIGHT = '1'` before `irm ... \| iex` |
 | `EXAKIT_DRY_RUN=1` | Download the kit for inspection, installs nothing |
-| `EXAKIT_DB_PORT=8564` | Alternate DB port (Linux and Windows container path only) |
+| `EXAKIT_DB_PORT=8564` | Alternate DB port (Linux and Windows container path only). Set it once, for the install: the kit records it and every later `exakit start` reuses it |
 
 Version and update behaviour (all optional, sensible defaults):
 
@@ -81,11 +106,11 @@ None of these are needed on a normal machine, and none are set by default. They 
 exakit status        # until it reports running
 ```
 
-  The `exakit` command is put in place in the first seconds of the install, so the poll works from the start: while the installer runs, `exakit status --json` answers `"status": "installing"` with `install_step` and `steps_completed`, exit code 3; `running` with exit 0 means installed and healthy. `command not found` therefore means the install has not started (or `~/.local/bin` is not on your `PATH`, see below), not that it is still running.
+  The `exakit` command is put in place in the first seconds of the install, so the poll works from the start: while the installer runs, `exakit status --json` answers `"status": "installing"` with `install_step` and `steps_completed`, exit code 3; `running` with exit 0 means installed and healthy. An installer that died is **not** "installing": its lock names a dead process, so `status` answers `stopped` (or `running`) with `installing: false`, `install_step` still set, and `remedies.install` naming the re-run — never keep polling past that. `command not found` therefore means the install has not started (or `~/.local/bin` is not on your `PATH`, see below), not that it is still running.
 
 - **Re-running the installer is safe and resumes.** Completed steps are skipped, failed steps retry. When in doubt, re-run rather than diagnose.
 - An existing database is **adopted**, running or stopped. Only a database that cannot start is replaced, and the installer announces it. To restart a stopped database, prefer `exakit start` over re-installing.
-- **On Windows, adoption crosses runtimes, because Windows and WSL share one Docker engine.** Docker Desktop with WSL integration is a single engine reachable from both PowerShell and the distro, and both installs default to the container `exasol-nano` on the volume `exasol-nano-data` — so a WSL install adopts and takes over the container a Windows install created (and the other way round), and `exakit uninstall` in either one removes the container the other is using. If both have to exist on one machine, give one of them `EXAKIT_NANO_CONTAINER` and `EXAKIT_NANO_VOLUME` of its own **before** installing it; there is no way to separate them afterwards.
+- **On Windows, adoption crosses runtimes, because Windows and WSL share one Docker engine.** Docker Desktop with WSL integration is a single engine reachable from both PowerShell and the distro, and both installs default to the container `exasol-nano` on the volume `exasol-nano-data` — so a WSL install adopts and takes over the container a Windows install created (and the other way round), and `exakit uninstall` in either one removes the container the other is using. If both have to exist on one machine, give one of them `EXAKIT_NANO_CONTAINER` and `EXAKIT_NANO_VOLUME` of its own **before** installing it; there is no way to separate them afterwards. A rootless **Podman** container inside a WSL distro is *not* on that shared engine: the Windows Docker engine cannot see it, yet WSL relays its published port to Windows (`wslrelay` holds it), so the installer reports a port conflict and names the container. Leave it alone and take another port (`EXAKIT_DB_PORT`); `wsl --shutdown` would stop that database too.
 - **A database that cannot be started at all is a distinct state, and it has its own command.** After a crash (SIGKILL, a hard power loss) the launcher can mark the deployment `interrupted`, after which every `exakit start` fails the same way. `exakit status` reports `interrupted` rather than `stopped` and names `exakit repair-runtime` as the remedy; `status --json` puts that same command in `remedies.database`. **Do not loop on `exakit start`, and do not expect a plain installer re-run to fix it** — `repair-runtime` rebuilds the deployment, which **destroys its data** (bundled datasets are reloaded afterwards; anything the user loaded themselves is not). Ask the user before running it, and pass `--yes` only once they have agreed.
 
 ## Verify the install
@@ -96,15 +121,15 @@ exakit info                                       # connection panel
 exakit sql 'SELECT CURRENT_TIMESTAMP'             # end-to-end proof
 ```
 
-A returned timestamp means the database works. MCP health: `exakit mcp-doctor` (reports `success` plus a per-client state map: connected, available, not installed — and it now starts the configured server and completes an MCP handshake, so `connected` means the client can actually reach it, not merely that the config entry parses). It also **repairs** drift it finds — a deleted entry, a loosened file mode — and re-checks; `mcp-doctor --json` only reports, and its `remedy` names the repairing form. `exakit mcp-setup` takes no options (exit 2 if given one): name clients with `EXAKIT_MCP_CLIENTS=...`, and a client whose file no longer holds the kit's `exasol` entry is offered again (an add-on's entry alone does not count). `exakit mcp-remove <client>` takes the kit's entries out of a client that is gone from the machine, which is what doctor's `managed_client_missing` remedy names. Doctor repairs the warnings it can act on too (a loosened file mode), and an add-on endpoint is only ever written into clients that are connected: detected, with the `exasol` entry present.
+A returned timestamp means the database works. MCP health: `exakit mcp-doctor` (reports `success` plus a per-client state map: connected, available, not installed — and it now starts the configured server and completes an MCP handshake, so `connected` means the client can actually reach it, not merely that the config entry parses; `--json` also carries `mcp_privileges`, the system privileges the read-only user reports about itself — exactly `CREATE SESSION`, `SELECT ANY TABLE`, `USE ANY SCHEMA` — so the boundary is proven without touching a password file). It also **repairs** drift it finds — a deleted entry, a loosened file mode — and re-checks; `mcp-doctor --json` only reports, and its `remedy` names the repairing form. `exakit mcp-setup` takes no options (exit 2 if given one): name clients with `EXAKIT_MCP_CLIENTS=...`, and a client whose file no longer holds the kit's `exasol` entry is offered again (an add-on's entry alone does not count). `exakit mcp-remove <client>` takes the kit's entries out of a client that is gone from the machine, which is what doctor's `managed_client_missing` remedy names. Doctor repairs the warnings it can act on too (a loosened file mode), and an add-on endpoint is only ever written into clients that are connected: detected, with the `exasol` entry present.
 
 **You cannot use the MCP tools in the session that installed them.** An MCP client reads its server list at startup, so the client running this install — including you — has no `exasol` tools until it restarts. That is expected and is not a fault to diagnose. For the rest of *this* session use `exakit sql` (below); verify the MCP path next session, or ask the user to restart their client.
 
 ### Running SQL
 
-`exakit sql '<statement>'` is the path to prefer: it is the only one that turns a raw engine error into a remedy (connection refused → `exakit start`; `FETCH FIRST`/`TOP` → `LIMIT`; object not found → describe it first). The remedy is printed **first, on stdout**, as a line starting with `! `, ahead of the engine's own text. It refuses anything that is not a single read statement unless you pass `--write`; a first word it does not recognise at all (`SELCT`) is reported as a typo, not as a write. A saved statement reruns with `exakit sql --file <path>` or `exakit sql < file`; comment lines and a trailing `;` are dropped, so the files under `~/.exasol-starter-kit/workflows/` run as saved. `--json` returns one object (`{"ok": true, "rows": [...]}` or `{"ok": false, "error": ..., "remedy": ...}`) with nothing else on stdout.
+`exakit sql '<statement>'` is the path to prefer: it is the only one that turns a raw engine error into a remedy (connection refused → `exakit start`; `FETCH FIRST`/`TOP` → `LIMIT`; object not found → describe it first). The remedy is printed **first, on stdout**, as a line starting with `! `, ahead of the engine's own text. It refuses anything that is not a single read statement unless you pass `--write`; a first word it does not recognise at all (`SELCT`) is reported as a typo, not as a write. A saved statement reruns with `exakit sql --file <path>` or `exakit sql < file`; comment lines and a trailing `;` are dropped, so the files under `~/.exasol-starter-kit/workflows/` run as saved. `--json` returns one object (`{"ok": true, "rows": [...], "row_count": n}` or `{"ok": false, "error": ..., "remedy": ...}`) with nothing else on stdout.
 
-Without MCP tools — always the case in the session that ran the install — discover what data exists from the system tables, which answer in well under a second: `SELECT TABLE_SCHEMA, TABLE_NAME, TABLE_ROW_COUNT FROM SYS.EXA_ALL_TABLES WHERE TABLE_SCHEMA NOT LIKE 'SYS%'` lists every table, `SYS.EXA_ALL_COLUMNS` (filter on `COLUMN_SCHEMA`) gives columns and types, and each bundled dataset is described in the kit copy's `data/data-dictionary.md` (`~/.exasol-starter-kit/kit/data/data-dictionary.md`).
+Without MCP tools — always the case in the session that ran the install — discover what data exists from the system tables, which the engine answers in well under a second (through `exakit sql` budget about a second per statement on Windows — process start and TLS — so fold introspection into as few statements as you can): `SELECT TABLE_SCHEMA, TABLE_NAME, TABLE_ROW_COUNT FROM SYS.EXA_ALL_TABLES WHERE TABLE_SCHEMA NOT LIKE 'SYS%'` lists every table, `SYS.EXA_ALL_COLUMNS` (filter on `COLUMN_SCHEMA`) gives columns and types, and the table and column comments (`TABLE_COMMENT`, `COLUMN_COMMENT`) are the dictionary for every bundled dataset; the kit copy's `data/data-dictionary.md` (`~/.exasol-starter-kit/kit/data/data-dictionary.md`) adds the narrative and the join map.
 
 It is **not** a sandbox — it connects as the admin user, exactly like `exapump sql -p starter-kit`. The enforced read-only boundary is the MCP user and nothing else.
 
@@ -190,20 +215,19 @@ curl -s -X POST http://127.0.0.1:5100/mcp \
 
 - State, credentials, logs: `~/.exasol-starter-kit/` (logs under `logs/`). Installer and `exakit` messages name their remedy — check there before improvising. Raw database/driver errors (through MCP tools or `exapump` directly) do NOT; translate the common ones with the table below.
 - Kit source copy (read any script): `~/.exasol-starter-kit/kit/`
-- CLI binaries: `~/.local/bin/` (`exakit`, `exapump`, `exasol` on macOS, and `dash-server` once that add-on is installed). **That directory is not on a bare non-interactive `PATH`** (a clean `sh -c` sees roughly `/usr/local/bin:/bin:/usr/bin`), so `exakit: command not found` does **not** mean "not installed" — test `~/.local/bin/exakit` before concluding anything, and either call it by absolute path or `export PATH="$HOME/.local/bin:$PATH"` first.
+- CLI binaries: `~/.local/bin/` (`exakit`, `exapump`, `exasol` on macOS, and `dash-server` once that add-on is installed). **That directory is not on a bare non-interactive `PATH`** (a clean `sh -c` sees roughly `/usr/local/bin:/bin:/usr/bin`), so `exakit: command not found` does **not** mean "not installed" — test `~/.local/bin/exakit` before concluding anything, and either call it by absolute path or `export PATH="$HOME/.local/bin:$PATH"` first. **On Windows the command is `exakit.cmd`** (in `%USERPROFILE%\.local\bin`): PowerShell resolves bare `exakit`, but Git Bash — Claude Code's shell on Windows — does not, and `~/.local/bin/exakit` does not exist there; call `~/.local/bin/exakit.cmd` by that name.
 - Saved queries: `~/.exasol-starter-kit/workflows/` — created by the install, and where the skill's "make it rerunnable" step puts approved SQL.
 - **Never print, echo or paste a database password — and it is not only in `~/.exasol-starter-kit/credentials/`.** The MCP setup writes `EXA_PASSWORD` **in clear text** into each AI client's own config (`~/.claude.json`, `~/.codex/config.toml`, and the rest — `exakit mcp-status` lists them). Those are files agents read routinely while debugging MCP, so treat them the same as the credential files: read them if you must, never reproduce them in your output, a commit, an issue, or a support thread. Redact the `env` block before showing a client config to anyone.
 
 ## After the install
 
-Install the agent skills so future sessions can drive the full ask, inspect SQL, run, validate loop:
+The installer already placed the agent skills where CLI agents look (`~/.claude/skills`, `~/.agents/skills`), so future sessions can drive the full ask, inspect SQL, run, validate loop. Nothing to run:
 
 ```bash
-exakit skills-install     # place them where CLI agents look
-exakit skills             # what this kit carries, and what is installed (--json too)
+exakit skills             # what this kit carries, whether each is placed, and the next command if one is needed (--json too)
 ```
 
-The skill set is a versioned component: `exakit version` shows a `skills` row, and `exakit update` fetches a newer set the maintainers advertise and installs it, without a kit release. A stale set is therefore fixed by `exakit update`, not by `skills-install`, which only re-places the local copy.
+The skill set is a versioned component: `exakit version` and `exakit info` show its installed and advertised versions, and `exakit update` fetches a newer set the maintainers advertise and places it, without a kit release. If a placed skill has gone missing, `exakit skills` says so and names the repair.
 
 There is one skill per thing you have to operate, so only the relevant one loads: `local-agent-ready-starter` (setup and the first query), `exasol-runtime`, `exasol-exapump`, `exasol-mcp`, `exasol-pyexasol`, and one per marketplace add-on (`exasol-marketplace`, `dash-server`, `json-tables`, `exasol-vscode`). Full index: [skills/README.md](skills/README.md).
 
@@ -230,11 +254,28 @@ Then see `skills/local-agent-ready-starter/SKILL.md` for the full query-loop dis
 
 `exakit sql --json` returns the same faults as data: `{"ok": false, "error": "<engine text>", "remedy": "..."}` on failure and `{"ok": true, "rows": [...]}` on success, so nothing above has to be pattern-matched off a screen.
 
-For scripted state checks: `exakit status --json` (fields: `running`, `datasets_loaded` — **verified against the database, not just the manifest** — `services`, `steps_completed` and `steps_missing`, plus `remedies`, a map of component to the exact repair command — an install step that never finished is in it too, so a session that picks the machine up after a crashed install sees `remedies.mcp: "exakit mcp-setup"` rather than only `running` — and `last_failure`, the most recent recorded reason still pending), `exakit info --json` (the install record), `exakit mcp-doctor --json` (per-client MCP state), `exakit catalog --json` (the whole command surface) and `exakit logs --json` (every log target and its path).
+### Scripted state checks
 
-**Exit codes.** `status`, `info --json` and `mcp-doctor` answer `0` running / `3` database not running / `4` not installed — those three are the state queries, and the code IS the answer (`status` also answers `3` with `"status": "installing"` while the installer is still running). `version` answers `0` ok / `4` not installed only: they report on versions, which a stopped database does not change, so do not read database health off them. `version --json` and `mcp-status --json` exist too: one object each, same three keys. `mcp-doctor --json` carries `details.clients`, one row per supported client with a state derived from the checks (`connected`, `needs_attention`, `configured_client_missing`, `not_set_up`, `not_installed`), and its `remedy` is null unless a WARNING or ERROR finding names one. Bad input — an unknown subcommand, an unknown option to any command, a statement `exakit sql` refuses — exits `2` and records nothing (`exakit sql --json` answers a refusal as `{"ok": false, "error": ..., "rejected": true}`): `last_failure` is for a step of your install that did not finish, not for something you typed.
+- `exakit status --json`: `running`, `datasets_loaded` (**verified against the database**, not the manifest; `datasets_source` says which of the two answered), `services`, `steps_completed`, `steps_missing`, `remedies` (component to the exact repair command; an install step that never finished is in it, so a session picking up after a crash sees `remedies.mcp: "exakit mcp-setup"`), `last_failure` and `last_failure_at`.
+- `exakit info --json`: the install record. `exakit mcp-doctor --json`: per-client MCP state under `details.clients` (`connected`, `needs_attention`, `configured_client_missing`, `not_set_up`, `not_installed`); its `remedy` is null unless a WARNING or ERROR names one, and `--json` only reports where the plain command also repairs.
+- `exakit catalog --json`: the whole command surface. `exakit logs --json`: every log target and its path. `exakit help <id> --json`: a component's page. All rendered from `setup/help/*.json`, so read these rather than scraping the decorated screen.
 
-**One shape for every `--json` answer.** `installed`, `status` and `remedy` are present in all of them, in every state — healthy, database down, and not installed — so a parser can branch without first working out which shape it received. Introspecting the data without MCP: table and column comments ship with every bundled dataset and are readable from `SYS.EXA_ALL_TABLES` (`TABLE_COMMENT`) and `SYS.EXA_ALL_COLUMNS` (`COLUMN_COMMENT`, filtered by `COLUMN_SCHEMA` / `COLUMN_TABLE`) — a sub-100ms query that returns units, value domains and FK targets, not just types. Discover every command with `exakit catalog` (searchable: `exakit catalog logs`, machine-readable: `exakit catalog --json`). For a component rather than a command, `exakit <component> --help` prints its full page - what it is, how to start it, its commands, its environment variables and its troubleshooting table. Components: `exapump`, `mcp`, `pyexasol`, `personal`, `nano`, `dash-server`, `json-tables`, `exasol-vscode`. Every command answers `--help` too. All of it is rendered from `setup/help/*.json`, so `exakit catalog --json` and `exakit help <id> --json` are the structured forms an agent should read rather than scraping the decorated screen.
+### Exit codes, precisely
+
+- `status`, `info --json`, `mcp-doctor`: `0` running · `3` database not running (also `3` with `"status": "installing"` while the installer runs) · `4` not installed. The code **is** the answer.
+- A kit that is not where `exakit` looks (no install, or `EXAKIT_HOME` pointing elsewhere) answers `4`, with the same JSON shape when `--json` is given.
+- `version` and `mcp-status`: `0` ok · `4` not installed. They report on versions and configs, which a stopped database does not change; do not read database health off them.
+- Bad input exits `2` and records nothing: an unknown subcommand, an unknown option to **any** command, a statement `exakit sql` refuses (`--json` answers `{"ok": false, "error": ..., "rejected": true}`), an unsupported data file. `last_failure` is only for a step of your install that did not finish.
+- **One shape for every `--json` answer:** `installed`, `status`, `remedy`, in every state, so a parser branches without first working out which shape it received.
+
+### Discovering the data and the commands
+
+- Table and column comments ship with every bundled dataset: `SYS.EXA_ALL_TABLES` (`TABLE_COMMENT`) and `SYS.EXA_ALL_COLUMNS` (`COLUMN_COMMENT`, filter by `COLUMN_SCHEMA` / `COLUMN_TABLE`). Sub-100 ms, and it returns units, value domains and FK targets, not just types. The kit copy's `data/data-dictionary.md` says the same in prose.
+- `exakit catalog` lists every command (searchable: `exakit catalog logs`). `exakit <component> --help` prints a component's page: what it is, how to start it, its commands, environment variables and troubleshooting table. Components: `exapump`, `mcp`, `pyexasol`, `personal`, `nano`, `dash-server`, `json-tables`, `exasol-vscode`. Every command answers `--help`.
+
+### Fewer approval prompts
+
+`skills/reducing-agent-prompts.md` is the per-agent guide: which read-only commands are safe to allow without a prompt, and why `exakit sql`, `exapump` and every mutating command deliberately keep asking. The installer applies that allowlist to Claude Code's settings itself (and `exakit uninstall` removes exactly those entries again); other agents follow the doc.
 
 ## Uninstall
 

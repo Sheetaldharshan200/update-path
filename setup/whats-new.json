@@ -21,28 +21,10 @@
     "already had the kit working and wants to know what is different."
   ],
   "0.2.0": [
-    "New: exakit marketplace adds dashboards, VS Code and JSON loading.",
-    "New: exakit update applies the tested version set.",
-    "New: exakit version shows installed and advertised versions.",
-    "The installer downloads 4x less: 27 MB down to 6.5 MB."
-  ],
-  "0.2.2": [
-    "exakit status says installing while the installer runs.",
-    "exakit sql runs a saved file: --file <path> or stdin.",
-    "Fixes come first in exakit sql errors, on stdout.",
-    "exakit version --json and mcp-status --json return objects.",
-    "EXAKIT_MCP_CLIENTS=all now means the clients installed here.",
-    "A busy database port is reported as a conflict, not running."
-  ],
-  "0.2.3": [
-    "EXAKIT_MCP_CLIENTS=all skips clients the kit only wrote a file for.",
-    "A client counts as installed by its program or app, not its config."
-  ],
-  "0.2.4": [
-    "exakit sql --json returns one object: rows, or error plus remedy.",
-    "exakit status --json names a remedy for each unfinished step.",
-    "mcp-doctor blames only the client whose config drifted.",
-    "mcp-setup re-offers a client whose config lost the kit's entry.",
-    "SELECT TOP and a busy-port TLS failure now come with a hint."
+    "exakit marketplace: dashboards, VS Code, JSON loading, a scheduler.",
+    "exakit update applies the recommended version set, AI skills too.",
+    "exakit version shows installed and recommended versions.",
+    "Agents can drive every command: --json output, exit 2 on bad input.",
+    "Services return after a reboot. exakit uninstall picks what goes."
   ]
 }

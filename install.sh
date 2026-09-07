@@ -159,6 +159,10 @@ main() {
     else
         EXAKIT_KIT_SOURCE="$EXAKIT_REPO@$EXAKIT_REF"
         export EXAKIT_KIT_SOURCE
+        # Stamped so setup can say how long the bootstrap took before its first
+        # step: on some fresh installs `exakit status` was unavailable for over a
+        # minute after this line and nothing recorded where the time went.
+        EXAKIT_INSTALL_T0="$(date +%s)"; export EXAKIT_INSTALL_T0
         say "Downloading the starter kit ($EXAKIT_REPO@$EXAKIT_REF)"
         tmp_tar="$(mktemp "${TMPDIR:-/tmp}/exakit-src.XXXXXX")" \
             || fail "Could not create a temporary file. Check that ${TMPDIR:-/tmp} is writable and the disk is not full."
@@ -206,9 +210,11 @@ main() {
     # first-run license confirmation) can still read the keyboard.
     # Name the platform, not just the script: setup-wsl.sh also serves native
     # Linux, and a Linux user reading "setup-wsl" wonders if WSL is required.
+    _bootstrap_s=""
+    [ -n "${EXAKIT_INSTALL_T0:-}" ] && _bootstrap_s=" ($(( $(date +%s) - EXAKIT_INSTALL_T0 ))s after start)"
     case "$setup_script" in
-        */setup-wsl.sh) say "Starting setup: $setup_script (shared Linux / WSL setup)" ;;
-        *)              say "Starting setup: $setup_script" ;;
+        */setup-wsl.sh) say "Starting setup: $setup_script (shared Linux / WSL setup)$_bootstrap_s" ;;
+        *)              say "Starting setup: $setup_script$_bootstrap_s" ;;
     esac
     printf '\n'
     # We already showed the banner above; tell the setup script to skip its

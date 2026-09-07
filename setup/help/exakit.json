@@ -30,13 +30,6 @@
       ]
     },
     {
-      "title": "Skills for agents",
-      "commands": [
-        "skills",
-        "skills-install"
-      ]
-    },
-    {
       "title": "Add-ons",
       "commands": [
         "marketplace"
@@ -60,6 +53,7 @@
       "title": "Reference",
       "commands": [
         "guide",
+        "skills",
         "help",
         "catalog",
         "whats-new"
@@ -241,7 +235,7 @@
       "command": "skills",
       "options": "[--json | -j]",
       "summary": "List the AI skills the kit carries.",
-      "description": "One skill per component and add-on, with a one-line summary and whether each has reached the agents' discovery folders. When the maintainers advertise a newer skill set, the panel says so and names exakit update, which fetches it.",
+      "description": "One skill per component and add-on, with a one-line summary and whether each has reached the agents' discovery folders. Names the next command when one is needed: exakit update when the maintainers advertise a newer skill set, exakit skills-install when a placed skill has gone missing. --json adds installed_version, advertised_version, status and next.",
       "examples": [
         "exakit skills",
         "exakit skills --json"
@@ -250,11 +244,12 @@
     {
       "command": "skills-install",
       "options": "",
-      "summary": "Install the AI skills for CLI agents.",
-      "description": "Places the skills the kit copy carries into ~/.claude/skills and ~/.agents/skills so agent sessions can drive the kit. Restart or reload the agent afterwards. To pick up a NEWER skill set the maintainers advertise, run exakit update instead: it fetches the set, then places it.",
+      "summary": "Re-place the AI skills the kit copy carries (repair only).",
+      "description": "Places the skills this kit copy carries into ~/.claude/skills and ~/.agents/skills, and merges the read-only command allowlist into Claude Code's settings. The installer already does this, and exakit update fetches and places a NEWER set, so this is only for a skill folder that went missing: exakit skills names it when that is the case. Restart or reload the agent afterwards.",
       "examples": [
         "exakit skills-install"
-      ]
+      ],
+      "hidden": true
     },
     {
       "command": "marketplace",

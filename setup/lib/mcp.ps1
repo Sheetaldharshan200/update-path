@@ -100,6 +100,12 @@ function Get-McpSslCertValidation {
 # "ready to run via uvx", the handshake bullet and its tick were one fact:
 # the server is cached and answers. Test-McpServer prints the merged line; the
 # phases live on the spinner instead. Twin of mcp_install in mcp.sh.
+# Set by Invoke-McpOperationCli: whether the last runtime operation exited
+# non-zero (a report that FOUND something also exits non-zero), and the system
+# privileges the MCP user was last seen holding (Confirm-McpReadonlyPosture).
+$script:McpLastRunFailed = $false
+$script:McpReadonlyPrivileges = @()
+
 function Install-Mcp {
     $script:McpStepT0 = Get-Date
     Install-ExakitUv | Out-Null
@@ -130,7 +136,15 @@ function Install-Mcp {
         $ErrorActionPreference = $previousEAP
         Stop-ExakitSpinner
     }
-    if ($script:LogFile) { "uvx $($script:McpPackage)@$($script:McpVersion) --help" | Add-Content -Path $script:LogFile; $primeOut | Add-Content -Path $script:LogFile }
+    if ($script:LogFile) {
+        "uvx $($script:McpPackage)@$($script:McpVersion) --help" | Add-Content -Path $script:LogFile
+        # The prime runs the server with no database configuration on purpose; a
+        # Python traceback ending in "Insufficient database connection
+        # configuration" below is that, not a fault - said here so a reader
+        # chasing a different failure does not stop at it.
+        "NOTE  the priming run has no connection settings; an 'Insufficient database connection configuration' traceback below is expected" | Add-Content -Path $script:LogFile
+        $primeOut | Add-Content -Path $script:LogFile
+    }
     if ($primeCode -eq 0 -or $primeOut -match '(?i)usage:|insufficient database connection|exasol[./\\]ai[./\\]mcp|site-packages[/\\]exasol') {
         Ok "MCP server package cached"
     } else {
@@ -688,7 +702,15 @@ function Confirm-McpReadonlyPosture {
     Info "Re-checking MCP read-only grant posture against the database"
     try {
         Assert-McpReadonlyPosture -ConfigPath $tempConfig -ReadonlyUser $readonlyUser -Schemas $schemasCsv
-        Ok "MCP read-only grant posture is still correct"
+        # The list itself, as the MCP user sees it: proving the boundary used to
+        # mean opening your own connection with the password file. Doctor prints
+        # it here and `--json` carries it as mcp_privileges.
+        $script:McpReadonlyPrivileges = @(Get-McpReadonlyPrivileges -ConfigPath $tempConfig)
+        if ($script:McpReadonlyPrivileges.Count -gt 0) {
+            Ok "MCP read-only grant posture is still correct - $readonlyUser holds exactly: $($script:McpReadonlyPrivileges -join ', ')"
+        } else {
+            Ok "MCP read-only grant posture is still correct"
+        }
         return $true
     } catch {
         Warn2 "MCP read-only grant posture has drifted from the expected read-only set (see log). Run 'exakit mcp-doctor' or review grants manually."
@@ -707,6 +729,21 @@ function Confirm-McpReadonlyPosture {
 # Codex adapter). A system `python` that's older - or the Windows "App
 # execution alias" stub that resolves as `python` but isn't a real
 # interpreter - must NOT be used to run the module, or it fails on import.
+# Get-McpReadonlyPrivileges <config> - the system privileges the MCP user holds,
+# read as that user from SYS.EXA_USER_SYS_PRIVS (the probe the skills teach).
+function Get-McpReadonlyPrivileges {
+    param([Parameter(Mandatory)][string]$ConfigPath)
+    $result = Invoke-ExapumpAdminSql -ConfigPath $ConfigPath -Profile "mcp_readonly" -Sql "SELECT PRIVILEGE FROM SYS.EXA_USER_SYS_PRIVS ORDER BY 1"
+    if (-not $result.Success) { return @() }
+    $privs = @()
+    foreach ($line in ("$($result.Output)" -split "`r?`n")) {
+        $t = $line.Trim()
+        if ($t -eq "PRIVILEGE" -or $t.StartsWith("[") -or $t -match 'statement') { continue }
+        if ($t -match '^[A-Z][A-Z ]+$') { $privs += $t }
+    }
+    return $privs
+}
+
 function Test-ExakitSystemPythonForMcp {
     if (-not (Test-ExakitSystemPython)) { return $false }
     try {
@@ -795,12 +832,85 @@ function Invoke-McpOperationCli {
     $args += "--clients"
     $args += $Clients
     $result = Invoke-McpModule $args
+    $script:McpLastRunFailed = ($result.ExitCode -ne 0)
     if ($result.ExitCode -ne 0) {
         if ($script:LogFile) { $result.Output | Add-Content -Path $script:LogFile }
+        # A diagnosis that FOUND something is not a diagnosis that failed to run.
+        # The runtime exits non-zero for both; doctor's drift report used to be
+        # thrown away here as "MCP doctor failed (see log)" - nothing shown,
+        # nothing repaired, and the log's own advice was "run exakit mcp-doctor".
+        # Twin of _exakit_mcp_reported in common.sh.
+        if (Test-McpResultReported -Text $result.Output) { return $result.Output }
         Warn2 "MCP $Operation failed (see log)."
         return $null
     }
     return $result.Output
+}
+
+# Test-McpResultReported <text> - a result document carrying an operation and a
+# status: the runtime ran and is telling you something.
+function Test-McpResultReported {
+    param([string]$Text)
+    if (-not "$Text".Trim()) { return $false }
+    try {
+        $doc = "$Text" | ConvertFrom-Json
+        return [bool]($doc -and $doc.PSObject.Properties["operation"] -and $doc.PSObject.Properties["status"])
+    } catch {
+        return $false
+    }
+}
+
+# Test-McpResultRepairable <text> - a WARNING or ERROR finding carries a code the
+# repair operation acts on. Twin of _exakit_mcp_result_repairable.
+function Test-McpResultRepairable {
+    param([string]$Text)
+    $codes = @("permission_drift", "manifest_drift_hash_mismatch", "manifest_drift_missing_artifact", "managed_artifact_missing", "managed_entry_outdated")
+    try {
+        $doc = "$Text" | ConvertFrom-Json
+        foreach ($finding in @($doc.findings)) {
+            if ($null -eq $finding) { continue }
+            $severity = "$($finding.severity)".ToLowerInvariant()
+            if (($codes -contains "$($finding.code)") -and ($severity -in @("warning", "error", "critical"))) { return $true }
+        }
+    } catch { }
+    return $false
+}
+
+# Add-McpResultStamp <text> [privileges] - the discriminators every --json state
+# answer carries (`installed`, `remedy`) added to the subsystem's own document,
+# which is never otherwise touched. The remedy is the recommended_action of the
+# worst WARNING-or-above finding, a finding about a FILE ahead of one about an
+# absent client; null when none names one. Twin of _exakit_stamp_mcp_json.
+function Add-McpResultStamp {
+    param([string]$Text, [string[]]$Privileges = @())
+    try {
+        $doc = "$Text" | ConvertFrom-Json
+        if (-not $doc) { return $Text }
+        if (-not $doc.PSObject.Properties["installed"]) { $doc | Add-Member -NotePropertyName installed -NotePropertyValue $true }
+        if (-not $doc.PSObject.Properties["remedy"]) {
+            $rank = @{ critical = 0; error = 1; warning = 2 }
+            $bestScore = $null
+            $bestAction = $null
+            $index = 0
+            foreach ($finding in @($doc.findings)) {
+                $index++
+                if ($null -eq $finding -or -not $finding.recommended_action) { continue }
+                $severity = "$($finding.severity)".ToLowerInvariant()
+                if (-not $rank.ContainsKey($severity)) { continue }
+                $aboutFile = 1
+                if ($finding.scope -and $finding.scope.path) { $aboutFile = 0 }
+                $score = ($rank[$severity] * 1000000) + ($aboutFile * 100000) + $index
+                if ($null -eq $bestScore -or $score -lt $bestScore) { $bestScore = $score; $bestAction = "$($finding.recommended_action)" }
+            }
+            $doc | Add-Member -NotePropertyName remedy -NotePropertyValue $bestAction
+        }
+        if ($Privileges.Count -gt 0 -and -not $doc.PSObject.Properties["mcp_privileges"]) {
+            $doc | Add-Member -NotePropertyName mcp_privileges -NotePropertyValue @($Privileges)
+        }
+        return ($doc | ConvertTo-Json -Depth 32)
+    } catch {
+        return $Text
+    }
 }
 
 # Invoke-McpAddonCli - register the MCP endpoints of installed add-ons with the
@@ -1445,14 +1555,21 @@ function Invoke-McpOperation {
     # exakit_mcp_operation (common.sh).
     if ($env:EXAKIT_MCP_RESULT_JSON -eq "1") {
         $resultJson = Invoke-McpOperationCli -Operation $Operation -Clients $clients 6>$null
-        if ($resultJson) {
-            Write-Output $resultJson
-        } else {
-            Write-Output "{`"error`": `"the MCP $Operation operation produced no result (see log)`"}"
-        }
         $ok = [bool]$resultJson
+        if ($ok -and $script:McpLastRunFailed) { $ok = $false }
+        $privileges = @()
         if ($Operation -in @("doctor", "validate")) {
             if (-not (Confirm-McpReadonlyPosture 6>$null)) { $ok = $false }
+            $privileges = @($script:McpReadonlyPrivileges)
+        }
+        # Straight to the console stream, past the caller: Invoke-CmdMcpOperation
+        # reads this function's boolean through `if (-not (...))`, which swallowed
+        # every pipeline object with it - `exakit mcp-doctor --json` and
+        # `mcp-status --json` printed nothing and exited 0.
+        if ($resultJson) {
+            [Console]::Out.WriteLine((Add-McpResultStamp -Text $resultJson -Privileges $privileges))
+        } else {
+            [Console]::Out.WriteLine("{`"installed`": true, `"status`": `"error`", `"remedy`": `"exakit logs setup`", `"error`": `"the MCP $Operation operation produced no result (see log)`"}")
         }
         return $ok
     }
@@ -1472,6 +1589,27 @@ function Invoke-McpOperation {
     }
     if ($resultJson) { Show-McpOperationSummary $resultJson }
     $ok = [bool]$resultJson
+    if ($ok -and $script:McpLastRunFailed) { $ok = $false }
+    # Doctor REPAIRS what it can act on - a drifted or deleted entry, a loosened
+    # file mode - and re-checks, as its own report promises ("exakit mcp-doctor
+    # repairs drift"). This side only ever diagnosed: the drift finding came back
+    # with recommended_action "Run: exakit mcp-doctor", and the wrapper exited 1.
+    # Twin of the EXAKIT_MCP_LAST_REPAIRABLE branch in exakit_mcp_operation.
+    if ($Operation -eq "doctor" -and $resultJson -and (Test-McpResultRepairable -Text $resultJson)) {
+        Info "Repairing what doctor found"
+        $repairJson = Invoke-McpOperationCli -Operation "repair" -Clients $clients
+        if ($repairJson -and -not $script:McpLastRunFailed) {
+            Ok "Repair applied - re-checking"
+            $recheck = Invoke-McpOperationCli -Operation "doctor" -Clients $clients
+            if ($recheck) {
+                Show-McpOperationSummary $recheck
+                $ok = (-not $script:McpLastRunFailed) -and -not (Test-McpResultRepairable -Text $recheck)
+            }
+        } else {
+            Warn2 "Repair did not complete (see log). Re-connect the client with: exakit mcp-setup"
+            $ok = $false
+        }
+    }
     if ($Operation -in @("doctor", "validate")) {
         if (-not (Confirm-McpReadonlyPosture)) { $ok = $false }
     }

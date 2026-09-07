@@ -52,7 +52,7 @@ A checkbox menu shows every supported client: Claude, Codex, Cursor, Gemini CLI,
 
 After setup, restart the client and look for an MCP server named `exasol`.
 
-**Optional: let your AI agent do all of this.** Run `exakit skills-install`, then say **"setup starter kit"** in a fresh agent session. It checks state, connects, loads data, and runs the first query with the SQL shown before execution. Details: [skills/README.md](skills/README.md).
+**Optional: let your AI agent do all of this.** The installer placed the agent skills; say **"setup starter kit"** in a fresh agent session. It checks state, connects, loads data, and runs the first query with the SQL shown before execution. Details: [skills/README.md](skills/README.md).
 
 ## 5. Ask your first question
 

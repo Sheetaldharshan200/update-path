@@ -1,8 +1,8 @@
 # Skills — AI assistant guidance for the starter kit
 
 > **TL;DR** — These are AI *skills*: small `SKILL.md` recipes that teach an AI
-> assistant how to drive this kit. `exakit skills-install` copies them into
-> `~/.claude/skills/` and `~/.agents/skills/`.
+> assistant how to drive this kit. The installer copies them into
+> `~/.claude/skills/` and `~/.agents/skills/`; `exakit update` fetches a newer set.
 
 **What is verified, and what is assumed.** Claude Code reads `~/.claude/skills/`
 and picks these up on its next start — that path is tested. `~/.agents/skills/`
@@ -35,7 +35,7 @@ user's request actually needs, not a manual for the whole kit.
 | [`exasol-mcp`](exasol-mcp/SKILL.md) | Connecting AI clients over MCP, diagnosing `mcp-doctor`, repairing config drift, proving the read-only user really is read-only. |
 | [`exasol-pyexasol`](exasol-pyexasol/SKILL.md) | Querying the database from Python — the right interpreter, the TLS setting the self-signed certificate needs, reading credentials safely. |
 
-**The wider ecosystem** — not part of this kit
+**The wider Exasol ecosystem** — installed with the kit; it catalogs tools that are *not* part of it
 
 | Skill | Use it when… |
 |---|---|
@@ -43,7 +43,7 @@ user's request actually needs, not a manual for the whole kit.
 
 **The marketplace** — opt-in add-ons
 
-The three add-on skills below are **installed with their add-on**, not with the
+The four add-on skills below are **installed with their add-on**, not with the
 kit: each declares `addon: <id>` in its frontmatter, and the marketplace places
 it as part of installing that add-on and removes it again when the add-on goes.
 A skill is a set of triggers for an agent to match on, and matching them for a
@@ -85,14 +85,14 @@ half-finished install or a hand deletion) and `available` (in none).
 ## How a skill reaches your agent
 
 Skills auto-load only from an agent's discovery folders, **not** from this repo
-path. The kit installs them for you:
+path. The installer copies each skill into the standard per-user locations so
+your CLI agent finds it automatically, and `exakit skills` shows the result:
 
 ```bash
-exakit skills-install
+exakit skills
 ```
 
-This copies each skill into the standard per-user locations so your CLI agent
-finds it automatically:
+The per-user locations:
 
 - **Claude Code** → `~/.claude/skills/<name>/`
 - **Codex / Cursor / other open-standard agents** → `~/.agents/skills/<name>/`

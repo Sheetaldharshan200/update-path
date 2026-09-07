@@ -146,6 +146,14 @@ $script:BinDir       = if ($env:EXAKIT_BIN_DIR) { $env:EXAKIT_BIN_DIR } else { J
 # exakit_failure_note_file in common.sh, including the file name, so the two
 # platforms describe the same install the same way.
 $script:FailureNotePath = if ($env:EXAKIT_FAILURE_NOTE) { $env:EXAKIT_FAILURE_NOTE } else { Join-Path $script:ExakitHome ".last-failure" }
+# Fail() writes that note only while the INSTALLER runs (setup-windows-docker.ps1
+# turns this on) or from a soft step. An ordinary command's Fail() - `exakit
+# start` on a half-built kit, a typo - used to overwrite the reason the install
+# stopped, so status --json reported the wrong last_failure.
+$script:ExakitRecordFailureNotes = $false
+# One setup run at a time, and a crashed one must never read as "installing"
+# forever: the lock names the installer's pid. Twin of .install.lock in common.sh.
+$script:InstallLockPath = if ($env:EXAKIT_INSTALL_LOCK) { $env:EXAKIT_INSTALL_LOCK } else { Join-Path $script:ExakitHome ".install.lock" }
 
 # A home the kit cannot use, said out loud. Not a matter of taste: the install
 # cannot complete on a network or redirected home, and the one thing that fixes
@@ -448,8 +456,15 @@ function Get-ExakitDbErrorRemedy {
     param([string]$Text, [string]$Statement = "")
     $lines = @()
     if (-not $Text) { return $lines }
+    # Windows spells a refused socket differently: exapump says "Failed to
+    # connect to 127.0.0.1:8563" and the OS text is "No connection could be made
+    # because the target machine actively refused it (os error 10061)". None of
+    # those contain "connection refused", so the one remedy every agent needs
+    # first came back as null here.
     if ($Text -match 'onnection refused' -or $Text -match 'Errno 61' -or
-        $Text -match 'Errno 111' -or $Text -match '(?i)could not connect') {
+        $Text -match 'Errno 111' -or $Text -match '(?i)could not connect' -or
+        $Text -match '(?i)failed to connect to' -or $Text -match '(?i)actively refused' -or
+        $Text -match 'os error 10061') {
         $lines += "That is the database not answering - it is stopped or unreachable. Start it with: exakit start (then check: exakit status)"
     } elseif ($Text -match '(?i)tls handshake' -or $Text -match 'TLS error') {
         # The port answered but not with Exasol's TLS: something else listens
@@ -805,7 +820,7 @@ function Fail([string]$Msg) {
     # `exakit status --json` reports it as last_failure. Twin of bash die()
     # calling exakit_note_failure. Guarded the same way: this can run while the
     # library is still being dot-sourced.
-    if (Get-Command Write-ExakitFailureNote -ErrorAction SilentlyContinue) {
+    if ($script:ExakitRecordFailureNotes -and (Get-Command Write-ExakitFailureNote -ErrorAction SilentlyContinue)) {
         Write-ExakitFailureNote $Msg
     }
     # Rendered as a small "card": prominent cross header, then a dim gutter
@@ -852,7 +867,14 @@ function Invoke-ExakitLogged {
         # before we can inspect the real process exit code.
         $ErrorActionPreference = "Continue"
         if ($script:LogFile) {
-            & $Cmd @CmdArgs *>> $script:LogFile
+            # Stringify each line here rather than `*>>`: PowerShell 5.1's
+            # redirection appends native stderr as UTF-16 error-record dumps
+            # (wrapped, with CategoryInfo trailers) inside a UTF-8 log, so a
+            # Docker "ports are not available" landed as "p o r t s   a r e"
+            # and no grep for the remedy could find it.
+            & $Cmd @CmdArgs 2>&1 | ForEach-Object {
+                if ($_ -is [System.Management.Automation.ErrorRecord]) { "$($_.Exception.Message)" } else { "$_" }
+            } | Add-Content -Path $script:LogFile
         } else {
             & $Cmd @CmdArgs | Out-Null
         }
@@ -1169,7 +1191,20 @@ function Save-ExakitManifest($Manifest) {
         # bash side is immune because json.dump ASCII-escapes everything.
         $json = $Manifest | ConvertTo-Json -Depth 12
         [System.IO.File]::WriteAllText($tmp, $json, (New-Object System.Text.UTF8Encoding($false)))
-        Move-Item -Force $tmp $script:ManifestPath
+        # Retried: with a reader holding the manifest open (an agent polling
+        # `exakit status` during the install), Windows keeps the old name alive
+        # until that handle closes, and a single Move-Item fails with "Cannot
+        # create a file when that file already exists" - which aborted a
+        # dataset load whose rows were all in.
+        for ($attempt = 1; $attempt -le 6; $attempt++) {
+            try {
+                Move-Item -Force $tmp $script:ManifestPath -ErrorAction Stop
+                break
+            } catch {
+                if ($attempt -eq 6) { throw }
+                Start-Sleep -Milliseconds (50 * $attempt)
+            }
+        }
     } catch {
         if (Test-Path $tmp) { Remove-Item -Force -ErrorAction SilentlyContinue $tmp }
         throw
@@ -1213,6 +1248,40 @@ function Get-ExakitManifestValue {
     $doc = Read-ExakitManifest
     if ($null -eq $doc) { return $null }
     return (Get-ManifestValue -Manifest $doc -Path $Path)
+}
+
+# Sync-ExakitRuntimeDefaultsFromManifest - the port and image the INSTALL
+# recorded win over the built-in defaults when the environment names neither.
+# EXAKIT_DB_PORT and EXAKIT_NANO_TAG were read from the environment only, so
+# `exakit start` after an install on 8564 recreated the container on 8563 -
+# straight into the conflict the port had been chosen to avoid - and a start
+# that had to create the container pulled "docker.io/exasol/nano:" with no tag.
+# Twin of nano_adopt_recorded_settings in runtime-nano.sh.
+function Sync-ExakitRuntimeDefaultsFromManifest {
+    try {
+        if (-not $env:EXAKIT_DB_PORT) {
+            $dsn = "$(Get-ExakitManifestValue 'runtime.dsn')"
+            if ($dsn -match ':(\d+)\s*$') { $script:DbPort = $Matches[1] }
+        }
+        if (-not $script:NanoTag) {
+            $image = "$(Get-ExakitManifestValue 'runtime.image')"
+            if ($image -match ':([^:/]+)\s*$') { $script:NanoTag = $Matches[1] }
+        }
+    } catch { }
+}
+
+# ConvertFrom-ExakitJsonRows <text> - exapump's `--format json` rows, one row
+# object at a time. PowerShell 5.1's ConvertFrom-Json hands a JSON array back as
+# ONE pipeline object; wrapped in @() that became a one-element array holding the
+# array, and ConvertTo-Json then wrote {"rows":[{"value":[...],"Count":8}]} - the
+# documented {"rows":[...]} shape was never what Windows agents received.
+# Callers collect with @(ConvertFrom-ExakitJsonRows $text).
+function ConvertFrom-ExakitJsonRows {
+    param([string]$Text)
+    if (-not "$Text".Trim()) { return }
+    $parsed = $null
+    try { $parsed = "$Text" | ConvertFrom-Json } catch { return }
+    foreach ($row in @($parsed)) { if ($null -ne $row) { Write-Output $row } }
 }
 
 # manifest_set equivalent: reads, mutates, writes atomically, every call.
@@ -1461,7 +1530,10 @@ function Clear-ExakitRuntimeFailureNote {
         if (-not (Test-Path $script:FailureNotePath)) { return }
         $first = "$(@(Get-Content -Path $script:FailureNotePath -ErrorAction Stop)[0])"
         if ($first -match 'exakit start' -or $first -match 'cannot start' -or
-            $first -match 'held by another process' -or $first -match 'not running') {
+            $first -match 'held by another process' -or $first -match 'not running' -or
+            $first -match '(?i)could not start' -or $first -match '(?i)pull failed' -or
+            $first -match '(?i)is not available' -or $first -match '(?i)no runtime recorded' -or
+            $first -match '(?i)container') {
             Remove-Item -Path $script:FailureNotePath -Force -ErrorAction SilentlyContinue
         }
     } catch { }
@@ -1480,6 +1552,37 @@ function Read-ExakitFailureNote {
     } catch {
         return $empty
     }
+}
+
+# Install lock - twin of exakit_acquire_lock and the .install.lock read in
+# cmd_status (common.sh, setup/exakit). The manifest's install.current_step says
+# an install was underway; only a LIVE pid in the lock says it still is. Without
+# it a crashed Windows install answered `exakit status --json` with "installing -
+# poll until running" forever, and suppressed the re-run remedy that applied.
+function Test-ExakitInstallRunning {
+    try {
+        if (-not (Test-Path $script:InstallLockPath)) { return $false }
+        $pidText = "$(@(Get-Content -Path $script:InstallLockPath -ErrorAction Stop)[0])".Trim()
+        if ($pidText -notmatch '^\d+$') { return $false }
+        return [bool](Get-Process -Id ([int]$pidText) -ErrorAction SilentlyContinue)
+    } catch {
+        return $false
+    }
+}
+
+function Enter-ExakitInstallLock {
+    if (Test-ExakitInstallRunning) {
+        $holder = "$(@(Get-Content -Path $script:InstallLockPath -ErrorAction SilentlyContinue)[0])".Trim()
+        Fail "Another setup run is already in progress (pid $holder). Wait for it to finish; if you are sure it is dead, remove $($script:InstallLockPath) and re-run."
+    }
+    if (Test-Path $script:InstallLockPath) { Warn2 "Found a lock from an interrupted run - removing it and continuing" }
+    $dir = Split-Path -Parent $script:InstallLockPath
+    if ($dir -and -not (Test-Path $dir)) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
+    [System.IO.File]::WriteAllText($script:InstallLockPath, "$PID`n", (New-Object System.Text.UTF8Encoding($false)))
+}
+
+function Exit-ExakitInstallLock {
+    try { Remove-Item -Path $script:InstallLockPath -Force -ErrorAction SilentlyContinue } catch { }
 }
 
 # Register-ExakitSoftFailure - book a step as "did not complete" without the
@@ -1505,6 +1608,33 @@ function Register-ExakitSoftFailure {
         Reason = $Reason
         Label  = $Label
     }
+    # On disk too. The closing summary scrolls away with the install, and the
+    # NEXT process (`exakit status`) knew nothing of a step that did not finish:
+    # remedy null, remedies {}, while the datasets it was asked for were simply
+    # missing. status reads install.soft_failures back into `remedies`, and the
+    # failure note carries the reason WITH its repair command.
+    try {
+        $key = "install.soft_failures." + ($Component -replace '[^A-Za-z0-9_]', '_')
+        Set-ExakitManifestValue "$key.repair" $Repair
+        Set-ExakitManifestValue "$key.reason" "$Reason"
+        Set-ExakitManifestValue "$key.at" (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
+    } catch { }
+    if (Get-Command Write-ExakitFailureNote -ErrorAction SilentlyContinue) {
+        $note = "$Label did not finish"
+        if ($Reason) { $note = "$note - $Reason" }
+        Write-ExakitFailureNote "$note. Retry with: $Repair"
+    }
+}
+
+# Clear-ExakitSoftFailure <component> - the step ran to completion later (a
+# re-run, `exakit data-load`, `exakit mcp-setup`), so its record goes.
+function Clear-ExakitSoftFailure {
+    param([Parameter(Mandatory)][string]$Component)
+    try {
+        $key = "install.soft_failures." + ($Component -replace '[^A-Za-z0-9_]', '_')
+        if ($null -ne (Get-ExakitManifestValue $key)) { Remove-ExakitManifestValue $key }
+    } catch { }
+    if ($script:ExakitSoftFailed.Contains($Component)) { $script:ExakitSoftFailed.Remove($Component) }
 }
 
 function Invoke-ExakitSoftStep {
@@ -1526,6 +1656,7 @@ function Invoke-ExakitSoftStep {
             throw $soft
         }
         Set-ExakitFailureReason ""
+        Clear-ExakitSoftFailure -Component $Component
         return $true
     } catch {
         # Fail() records the message it printed; an ordinary exception carries
@@ -1564,6 +1695,7 @@ function Invoke-ExakitBestEffort {
     try {
         & $Body
         Set-ExakitFailureReason ""
+        Clear-ExakitSoftFailure -Component $Component
         return $true
     } catch {
         $reason = Get-ExakitFailureReason
@@ -1621,6 +1753,7 @@ function Invoke-ExakitBounded {
     param(
         [Parameter(Mandatory)][string]$FilePath,
         [string[]]$Arguments = @(),
+        [string]$ArgumentString = "",
         [int]$TimeoutSeconds = 8
     )
     $info = New-Object System.Diagnostics.ProcessStartInfo
@@ -1633,6 +1766,10 @@ function Invoke-ExakitBounded {
         $quoted += '"' + ($argument -replace '"', '\"') + '"'
     }
     $info.Arguments = ($quoted -join " ")
+    # -ArgumentString is taken verbatim, for the one caller whose target parses
+    # its own command line: wsl.exe does not accept a quoted "--" as its
+    # separator and ran the whole probe as a Linux command named "--".
+    if ($ArgumentString) { $info.Arguments = $ArgumentString }
     $info.RedirectStandardOutput = $true
     $info.RedirectStandardError = $true
     $info.UseShellExecute = $false
@@ -2312,7 +2449,10 @@ function Set-ExakitStepDone {
         $doc = Read-ExakitManifest
         if ($null -eq $doc) { Fail "Failed to record step ${Step}: no manifest at $script:ManifestPath" }
         $steps = Get-ManifestValue -Manifest $doc -Path "steps_completed"
-        $steps = [array]$steps
+        # An empty array comes back from a function as $null, and [array]$null
+        # is still $null - so `+=` made the first tick a bare STRING and the
+        # manifest carried "steps_completed": "launcher" until the second step.
+        if ($null -eq $steps) { $steps = @() } else { $steps = @($steps) }
         if ($steps -notcontains $Step) { $steps += $Step }
         Set-ManifestValue -Manifest $doc -Path "steps_completed" -Value $steps
         Save-ExakitManifest $doc
@@ -3221,6 +3361,25 @@ function Get-ExakitRepoRoot {
 # ~/.claude/settings.json: strictly additive, idempotent, never removes
 # anything, and a malformed file is left alone. Twin of
 # exakit_apply_readonly_allowlist in common.sh.
+# Test-ExakitLegacyAllowlistRule <rule> - a rule this kit wrote for a command it
+# no longer has (`update-check` merged into `version`, `mcp-validate` into
+# `mcp-doctor`). Uninstall removed only the current set, so these lingered.
+function Test-ExakitLegacyAllowlistRule {
+    param([string]$Rule)
+    return ("$Rule" -match '^(Bash|PowerShell)\((~/\.local/bin/|\$HOME/\.local/bin/)?exakit(\.cmd)? (update-check|mcp-validate)(:\*)?\)$')
+}
+
+# Write-ExakitSettingsJson - BOM-less UTF-8, deep enough for real settings.
+# `Set-Content -Encoding UTF8` on PowerShell 5.1 prepends a BOM, which strict
+# JSON readers (jq, Python's json.load, other agents' tooling) reject - on the
+# one file every Claude Code session reads first - and -Depth 8 silently
+# flattened anything nested deeper (hooks, MCP blocks) into strings.
+function Write-ExakitSettingsJson {
+    param([Parameter(Mandatory)][string]$Path, [Parameter(Mandatory)]$Doc)
+    $json = $Doc | ConvertTo-Json -Depth 32
+    [System.IO.File]::WriteAllText($Path, $json, (New-Object System.Text.UTF8Encoding($false)))
+}
+
 function Set-ExakitReadonlyAllowlist {
     # The kit's read-only command surface. Leaving any of these out is what kept
     # the friction real: AGENTS.md tells an agent to discover commands with
@@ -3238,7 +3397,12 @@ function Set-ExakitReadonlyAllowlist {
     # binary by absolute path. So the bare-`exakit` rules covered exactly the
     # invocation the docs steer agents AWAY from, and every "read-only" command
     # kept prompting anyway.
-    $prefixes = @("exakit", "~/.local/bin/exakit", "`$HOME/.local/bin/exakit")
+    # And the Windows spellings. The shim is exakit.cmd: PowerShell resolves the
+    # bare name, but Git Bash - Claude Code's shell on Windows - does not, and
+    # ~/.local/bin/exakit does not exist there. Rules naming only the Unix
+    # spellings matched nothing an agent on a Windows machine could type.
+    $prefixes = @("exakit", "~/.local/bin/exakit", "`$HOME/.local/bin/exakit",
+                  "exakit.cmd", "~/.local/bin/exakit.cmd", "`$HOME/.local/bin/exakit.cmd")
     $allow = @()
     foreach ($prefix in $prefixes) {
         foreach ($command in $readonly) { $allow += "Bash($prefix $command`:*)" }
@@ -3247,11 +3411,16 @@ function Set-ExakitReadonlyAllowlist {
         $allow += "Bash($prefix skills)"
         $allow += "Bash($prefix skills --json)"
     }
+    # The PowerShell tool has its own rule namespace, and bare `exakit` resolves there.
+    foreach ($command in $readonly) { $allow += "PowerShell(exakit $command`:*)" }
+    $allow += "PowerShell(exakit skills)"
+    $allow += "PowerShell(exakit skills --json)"
     $allow += "mcp__exasol"
     # The deny needs every spelling too, for the opposite reason: a rule that
     # only names the bare form is trivially sidestepped by the absolute path the
     # docs recommend.
     $deny = @($prefixes | ForEach-Object { "Bash($_ uninstall`:*)" })
+    $deny += "PowerShell(exakit uninstall`:*)"
     $dir = Join-Path $HOME ".claude"
     $path = Join-Path $dir "settings.json"
     New-Item -ItemType Directory -Force -Path $dir | Out-Null
@@ -3273,13 +3442,18 @@ function Set-ExakitReadonlyAllowlist {
             $permissions | Add-Member -NotePropertyName $key -NotePropertyValue @()
         }
         $existing = @($permissions.$key)
+        # Rules for commands that no longer exist were left behind by earlier
+        # kits; drop them on the way through, and count that as a change.
+        $before = $existing.Count
+        $existing = @($existing | Where-Object { -not (Test-ExakitLegacyAllowlistRule $_) })
+        $added += ($before - $existing.Count)
         foreach ($entry in $wanted) {
             if ($existing -notcontains $entry) { $existing += $entry; $added++ }
         }
         $permissions.$key = $existing
     }
     if ($added -gt 0) {
-        $doc | ConvertTo-Json -Depth 8 | Set-Content -Path $path -Encoding UTF8
+        Write-ExakitSettingsJson -Path $path -Doc $doc
     }
     return "ADDED $added"
 }
@@ -3300,7 +3474,8 @@ function Remove-ExakitReadonlyAllowlist {
         "status", "info", "version", "mcp-doctor", "logs", "catalog", "preflight",
         "guide", "mcp-status", "help"
     )
-    $prefixes = @("exakit", "~/.local/bin/exakit", "`$HOME/.local/bin/exakit")
+    $prefixes = @("exakit", "~/.local/bin/exakit", "`$HOME/.local/bin/exakit",
+                  "exakit.cmd", "~/.local/bin/exakit.cmd", "`$HOME/.local/bin/exakit.cmd")
     $ours = @()
     foreach ($prefix in $prefixes) {
         foreach ($command in $readonly) { $ours += "Bash($prefix $command`:*)" }
@@ -3308,6 +3483,9 @@ function Remove-ExakitReadonlyAllowlist {
         $ours += "Bash($prefix skills --json)"
         $ours += "Bash($prefix uninstall`:*)"
     }
+    foreach ($command in ($readonly + @("uninstall"))) { $ours += "PowerShell(exakit $command`:*)" }
+    $ours += "PowerShell(exakit skills)"
+    $ours += "PowerShell(exakit skills --json)"
     $ours += "mcp__exasol"
     $path = Join-Path (Join-Path $HOME ".claude") "settings.json"
     if (-not (Test-Path $path)) { return "REMOVED 0" }
@@ -3318,12 +3496,12 @@ function Remove-ExakitReadonlyAllowlist {
     foreach ($key in @("allow", "deny")) {
         if (-not $permissions.PSObject.Properties[$key]) { continue }
         $existing = @($permissions.$key)
-        $kept = @($existing | Where-Object { $ours -notcontains $_ })
+        $kept = @($existing | Where-Object { ($ours -notcontains $_) -and -not (Test-ExakitLegacyAllowlistRule $_) })
         $removed += ($existing.Count - $kept.Count)
         $permissions.$key = $kept
     }
     if ($removed -gt 0) {
-        try { $doc | ConvertTo-Json -Depth 8 | Set-Content -Path $path -Encoding UTF8 } catch { return "SKIP unwritable" }
+        try { Write-ExakitSettingsJson -Path $path -Doc $doc } catch { return "SKIP unwritable" }
     }
     return "REMOVED $removed"
 }
@@ -3559,7 +3737,25 @@ function Show-ExakitSkills {
     }
 
     if ($Json) {
-        Write-Output ([pscustomobject]@{ skills = $entries } | ConvertTo-Json -Depth 4 -Compress)
+        # Straight to the console stream: the caller discards this function's
+        # pipeline output to read its boolean, which used to swallow the JSON
+        # with it - `exakit skills --json` printed nothing and exited 0.
+        # Twin of exakit_skills_list --json: the panel's verdict as data, from
+        # the manifest and the cached versions document (no network).
+        $skjHave = Get-ExakitManifestValue "components.skills.version"
+        $skjWant = Get-ExakitVersionsValue -Path "components.skills.version"
+        $skjMissing = @($entries | Where-Object { $_.state -ne "installed" }).Count
+        $skjStatus = "current"; $skjNext = $null
+        if ($skjHave -and $skjWant -and ("$skjHave" -ne "$skjWant")) { $skjStatus = "update_pending"; $skjNext = "exakit update" }
+        elseif ($skjMissing -gt 0) { $skjStatus = "missing"; $skjNext = "exakit skills-install" }
+        $skjDoc = [ordered]@{
+            skills = @($entries)
+            installed_version = $(if ($skjHave) { "$skjHave" } else { $null })
+            advertised_version = $(if ($skjWant) { "$skjWant" } else { $null })
+            status = $skjStatus
+            next = $skjNext
+        }
+        [Console]::Out.WriteLine(($skjDoc | ConvertTo-Json -Depth 4 -Compress))
         return $true
     }
 
@@ -4750,6 +4946,17 @@ function Show-ExakitConnectionPanel {
     if ($mcpConfigs) {
         Write-ExakitPanelLine "MCP configs:  in each AI client's config (list: exakit mcp-status)"
         Write-ExakitPanelLine "MCP backups:  $(Get-ExakitTilde $script:McpDir)"
+    }
+    # The skill set, from the manifest and the cached versions document. Twin
+    # of the Skills row in connection_panel.
+    $cpSkillsHave = Get-ExakitManifestValue "components.skills.version"
+    $cpSkillsWant = Get-ExakitVersionsValue -Path "components.skills.version"
+    if ($cpSkillsHave) {
+        if ($cpSkillsWant -and ("$cpSkillsWant" -ne "$cpSkillsHave")) {
+            Write-ExakitPanelLine "Skills:       $cpSkillsHave ($cpSkillsWant available: exakit update)"
+        } else {
+            Write-ExakitPanelLine "Skills:       $cpSkillsHave (list: exakit skills)"
+        }
     }
     # The JSON form rides on the Manifest row rather than trailing the panel as
     # a sentence of its own: it is the same fact, and a reader who wants the

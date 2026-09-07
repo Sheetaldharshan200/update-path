@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
-  "updated": "2026-09-03",
+  "updated": "2026-09-07",
   "kit": {
-    "version": "0.2.4"
+    "version": "0.2.0"
   },
   "components": {
     "personal": {
@@ -37,7 +37,7 @@
       "severity": "normal"
     },
     "skills": {
-      "version": "1.8.0",
+      "version": "1.9.1",
       "severity": "normal"
     },
     "dash-server": {

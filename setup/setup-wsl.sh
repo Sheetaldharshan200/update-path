@@ -38,6 +38,9 @@ if [ -f "$LIB_DIR/mcp.sh" ];      then . "$LIB_DIR/mcp.sh"      || die "Could no
 if [ -f "$LIB_DIR/pyexasol.sh" ]; then . "$LIB_DIR/pyexasol.sh" || die "Could not load $LIB_DIR/pyexasol.sh (corrupted kit copy? re-download and re-run)"; fi
 
 exakit_init_logging
+# Where the bootstrap time went, in the log: the installer stamps its start,
+# and this is the first line setup can write.
+[ -n "${EXAKIT_INSTALL_T0:-}" ] && _exakit_log_file "INFO  setup started $(( $(date +%s) - EXAKIT_INSTALL_T0 ))s after the installer began (download, extraction and library load)"
 manifest_init
 exakit_enable_failure_handling
 # The `exakit` command first, so `exakit status` answers from the first seconds

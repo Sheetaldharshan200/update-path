@@ -1178,6 +1178,17 @@ EXAKIT_JL_EOF
     return 0
 }
 
+# _llf_refuse <message> — the loader runs in a subshell whose exit code its
+# callers read: 0 loaded, 2 "back"/skipped. A refusal of BAD INPUT is neither,
+# so it is exit 3: the callers turn it into exit 2 for the user (the same code
+# every other refusal has) without recording a failed step. `reject` could not
+# be used here: its exit 2 read as "skipped" and the command exited 0.
+_llf_refuse() {
+    printf '\n  %s%s %s%s%s\n' "${UI_ERR:-}" "${UI_CROSS:-[x]}" "${UI_BOLD:-}" "$*" "${UI_RESET:-}" >&2
+    _exakit_log_file "REJECT $*"
+    exit 3
+}
+
 exakit_load_local_file() {
     while :; do
         _raw_path="$(prompt_text "Local CSV / Parquet / JSON file — or a folder of them (type back to return)" "${EXAKIT_DATA_FILE:-}")"
@@ -1199,9 +1210,32 @@ exakit_load_local_file() {
         # answered by the same prompt (and the same EXAKIT_DATA_FILE) as a
         # single file, because "here is my data" is the same request either way.
         [ -d "$_path" ] && { exakit_load_local_folder "$_path"; return $?; }
-        [ -s "$_path" ] && break
+        if [ -s "$_path" ]; then
+            # Refuse what the loader cannot take BEFORE it runs. exapump loads
+            # .csv/.tsv and .parquet (JSON through the add-on); anything else
+            # died inside the loader and was recorded as a failed install step,
+            # although it was only the wrong file. Bad input: exit 2, no note.
+            _llf_kind="$(exakit_data_file_kind "$_path")"
+            case "$_llf_kind:$(printf '%s' "${_path##*/}" | tr '[:upper:]' '[:lower:]')" in
+                unknown:*|csv:*.txt)
+                    [ -n "$(_exakit_prompt_tty)" ] || _llf_refuse "Cannot load '${_path##*/}': only .csv, .tsv, .parquet (and .json with the JSON Tables add-on) are supported — rename or convert the file first."
+                    warn "Only .csv, .tsv, .parquet (and .json with the JSON Tables add-on) can be loaded: ${_path##*/}"
+                    continue ;;
+            esac
+            if [ "$_llf_kind" = csv ]; then
+                # A header with no comma but a ';' or a tab is one column to
+                # exapump, which splits on ','; the load "succeeds" as a single
+                # column and nothing says so.
+                _llf_head="$(head -n 1 "$_path" 2>/dev/null)"
+                case "$_llf_head" in
+                    *,*) ;;
+                    *";"*|*"	"*) warn "The header of ${_path##*/} has no comma but a ';' or tab — exapump splits on ',' and would load it as ONE column. Convert the file, or load it with: exapump upload --delimiter ';' -p $EXAKIT_EXAPUMP_PROFILE ..." ;;
+                esac
+            fi
+            break
+        fi
         warn "File not found or empty: $_path"
-        [ -n "$(_exakit_prompt_tty)" ] || return 1
+        [ -n "$(_exakit_prompt_tty)" ] || _llf_refuse "File not found or empty: $_path"
     done
     # Every file kind is asked the same two things, in the same order, before
     # any work starts: the file, then SCHEMA.TABLE. What has to happen after
@@ -2409,6 +2443,10 @@ exakit_data_load_menu() {
         if [ "$_local_status" -eq 2 ]; then
             _menu_notes="${_menu_notes}info|Local file load skipped. Run it any time with: exakit data-load
 "
+        elif [ "$_local_status" -eq 3 ]; then
+            # The file was refused as bad input (message already printed): the
+            # command answers like every other refusal, exit 2, nothing recorded.
+            _menu_status=2
         elif [ "$_local_status" -ne 0 ]; then
             _menu_status="$_local_status"
         fi

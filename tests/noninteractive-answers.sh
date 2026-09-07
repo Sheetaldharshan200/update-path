@@ -101,7 +101,9 @@ echo "EXAKIT_DATA_FILE — a bad path fails instead of looping (no tty):"
 (
     EXAKIT_DATA_FILE=/nonexistent/file.csv
     export EXAKIT_DATA_FILE
-    exakit_load_local_file </dev/null >/dev/null 2>&1
+    # In its own subshell: a refused file EXITS the loader with 3 (bad input,
+    # which its callers turn into exit 2), exactly as the real callers run it.
+    ( exakit_load_local_file </dev/null >/dev/null 2>&1 )
     echo "rc=$?" > "$WORK/local-file-rc"
 ) &
 _lf_pid=$!
@@ -113,10 +115,10 @@ done
 if kill -0 "$_lf_pid" 2>/dev/null; then
     kill "$_lf_pid" 2>/dev/null
     wait "$_lf_pid" 2>/dev/null
-    check "bad EXAKIT_DATA_FILE returns nonzero promptly" "rc=1" "HUNG-KILLED-AFTER-10S"
+    check "bad EXAKIT_DATA_FILE is refused promptly (exit 3 = bad input)" "rc=3" "HUNG-KILLED-AFTER-10S"
 else
     wait "$_lf_pid" 2>/dev/null
-    check "bad EXAKIT_DATA_FILE returns nonzero promptly" "rc=1" "$(cat "$WORK/local-file-rc" 2>/dev/null || echo "no-rc-recorded")"
+    check "bad EXAKIT_DATA_FILE is refused promptly (exit 3 = bad input)" "rc=3" "$(cat "$WORK/local-file-rc" 2>/dev/null || echo "no-rc-recorded")"
 fi
 
 echo ""

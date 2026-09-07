@@ -109,9 +109,14 @@ function Assert-ExakitInstalled {
 # returns $null when the database is unreachable. Either way the manifest read
 # below is the fallback, never the first answer.
 function Get-ExakitLoadedDatasets {
+    # Which source answered: "database" when the marker tables were checked,
+    # "manifest" when the database could not be reached and the record stood in.
+    # status --json carries it as datasets_source, so a list answered off the
+    # manifest while the database is down is not mistaken for a verified one.
+    $script:ExakitDatasetsSource = "manifest"
     if (Get-Command Get-ExakitVerifiedDatasets -ErrorAction SilentlyContinue) {
         $verified = Get-ExakitVerifiedDatasets
-        if ($null -ne $verified) { return @($verified) }
+        if ($null -ne $verified) { $script:ExakitDatasetsSource = "database"; return @($verified) }
     }
     $datasets = Get-ExakitManifestValue "data.datasets"
     if (-not $datasets) { return @() }
@@ -136,6 +141,7 @@ function Write-ExakitNotInstalledAnswer {
     if ($Json) {
         Write-Output ([pscustomobject]@{
             installed = $false
+            status    = "not installed"
             manifest  = $script:ManifestPath
             reason    = "no install record"
             remedy    = "run the installer"
@@ -163,7 +169,15 @@ function Invoke-CmdStatus {
     # An install in progress is its own state: Begin-ExakitStep records the step
     # and the setup script clears it when done. Twin of the same read in cmd_status.
     $installStep = "$(Get-ExakitManifestValue 'install.current_step')"
-    $installing = ($installStep -ne "" -and -not ($steps -contains "exakit_helper"))
+    # Both have to agree - the step in the manifest AND a live pid in the lock -
+    # or a crashed install reads as "installing" forever, with the re-run remedy
+    # suppressed. Twin of cmd_status.
+    $installing = ($installStep -ne "" -and -not ($steps -contains "exakit_helper") -and (Test-ExakitInstallRunning))
+    # A step recorded with no live installer behind it: the install stopped there.
+    $installStopped = ($installStep -ne "" -and -not $installing -and -not ($steps -contains "exakit_helper"))
+    # Steps the installer recorded as not finished (a failed data load, a skipped
+    # client wiring), each with the command that finishes it.
+    $softRecords = Get-ExakitManifestValue "install.soft_failures"
     $datasets = @(Invoke-ExakitWithSpinner -Quiet:$Json -Label "Checking which datasets are loaded" -Body {
         ,@(Get-ExakitLoadedDatasets)
     })
@@ -190,7 +204,14 @@ function Invoke-CmdStatus {
         $remedies = [ordered]@{}
         if (-not $pyexasol) { $remedies["pyexasol"] = "exakit update" }
         if (-not $running) { $remedies["database"] = "exakit start" }
-        if ($installing) { $remedies["install"] = "the installer is still running (step: $installStep) - poll exakit status --json until status is running" }
+        if ($installing) { $remedies["install"] = "exakit status --json   (the installer is still running, step: $installStep - poll until status is running)" }
+        elseif ($installStopped) { $remedies["install"] = "re-run the installer (it stopped at step: $installStep; completed steps are skipped)" }
+        if ($softRecords) {
+            foreach ($property in @($softRecords.PSObject.Properties)) {
+                $repair = "$($property.Value.repair)"
+                if ($repair -and -not $remedies.Contains($property.Name)) { $remedies[$property.Name] = $repair }
+            }
+        }
         $stepsMissing = @()
         if (-not $installing) {
             $stepRemedies = @(
@@ -212,11 +233,16 @@ function Invoke-CmdStatus {
         if ($remedies.Contains("install")) { $topRemedy = $remedies["install"] }
         elseif ($remedies.Contains("database")) { $topRemedy = $remedies["database"] }
         elseif ($stepsMissing.Count -gt 0) { $topRemedy = $remedies[$stepsMissing[0]] }
+        elseif ($softRecords) {
+            foreach ($property in @($softRecords.PSObject.Properties)) {
+                if (-not $topRemedy -and $property.Value.repair) { $topRemedy = "$($property.Value.repair)" }
+            }
+        }
         [ordered]@{
             installed       = $true
             status          = $statusWord
             installing      = $installing
-            install_step    = $(if ($installing) { $installStep } else { $null })
+            install_step    = $(if ($installing -or $installStopped) { $installStep } else { $null })
             remedy          = $topRemedy
             kit_level       = "$(Get-ExakitManifestValue 'kit_level')"
             runtime         = [ordered]@{ type = $type; status = $status }
@@ -224,6 +250,7 @@ function Invoke-CmdStatus {
             services        = $services
             autostart       = ((Get-ExakitManifestValue "autostart.enabled") -eq $true)
             datasets_loaded = $datasets
+            datasets_source = $script:ExakitDatasetsSource
             steps_completed = $steps
             steps_missing   = $stepsMissing
             pyexasol        = $(if ($pyexasol) { "$pyexasol" } else { $null })
@@ -283,6 +310,19 @@ function Invoke-CmdStatus {
     if (-not $dsn) { $dsn = "unknown" }
     if ($running) { $reach = "reachable" } else { $reach = "not reachable" }
     Write-StatusPanelRow "Database" "$dsn - $reach"
+    # The install state, which the JSON has carried since the poll contract was
+    # written and this screen never showed: it said "Start it: exakit start"
+    # under a live installer.
+    if ($installing) {
+        Write-StatusPanelRow "Install" "in progress - step: $installStep (poll: exakit status --json)"
+    } elseif ($installStopped) {
+        Write-StatusPanelRow "Install" "did not finish at step: $installStep - re-run the installer"
+    }
+    if ($failureNote.reason) {
+        $noteText = "$($failureNote.reason)"
+        if ($noteText.Length -gt 60) { $noteText = $noteText.Substring(0, 57) + "..." }
+        Write-StatusPanelRow "Last failure" "$noteText ($($failureNote.at))"
+    }
     # "enabled"/"disabled", not "on"/"off": this row reports a STATE, and on/off
     # reads as the switch you flip rather than the position it is in. The
     # The command itself takes no verb: it shows this state and asks.
@@ -422,6 +462,24 @@ function Invoke-CmdStatus {
     foreach ($row in $softRows) {
         Write-StatusRow $softLabel $row
         $softLabel = ""
+    }
+    if ($softRecords) {
+        $softLabel = "Unfinished:"
+        foreach ($property in @($softRecords.PSObject.Properties)) {
+            Write-StatusRow $softLabel ("$($property.Name)".PadRight(11) + " retry: " + "$($property.Value.repair)")
+            $softLabel = ""
+        }
+    }
+    if ($installing) {
+        Write-Host "Installing: step $installStep - poll: exakit status --json"
+        exit 3
+    }
+    if ($installStopped) {
+        Write-Host "Finish it:  re-run the installer (it stopped at step: $installStep)"
+        # No "Start it" underneath: with no runtime recorded yet, `exakit start`
+        # can only answer "No runtime recorded in the manifest yet" - the
+        # installer is the one command that finishes this.
+        if (-not $type) { exit 3 }
     }
     # No "Manifest:" row: an internal file path, on the last line of the screen,
     # that nothing on this screen asks the reader to open.
@@ -1243,13 +1301,13 @@ function Invoke-CmdVersion {
             $status = "exakit marketplace"
             $severity = ""
         } elseif ($available -eq "unknown" -or $installed -eq "unknown") {
-            $status = "inspect"
+            $status = "unknown - check: exakit status"
         } elseif ($installed -eq "not installed" -and (Test-ExakitComponentHeavy $actual)) {
             # A runtime that is not installed is not a runtime this machine wants:
             # offering to deploy Exasol Personal onto a Nano install would be
             # actively wrong. (A missing light component, by contrast, is exactly
             # the repair case below.)
-            $status = "inspect"
+            $status = "not installed - re-run the installer"
         } elseif ($installed -ne "not installed" -and (Test-ExakitVersionNewer -Latest $installed -Current $available)) {
             # Installed is ahead of the published set. The kit never moves a
             # component backwards, so there is nothing to offer: lowering a
@@ -1362,7 +1420,12 @@ function Invoke-CmdVersion {
     # command per row taught the long way round to the reader who least needed it.
     # The add-on rows carry their own `exakit marketplace`, so the discovery line
     # that used to repeat it here is gone too.
-    if ($pending -gt 0) { Info "Bring everything up to date with: exakit update" }
+    $unfinishedStep = "$(Get-ExakitManifestValue 'install.current_step')"
+    if ($unfinishedStep -ne "") {
+        # A half-finished install is repaired by the installer, not by update:
+        # update assumes a runtime to update.
+        Info "The install did not finish (step: $unfinishedStep) - re-run the installer; it resumes there."
+    } elseif ($pending -gt 0) { Info "Bring everything up to date with: exakit update" }
 }
 
 # Get-ExakitVersionTableTargets - every row the table shows.
@@ -2209,6 +2272,11 @@ function Invoke-CmdMcpOperation {
     Assert-ExakitInstalled
     Initialize-ExakitLogging
     if (-not (Invoke-McpOperation -Operation $Operation -InputArgs $OpArgs)) {
+        # In --json mode the report IS the answer: the Fail card would land on
+        # stdout after the object (the host writes Write-Host there when
+        # redirected) and break every parser with "extra data". Exit 1 quietly;
+        # the report's status and remedy already say what is wrong.
+        if ($env:EXAKIT_MCP_RESULT_JSON -eq "1") { exit 1 }
         Fail "Could not complete MCP $Operation"
     }
 }
@@ -2270,18 +2338,40 @@ function Invoke-CmdInfoJson {
     $running = ((Get-ExakitRuntimeStatus) -eq "running")
     try {
         $doc = $raw | ConvertFrom-Json
+        # A one-element list was written by PowerShell 5.1 as a bare string
+        # ("steps_completed": "launcher"); hand parsers the array they were promised.
+        if ($doc.PSObject.Properties["steps_completed"]) { $doc.steps_completed = @($doc.steps_completed | Where-Object { $null -ne $_ }) }
         $doc | Add-Member -NotePropertyName "installed" -NotePropertyValue $true -Force
         $statusText = "database not running"
-        if ($running) { $statusText = "running" }
-        $doc | Add-Member -NotePropertyName "status" -NotePropertyValue $statusText -Force
         $remedyText = "exakit start"
-        if ($running) { $remedyText = $null }
+        if ($running) { $statusText = "running"; $remedyText = $null }
+        # The same installing state `status --json` answers. Mid-install this said
+        # "database not running - exakit start": the one command that must not
+        # run underneath a live installer.
+        $installStep = "$(Get-ExakitManifestValue 'install.current_step')"
+        $installing = ($installStep -ne "" -and (Test-ExakitInstallRunning))
+        if ($installing) {
+            $statusText = "installing"
+            $remedyText = "exakit status --json   (the installer is still running, step: $installStep - poll until status is running)"
+        }
+        $doc | Add-Member -NotePropertyName "status" -NotePropertyValue $statusText -Force
         $doc | Add-Member -NotePropertyName "remedy" -NotePropertyValue $remedyText -Force
+        # The skill set's verdict, from the manifest and the cached versions
+        # document (no network). Twin of the skills block in cmd_info_json.
+        $ijHave = Get-ExakitManifestValue "components.skills.version"
+        $ijWant = Get-ExakitVersionsValue -Path "components.skills.version"
+        $ijPending = ($ijHave -and $ijWant -and ("$ijHave" -ne "$ijWant"))
+        $doc | Add-Member -NotePropertyName "skills" -NotePropertyValue ([ordered]@{
+            installed_version = $(if ($ijHave) { "$ijHave" } else { $null })
+            advertised_version = $(if ($ijWant) { "$ijWant" } else { $null })
+            status = $(if ($ijPending) { "update_pending" } else { "current" })
+            next = $(if ($ijPending) { "exakit update" } else { $null })
+        }) -Force
         Write-Output ($doc | ConvertTo-Json -Depth 8)
     } catch {
         Write-Output $raw.TrimEnd("`r", "`n")
     }
-    if (-not $running) { exit 3 }
+    if ($installing -or -not $running) { exit 3 }
     exit 0
 }
 
@@ -2347,24 +2437,33 @@ function Invoke-CmdSql {
         # without parsing. Twin of the --json branch in cmd_sql:
         #   {"ok": true,  "rows": [...]}
         #   {"ok": false, "error": "<engine text>", "remedy": "<...>" | null}
-        $errFile = Join-Path ([System.IO.Path]::GetTempPath()) ("exakit-sql-err-" + [System.IO.Path]::GetRandomFileName())
-        $rowsText = ""
+        # stdout and stderr kept apart in one pass, each line as its TEXT. The
+        # old `2>$errFile` had PowerShell format every stderr line as an error
+        # record wrapped at console width, so the engine text in `error` was cut
+        # mid-sentence ("... not found [line 1, column 8] (Session:") and the SQL
+        # state never made it into the object.
+        $outLines = @()
+        $errLines = @()
         $code = 1
         $previousEap = $ErrorActionPreference
         try {
             $ErrorActionPreference = "Continue"
-            $rowsText = & (Get-ExapumpCli) @("sql", "-p", $script:ExapumpProfile, "-f", "json", $Statement) 2>$errFile | Out-String
+            $captured = @(& (Get-ExapumpCli) @("sql", "-p", $script:ExapumpProfile, "-f", "json", $Statement) 2>&1)
             $code = $LASTEXITCODE
+            foreach ($item in $captured) {
+                if ($item -is [System.Management.Automation.ErrorRecord]) { $errLines += "$($item.Exception.Message)" } else { $outLines += "$item" }
+            }
         } catch {
-            $rowsText = ""
+            $errLines += "$_"
         } finally {
             $ErrorActionPreference = $previousEap
         }
-        $errText = ""
-        if (Test-Path $errFile) { $errText = Get-Content -Raw -Path $errFile -ErrorAction SilentlyContinue; Remove-Item -Path $errFile -Force -ErrorAction SilentlyContinue }
+        $rowsText = ($outLines -join "`n")
+        $errText = ($errLines -join "`n")
         if ($code -eq 0) {
-            $rows = @()
-            if ("$rowsText".Trim()) { try { $rows = @("$rowsText" | ConvertFrom-Json) } catch { $rows = @() } }
+            # One row object per row - see ConvertFrom-ExakitJsonRows for the
+            # {"value":[...],"Count":n} wrapper this used to print on PowerShell 5.1.
+            $rows = @(ConvertFrom-ExakitJsonRows -Text $rowsText)
             [ordered]@{ ok = $true; rows = $rows } | ConvertTo-Json -Depth 6 -Compress | Write-Output
             exit 0
         }
@@ -2547,6 +2646,18 @@ try {
             # made `mcp-doctor --json` print nothing on an uninstalled machine.
             $doctorJson = ($RestArgs -contains "--json" -or $RestArgs -contains "-j")
             Assert-ExakitKnownOptions -CommandName "mcp-doctor" -Allowed @("--json", "-j") -Arguments $RestArgs
+            # Mid-install the runtime is not recorded yet, and this answered "not
+            # installed", exit 4 - which sends an agent to start a SECOND install.
+            # `status` knows the installing state; say the same thing here.
+            $doctorStep = "$(Get-ExakitManifestValue 'install.current_step')"
+            if ((Test-Path $script:ManifestPath) -and $doctorStep -ne "" -and (Test-ExakitInstallRunning)) {
+                if ($doctorJson) {
+                    [ordered]@{ installed = $true; status = "installing"; remedy = "exakit status --json   (the installer is still running, step: $doctorStep - poll until status is running)" } | ConvertTo-Json
+                } else {
+                    Info "The installer is still running (step: $doctorStep) - MCP diagnostics wait for it. Poll: exakit status"
+                }
+                exit 3
+            }
             if (-not (Test-Path $script:ManifestPath) -or -not (Get-RuntimeType)) {
                 Write-ExakitNotInstalledAnswer -Json:$doctorJson
             }
@@ -2555,7 +2666,8 @@ try {
             $doctorUp = ($doctorType -eq "nano" -and "$(Get-NanoStatus)".StartsWith("running"))
             if (-not $doctorUp) {
                 if ($doctorJson) {
-                    @{ database = "not running"; remedy = "exakit start" } | ConvertTo-Json
+                    # The same three keys every --json state answer carries.
+                    [ordered]@{ installed = $true; status = "database not running"; remedy = "exakit start"; database = "not running" } | ConvertTo-Json
                 } else {
                     Warn2 "The database is not running - fix that first: exakit start"
                     Info "MCP diagnostics need a live database (the read-only user and its grants are checked against it)."

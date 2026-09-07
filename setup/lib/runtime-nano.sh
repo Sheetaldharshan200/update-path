@@ -39,6 +39,34 @@ nano_engine() {
 # nano_resolve_names — lifecycle commands must act on the names the install
 # actually used (recorded in the manifest), not on this shell's defaults.
 # An explicit environment override still wins.
+# nano_adopt_recorded_settings - the port and image tag the INSTALL recorded win
+# over the built-in defaults when the environment names neither. Both were read
+# from the environment only, so `exakit start` after an install on 8564 recreated
+# the container on 8563 (into the very conflict the port had been chosen to
+# avoid), and a start that had to create the container had no tag to pull.
+# Twin of Sync-ExakitRuntimeDefaultsFromManifest in exakit-common.ps1.
+nano_adopt_recorded_settings() {
+    if [ -z "${EXAKIT_DB_PORT_EXPLICIT:-}" ]; then
+        _nars_dsn="$(manifest_get runtime.dsn 2>/dev/null || true)"
+        case "$_nars_dsn" in
+            *:*)
+                _nars_port="${_nars_dsn##*:}"
+                case "$_nars_port" in
+                    ''|*[!0-9]*) ;;
+                    *) EXAKIT_DB_PORT="$_nars_port" ;;
+                esac
+                ;;
+        esac
+    fi
+    if [ -z "${EXAKIT_NANO_TAG:-}" ]; then
+        _nars_image="$(manifest_get runtime.image 2>/dev/null || true)"
+        case "$_nars_image" in
+            *:*) EXAKIT_NANO_TAG="${_nars_image##*:}" ;;
+        esac
+    fi
+    return 0
+}
+
 nano_resolve_names() {
     if [ "$EXAKIT_NANO_CONTAINER" = "exasol-nano" ]; then
         _mc="$(manifest_get runtime.container 2>/dev/null)"
@@ -48,6 +76,7 @@ nano_resolve_names() {
         _mv="$(manifest_get runtime.volume 2>/dev/null)"
         [ -n "$_mv" ] && EXAKIT_NANO_VOLUME="$_mv"
     fi
+    nano_adopt_recorded_settings
 }
 
 nano_check_requirements() {

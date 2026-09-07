@@ -63,6 +63,28 @@ function Get-ExakitHelpDocuments {
 $script:ExakitHelpKnownTools = @("exakit", "exapump", "exasol", "dash-server",
     "exasol-json-tables", "exasol-mcp-server", "exasol-mcp-server-http")
 
+# Twin of commands_of() in help.sh: an entry marked "hidden": true keeps its
+# page (exakit <cmd> --help) but is left off the overview, --all, the catalogue
+# and the JSON surfaces. It exists for repair, not for discovery.
+function Get-ExakitHelpVisibleCommands {
+    param($Doc)
+    $out = @()
+    foreach ($entry in @($Doc.commands)) {
+        if ($null -eq $entry) { continue }
+        if ($entry.PSObject.Properties["hidden"] -and $entry.hidden) { continue }
+        $out += $entry
+    }
+    return $out
+}
+
+# A copy of a document with its hidden commands removed, for the JSON dumps.
+function Get-ExakitHelpDocWithoutHidden {
+    param($Doc)
+    $copy = $Doc | Select-Object *
+    if ($copy.PSObject.Properties["commands"]) { $copy.commands = @(Get-ExakitHelpVisibleCommands $Doc) }
+    return $copy
+}
+
 function Get-ExakitHelpInvocation {
     param([string]$DocId, $Entry, $Doc)
     $command = ""
@@ -166,7 +188,7 @@ function Show-ExakitHelpOverview {
         Write-ExakitHelpSteps $doc.quickstart
     }
     $byName = @{}
-    foreach ($entry in $doc.commands) { $byName[$entry.command] = $entry }
+    foreach ($entry in (Get-ExakitHelpVisibleCommands $doc)) { $byName[$entry.command] = $entry }
     # First group wins, exactly as the --all view already does. A command that
     # reads naturally in two groups (mcp-setup belongs to both "Get started" and
     # "AI clients") was printed twice, so the one screen whose whole job is "find
@@ -206,7 +228,7 @@ function Show-ExakitHelpAll {
     if (-not $doc) { return 1 }
     Write-ExakitHelpHeader "exakit - every command" $doc.tagline
     $byName = @{}
-    foreach ($entry in $doc.commands) { $byName[$entry.command] = $entry }
+    foreach ($entry in (Get-ExakitHelpVisibleCommands $doc)) { $byName[$entry.command] = $entry }
     $seen = @{}
     foreach ($group in $doc.groups) {
         Write-ExakitHelpSection $group.title
@@ -229,7 +251,7 @@ function Show-ExakitHelpAll {
             $sub = $docs[$key]
             Write-Host "    $key" -NoNewline
             Write-Host "  $($sub.tagline)" -ForegroundColor DarkGray
-            foreach ($entry in $sub.commands) {
+            foreach ($entry in (Get-ExakitHelpVisibleCommands $sub)) {
                 $text = $entry.summary
                 if (-not $text) { $text = $entry.description }
                 Write-ExakitHelpCommand -Indent "      " -Pad 34 -Summary $text `
@@ -294,7 +316,7 @@ function Show-ExakitHelpComponent {
     }
     if ($doc.commands) {
         Write-ExakitHelpSection "Commands"
-        foreach ($entry in $doc.commands) {
+        foreach ($entry in (Get-ExakitHelpVisibleCommands $doc)) {
             $text = $entry.summary
             if (-not $text) { $text = $entry.description }
             Write-ExakitHelpCommand -Pad 34 -Summary $text `
@@ -349,7 +371,7 @@ function Get-ExakitHelpRows {
     $seen = @{}
     foreach ($key in ($docs.Keys | Sort-Object)) {
         $doc = $docs[$key]
-        foreach ($entry in $doc.commands) {
+        foreach ($entry in (Get-ExakitHelpVisibleCommands $doc)) {
             $tool = $key
             $command = $entry.command
             $parts = $command -split '\s+'
@@ -490,9 +512,11 @@ function Show-ExakitHelpJson {
     $docs = Get-ExakitHelpDocuments
     $rows = Get-ExakitHelpRows
     if (-not $Which -or $Which -eq "all") {
-        $payload = [ordered]@{ schema_version = 1; search = $null; count = $rows.Count; commands = $rows; documents = $docs }
+        $visibleDocs = [ordered]@{}
+        foreach ($k in ($docs.Keys | Sort-Object)) { $visibleDocs[$k] = Get-ExakitHelpDocWithoutHidden $docs[$k] }
+        $payload = [ordered]@{ schema_version = 1; search = $null; count = $rows.Count; commands = $rows; documents = $visibleDocs }
     } elseif ($docs.ContainsKey($Which)) {
-        $payload = $docs[$Which]
+        $payload = Get-ExakitHelpDocWithoutHidden $docs[$Which]
     } else {
         $needle = $Which.ToLowerInvariant()
         $hit = @($rows | Where-Object {
@@ -501,5 +525,7 @@ function Show-ExakitHelpJson {
         $payload = [ordered]@{ schema_version = 1; search = $Which; count = $hit.Count; commands = $hit }
     }
     $payload | ConvertTo-Json -Depth 12
-    return 0
+    # Nothing else on stdout: a `return 0` here put a bare "0" line after the
+    # object, and `exakit catalog --json` / `help <x> --json` failed every parser.
+    return
 }

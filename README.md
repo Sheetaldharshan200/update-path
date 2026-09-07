@@ -54,15 +54,14 @@ You already use AI. The hard part is trusting it with your data. This kit gives 
 | ⚡ | **[exapump](https://github.com/exasol-labs/exapump)** | Load CSV/Parquet files and run SQL from your terminal |
 | 🐍 | **[pyexasol](https://github.com/exasol/pyexasol)** | The official Exasol Python driver, ready in its own environment |
 
-At the end: connection details on screen, a managed runtime state under `~/.exasol-starter-kit/`, and guided MCP setup for supported clients. The database itself is usually up in **under 2 minutes**.
-
-**Three optional add-ons — add them any time with `exakit marketplace`:**
+**Four add-ons — add them any time with `exakit marketplace`:**
 
 | | Add-on | What it does for you |
 |---|---|---|
 | 📊 | **[dash-server](https://github.com/exasol-labs/dash-server)** | Your AI builds live, query-backed dashboards on the local database; you open them in the browser |
 | 🧩 | **[Exasol&nbsp;for&nbsp;VS&nbsp;Code](https://github.com/exasol-labs/exasol-vscode)** | SQL editing and schema browsing against the local database, inside your editor |
 | 🧬 | **[JSON&nbsp;Tables](https://github.com/exasol-labs/exasol-json-tables)** | Load JSON files into Exasol as regular tables, nested documents included |
+| ⏱️ | **[Exasol&nbsp;Scheduler](https://github.com/exasol-labs/exasol-scheduler)** | Lightweight, table-driven SQL job scheduling: run SQL on a timetable inside the local database |
 
 
 
@@ -89,26 +88,11 @@ At the end: connection details on screen, a managed runtime state under `~/.exas
 
 **No Python install needed** on any platform: the kit uses a system Python 3.11+ when it finds one, and otherwise installs a managed Python for its own use.
 
-Not sure? Check first. It installs **nothing**:
-
-**macOS / Linux / WSL**
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/krishna-exasol/update-path/main/install.sh | EXAKIT_PREFLIGHT=1 sh
-```
-
-**Windows (PowerShell)** — there is no `sh` there, and `curl` is an alias for `Invoke-WebRequest`, so set the variable first:
-
-```powershell
-$env:EXAKIT_PREFLIGHT = '1'
-irm https://raw.githubusercontent.com/krishna-exasol/update-path/main/install.ps1 | iex
-```
-
 Step-by-step guides: [QUICKSTART](QUICKSTART.md) · [macOS](quickstarts/macos.md) · [WSL](quickstarts/windows-wsl.md) · [Windows + Docker](quickstarts/windows-docker.md)
 
 ### Installing: what to expect
 
-The installer detects your OS and hardware, shows its plan, then installs everything: the database, exapump, the MCP server, pyexasol, and your AI client connections. The flow is the same on macOS, Linux, WSL, and Windows PowerShell. The database is usually up in **under 2 minutes**; the steps after it — sample data, the AI bridge, the Python driver — take longer, and a full Windows install is the slowest of them. A long-running install is not a stuck one.
+One command does the whole install. It checks your machine, shows what it will do, and then installs the database, exapump, the MCP server, pyexasol and your AI client connections. The database is ready in about two minutes. The rest takes a few minutes more, especially on Windows. Let it finish. It is the same on macOS, Linux, WSL and Windows PowerShell.
 
 At the end you get a connection panel with everything you need, and a first prompt for your AI client is on your clipboard.
 
@@ -122,7 +106,7 @@ exakit mcp-setup
 
 A checkbox multi-select (↑/↓ to move, **Space** to toggle, **Enter** to confirm) over **Claude**, **Codex**, **Cursor**, **GitHub Copilot**, **Gemini CLI**, **OpenCode**, **Continue**, and **Skip for now**. The list is **dynamic**: clients already connected, or not installed on this machine, aren't offered. If everything found is already connected, the command says so and exits.
 
-The command validates the MCP connection, prints where the config lives, and gives you a first prompt to try, copied to your clipboard when a clipboard tool is available. When it can detect the local MCP launcher path, it writes that exact path into client configs instead of assuming `uvx` is on every app's PATH, for more reliable setup across macOS, Linux, and Windows.
+The command checks the MCP connection, prints where each config lives, and gives you a first prompt to try. It writes the exact path of the local MCP launcher into the client configs, so setup does not depend on what is on each app's PATH.
 
 The installer runs this step for you automatically. `exakit mcp-setup` re-runs it any time.
 
@@ -130,14 +114,7 @@ Health check any time: `exakit mcp-doctor`.
 
 ## Let an AI assistant drive the kit (the skills)
 
-The kit ships **AI skills** — `SKILL.md` recipes that teach an agent (Claude Code, Codex, Cursor, or any tool that reads the open skill standard) how to operate it. There is one per thing the agent has to drive, so only the relevant one loads: the starter flow, then the database runtime, exapump, MCP, pyexasol, and each marketplace add-on.
-
-```bash
-exakit skills-install     # place them where agents look
-exakit skills             # what this kit carries, and what is installed
-```
-
-This copies the skills into each agent's discovery folder (`~/.claude/skills/`, `~/.agents/skills/`). The set is versioned like every other component: when the maintainers publish a newer one, `exakit update` fetches and installs it in seconds. In a **fresh** agent session, say **"setup starter kit"** and it takes over — or ask for anything else the kit does ("load this JSON file", "build me a dashboard", "query Exasol from Python") and the matching skill fires on its own. See [`skills/README.md`](skills/README.md) for the full index, and [`skills/reducing-agent-prompts.md`](skills/reducing-agent-prompts.md) if the agent asks for approval too often.
+The installer gives your AI agent seven skills, one per thing it may need to drive: setup, the database, exapump, MCP, Python, the Exasol tool ecosystem and the marketplace, plus one per installed add-on. They work in Claude Code, Codex, Cursor and any tool that reads the open skill standard, and load only when relevant. `exakit skills` lists them, `exakit update` refreshes them. Index: [skills/README.md](skills/README.md).
 
 ## The workflow this kit teaches
 
@@ -153,23 +130,16 @@ The kit ships **three bundled datasets**, each in its own schema, so your AI cli
 
 | Dataset | What it is | Schema |
 |---|---|---|
-| **TPC-H retail** | The standard wholesale/retail model: customers, orders, line items, parts, suppliers (~175k rows, ~21 MB) | `TPCH` |
+| **TPC-H retail** | The standard wholesale/retail model: customers, orders, line items, parts, suppliers (~175k rows, ~21 MB) ([data/datasets/tpch](data/datasets/tpch)) | `TPCH` |
 | **Smart&#8209;meter&nbsp;energy&nbsp;readings** | A ~108k-row time series ([data/datasets/energy](data/datasets/energy)) | `ENERGY` |
 | **Daily&nbsp;city&nbsp;weather&nbsp;history** | ~11k rows ([data/datasets/weather](data/datasets/weather)) | `WEATHER` |
 
-Run `exakit data-load` for the same checkbox menu as the installer. It lists every bundled dataset **not yet loaded** (checked against the live database, not a flag), a **local CSV or Parquet file** option, and Cancel. Once everything bundled is loaded, only the local-file and Cancel options remain. `exakit data-load --force` reloads the bundled sample data. One-liner alternative:
-
 ```bash
-exapump upload yourfile.csv --table STARTER_KIT.MYTABLE -p starter-kit
+exakit data-load             # bundled datasets not yet loaded, or your own data
+exakit data-load --force     # reload the bundled datasets
 ```
 
-Your uploads go to the `STARTER_KIT` schema by default.
-
-**More detail:**
-
-- [data/README.md](data/README.md): what's included and how to regenerate at a different size
-- [data/data-dictionary.md](data/data-dictionary.md): every table and column, with types, keys, and the revenue formula
-- [data/example-questions.md](data/example-questions.md): 14 ready-to-ask questions with validated reference SQL
+Your own data can be CSV, Parquet or JSON files, or a folder of them, one table each (JSON through the JSON Tables add-on, offered when needed). Uploads land in the `STARTER_KIT` schema. Details: [what's included](data/README.md) · [data dictionary](data/data-dictionary.md) · [14 example questions with reference SQL](data/example-questions.md)
 
 ## More ways to connect
 
@@ -198,7 +168,7 @@ exakit help            # every command
 
 Something failed mid-install? Re-run the install command. It picks up where it left off.
 
-## Optional add-ons: the marketplace
+## Add-ons: the marketplace
 
 The install stays minimal on purpose; extras live in the marketplace. At the
 end of a successful install the kit asks once whether to add any — or browse
@@ -210,58 +180,19 @@ exakit marketplace
 
 Space selects, Enter installs. Installed add-ons update through `exakit update`
 like everything else, and a tool you already have — even one installed outside
-the kit — is never offered twice. Flowcharts of every scenario:
-[MARKETPLACE-FLOWS.md](MARKETPLACE-FLOWS.md). Building your own add-on:
-[MARKETPLACE.md](MARKETPLACE.md).
+the kit — is never offered twice. Flowcharts of every scenario, and how to
+build your own add-on: [MARKETPLACE.md](MARKETPLACE.md).
 
 ## Staying up to date
 
-The kit tracks a **tested set** of versions, not the newest of everything. The
-maintainers publish that set, and your machine reads it — so an update means
-"move to the combination we verified together", never "hope four independent
-releases work with each other".
+The maintainers publish one recommended set of versions in `versions.json` on the kit's `main` branch. Your machine reads it (at most once a day, cached for offline use) and compares it with what is installed.
 
-`exakit update` applies the quick components (kit scripts, exapump, MCP server,
-pyexasol) in seconds. If a **database** update is waiting it asks you first,
-because that one stops the database for a minute or two:
-
-```
-? Stop the database and update the runtime now? [y/N]
+```bash
+exakit version    # installed, recommended and status, one row per component
+exakit update     # apply everything that is pending
 ```
 
-Answer `y` and it does the whole job — stops the database, updates the runtime,
-brings it back up and tells you it is running again. Answer `n` and nothing is
-stopped; `exakit update` applies it whenever you like. Your data is kept
-either way: the update reuses the same data volume, and the previous version is
-put back if the new one does not come up.
-
-In a script, a pipe or CI there is nobody to ask, so the database update is
-**never** started on its own — it is deferred exactly as above. Opt in
-deliberately with `exakit update --yes` (or `EXAKIT_CONFIRM_RUNTIME_UPDATE=1`).
-
-```
-Component  Installed         Tagged            Severity    Action
-exakit     0.2.1             0.2.1             -           current
-nano       2026.2.0-nano.2   2026.2.0-nano.3   -           exakit update (heavy)
-exapump    0.11.3            0.12.0            recommended exakit update
-mcp        2.1.0             2.1.0             -           current
-pyexasol   2.3.2             2.3.2             -           current
-```
-
-A few things worth knowing:
-
-- **Severity is the maintainers' judgement.** Only `recommended` and `critical`
-  changes ever interrupt another command, at most once a day, on `stderr`.
-  Silence them for good with `EXAKIT_NO_UPDATE_NOTICE=1`.
-- **`Tagged` is the version set the maintainers tested together.** It is usually
-  the newer number, but not always: if a release is withdrawn the tagged version
-  goes *down*, and a machine already on the higher one simply shows both numbers
-  with an action of `none`. The kit never moves a component backwards.
-- **Offline is fine.** Version resolution falls back to a cached copy, then to the
-  copy that shipped with your kit. No command ever fails because an update check
-  could not reach the network.
-- **You can still pick your own versions.** `EXAKIT_EXAPUMP_VERSION=0.11.2 exakit
-  update exapump` installs exactly that, digest-verified like anything else.
+`exakit update` refreshes the kit scripts, exapump, the MCP server, pyexasol, the agent skills and installed add-ons in seconds, with no downtime. A database runtime update stops the database for a minute or two, so it asks first and never runs unattended (opt in with `exakit update --yes`). Data, credentials and MCP configs are never touched, the previous kit copy is kept, and the kit never moves a component backwards.
 
 ## Safety and operations
 
@@ -294,9 +225,8 @@ https://github.com/user-attachments/assets/77916db0-d273-4720-8d59-1aedac95d5e8
 | Port&nbsp;8563&nbsp;already&nbsp;taken? | `EXAKIT_DB_PORT=8564` before the install command. |
 | Behind&nbsp;a&nbsp;corporate&nbsp;proxy? | `export HTTPS_PROXY=...` and re-run. |
 | Where's&nbsp;the&nbsp;deep-dive&nbsp;for&nbsp;my&nbsp;OS? | [macOS](quickstarts/macos.md) · [WSL](quickstarts/windows-wsl.md) · [Windows + Docker](quickstarts/windows-docker.md) |
-| Step-by-step&nbsp;to&nbsp;the&nbsp;first&nbsp;query? | [QUICKSTART](QUICKSTART.md) → [First workflow](demo/first-revenue-analysis.md) |
-| Installing&nbsp;over&nbsp;a&nbsp;database<br>I&nbsp;already&nbsp;have? | **It is adopted, not replaced.** A running database is reused (the installer asks, and defaults to yes); a stopped one is started and reused. Your data is untouched. Only a database that cannot start at all is replaced, and the installer says so first — including that the previous data is not recoverable. |
-| How&nbsp;do&nbsp;updates&nbsp;work? | The maintainers publish a tested version set; `exakit version` compares it against what you have and `exakit update` applies the quick parts in seconds. See [Staying up to date](#staying-up-to-date). |
+| Installing&nbsp;over&nbsp;a&nbsp;database<br>I&nbsp;already&nbsp;have? | An existing database is adopted, never replaced. Running or stopped, it is reused with its data intact. Only a database that cannot start at all is replaced, and the installer warns you first. |
+| How&nbsp;do&nbsp;updates&nbsp;work? | The maintainers publish one recommended set of versions. `exakit version` shows what is pending, `exakit update` applies it. See [Staying up to date](#staying-up-to-date). |
 | How&nbsp;do&nbsp;I&nbsp;remove&nbsp;everything? | `exakit uninstall` |
 
 ---

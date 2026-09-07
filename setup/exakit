@@ -82,9 +82,22 @@ else
     # Name the path actually searched, not the default. With EXAKIT_HOME set this
     # message used to send the reader to ~/.exasol-starter-kit/kit while the code
     # had looked somewhere else entirely.
+    # No kit here is "not installed": exit 4, and one JSON object when --json
+    # was asked for, the same shape every state query answers with. This used
+    # to be prose and exit 1, so a parser pointed at a relocated EXAKIT_HOME
+    # got neither the status nor the remedy it was promised.
+    _no_lib_remedy="re-run the installer (curl -fsSL https://raw.githubusercontent.com/krishna-exasol/update-path/main/install.sh | sh)${EXAKIT_HOME:+; or point EXAKIT_HOME at an install that has kit/setup/lib}"
+    for _no_lib_arg in "$@"; do
+        case "$_no_lib_arg" in
+            --json|-j)
+                printf '{"installed": false, "status": "not installed", "remedy": "%s", "error": "no kit library at %s/lib or %s/kit/setup/lib"}\n' \
+                    "$_no_lib_remedy" "$_script_dir" "${EXAKIT_HOME:-$HOME/.exasol-starter-kit}"
+                exit 4 ;;
+        esac
+    done
     echo "exakit: cannot find the kit library (looked in $_script_dir/lib and ${EXAKIT_HOME:-$HOME/.exasol-starter-kit}/kit/setup/lib)" >&2
     echo "exakit: if EXAKIT_HOME is set, it must point at an install that has kit/setup/lib; otherwise re-run the installer." >&2
-    exit 1
+    exit 4
 fi
 
 . "$_lib_dir/common.sh"
@@ -237,9 +250,11 @@ cmd_status() {
     # to agree, so a crashed install never reads as "installing" forever.
     _cs_installing=0
     _cs_step="$(manifest_get install.current_step 2>/dev/null || true)"
-    if [ -n "$_cs_step" ] && [ -f "$EXAKIT_HOME/.install.lock" ]; then
-        _cs_lock_pid="$(cat "$EXAKIT_HOME/.install.lock" 2>/dev/null || true)"
-        if [ -n "$_cs_lock_pid" ] && kill -0 "$_cs_lock_pid" 2>/dev/null; then _cs_installing=1; fi
+    # The lock holder must be the SAME process that took the lock, not merely a
+    # live process with that pid: a crashed installer's pid gets reused, and
+    # status then said "installing" for as long as the newcomer lived.
+    if [ -n "$_cs_step" ] && exakit_lock_holder_alive "$EXAKIT_HOME/.install.lock"; then
+        _cs_installing=1
     fi
 
     if [ "$_cs_json" -eq 1 ]; then
@@ -1213,8 +1228,12 @@ cmd_info_json() {
     # .status the way it was told hit a KeyError on exactly the state worth
     # branching on. The record is the manifest, complete, plus those three keys.
     if exakit_runtime_is_running; then _ij_running=1; else _ij_running=0; fi
+    # The skill set's advertised version, from the CACHED versions document
+    # (no network): info says when `exakit update` has a newer set to fetch,
+    # the way `exakit version` does, without becoming a network call.
+    _ij_skills_want="$(exakit_versions_value components.skills.version 2>/dev/null || true)"
     if exakit_can_run_python; then
-        run_python - "$EXAKIT_MANIFEST" "$_ij_running" <<'EXAKIT_IJ_PY'
+        run_python - "$EXAKIT_MANIFEST" "$_ij_running" "$_ij_skills_want" <<'EXAKIT_IJ_PY'
 import json, sys
 with open(sys.argv[1], encoding="utf-8") as handle:
     doc = json.load(handle)
@@ -1222,6 +1241,14 @@ running = sys.argv[2] == "1"
 doc["installed"] = True
 doc["status"] = "running" if running else "database not running"
 doc["remedy"] = None if running else "exakit start"
+skills_have = ((doc.get("components") or {}).get("skills") or {}).get("version")
+skills_want = sys.argv[3] or None
+doc["skills"] = {
+    "installed_version": skills_have,
+    "advertised_version": skills_want,
+    "status": "update_pending" if (skills_have and skills_want and skills_have != skills_want) else "current",
+    "next": "exakit update" if (skills_have and skills_want and skills_have != skills_want) else None,
+}
 print(json.dumps(doc, indent=2))
 EXAKIT_IJ_PY
     else
@@ -1339,22 +1366,34 @@ cmd_sql() {
         #   {"ok": false, "error": "<engine text>", "remedy": "<...>" | null}
         # The remedy is the same one the human form prints first; an agent gets
         # it at a key instead of inside the text. Exit code unchanged.
+        # Rows, error text and remedy travel through FILES. Handed to Python as
+        # arguments, a 120,000-row result hit the OS argument-size limit
+        # ("Argument list too long"), stdout stayed empty and the exit code was
+        # 0 - a silent success, the worst answer an agent can be given.
         _sql_err="$(mktemp "${TMPDIR:-/tmp}/exakit-sql-err.XXXXXX")"
-        _sql_rows="$("$(exapump_cli)" sql -p "$EXAKIT_EXAPUMP_PROFILE" -f json "$_sql_text" 2>"$_sql_err")"
+        _sql_rowsf="$(mktemp "${TMPDIR:-/tmp}/exakit-sql-rows.XXXXXX")"
+        _sql_remf="$(mktemp "${TMPDIR:-/tmp}/exakit-sql-remedy.XXXXXX")"
+        "$(exapump_cli)" sql -p "$EXAKIT_EXAPUMP_PROFILE" -f json "$_sql_text" >"$_sql_rowsf" 2>"$_sql_err"
         _sql_rc=$?
-        _sql_out="$(cat "$_sql_err" 2>/dev/null)"
-        rm -f "$_sql_err"
-        _sql_remedy=""
-        [ "$_sql_rc" -ne 0 ] && _sql_remedy="$(exakit_db_error_remedy "$_sql_out" "$_sql_text")"
-        run_python - "$_sql_rc" "$_sql_rows" "$_sql_out" "$_sql_remedy" <<'EXAKIT_SQL_JSON_PY'
+        if [ "$_sql_rc" -ne 0 ]; then
+            exakit_db_error_remedy "$(cat "$_sql_err" 2>/dev/null)" "$_sql_text" > "$_sql_remf"
+        fi
+        run_python - "$_sql_rc" "$_sql_rowsf" "$_sql_err" "$_sql_remf" <<'EXAKIT_SQL_JSON_PY'
 import json, sys
-rc, rows, err, remedy = int(sys.argv[1]), sys.argv[2], sys.argv[3], sys.argv[4]
+rc = int(sys.argv[1])
+def read(path):
+    try:
+        with open(path, encoding="utf-8", errors="replace") as handle:
+            return handle.read()
+    except OSError:
+        return ""
+rows, err, remedy = read(sys.argv[2]), read(sys.argv[3]), read(sys.argv[4])
 if rc == 0:
     try:
         parsed = json.loads(rows) if rows.strip() else []
     except ValueError:
         parsed = []
-    print(json.dumps({"ok": True, "rows": parsed}))
+    print(json.dumps({"ok": True, "rows": parsed, "row_count": len(parsed) if isinstance(parsed, list) else None}))
 else:
     # The engine's message, not exapump's framing: the first line that carries
     # an error, with the generic "Hint:" left out because the remedy is the hint.
@@ -1371,6 +1410,13 @@ else:
                       lines[0] if lines else "query failed")
     print(json.dumps({"ok": False, "error": detail, "remedy": remedy.strip() or None}))
 EXAKIT_SQL_JSON_PY
+        _sql_py_rc=$?
+        rm -f "$_sql_err" "$_sql_rowsf" "$_sql_remf"
+        # The object is the answer; if it could not be produced, say so as one.
+        if [ "$_sql_py_rc" -ne 0 ]; then
+            printf '{"ok": false, "error": "exakit could not render the result as JSON (see exakit logs)", "remedy": null}\n'
+            return 1
+        fi
         return "$_sql_rc"
     fi
     _sql_out="$("$(exapump_cli)" sql -p "$EXAKIT_EXAPUMP_PROFILE" "$_sql_text" 2>&1)"

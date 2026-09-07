@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# agent-audit.sh — the findings of the 2026-09-03/04 agent-operability audits (round 1: twelve, round 2: ten, round 3: seven),
+# agent-audit.sh — the findings of the 2026-09-03/04 agent-operability audits (round 1: twelve, round 2: ten, round 3: seven, round 4: seven),
 # each pinned so it cannot come back. The audit drove the kit the way an agent
 # with no TTY does: unattended install and uninstall, the sql path, the state
 # queries, deliberate breakage. Every check here is the shape of one of those
@@ -293,6 +293,50 @@ echo "R3-7. add-on endpoints go only to connected clients; configured means the 
 has "repair scopes the add-on to connected clients" "_connected_clients(repository" "$(cat "$ROOT/mcp/cli.py")"
 lacks "...and never to the whole supported list" "clients=clients or list(SETUP_CLIENT_IDS)" "$(cat "$ROOT/mcp/cli.py")"
 has "discover counts the exasol entry only" '_record_entry_name(record) != "exasol"' "$(cat "$ROOT/mcp/cli.py")"
+
+# --- Round 4 (main as of 2026-09-07) -----------------------------------------
+
+echo "R4-1. sql --json carries the result through files, never argv:"
+lacks "no argv hand-off of rows" 'run_python - "$_sql_rc" "$_sql_rows"' "$(sed -n '/^cmd_sql()/,/^}/p' "$CLI")"
+has "rows come from a file" '_sql_rowsf' "$(sed -n '/^cmd_sql()/,/^}/p' "$CLI")"
+has "a render failure is itself a JSON answer" 'could not render the result as JSON' "$(sed -n '/^cmd_sql()/,/^}/p' "$CLI")"
+
+echo "R4-2. the install lock names its holder, not just a pid:"
+_lk="$WORK/lock"; sleep 60 & _sp=$!
+printf '%s\n%s\n' "$_sp" "$(exakit_process_start_time "$_sp")" > "$_lk"
+check "a live holder with the recorded start time is alive" "yes" "$(exakit_lock_holder_alive "$_lk" && echo yes || echo no)"
+printf '%s\n%s\n' "$_sp" "Thu Jan  1 00:00:00 1970" > "$_lk"
+check "the same pid with another start time is NOT the holder" "no" "$(exakit_lock_holder_alive "$_lk" && echo yes || echo no)"
+printf '%s\n' "$_sp" > "$_lk"
+check "an old one-line lock still falls back to the pid check" "yes" "$(exakit_lock_holder_alive "$_lk" && echo yes || echo no)"
+kill "$_sp" 2>/dev/null; wait "$_sp" 2>/dev/null
+check "a dead pid is not the holder" "no" "$(exakit_lock_holder_alive "$_lk" && echo yes || echo no)"
+has "acquire writes two lines" 'exakit_process_start_time "$$"' "$(sed -n '/^exakit_acquire_lock()/,/^}/p' "$ROOT/setup/lib/common.sh")"
+has "status reads the lock through the same helper" 'exakit_lock_holder_alive "$EXAKIT_HOME/.install.lock"' "$(sed -n '/^cmd_status()/,/^}/p' "$CLI")"
+
+echo "R4-3. a relocated EXAKIT_HOME answers as not installed, in JSON when asked:"
+_nh="$(EXAKIT_HOME="$WORK/nowhere" bash "$CLI" status --json 2>/dev/null)"
+check "JSON with installed=false and a remedy" "False|not installed|yes" \
+    "$(printf '%s' "$_nh" | python3 -c 'import json,sys; d=json.load(sys.stdin); print("%s|%s|%s" % (d["installed"], d["status"], "yes" if d["remedy"] else "no"))' 2>/dev/null)"
+check "...exit 4" "4" "$(EXAKIT_HOME="$WORK/nowhere" bash "$CLI" status --json >/dev/null 2>&1; echo $?)"
+check "the prose form exits 4 too" "4" "$(EXAKIT_HOME="$WORK/nowhere" bash "$CLI" status >/dev/null 2>&1; echo $?)"
+
+echo "R4-4. unsupported and one-column files are refused or flagged before the loader:"
+has "the loader refuses .txt and unknown kinds before running" 'unknown:*|csv:*.txt)' "$(cat "$ROOT/setup/lib/exapump.sh")"
+has "...as bad input, not a failed step" "_llf_refuse \"Cannot load '" "$(cat "$ROOT/setup/lib/exapump.sh")"
+has "a missing file without a TTY is bad input too" '_llf_refuse "File not found or empty' "$(cat "$ROOT/setup/lib/exapump.sh")"
+has "the data-load menu turns the refusal into exit 2" '_local_status" -eq 3' "$(cat "$ROOT/setup/lib/exapump.sh")"
+has "the installer does not book it as a failed step" 'The local file was refused' "$(cat "$ROOT/setup/lib/common.sh")"
+has "a ';' header is called out" "would load it as ONE column" "$(cat "$ROOT/setup/lib/exapump.sh")"
+has "the PowerShell twin refuses the same files" 'llfKind -eq "unknown"' "$(cat "$ROOT/setup/lib/exapump.ps1")"
+
+echo "R4-5. service logs are created owner-only before launchd opens them:"
+has "the log is created 0600 before launchctl load" 'chmod 600 "$EXAKIT_LOG_DIR/autostart-$_ar_id.log"' "$(cat "$ROOT/setup/lib/common.sh")"
+
+echo "R4-6. the installer records where the bootstrap time went:"
+has "install.sh stamps its start" 'EXAKIT_INSTALL_T0="$(date +%s)"' "$(cat "$ROOT/install.sh")"
+has "setup logs the elapsed bootstrap" 'after the installer began' "$(cat "$ROOT/setup/setup-macos.sh")"
+has "...on the WSL path too" 'after the installer began' "$(cat "$ROOT/setup/setup-wsl.sh")"
 
 printf '\npassed: %d, failed: %d\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
