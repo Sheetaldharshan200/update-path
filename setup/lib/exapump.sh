@@ -206,8 +206,15 @@ exapump_install() {
 # failure (dynamic-linker GLIBC version mismatch) self-repair with the
 # container shim; anything else is a hard, explained failure.
 exapump_verify_runs() {
-    _evr_err="$("$EXAKIT_EXAPUMP_BIN" --version 2>&1)" && return 0
-    _exakit_log_file "ERR   exapump --version failed: $_evr_err"
+    _evr_err="$("$EXAKIT_EXAPUMP_BIN" --version 2>&1)"
+    _evr_rc=$?
+    [ "$_evr_rc" -eq 0 ] && return 0
+    _exakit_log_file "ERR   exapump --version failed (rc=$_evr_rc): $_evr_err"
+    # A binary the kernel refuses to execute produces no stderr to match on, so
+    # the exit status is the only evidence there is.
+    if exakit_unsigned_binary_hint "$EXAKIT_EXAPUMP_BIN" "$_evr_rc"; then
+        die "exapump was downloaded and verified but cannot be executed on this machine."
+    fi
     case "$_evr_err" in
         *GLIBC_*)
             exapump_install_glibc_shim
@@ -1133,7 +1140,9 @@ EXAKIT_JSON_NORMALISE_PY
         *) ;;   # no python, or an unreadable file: let the engine have its say
     esac
 
-    if ! run_logged "$EXAKIT_JSON_TABLES_BIN" ingest \
+    # Through _json_tables_logged so the engine's own words land in the
+    # add-on's log too - the very file the failure message below points at.
+    if ! run_logged _json_tables_logged "$EXAKIT_JSON_TABLES_BIN" ingest \
             --input "$_jl_input" --output-dir "$_jl_tmp/out"; then
         rm -rf "$_jl_tmp"
         warn "This JSON file could not be read - see: exakit logs json-tables"

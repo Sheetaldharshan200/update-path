@@ -14,7 +14,8 @@
 #                         deferred unless -Yes (or EXAKIT_CONFIRM_RUNTIME_UPDATE=1)
 #                         says otherwise
 #   info [--json]         print the connection details panel; --json prints the
-#                         install record (manifest.json) verbatim, nothing else
+#                         install record (manifest.json) plus the state keys
+#                         installed / status / remedy / skills, nothing else
 #   guide                 friendly walkthrough: connect AI clients (MCP), SQL
 #                         clients (DBeaver, DbVisualizer), and Python (pyexasol)
 #   start                 start the local database and every add-on service
@@ -59,6 +60,10 @@ $ErrorActionPreference = "Stop"
 # Set by the machine-readable paths (`info --json`) so the update notice at the
 # bottom of the dispatcher stays off stdout and the output remains parseable.
 $script:JsonOutput = $false
+# An exit code a command decided on but must not exit with yet - the update
+# notice at the bottom of the dispatcher still has to print. 0 means "nothing
+# pending"; see the `info` arm.
+$script:PendingExitCode = 0
 
 # --- locate the kit's lib directory -----------------------------------------
 $scriptDir = Split-Path -Parent $PSCommandPath
@@ -92,9 +97,39 @@ if (Test-Path (Join-Path $libDir "exasol-scheduler.ps1")) { . (Join-Path $libDir
 if (Test-Path (Join-Path $libDir "help.ps1")) { . (Join-Path $libDir "help.ps1") }
 
 
+# Assert-ExakitInstalled [-Json] - the install gate every command runs first.
+# Twin of _require_install, INCLUDING THE EXIT CODES: 4 when there is no
+# install record and 3 when there is one with no runtime yet, the same pair
+# every state query answers with. A bare Fail exited 1, a code the contract
+# does not document at all, and left stdout empty on the -Json path.
 function Assert-ExakitInstalled {
-    if (-not (Test-Path $script:ManifestPath)) { Fail "No installation found. Run the installer first." }
-    if (-not (Get-RuntimeType)) { Fail "No runtime recorded in the manifest yet." }
+    param([switch]$Json)
+    if (-not (Test-Path $script:ManifestPath)) {
+        if ($Json) {
+            Write-Output ([pscustomobject]@{
+                ok = $false; installed = $false; status = "not installed"
+                error = "no installation found"; remedy = (Get-ExakitInstallCommand)
+            } | ConvertTo-Json -Compress)
+        } else {
+            Write-Host "No installation found. Run the installer first: $(Get-ExakitInstallCommand)"
+        }
+        exit 4
+    }
+    if (-not (Get-RuntimeType)) {
+        # `status --json` answers installed: true / "no database" / exit 3 for
+        # this same machine state; two state queries may not disagree on it.
+        if ($Json) {
+            Write-Output ([pscustomobject]@{
+                ok = $false; installed = $true; status = "no database"
+                error = "no runtime recorded in the manifest yet"
+                remedy = (Get-ExakitInstallCommand)
+                remedy_hint = "the installer resumes at the unfinished step"
+            } | ConvertTo-Json -Compress)
+        } else {
+            Write-Host "No runtime recorded in the manifest yet - re-run the installer, it resumes at the unfinished step: $(Get-ExakitInstallCommand)"
+        }
+        exit 3
+    }
 }
 
 # Get-ExakitLoadedDatasets - the bundled datasets that are loaded. Twin of
@@ -144,10 +179,14 @@ function Write-ExakitNotInstalledAnswer {
             status    = "not installed"
             manifest  = $script:ManifestPath
             reason    = "no install record"
-            remedy    = "run the installer"
+            # A RUNNABLE COMMAND, never a sentence: AGENTS.md tells the agent to
+            # run whatever `remedy` holds, and "run the installer" is not
+            # something a shell can execute. Twin of the same key in
+            # _not_installed_answer.
+            remedy    = (Get-ExakitInstallCommand)
         } | ConvertTo-Json -Compress)
     } else {
-        Write-Host "Not installed (no manifest at $script:ManifestPath). Run the installer first."
+        Write-Host "Not installed (no manifest at $script:ManifestPath). Run the installer first: $(Get-ExakitInstallCommand)"
     }
     exit 4
 }
@@ -162,7 +201,13 @@ function Invoke-CmdStatus {
     # blank line for two seconds.
     $type = Get-RuntimeType
     $status = Invoke-ExakitWithSpinner -Quiet:$Json -Label "Checking the database" -Body {
-        switch ($type) { "nano" { Get-NanoStatus } default { "unknown" } }
+        # NO RUNTIME RECORDED is a state the kit knows exactly, not an unknown:
+        # the installer has not reached its runtime step, so no database is
+        # deployed. "unknown" is in no documented status vocabulary and matched
+        # none of the arms downstream, so the screen fell through to "Start it:
+        # exakit start" - a command that in this state can only fail. Twin of
+        # the same case in cmd_status.
+        switch ($type) { "nano" { Get-NanoStatus } default { "not installed" } }
     }
     $running = "$status".StartsWith("running")
     $steps = @(Get-ExakitManifestValue "steps_completed")
@@ -187,25 +232,60 @@ function Invoke-CmdStatus {
     # an agent needs here. Twin of the .last-failure read in cmd_status.
     $failureNote = Read-ExakitFailureNote
     $services = @{}
+    # A service that knows its address says so through the registry's UrlFn, and
+    # the JSON carries it - an agent could not get dash-server's URL from any
+    # machine-readable surface before this. Twin of the `urls` map in cmd_status.
+    $serviceUrls = @{}
     Invoke-ExakitWithSpinner -Quiet:$Json -Label "Checking the add-on services" -Body {
         foreach ($svcId in (Get-ExakitServiceIds)) {
             if ($svcId -eq "database") { continue }
             $services[$svcId] = (Get-ExakitServiceStatus -Id $svcId)
+            $svcUrl = Get-ExakitServiceUrl -Id $svcId
+            if ($svcUrl) { $serviceUrls[$svcId] = $svcUrl }
         }
     } | Out-Null
 
     if ($Json) {
+        $installCmd = Get-ExakitInstallCommand
+        # "installed: true" beside "status: not installed" was one object
+        # contradicting itself: `installed` answers for the KIT, the runtime
+        # string answers for the DATABASE. The kit-level word is "no database";
+        # the verbatim runtime string stays under runtime.status. Twin of
+        # top_status in cmd_status.
         $statusWord = $status
         if ($installing) { $statusWord = "installing" }
+        elseif ("$status".StartsWith("not installed")) { $statusWord = "no database" }
         # Remedies are additive, one per component that needs one. Twin of the
         # map in cmd_status: a step the installer never finished names its
         # repair here, so a session that picks the machine up after a crashed
         # install sees more than "running".
+        #
+        # EVERY REMEDY IS A RUNNABLE COMMAND. AGENTS.md says "when remedy is not
+        # null, run it", so an English sentence at that key breaks the contract
+        # the same document promises. The prose moves to remedy_hints, same keys.
         $remedies = [ordered]@{}
+        $remedyHints = [ordered]@{}
         if (-not $pyexasol) { $remedies["pyexasol"] = "exakit update" }
-        if (-not $running) { $remedies["database"] = "exakit start" }
-        if ($installing) { $remedies["install"] = "exakit status --json   (the installer is still running, step: $installStep - poll until status is running)" }
-        elseif ($installStopped) { $remedies["install"] = "re-run the installer (it stopped at step: $installStep; completed steps are skipped)" }
+        if (-not $running) {
+            # With NO runtime deployed, "exakit start" has nothing to start and
+            # fails identically every time - only the installer creates one.
+            if ("$status".StartsWith("interrupted")) {
+                $remedies["database"] = "exakit repair-runtime"
+                $remedyHints["database"] = "this DESTROYS the database and its data - ask the user, then pass --yes"
+            } elseif ("$status".StartsWith("not installed")) {
+                $remedies["database"] = $installCmd
+                $remedyHints["database"] = "no database is deployed; the installer resumes at the unfinished step"
+            } else {
+                $remedies["database"] = "exakit start"
+            }
+        }
+        if ($installing) {
+            $remedies["install"] = "exakit status --json"
+            $remedyHints["install"] = "the installer is still running (step: $installStep) - poll the remedy until status is running"
+        } elseif ($installStopped) {
+            $remedies["install"] = $installCmd
+            $remedyHints["install"] = "the installer died at step '$installStep' - re-running resumes there"
+        }
         if ($softRecords) {
             foreach ($property in @($softRecords.PSObject.Properties)) {
                 $repair = "$($property.Value.repair)"
@@ -214,18 +294,27 @@ function Invoke-CmdStatus {
         }
         $stepsMissing = @()
         if (-not $installing) {
+            # $null means "the installer's own command", resolved below, with the
+            # resume note as the HINT rather than inside the remedy.
             $stepRemedies = @(
-                @("launcher", "re-run the installer (it resumes at the unfinished step)"),
-                @("runtime", "re-run the installer (it resumes at the unfinished step)"),
-                @("exapump", "re-run the installer (it resumes at the unfinished step)"),
+                @("launcher", $null),
+                @("runtime", $null),
+                @("exapump", $null),
                 @("mcp", "exakit mcp-setup"),
                 @("pyexasol", "exakit update"),
-                @("exakit_helper", "re-run the installer (it resumes at the unfinished step)")
+                @("exakit_helper", $null)
             )
             foreach ($pair in $stepRemedies) {
                 if (-not ($steps -contains $pair[0])) {
                     $stepsMissing += $pair[0]
-                    if (-not $remedies.Contains($pair[0])) { $remedies[$pair[0]] = $pair[1] }
+                    if (-not $remedies.Contains($pair[0])) {
+                        if ($null -eq $pair[1]) {
+                            $remedies[$pair[0]] = $installCmd
+                            $remedyHints[$pair[0]] = "this install step never finished; the installer resumes at it"
+                        } else {
+                            $remedies[$pair[0]] = $pair[1]
+                        }
+                    }
                 }
             }
         }
@@ -248,6 +337,10 @@ function Invoke-CmdStatus {
             runtime         = [ordered]@{ type = $type; status = $status }
             running         = $running
             services        = $services
+            # Per-service addresses, from each module's own UrlFn hook: the JSON
+            # key an agent reads for "where is dash-server?" instead of scraping
+            # the human screen. Twin of `urls` in cmd_status.
+            urls            = $serviceUrls
             autostart       = ((Get-ExakitManifestValue "autostart.enabled") -eq $true)
             datasets_loaded = $datasets
             datasets_source = $script:ExakitDatasetsSource
@@ -255,6 +348,9 @@ function Invoke-CmdStatus {
             steps_missing   = $stepsMissing
             pyexasol        = $(if ($pyexasol) { "$pyexasol" } else { $null })
             remedies        = $remedies
+            # Prose that EXPLAINS a remedy, same keys: the remedy itself stays a
+            # runnable command, per the AGENTS.md contract. Twin of remedy_hints.
+            remedy_hints    = $remedyHints
             # Both keys, always. A reason with no date cannot be told from a
             # current one, and an undated note that outlived its cause is exactly
             # how a healthy machine comes to look broken - which is why the note
@@ -475,7 +571,7 @@ function Invoke-CmdStatus {
         exit 3
     }
     if ($installStopped) {
-        Write-Host "Finish it:  re-run the installer (it stopped at step: $installStep)"
+        Write-Host "Finish it:  $(Get-ExakitInstallCommand)   (it stopped at step: $installStep; completed steps are skipped)"
         # No "Start it" underneath: with no runtime recorded yet, `exakit start`
         # can only answer "No runtime recorded in the manifest yet" - the
         # installer is the one command that finishes this.
@@ -484,7 +580,20 @@ function Invoke-CmdStatus {
     # No "Manifest:" row: an internal file path, on the last line of the screen,
     # that nothing on this screen asks the reader to open.
     if (-not $running) {
-        Write-Host "Start it:   exakit start"
+        # THE SCREEN NAMES THE SAME COMMAND THE JSON HOISTS INTO `remedy`. An
+        # interrupted deployment cannot be started and a runtime that was never
+        # deployed has nothing to start, so prescribing `exakit start` for
+        # either is the loop the reader is already in. Twin of the case arms at
+        # the end of cmd_status.
+        if ("$status".StartsWith("interrupted")) {
+            Write-Host "Repair it:  exakit repair-runtime   (replaces the database; its data is not recoverable)"
+        } elseif ("$status".StartsWith("conflict")) {
+            Write-Host "Free the port: another process is listening on the database port - stop it, then: exakit start"
+        } elseif ("$status".StartsWith("not installed")) {
+            Write-Host "Deploy it:  $(Get-ExakitInstallCommand)   (it resumes at the unfinished step)"
+        } else {
+            Write-Host "Start it:   exakit start"
+        }
         exit 3
     }
     exit 0
@@ -518,6 +627,21 @@ function Get-ExakitServiceStatus {
     $addon = Get-ExakitMarketplaceAddon $Id
     if ($addon -and (Get-Command $addon.StatusFn -ErrorAction SilentlyContinue)) { return (& $addon.StatusFn) }
     return "unknown"
+}
+
+# Get-ExakitServiceUrl - the address a service is reachable at, or "" when it
+# has none. Optional registry hook (UrlFn), resolved the same generic way as
+# StatusFn/StartFn, so a future add-on gets a `urls` row with no wiring here.
+# Twin of the `url` convention hook that cmd_status resolves via _exakit_addon_fn.
+function Get-ExakitServiceUrl {
+    param([Parameter(Mandatory)][string]$Id)
+    if ($Id -eq "database") { return "" }
+    $addon = Get-ExakitMarketplaceAddon $Id
+    if ($addon -and $addon.PSObject.Properties["UrlFn"] -and
+        (Get-Command $addon.UrlFn -ErrorAction SilentlyContinue)) {
+        try { return "$(& $addon.UrlFn)" } catch { return "" }
+    }
+    return ""
 }
 
 function Start-ExakitService {
@@ -687,9 +811,15 @@ function Invoke-CmdStop {
 # DESTRUCTIVE: the deployment is replaced and its data is gone. Interactive runs
 # are asked; -Yes and EXAKIT_CONFIRM_RUNTIME_REPAIR=1 pre-answer it.
 # twin: cmd_repair_runtime in setup/exakit.
+#
+# EXIT 5 MEANS "NOT CONFIRMED, NOTHING WAS TOUCHED". Declining used to exit 0,
+# so an agent handed remedies.database "exakit repair-runtime" ran it with no
+# terminal, read a success code off a command that had deliberately done
+# nothing, and re-polled status to find `interrupted` again - the loop AGENTS.md
+# warns about, one command over. Twin of the same code in cmd_repair_runtime.
 function Invoke-CmdRepairRuntime {
-    param([switch]$Yes)
-    Assert-ExakitInstalled
+    param([switch]$Yes, [switch]$Json)
+    Assert-ExakitInstalled -Json:$Json
     $confirmed = [bool]$Yes
     if ($env:EXAKIT_CONFIRM_RUNTIME_REPAIR -eq "1") { $confirmed = $true }
 
@@ -698,19 +828,35 @@ function Invoke-CmdRepairRuntime {
     $setup = Join-Path $kit "setup\setup-windows-docker.ps1"
     if (-not (Test-Path $setup)) { Fail "The kit copy at $kit has no setup\setup-windows-docker.ps1. Re-run the installer instead." }
 
-    Warn2 "Repairing the runtime REPLACES the database. Its data is not recoverable."
-    Info "Bundled datasets are reloaded afterwards; anything you loaded yourself is not."
+    # Narration never shares stdout with the JSON object.
+    if ($Json) {
+        [Console]::Error.WriteLine("  ! This rebuilds your database from empty. Every table in it is deleted and cannot be recovered.")
+    } else {
+        Warn2 "This rebuilds your database from empty. Every table in it is deleted and cannot be recovered."
+        Info "The bundled sample datasets are reloaded afterwards. Anything you loaded yourself is not."
+        Info "If the database still answers, copy out anything you want to keep first, one table at a time:"
+        Info "  exakit sql --json 'SELECT * FROM <SCHEMA>.<TABLE>' > table.json"
+    }
     if (-not $confirmed) {
-        if (-not (Confirm-ExakitPrompt "Delete the database and rebuild it now?" $false)) {
+        if (-not (Confirm-ExakitPrompt "Delete everything in the database and rebuild it empty?" $false)) {
             # DECLINING A DESTRUCTIVE PROMPT IS THE SAFE ANSWER, not an error.
             # Fail() rendered it as a red error card and exited 1 - and it
             # records the reason as the last failure, so `exakit status --json`
-            # then reported one on a machine where nothing had gone wrong. "No,
-            # not now" is a successful outcome of this command. Twin of the same
-            # branch in cmd_repair_runtime (setup/exakit).
-            Info "Repair cancelled - nothing was changed."
-            Info "When you are ready: exakit repair-runtime --yes (or set EXAKIT_CONFIRM_RUNTIME_REPAIR=1)"
-            return
+            # then reported one on a machine where nothing had gone wrong.
+            # Nothing is recorded here either - but the code is 5, not 0: "you
+            # did not confirm" is not "it is repaired". Twin of the same branch
+            # in cmd_repair_runtime (setup/exakit).
+            if ($Json) {
+                [ordered]@{
+                    ok = $false; status = "declined"; reason = "not confirmed"; changed = $false
+                    remedy = "exakit repair-runtime --yes"
+                    remedy_hint = "this DESTROYS the database and its data - ask the user before running it"
+                } | ConvertTo-Json -Compress | Write-Output
+            } else {
+                Info "Repair cancelled - nothing was changed."
+                Info "When you are ready: exakit repair-runtime --yes (or set EXAKIT_CONFIRM_RUNTIME_REPAIR=1)"
+            }
+            exit 5
         }
     }
 
@@ -725,8 +871,83 @@ function Invoke-CmdRepairRuntime {
     # destructive answered itself with "keep the existing database".
     # Twin of the same export in cmd_repair_runtime (setup/exakit).
     $env:EXAKIT_REUSE_DB = "0"
+    if ($Json) {
+        # One object on stdout and nothing else: the rebuild's own narration is
+        # routed to stderr. Twin of the --json branch in cmd_repair_runtime.
+        & $setup 2>&1 | ForEach-Object { [Console]::Error.WriteLine("$_") }
+        if ($LASTEXITCODE -eq 0) {
+            [ordered]@{ ok = $true; status = "repaired"; changed = $true; remedy = $null } |
+                ConvertTo-Json -Compress | Write-Output
+            exit 0
+        }
+        [ordered]@{
+            ok = $false; status = "failed"; changed = $true
+            reason = "the rebuild did not finish (see exakit logs)"
+            remedy = (Get-ExakitInstallCommand)
+        } | ConvertTo-Json -Compress | Write-Output
+        exit 3
+    }
     & $setup
     exit $LASTEXITCODE
+}
+
+# Get-ExakitNanoTargetNames - "<container>|<volume>" for the Nano deployment
+# this install recorded, so a destructive prompt can NAME what it is about to
+# delete. The manifest first (the names this install actually used, which
+# EXAKIT_NANO_CONTAINER/VOLUME may have moved), then the defaults. Twin of
+# _exakit_nano_target_names in setup/lib/common.sh.
+function Get-ExakitNanoTargetNames {
+    $c = "$(Get-ExakitManifestValue 'runtime.container')"
+    $v = "$(Get-ExakitManifestValue 'runtime.volume')"
+    if (-not $c) { $c = $env:EXAKIT_NANO_CONTAINER }
+    if (-not $c) { $c = "exasol-nano" }
+    if (-not $v) { $v = $env:EXAKIT_NANO_VOLUME }
+    if (-not $v) { $v = "exasol-nano-data" }
+    return "$c|$v"
+}
+
+# Show-ExakitSharedEngineDbWarning - the shared-Docker-engine hazard, said
+# BEFORE consent is taken.
+#
+# It used to be printed from inside Invoke-ExakitUninstallComponent, i.e. after
+# the user had already typed UNINSTALL - the one sentence that might have
+# changed their answer, delivered once the answer could no longer be changed.
+# The confirmation named neither the container nor the volume (those appeared
+# only in the record line after the removal), so there was no moment at which a
+# Windows user could have noticed they were about to delete the database a WSL
+# install on the same machine is still using. Returns $false when the hazard
+# does not apply, so a caller can use it as a test. Twin of
+# _exakit_shared_engine_db_warning in setup/lib/common.sh; there it also has to
+# ask which OS it is on, because that file runs on four of them.
+function Show-ExakitSharedEngineDbWarning {
+    if ((Get-RuntimeType) -ne "nano") { return $false }
+    $names = (Get-ExakitNanoTargetNames) -split '\|'
+    Warn2 ("Windows and WSL share one Docker engine. If this machine also has a Windows or WSL install of the kit, removing the container '" + $names[0] + "' and the volume '" + $names[1] + "' deletes that database too, and it cannot be recovered.")
+    return $true
+}
+
+# Get-ExakitExapumpProfileDirs - every directory an exapump profile store could
+# be sitting in on this machine, newest convention first.
+#
+# THE WRITER AND THE REMOVER USED TO DISAGREE. exapump.ps1 resolves its config
+# from Get-ExakitProfileHome (%USERPROFILE%), because that is where exapump.exe
+# itself looks; uninstall deleted $HOME\.exapump, because PowerShell's $HOME is
+# what it had always used. On an ordinary machine the two are the same path and
+# nothing showed. On a domain-joined machine with a redirected home they are
+# not, and `exakit uninstall` reported success while leaving config.toml -- a
+# file holding an ADMIN connection string -- on disk.
+#
+# Both are returned, deduplicated: the current location, and the legacy one an
+# older kit on this same machine may have written. Twin note: the sh side has no
+# equivalent, because $HOME is the only home a POSIX shell has.
+function Get-ExakitExapumpProfileDirs {
+    $dirs = @()
+    foreach ($base in @((Get-ExakitProfileHome), $HOME)) {
+        if (-not $base) { continue }
+        $candidate = Join-Path $base ".exapump"
+        if ($dirs -notcontains $candidate) { $dirs += $candidate }
+    }
+    return $dirs
 }
 
 # Invoke-ExakitUninstallRun -DryRun - remove every artifact the kit installs, in
@@ -801,10 +1022,26 @@ function Invoke-ExakitUninstallRun {
     # 1) Database + all data (the Windows runtime is Nano).
     $type = Get-RuntimeType
     if ($type) {
+        # NAMED BEFORE THE REMOVAL, not only in the record line after it: on
+        # -Yes there is no gate to read, so this line and the shared-engine
+        # warning under it are the last chance to recognise the container as
+        # one the other side of a Windows+WSL machine is also using.
+        $targetNames = $null
+        if ($type -eq "nano") { $targetNames = (Get-ExakitNanoTargetNames) -split '\|' }
         if ($DryRun) {
-            Info "  will remove: local Exasol $type deployment and ALL its data"
+            if ($targetNames) {
+                Info ("  will remove: local Exasol nano deployment and ALL its data: container '" + $targetNames[0] + "', data volume '" + $targetNames[1] + "'")
+            } else {
+                Info "  will remove: local Exasol $type deployment and ALL its data"
+            }
+            [void](Show-ExakitSharedEngineDbWarning)
         } else {
-            Info "Removing the local Exasol $type deployment and all data"
+            if ($targetNames) {
+                Info ("Removing the local Exasol nano deployment and all data: container '" + $targetNames[0] + "', data volume '" + $targetNames[1] + "'")
+            } else {
+                Info "Removing the local Exasol $type deployment and all data"
+            }
+            [void](Show-ExakitSharedEngineDbWarning)
             switch ($type) {
                 "nano" { try { Remove-Nano -Data } catch { Warn2 "Database removal reported errors (continuing uninstall)" } }
                 default { Warn2 "Unknown runtime type '$type'; skipping database removal" }
@@ -834,7 +1071,7 @@ function Invoke-ExakitUninstallRun {
         } else {
             Info "Removing managed MCP configuration from AI clients"
             try { [void](Invoke-McpOperation -Operation "uninstall" -InputArgs @()) }
-            catch { Warn2 "Removing the managed MCP client config reported issues (continuing uninstall)" }
+            catch { Warn2 "Removing the managed AI client config reported issues (continuing uninstall)" }
         }
         RecordRemoved "MCP entry removed from the AI clients the kit manages: $mcpClientList"
     }
@@ -872,8 +1109,9 @@ function Invoke-ExakitUninstallRun {
     }
 
     # 4) exapump profile store (the kit created it; the binary goes in step 6).
-    $exapumpDir = Join-Path $HOME ".exapump"
-    if (Test-Path $exapumpDir) {
+    # Every candidate home, not just $HOME: see Get-ExakitExapumpProfileDirs.
+    foreach ($exapumpDir in (Get-ExakitExapumpProfileDirs)) {
+        if (-not (Test-Path $exapumpDir)) { continue }
         if ($DryRun) { Info "  will remove: exapump profiles at $exapumpDir" }
         else { Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $exapumpDir }
     }
@@ -888,7 +1126,7 @@ function Invoke-ExakitUninstallRun {
             $keep = "$($script:ExakitHome)-backups-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
             try {
                 Move-Item -Path $backupsDir -Destination $keep -ErrorAction Stop
-                Info "MCP client config snapshots kept at $keep (delete it when you are sure)"
+                Info "AI client config snapshots kept at $keep (delete it when you are sure)"
             } catch { }
         }
         if ($DryRun) { Info "  will remove: kit home $script:ExakitHome (credentials, logs, manifest, snapshots)" }
@@ -968,13 +1206,42 @@ foreach (`$f in @($quoted)) { try { Remove-Item -Force -ErrorAction SilentlyCont
 }
 
 function Invoke-CmdUninstall {
-    param([switch]$AssumeYes, [switch]$DryRun)
+    param([switch]$AssumeYes, [switch]$DryRun, [string]$Addon = "")
     Initialize-ExakitLogging
 
     if (-not (Test-Path $script:ManifestPath) -and
         -not (Test-Path (Join-Path $script:BinDir "exakit.cmd")) -and
         -not (Test-Path $script:ExakitHome)) {
         Info "Nothing to uninstall - no manifest, kit home, or installed binaries were found."
+        return
+    }
+
+    # A marketplace add-on by name: selective removal an agent or a script can
+    # call, instead of the TTY-only menu being the sole route to removing one
+    # piece. Twin of the same branch in cmd_uninstall (setup/exakit).
+    if ($Addon) {
+        $known = @(Get-ExakitMarketplaceAddons | ForEach-Object { $_.Id })
+        if ($known -notcontains $Addon) {
+            Write-Host ""
+            Write-Host "  [x] Unknown uninstall target '$Addon' (known add-ons: $($known -join ' '); bare 'exakit uninstall' removes the kit)."
+            exit 2
+        }
+        if (-not (Test-ExakitMarketplaceAddonInstalled $Addon)) {
+            Info "$Addon is not installed - nothing to remove."
+            return
+        }
+        if ($DryRun) {
+            Info "Dry run - would remove the $Addon add-on (its service, binary and credential; nothing else)."
+            return
+        }
+        if (-not $AssumeYes) {
+            if (-not (Confirm-ExakitPrompt "Remove the $Addon add-on?" -DefaultYes:$false)) {
+                Info "Nothing was removed."
+                return
+            }
+        }
+        Invoke-ExakitUninstallComponent -Key $Addon
+        Ok "$Addon removed. Reinstall any time with: exakit marketplace $Addon"
         return
     }
 
@@ -1113,6 +1380,8 @@ function Show-ExakitUninstallMenu {
     Warn2 "This is IRREVERSIBLE. Removed data cannot be recovered."
     if ($picked -contains "database" -or $picked -contains "everything") {
         Warn2 "The database selection deletes ALL local database data."
+        # BEFORE the typed gate, never after it.
+        [void](Show-ExakitSharedEngineDbWarning)
     }
     if (-not [Environment]::UserInteractive -or [Console]::IsInputRedirected) {
         Fail "uninstall needs an interactive terminal to confirm; use -Yes for the scripted full uninstall."
@@ -1140,6 +1409,12 @@ function Invoke-ExakitUninstallComponent {
     param([Parameter(Mandatory)][string]$Key)
     switch ($Key) {
         "database" {
+            # NO shared-engine warning here any more: by this line the user has
+            # typed UNINSTALL and the removal is under way. The hazard is stated
+            # before the gate instead (Show-ExakitSharedEngineDbWarning, called
+            # from Show-ExakitUninstallMenu), which is the only place saying it
+            # can still change the answer. Twin of the same move in
+            # _exakit_uninstall_component.
             Info "Removing the local Exasol Nano deployment and all data"
             try { Remove-Nano -Data } catch { Warn2 "Database removal reported errors" }
             Remove-ExakitStepDone "runtime"
@@ -1147,7 +1422,7 @@ function Invoke-ExakitUninstallComponent {
         "mcp_configs" {
             Info "Removing the managed MCP configuration from the AI clients"
             try { [void](Invoke-McpOperation -Operation "uninstall" -InputArgs @()) }
-            catch { Warn2 "Removing the managed MCP client config reported issues" }
+            catch { Warn2 "Removing the managed AI client config reported issues" }
         }
         "skills" {
             foreach ($root in (Get-ExakitSkillRoots)) {
@@ -1163,7 +1438,9 @@ function Invoke-ExakitUninstallComponent {
         "exapump" {
             Info "Removing exapump and its profiles"
             Remove-Item -Force -ErrorAction SilentlyContinue (Join-Path $script:BinDir "exapump.exe")
-            Remove-Item -Recurse -Force -ErrorAction SilentlyContinue (Join-Path $HOME ".exapump")
+            foreach ($exapumpDir in (Get-ExakitExapumpProfileDirs)) {
+                Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $exapumpDir
+            }
             Remove-ExakitManifestValue "components.exapump"
             Remove-ExakitStepDone "exapump"
         }
@@ -1187,6 +1464,9 @@ function Invoke-ExakitUninstallComponent {
                 # ...and the skills it owns go with it. Here rather than in the
                 # module, so every add-on gets it without writing a line.
                 try { Remove-ExakitAddonSkills $Key } catch { }
+                # ...and so does its BOOT ENTRY - left behind, it kept firing a
+                # launcher that no longer exists on every login, forever.
+                try { Unregister-ExakitAutostart -Id $Key } catch { }
             } else {
                 Warn2 "The $Key module carries no uninstall - update the kit: exakit update"
             }
@@ -1364,13 +1644,42 @@ function Invoke-CmdVersion {
         # exakit_print_version_table. `exakit version --json` used to print the
         # decorated table and exit 0.
         $components = @()
+        # WHICH ROWS ARE OPTIONAL. Nothing in a component object said whether it
+        # is part of the kit or an add-on someone chose, so an agent reading
+        # `status: "available"` could not tell "you have not installed this
+        # optional tool" from "a piece of your kit is missing". The registry is
+        # the source, never a hand-written set. Twin of addon_ids in
+        # exakit_print_version_table --json.
+        $addonIds = @(Get-ExakitMarketplaceAddons | ForEach-Object { $_.Id })
         foreach ($r in $rows) {
+            # The raw cell doubles as the HUMAN Action column, so it carried
+            # whatever a person should do next - "exakit marketplace",
+            # "2.2.0 available (repair)" - which is a command or a sentence, not
+            # a status. An agent branching on `status` (current vs everything
+            # else) saw neither, and one that copied the field into a message
+            # told the user their scheduler's status was "exakit marketplace".
+            # The JSON key gets the fixed vocabulary a parser can switch on, and
+            # the action moves to a per-row remedy that is runnable as-is.
+            # Twin of the same mapping in exakit_print_version_table --json.
+            $rowStatus = "$($r.R)"
+            $rowRemedy = $null
+            if ($rowStatus -eq "current") { $rowStatus = "current" }
+            elseif ($rowStatus -eq "none") { $rowStatus = "ahead" }
+            elseif ($rowStatus -eq "-") { $rowStatus = "unsupported" }
+            elseif ($rowStatus -eq "exakit marketplace") { $rowStatus = "available"; $rowRemedy = "exakit marketplace $($r.C)" }
+            elseif ($rowStatus.StartsWith("unknown")) { $rowStatus = "unknown" }
+            elseif ($rowStatus.StartsWith("not installed")) { $rowStatus = "unknown" }
+            elseif ($rowStatus.StartsWith("update exakit first")) { $rowStatus = "blocked_on_kit"; $rowRemedy = "exakit update exakit" }
+            elseif ($rowStatus.EndsWith("available (repair)")) { $rowStatus = "missing"; $rowRemedy = "exakit update $($r.C)" }
+            elseif ($rowStatus.EndsWith("available")) { $rowStatus = "update_available"; $rowRemedy = "exakit update $($r.C)" }
             $components += [ordered]@{
                 component       = $r.C
+                addon           = ($addonIds -contains $r.C)
                 installed       = $(if ($r.V -in @("not installed", "not available", "")) { $null } else { $r.V })
                 installed_label = $r.V
                 advertised      = $(if ($r.A -in @("unknown", "")) { $null } else { $r.A })
-                status          = $r.R
+                status          = $rowStatus
+                remedy          = $rowRemedy
                 severity        = $r.Sev
                 note            = $(if ($r.M) { $r.M } else { $null })
                 platform_note   = $(if ($r.N) { $r.N } else { $null })
@@ -1501,9 +1810,62 @@ function Write-ExakitVersionNote {
 # setup/lib/exakit-common.ps1 so the installer's closing offer can use it too
 # - mirroring the bash side, where it all lives in common.sh. This file only
 # carries the command entry point.
+# Invoke-CmdMarketplace [--list [--json]] [<addon-id>...] - bare, it browses
+# (and without a terminal it installs NOTHING; the menu says how to ask
+# explicitly). --list is the read-only surface an agent can always call;
+# --json makes it machine-readable. Ids are a targeted install: `exakit
+# marketplace dash-server` installs dash-server and nothing else - it used to
+# silently DISCARD the id and install the other pending add-ons instead.
+# Twin of cmd_marketplace in setup/exakit.
 function Invoke-CmdMarketplace {
+    param([string[]]$Arguments = @())
     if (-not (Test-Path $script:ManifestPath)) { Fail "No installation found. Run the installer first." }
+    $list = $false
+    $json = $false
+    $ids = @()
+    $known = @(Get-ExakitMarketplaceAddons | ForEach-Object { $_.Id })
+    # Bad input is refused with the bad-input code, the same style
+    # Assert-ExakitKnownOptions uses - exit 2, nothing runs, no failure note.
+    foreach ($arg in $Arguments) {
+        switch -Regex ($arg) {
+            '^(--list|-List)$' { $list = $true; continue }
+            '^(--json|-Json)$' { $json = $true; continue }
+            '^-' {
+                Write-Host ""
+                Write-Host "  [x] Unknown option '$arg' for marketplace (supported: --list, --json, or add-on ids to install)."
+                exit 2
+            }
+            default {
+                if ($known -contains $arg) { $ids += $arg }
+                else {
+                    Write-Host ""
+                    Write-Host "  [x] Unknown marketplace add-on '$arg' (known: $($known -join ' '))."
+                    exit 2
+                }
+            }
+        }
+    }
+    if ($list -or $json) {
+        if ($ids.Count -gt 0) {
+            Write-Host ""
+            Write-Host "  [x] marketplace --list is read-only and cannot be combined with add-on ids to install."
+            exit 2
+        }
+        Show-ExakitMarketplaceList -Json:$json
+        return
+    }
     Initialize-ExakitLogging
+    if ($ids.Count -gt 0) {
+        $previous = $env:EXAKIT_MARKETPLACE_ADDONS
+        try {
+            $env:EXAKIT_MARKETPLACE_ADDONS = ($ids -join ",")
+            Show-ExakitMarketplaceMenu
+        } finally {
+            if ($null -ne $previous) { $env:EXAKIT_MARKETPLACE_ADDONS = $previous }
+            else { Remove-Item Env:\EXAKIT_MARKETPLACE_ADDONS -ErrorAction SilentlyContinue }
+        }
+        return
+    }
     Show-ExakitMarketplaceMenu
 }
 
@@ -1732,7 +2094,7 @@ function Write-ExakitRuntimeUpdateExplanation {
         }
         "personal" {
             Info "The launcher is replaced; the database is checked afterwards and started again if it ends up down - usually under a minute."
-            Info "Your data is kept: this update neither deletes nor migrates the deployment's database content."
+            Info "Your data is kept: this update neither deletes nor migrates the tables in your database."
         }
         default {
             Info "The database goes down for the update and is started again afterwards."
@@ -1799,7 +2161,7 @@ function Invoke-ExakitRuntimeUpdateOffer {
     }
     $preanswer = Get-ExakitRuntimeUpdatePreanswer -AssumeYes $AssumeYes
     if ($preanswer -eq "no") {
-        Warn2 "$Actual $Installed -> $Advertised was left alone: the runtime update is answered 'no' (EXAKIT_CONFIRM_RUNTIME_UPDATE)."
+        Warn2 "$Actual $Installed -> $Advertised was left alone: the database update is answered 'no' (EXAKIT_CONFIRM_RUNTIME_UPDATE)."
         Info "Apply it when convenient:  exakit update"
         return $false
     }
@@ -2264,7 +2626,7 @@ function Invoke-CmdDataLoad {
 function Invoke-CmdMcpSetup {
     Assert-ExakitInstalled
     Initialize-ExakitLogging
-    if (-not (Invoke-McpSetup)) { Fail "Could not complete MCP client setup" }
+    if (-not (Invoke-McpSetup)) { Fail "Could not complete AI client setup." }
 }
 
 function Invoke-CmdMcpOperation {
@@ -2303,7 +2665,7 @@ function Invoke-CmdSkills {
     if ($Json) { [void](Show-ExakitSkills -Json) } else { [void](Show-ExakitSkills) }
 }
 
-# Invoke-CmdInfoJson - the install record, verbatim, on stdout. Mirrors cmd_info_json.
+# Invoke-CmdInfoJson - the install record plus the state keys, on stdout. Mirrors cmd_info_json.
 #
 # manifest.json is what every other command reads: which runtime, which versions,
 # which paths, what the last data load did. `exakit info --json` hands that to a
@@ -2344,7 +2706,17 @@ function Invoke-CmdInfoJson {
         $doc | Add-Member -NotePropertyName "installed" -NotePropertyValue $true -Force
         $statusText = "database not running"
         $remedyText = "exakit start"
+        $remedyHint = $null
         if ($running) { $statusText = "running"; $remedyText = $null }
+        elseif (-not (Get-RuntimeType)) {
+            # No runtime recorded means no database exists yet, so "exakit
+            # start" is the one command that cannot help. `status --json`
+            # answers "no database" with the installer's own command for this
+            # same machine state, and two state queries may not disagree.
+            $statusText = "no database"
+            $remedyText = (Get-ExakitInstallCommand)
+            $remedyHint = "no runtime is recorded yet; the installer resumes at the unfinished step"
+        }
         # The same installing state `status --json` answers. Mid-install this said
         # "database not running - exakit start": the one command that must not
         # run underneath a live installer.
@@ -2352,10 +2724,13 @@ function Invoke-CmdInfoJson {
         $installing = ($installStep -ne "" -and (Test-ExakitInstallRunning))
         if ($installing) {
             $statusText = "installing"
-            $remedyText = "exakit status --json   (the installer is still running, step: $installStep - poll until status is running)"
+            # A RUNNABLE command; the sentence moves to remedy_hint.
+            $remedyText = "exakit status --json"
+            $remedyHint = "the installer is still running (step: $installStep) - poll the remedy until status is running"
         }
         $doc | Add-Member -NotePropertyName "status" -NotePropertyValue $statusText -Force
         $doc | Add-Member -NotePropertyName "remedy" -NotePropertyValue $remedyText -Force
+        if ($remedyHint) { $doc | Add-Member -NotePropertyName "remedy_hint" -NotePropertyValue $remedyHint -Force }
         # The skill set's verdict, from the manifest and the cached versions
         # document (no network). Twin of the skills block in cmd_info_json.
         $ijHave = Get-ExakitManifestValue "components.skills.version"
@@ -2392,7 +2767,9 @@ function Invoke-CmdSql {
         }
         Write-Host ""; Write-Host "  [x] $Msg"; exit 2
     }
-    Assert-ExakitInstalled
+    # In -Json mode the install gate answers in JSON too: the other order left
+    # stdout empty on the one path where a parser most needs an answer.
+    Assert-ExakitInstalled -Json:$Json
     # The saved-workflow path the skill teaches: `exakit sql --file <path>`.
     # A file's leading "-- comment" line used to be parsed as an option, so the
     # only way to rerun a saved statement was exapump on the admin connection.
@@ -2585,12 +2962,22 @@ try {
                 $script:JsonOutput = $true
                 Invoke-CmdInfoJson
             } else {
+                # THE SAME EXIT CODE AS `info --json` FOR THE SAME MACHINE
+                # STATE. AGENTS.md lists `exakit info` in its "Verify the
+                # install" block, and the plain form answered 0 off a kit whose
+                # database was not running while `info --json` answered 3 - so
+                # an agent cross-checking two state queries got two verdicts for
+                # one machine. Twin of cmd_info.
+                if (-not (Test-Path $script:ManifestPath)) { Write-ExakitNotInstalledAnswer }
                 Show-ExakitConnectionPanel
                 # The --json form was reachable only from `exakit help`. The hint
                 # lives here rather than in Show-ExakitConnectionPanel because the
                 # install ends with that same panel, and someone finishing an
                 # install is not looking for a JSON dump.
                 Write-Host ""
+                # Recorded, not exited: the update notice below still runs, the
+                # way `_with_notice cmd_info` keeps it on the shell side.
+                if ((Get-ExakitRuntimeStatus) -ne "running") { $script:PendingExitCode = 3 }
             }
         }
         "guide"        { Assert-ExakitKnownOptions -CommandName "guide" -Allowed @() -Arguments $RestArgs; Show-ExakitGuide }
@@ -2605,12 +2992,25 @@ try {
             $sqlFile = ""
             $sqlRest = @()
             $expectFile = $false
+            # Everything after a bare `--` is the statement, never a flag.
+            $endOpts = $false
             foreach ($a in @($RestArgs)) {
                 if ($expectFile) { $sqlFile = $a; $expectFile = $false; continue }
+                if ($endOpts) { $sqlRest += $a; continue }
+                # A STATEMENT WHOSE FIRST LINE IS AN SQL COMMENT IS SQL, NOT A
+                # FLAG. "-- monthly revenue<newline>SELECT 1" was refused as
+                # "Unknown option" with the whole statement echoed into the
+                # option slot - and commented SQL is the normal shape of
+                # anything an agent shows a user before running, and of anything
+                # read out of the workflows folder. Options are single tokens:
+                # one that carries a newline, or opens with the "-- " of a
+                # comment, is the query. Twin of the same arms in cmd_sql.
+                if ($a -like "-- *" -or $a -match "`n") { $sqlRest += $a; continue }
+                if ($a -eq "--") { $endOpts = $true; continue }
                 if ($a -in @("--write", "-Write", "--json", "-j")) { continue }
                 if ($a -in @("--file", "-f", "-File")) { $expectFile = $true; continue }
                 if ($a -like "--file=*") { $sqlFile = $a.Substring(7); continue }
-                if ($a -like "--*") { $sqlBad = "Unknown option '$a' for sql (supported: --file <path>, --json, --write, --help)."; break }
+                if ($a -like "--*") { $sqlBad = "Unknown option '$a' for sql (supported: --file <path>, --json, --write, --help). If that was your SQL, its first line is a '--' comment: put a space after the dashes, pass the statement after a bare '--', or save it and use exakit sql --file <path>."; break }
                 $sqlRest += $a
             }
             if (-not $sqlBad -and $expectFile) { $sqlBad = "--file needs a path: exakit sql --file ~\.exasol-starter-kit\workflows\query.sql" }
@@ -2624,7 +3024,11 @@ try {
             Invoke-CmdSql -Statement $sqlText -Write:$sqlWrite -File $sqlFile -Json:$sqlJson
         }
         "repair-runtime" {
-            Invoke-CmdRepairRuntime -Yes:([bool]($RestArgs -contains "--yes" -or $RestArgs -contains "-y" -or $RestArgs -contains "-Yes"))
+            Assert-ExakitKnownOptions -CommandName "repair-runtime" -Allowed @("--yes", "-y", "-Yes", "--json", "-j") -Arguments $RestArgs
+            if ($RestArgs -contains "--json" -or $RestArgs -contains "-j") { $script:JsonOutput = $true }
+            Invoke-CmdRepairRuntime `
+                -Yes:([bool]($RestArgs -contains "--yes" -or $RestArgs -contains "-y" -or $RestArgs -contains "-Yes")) `
+                -Json:([bool]($RestArgs -contains "--json" -or $RestArgs -contains "-j"))
         }
         "autostart"    { Invoke-CmdAutostart -Action (($RestArgs | Select-Object -First 1)) }
         "data-load"    { Invoke-CmdDataLoad -Argument ($RestArgs | Select-Object -First 1) }
@@ -2652,14 +3056,34 @@ try {
             $doctorStep = "$(Get-ExakitManifestValue 'install.current_step')"
             if ((Test-Path $script:ManifestPath) -and $doctorStep -ne "" -and (Test-ExakitInstallRunning)) {
                 if ($doctorJson) {
-                    [ordered]@{ installed = $true; status = "installing"; remedy = "exakit status --json   (the installer is still running, step: $doctorStep - poll until status is running)" } | ConvertTo-Json
+                    # A RUNNABLE remedy; the sentence lives in remedy_hint.
+                    [ordered]@{ installed = $true; status = "installing"; remedy = "exakit status --json"; remedy_hint = "the installer is still running (step: $doctorStep) - poll the remedy until status is running" } | ConvertTo-Json
                 } else {
                     Info "The installer is still running (step: $doctorStep) - MCP diagnostics wait for it. Poll: exakit status"
                 }
                 exit 3
             }
-            if (-not (Test-Path $script:ManifestPath) -or -not (Get-RuntimeType)) {
+            if (-not (Test-Path $script:ManifestPath)) {
                 Write-ExakitNotInstalledAnswer -Json:$doctorJson
+            }
+            if (-not (Get-RuntimeType)) {
+                # A manifest with no runtime is an INCOMPLETE install, not "not
+                # installed". This arm used to answer installed: false / exit 4
+                # for the exact machine state `status --json` calls installed:
+                # true / exit 3 - so an agent cross-checking the two state
+                # queries got opposite answers to "is the kit installed?".
+                # Twin of the same arm in cmd_mcp_doctor.
+                if ($doctorJson) {
+                    [ordered]@{
+                        installed = $true; status = "no database"; database = "not installed"
+                        remedy = (Get-ExakitInstallCommand)
+                        remedy_hint = "no runtime is recorded yet; the installer resumes at the unfinished step"
+                    } | ConvertTo-Json
+                } else {
+                    Warn2 "No runtime is recorded in the manifest yet, so there is no database to diagnose against."
+                    Info "Finish the install first: $(Get-ExakitInstallCommand)"
+                }
+                exit 3
             }
             $doctorArgs = @($RestArgs | Where-Object { $_ -notin @("--json", "-j") })
             $doctorType = Get-RuntimeType
@@ -2707,10 +3131,14 @@ try {
             }
         }
         "skills-install" { Assert-ExakitKnownOptions -CommandName "skills-install" -Allowed @() -Arguments $RestArgs; Invoke-CmdSkillsInstall }
-        "marketplace"  { Assert-ExakitKnownOptions -CommandName "marketplace" -Allowed @() -Arguments $RestArgs; Invoke-CmdMarketplace }
+        "marketplace"  { Invoke-CmdMarketplace -Arguments $RestArgs }
         "upgrade-kit2"  { Write-ExakitKit2NotAvailable -Command "exakit upgrade-kit2" }
         "rollback-kit2" { Write-ExakitKit2NotAvailable -Command "exakit rollback-kit2" }
-        "uninstall"    { Invoke-CmdUninstall -AssumeYes:($RestArgs -contains "-Yes" -or $RestArgs -contains "--yes" -or $RestArgs -contains "-y") -DryRun:($RestArgs -contains "-DryRun" -or $RestArgs -contains "--dry-run" -or $RestArgs -contains "-n") }
+        "uninstall"    {
+            # One optional positional: a marketplace add-on id for selective
+            # removal; validated inside Invoke-CmdUninstall.
+            $unAddon = "" + (@($RestArgs | Where-Object { "$_" -notlike "-*" }) | Select-Object -First 1)
+            Invoke-CmdUninstall -Addon $unAddon -AssumeYes:($RestArgs -contains "-Yes" -or $RestArgs -contains "--yes" -or $RestArgs -contains "-y") -DryRun:($RestArgs -contains "-DryRun" -or $RestArgs -contains "--dry-run" -or $RestArgs -contains "-n") }
         "whats-new"    { Assert-ExakitKnownOptions -CommandName "whats-new" -Allowed @() -Arguments $RestArgs; Invoke-CmdWhatsNew -Version ($RestArgs | Select-Object -First 1) }
         "logs"         { Invoke-CmdLogs -LogArgs $RestArgs }
         "catalog"      {
@@ -2747,6 +3175,9 @@ try {
           "mcp-status") -contains $Command) {
         Show-ExakitUpdateNotice
     }
+    # A state query whose answer IS its exit code, set before the notice so the
+    # notice still prints. `exakit info` is the one that uses it today.
+    if ($script:PendingExitCode -ne 0) { exit $script:PendingExitCode }
 } catch [ExakitFailException] {
     # Fail() already printed the error and the log path; just set the exit code.
     exit 1

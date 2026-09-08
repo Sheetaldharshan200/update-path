@@ -11,9 +11,10 @@ while keeping the ones that matter gated.
 ## The principle (applies to every agent)
 
 Allow without prompting:
-- The kit's **read-only status commands** — they change nothing:
-  `exakit status`, `exakit info`, `exakit version`, `exakit mcp-doctor`,
-  `exakit logs`.
+- The kit's **read-only commands** — they change nothing: `exakit status`,
+  `info`, `version`, `mcp-doctor`, `logs`, `catalog`, `preflight`, `guide`,
+  `mcp-status`, `help`, and the exact forms `exakit skills` and
+  `exakit skills --json`.
 - The **`exasol` MCP tools** — the MCP server connects as a dedicated
   least-privilege read-only user, so the database itself rejects any write.
 
@@ -33,31 +34,59 @@ the guardrail that makes the kit trustworthy.
 
 **`exakit skills-install` already does this for you.** It merges the allowlist below
 into `~/.claude/settings.json` — additively and idempotently, never removing or
-overwriting anything you have set. The section is here so you can see what was
-granted, and so you can apply it by hand if the merge was skipped (it declines
-rather than clobber a settings file it cannot parse).
+overwriting anything you have set. The block below is the **complete** list it
+writes on macOS, Linux and WSL — 37 allow entries and 3 deny entries — so you can
+see what was granted, and paste it by hand if the merge was skipped (it declines
+rather than clobber a settings file it cannot parse). To see the list this
+machine actually has, open `~/.claude/settings.json`; to re-apply it, run
+`exakit skills-install`.
 
 ```json
 {
   "permissions": {
     "allow": [
       "Bash(exakit status:*)",
+      "Bash(exakit info:*)",
+      "Bash(exakit version:*)",
+      "Bash(exakit mcp-doctor:*)",
+      "Bash(exakit logs:*)",
+      "Bash(exakit catalog:*)",
+      "Bash(exakit preflight:*)",
+      "Bash(exakit guide:*)",
+      "Bash(exakit mcp-status:*)",
+      "Bash(exakit help:*)",
+      "Bash(exakit skills)",
+      "Bash(exakit skills --json)",
       "Bash(~/.local/bin/exakit status:*)",
+      "Bash(~/.local/bin/exakit info:*)",
+      "Bash(~/.local/bin/exakit version:*)",
+      "Bash(~/.local/bin/exakit mcp-doctor:*)",
+      "Bash(~/.local/bin/exakit logs:*)",
+      "Bash(~/.local/bin/exakit catalog:*)",
+      "Bash(~/.local/bin/exakit preflight:*)",
+      "Bash(~/.local/bin/exakit guide:*)",
+      "Bash(~/.local/bin/exakit mcp-status:*)",
+      "Bash(~/.local/bin/exakit help:*)",
+      "Bash(~/.local/bin/exakit skills)",
+      "Bash(~/.local/bin/exakit skills --json)",
       "Bash($HOME/.local/bin/exakit status:*)",
-      "Bash(exakit.cmd status:*)",
-      "Bash(~/.local/bin/exakit.cmd status:*)",
-      "Bash($HOME/.local/bin/exakit.cmd status:*)",
-      "PowerShell(exakit status:*)",
+      "Bash($HOME/.local/bin/exakit info:*)",
+      "Bash($HOME/.local/bin/exakit version:*)",
+      "Bash($HOME/.local/bin/exakit mcp-doctor:*)",
+      "Bash($HOME/.local/bin/exakit logs:*)",
+      "Bash($HOME/.local/bin/exakit catalog:*)",
+      "Bash($HOME/.local/bin/exakit preflight:*)",
+      "Bash($HOME/.local/bin/exakit guide:*)",
+      "Bash($HOME/.local/bin/exakit mcp-status:*)",
+      "Bash($HOME/.local/bin/exakit help:*)",
+      "Bash($HOME/.local/bin/exakit skills)",
+      "Bash($HOME/.local/bin/exakit skills --json)",
       "mcp__exasol"
     ],
     "deny": [
       "Bash(exakit uninstall:*)",
       "Bash(~/.local/bin/exakit uninstall:*)",
-      "Bash($HOME/.local/bin/exakit uninstall:*)",
-      "Bash(exakit.cmd uninstall:*)",
-      "Bash(~/.local/bin/exakit.cmd uninstall:*)",
-      "Bash($HOME/.local/bin/exakit.cmd uninstall:*)",
-      "PowerShell(exakit uninstall:*)"
+      "Bash($HOME/.local/bin/exakit uninstall:*)"
     ]
   }
 }
@@ -75,18 +104,23 @@ names only `exakit uninstall` is sidestepped by typing the full path.
 is `exakit.cmd`: PowerShell resolves the bare name, but Git Bash — Claude Code's
 shell on Windows — does not, and `~/.local/bin/exakit` does not exist, so the Unix
 spellings above matched nothing an agent on that machine could type and every
-status call kept prompting. The Windows list carries `Bash(exakit.cmd …)` in the
-same three spellings plus `PowerShell(exakit …)` for Claude Code's PowerShell tool,
-which has its own rule namespace. Rules for commands that no longer exist
-(`update-check`, `mcp-validate`) are swept out on the way through, and the file is
-written without a UTF-8 BOM, which strict JSON readers reject.
+status call kept prompting. To build the Windows list, take the block above and
+repeat every `Bash(exakit …)` rule three more times with `exakit.cmd`,
+`~/.local/bin/exakit.cmd` and `$HOME/.local/bin/exakit.cmd` in place of
+`exakit`, then add a `PowerShell(exakit …)` form of each — Claude Code's
+PowerShell tool has its own rule namespace, and bare `exakit` resolves there.
+That is what `exakit skills-install` writes on Windows: 85 allow entries and
+7 deny entries. On macOS, Linux and WSL those extra spellings match nothing you
+can type, which is why the block above leaves them out. Rules for
+commands that no longer exist (`update-check`, `mcp-validate`) are swept out on
+the way through, and the file is written without a UTF-8 BOM, which strict JSON
+readers reject.
 
-The real list covers the whole read-only surface — `status`, `info`, `version`,
-`mcp-doctor`, `logs`, `catalog`, `preflight`, `guide`, `mcp-status`,
-`help`, plus the exact forms `exakit skills` and `exakit skills --json`
-— in each of the three spellings. `exakit skills-install` is deliberately *not*
-prefix-matched: it writes this very file, and an allowlisted command that can grant
-permissions is an escalation path.
+`exakit skills-install` is deliberately *not* prefix-matched, which is why
+`exakit skills` and `exakit skills --json` appear as exact forms above:
+`Bash(exakit skills:*)` would also match `exakit skills-install`, which writes
+this very file, and an allowlisted command that can grant permissions is an
+escalation path.
 
 `exapump sql` and `exakit sql` are both intentionally absent, so SQL execution still
 prompts. Both connect as the **admin** user.

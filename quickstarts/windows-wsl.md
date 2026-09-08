@@ -71,8 +71,18 @@ The installer does this too. To run it again: `exakit mcp-setup`. Details in the
 
 Windows apps can reach the database directly at `127.0.0.1:8563`. If you configure a Windows desktop app from inside WSL, make sure its config uses a launcher command Windows can run. Two options:
 
-- Install `uv` on Windows and use the path from `(Get-Command uvx).Source` as the command
-- Or keep the same settings and wrap the launch as `wsl uvx exasol-mcp-server@<version>`
+- **Install `uv` on Windows** (`winget install astral-sh.uv`, or see astral.sh/uv) and use the path from `(Get-Command uvx).Source` as the command. Nothing else changes: the DSN is `127.0.0.1:8563`, which Windows reaches directly, and the credentials are carried as environment values, not as Linux file paths. This is the simpler of the two options.
+- Or launch through WSL. Two things do not cross the boundary by themselves. `wsl` runs your command **without sourcing `~/.bashrc`**, so a bare `uvx` is not on its PATH — give the absolute path, which `command -v uvx` inside WSL prints. And the config's `env` block sets variables for `wsl.exe` on the Windows side, not inside the distro — carry them in yourself with `env`. Take the values from `exakit info`:
+
+  ```json
+  "command": "wsl.exe",
+  "args": ["-d", "Ubuntu", "--", "env",
+           "EXA_DSN=127.0.0.1:8563", "EXA_USER=mcp_readonly",
+           "EXA_PASSWORD=<from exakit info>", "EXA_SSL_CERT_VALIDATION=false",
+           "/home/<you>/.local/bin/uvx", "exasol-mcp-server@<version>"]
+  ```
+
+  A single string (`"command": "wsl uvx ..."`) is not a program name Windows can spawn, and the kit's own `uvx` may live under `~/.exasol-starter-kit/bin` instead — `command -v uvx` inside the distro is the authority.
 
 Then continue with the [first workflow](../demo/first-revenue-analysis.md).
 
@@ -97,10 +107,14 @@ Full detail: [Staying up to date](../README.md#staying-up-to-date).
 |---|---|
 | "No container runtime found" inside WSL | Start Docker Desktop on Windows and enable WSL integration for your distro, then re-run |
 | Docker works in PowerShell but not in WSL | Same fix: WSL integration is per distro (Settings, Resources, WSL integration) |
-| Port 8563 busy on the Windows side | Something on Windows holds it. Stop it, or re-run with `EXAKIT_DB_PORT=8564` |
-| Database state after `wsl --shutdown` | Safe. Your data is kept. `exakit start` brings it back |
+| Port 8563 is already taken | Find out what holds it before stopping anything. From PowerShell: `Get-NetTCPConnection -LocalPort 8563 -State Listen`. If it is another Exasol — a Windows install of this kit, or a container in another WSL distro — leave it running and take another port instead: re-run with `EXAKIT_DB_PORT=8564` (the kit records it and later commands reuse it). If it is `wslrelay` left over from an earlier failed run and nothing in WSL needs it, `wsl --shutdown` releases it |
+| Database state after `wsl --shutdown` or a Windows reboot | Safe, and normally nothing to do: your data is kept, and a fresh install turns automatic start on, so the container comes back by itself once Docker Desktop is running. If you turned it off (`exakit autostart`) or Docker Desktop is not up yet, `exakit start` brings it back |
+| After a reboot, what does *not* come back | Only the database rides Docker Desktop's restart policy. Service add-ons such as dash-server are `systemd --user` units, and a WSL distro runs no user session until something opens it — so they start when you first open a WSL terminal, not at Windows boot. And WSL2 ships with systemd **off**: without `systemd=true` under `[boot]` in `/etc/wsl.conf` (then `wsl --shutdown` from Windows) there is no `systemd --user` at all and nothing was registered. `exakit start` brings everything back in one command |
+| This distro is on WSL 1 | Nothing container-based can run there — WSL 1 has no Linux kernel. Convert it from an admin PowerShell, keeping your files: `wsl --set-version <distro> 2` (`wsl -l -v` lists versions), then re-run the installer |
+| Using Podman inside WSL instead of Docker Desktop | Supported, and the shared-engine section above does **not** apply: a rootless Podman container is not on Docker Desktop's engine and the Windows side cannot see it. WSL still relays its published port to Windows, so a Windows install will report 8563 as taken — give one of them `EXAKIT_DB_PORT`. Remember that `wsl --shutdown` stops a Podman-hosted database, and that autostart for it goes through `systemd --user` (see the reboot row above) |
 | WSL clock drift after laptop sleep | If TLS or downloads act strange: `sudo hwclock -s` |
 | This install took over a Windows one (or the other way round) | They share Docker Desktop's engine, and both default to the same container. See [Windows and WSL share one Docker engine](#windows-and-wsl-share-one-docker-engine) — the separation has to be set with `EXAKIT_NANO_CONTAINER` and `EXAKIT_NANO_VOLUME` before installing |
-| `$HOME` is on `/mnt/c`, redirected or cloud-synced | `EXAKIT_HOME=/opt/exakit` (any writable Linux path) before the install moves state, credentials, logs and the kit copy there. Keep it exported for later `exakit` commands too — put it in `~/.bashrc`, not just the one shell |
+| `$HOME` is on `/mnt/c`, redirected or cloud-synced | **Move the kit off it.** Windows drives are mounted into WSL without Linux file permissions, so the `chmod 600` the kit puts on your database passwords is accepted and does nothing — they end up readable by every Windows user on the machine, and synced to OneDrive if the profile is. Set `EXAKIT_HOME=/home/$USER/exakit` — any path on the Linux filesystem that you already own — **before** the install; it moves state, credentials, logs and the kit copy there. Keep it exported for later `exakit` commands too: put it in `~/.bashrc`, not just the one shell. (For a shared location such as `/opt/exakit`, create it first: `sudo mkdir -p /opt/exakit && sudo chown "$USER" /opt/exakit`. Never run the installer itself with `sudo`.) |
+| The repo is already cloned on the Windows side | Install from it instead of downloading: `EXAKIT_LOCAL_KIT=/mnt/c/Users/<you>/src/update-path` before the install command. The kit is copied into `$EXAKIT_HOME`, so `/mnt/c` slowness costs you the copy and nothing after it, and the repo's `.gitattributes` keeps a Windows checkout free of the CRLF endings that would otherwise break the scripts. Same variable serves an air-gapped or proxied machine |
 
-Remove everything: `exakit uninstall` inside WSL.
+Remove everything: `exakit uninstall` inside WSL. It names the container and the data volume before it asks you to confirm — read them: on a machine that also has a Windows install of the kit, they are the same container and the same volume.

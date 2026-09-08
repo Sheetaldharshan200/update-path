@@ -408,7 +408,10 @@ fi
 for f in "setup/exakit|cmd_repair_runtime() {|die" "setup/exakit.ps1|function Invoke-CmdRepairRuntime {|Fail"; do
     file="${f%%|*}"; rest="${f#*|}"; opener="${rest%%|*}"; fatal="${rest##*|}"
     body="$(fn_body "$ROOT/$file" "$opener")"
-    decline="$(printf '%s\n' "$body" | grep -A 12 'Delete the database and rebuild it now?')"
+    # 30 lines, not 12: the declined branch now answers in --json as well as in
+    # prose, and the JSON object sits between the prompt and the human line.
+    decline="$(printf '%s
+' "$body" | grep -A 30 'Delete everything in the database and rebuild it empty?')"
     if [ -z "$decline" ]; then
         fail "could not find the repair-runtime confirmation in $file"
     elif has "$decline" "$fatal \"Nothing was changed"; then

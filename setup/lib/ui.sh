@@ -159,11 +159,6 @@ ui_banner() {
     printf '\n'
 }
 
-# ui_rule — a full-width accent divider (box inner width).
-ui_rule() {
-    printf '  %s%s%s\n' "$UI_DIM" "$(ui_repeat "$UI_HR" "$UI_BOX_W")" "$UI_RESET"
-}
-
 # ui_box_top <title> / ui_box_line <text> / ui_box_bottom — a titled frame.
 ui_box_top() {
     _uibt_title=" $1 "
@@ -211,6 +206,55 @@ ui_panel_end() {
     done
     IFS=$_uipe_oifs
     _uipe_w=$(( _uipe_w + 2 ))                  # breathing room on the right
+    # CAPPED TO THE TERMINAL. A panel takes the width of its widest line, and
+    # the uninstall consent panel measured 116 columns — so the one box that
+    # must be read whole wrapped mid-border and broke apart on every default
+    # terminal. Lines longer than the cap are WRAPPED into the panel (indented
+    # continuations), not truncated: this panel names what is about to be
+    # deleted, and a consent screen that hides its own consequences is worse
+    # than an ugly one. Only where a terminal is actually rendering — captured
+    # and piped output has no columns to break, and wrapping there would split
+    # long paths across lines under every grep that reads them.
+    if [ -t 1 ]; then
+        _uipe_cols="$(_ui_term_cols 2>/dev/null || echo 80)"
+        case "$_uipe_cols" in ''|*[!0-9]*) _uipe_cols=80 ;; esac
+        _uipe_max=$(( _uipe_cols - 4 ))         # two-space indent + borders
+        [ "$_uipe_max" -lt 24 ] && _uipe_max=24
+    else
+        _uipe_max=$_uipe_w
+    fi
+    if [ "$_uipe_w" -gt "$_uipe_max" ]; then
+        _uipe_w=$_uipe_max
+        _uipe_inner=$(( _uipe_w - 2 ))
+        _uipe_new=""
+        _uipe_oifs=$IFS; IFS='
+'
+        for _uipe_l in $_UI_PANEL_BUF; do
+            if [ "$(_ui_visible_len "$_uipe_l")" -le "$_uipe_inner" ]; then
+                _uipe_new="${_uipe_new}${_uipe_l}
+"
+                continue
+            fi
+            IFS=$_uipe_oifs
+            _ui_wrap "$_uipe_l" "$(( _uipe_inner - 2 ))"
+            _uipe_i=0
+            while [ "$_uipe_i" -lt "${_UI_WRAP_N:-0}" ]; do
+                if [ "$_uipe_i" -eq 0 ]; then
+                    _uipe_new="${_uipe_new}${_UI_WRAP[$_uipe_i]}
+"
+                else
+                    _uipe_new="${_uipe_new}  ${_UI_WRAP[$_uipe_i]}
+"
+                fi
+                _uipe_i=$(( _uipe_i + 1 ))
+            done
+            IFS='
+'
+        done
+        IFS=$_uipe_oifs
+        _UI_PANEL_BUF="${_uipe_new%
+}"
+    fi
     # top border with inset title
     _uipe_title=" $_UI_PANEL_TITLE "
     _uipe_fill=$(( _uipe_w - ${#_uipe_title} - 1 ))

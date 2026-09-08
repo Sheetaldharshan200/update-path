@@ -22,30 +22,42 @@ fail() { FAIL=$((FAIL + 1)); printf '  FAIL %s\n' "$1"; }
 # Every component that is a valid update target, plus the add-on-author template
 # used in MARKETPLACE.md. Kept as a list rather than a wildcard so a NEW
 # component has to be added here consciously.
-COMPONENTS='dash-server runtime pyexasol exakit json-tables exapump personal exasol-vscode mcp skills kit2 my-tool'
+COMPONENTS='dash-server runtime pyexasol exakit json-tables exapump personal exasol-vscode exasol-scheduler mcp skills kit2 my-tool'
 
-printf '\n== no user-visible surface names a component after "exakit update" ==\n'
+# WHERE the rule applies: the surfaces a reader goes through to LEARN the kit.
+# There the everyday command is bare `exakit update`, and a reader who never
+# meets the component form never has to choose between two ways of doing one
+# thing.
+#
+# It does NOT apply to a repair remedy or to an add-on's own page, and that is
+# not a loophole -- it is the difference between guidance and diagnosis. Bare
+# `exakit update` skips a component whose version is already current, so a
+# message about a component that is installed-but-broken ("the engine is
+# missing, repair with: ...") CANNOT use the bare form: it would print a
+# command that does nothing. The kit's own contract says a remedy is a command
+# you can run, so those messages name the component on purpose.
+GUIDANCE_FILES="README.md QUICKSTART.md AGENTS.md setup/help/exakit.json skills/local-agent-ready-starter/SKILL.md"
+GUIDANCE_GLOBS="quickstarts"
 
-# CHANGELOG.md is a dated historical record of what shipped, and rewriting what
-# a past release said is not the same as changing what the kit says now.
-#
-# Comment lines in shell and PowerShell are excluded because they explain the
-# internals to whoever maintains this, and the component form is exactly what
-# they have to talk about. A Markdown "#" is a heading, not a comment, so those
-# files are read whole.
-#
-# tests/ is skipped entirely, and not just this file. A suite that asserts the
-# form is ABSENT from a screen has to spell the form out to say so -- six such
-# `lacks` needles live in versions-manifest.sh -- so scanning tests counts every
-# check that the form is gone as evidence that it is still there. Tests are not
-# a surface anybody reads for guidance, which is what this guard is about.
+printf '\n== no learn-the-kit surface names a component after "exakit update" ==\n'
+
+# The ONE exception, and it is the staged Personal major upgrade. Its three
+# steps are a data migration gated on a backup, and the flags that express them
+# are parsed inside the Personal updater -- `exakit update --plan` is rejected
+# by the option parser, so the component form is the only way to write it down.
+# Hiding a working, backup-gated migration route is worse than naming a
+# component once, with its flag on the same line to say why.
 scan() { # scan <component>
-    grep -rn "exakit update $1" \
-        --include="*.sh" --include="*.ps1" --include="*.json" --include="*.md" --include="exakit" \
-        "$ROOT" 2>/dev/null \
-        | grep -v '/CHANGELOG.md:' \
-        | grep -v '/tests/' \
-        | grep -v '/.claude/' \
+    _sc_files=""
+    for _sc_f in $GUIDANCE_FILES; do
+        [ -f "$ROOT/$_sc_f" ] && _sc_files="$_sc_files $ROOT/$_sc_f"
+    done
+    for _sc_g in $GUIDANCE_GLOBS; do
+        [ -d "$ROOT/$_sc_g" ] && _sc_files="$_sc_files $(find "$ROOT/$_sc_g" -type f -name '*.md' | tr '\n' ' ')"
+    done
+    # shellcheck disable=SC2086 -- the list is built from known paths
+    grep -n "exakit update $1" $_sc_files 2>/dev/null \
+        | grep -vE -- '--plan|--backup|--apply' \
         | grep -vE ':[0-9]+: *#'
 }
 
@@ -54,11 +66,31 @@ for _c in $COMPONENTS; do
     _hits="$(scan "$_c" || true)"
     if [ -n "$_hits" ]; then
         _offenders=$((_offenders + 1))
-        fail "\"exakit update $_c\" is still advertised"
+        fail "\"exakit update $_c\" is still advertised where a reader learns the kit"
         printf '%s\n' "$_hits" | sed "s|$ROOT/||" | sed 's/^/         /' | head -4
     fi
 done
-[ "$_offenders" -eq 0 ] && pass "no component name follows \"exakit update\" anywhere a user reads"
+[ "$_offenders" -eq 0 ] && pass "no component name follows \"exakit update\" on a learn-the-kit surface"
+
+printf '\n== a repair remedy names the component it repairs ==\n'
+# The other half of the same rule. A message that tells the reader to repair one
+# component must name it, because the bare form would skip it. If someone
+# "simplifies" these to `exakit update` the remedy silently stops working, and
+# the guard above would happily pass.
+_repair_ok=0
+_repair_missing=""
+for _rc in json-tables exasol-scheduler; do
+    if grep -rq "exakit update $_rc" "$ROOT/setup/lib/$_rc.sh" 2>/dev/null; then
+        _repair_ok=$((_repair_ok + 1))
+    else
+        _repair_missing="$_repair_missing $_rc"
+    fi
+done
+if [ -z "$_repair_missing" ]; then
+    pass "each add-on's repair remedy still names its own component ($_repair_ok checked)"
+else
+    fail "a repair remedy no longer names its component:$_repair_missing"
+fi
 
 printf '\n== the flags that only exist on the component form are not advertised ==\n'
 # --plan / --backup / --apply are parsed inside the Personal upgrade path, which

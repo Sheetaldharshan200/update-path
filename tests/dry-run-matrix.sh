@@ -573,7 +573,7 @@ if grep -q 'exakit_marketplace_addons()' "$ROOT/setup/lib/common.sh" && \
    grep -q 'function Update-JsonTables' "$ROOT/setup/lib/json-tables.ps1" && \
    grep -q 'function Install-JsonTables' "$ROOT/setup/lib/json-tables.ps1" && \
    grep -q '"json-tables"' "$ROOT/setup/lib/exakit-common.ps1" && \
-   grep -q '"marketplace"  { .*Invoke-CmdMarketplace }' "$ROOT/setup/exakit.ps1"; then
+   grep -q '"marketplace"  { Invoke-CmdMarketplace' "$ROOT/setup/exakit.ps1"; then
     check "marketplace(twins)" "yes" "yes"
 else
     check "marketplace(twins)" "yes" "no"
@@ -985,10 +985,10 @@ printf '{\n  "kit": {\n    "version": "0.2.0"\n  }\n}\n' > "$_ij/have/manifest.j
 _ij_out="$(EXAKIT_HOME="$_ij/have" bash "$ROOT/setup/exakit" info --json 2>"$_ij/err")"
 _ij_alias="$(EXAKIT_HOME="$_ij/have" bash "$ROOT/setup/exakit" info -j 2>/dev/null)"
 _ij_none="$(EXAKIT_HOME="$_ij/none" bash "$ROOT/setup/exakit" info --json 2>/dev/null)"; _ij_rc=$?
-# The record verbatim PLUS the three keys every state query carries
-# (installed/status/remedy) and the `skills` verdict block: strip those and
-# what is left must be the manifest.
-if python3 -c 'import json,sys; d=json.loads(sys.argv[2]); r=json.load(open(sys.argv[1])); [d.pop(k, None) for k in ("installed","status","remedy","skills")]; sys.exit(0 if d == r else 1)' "$_ij/have/manifest.json" "$_ij_out" && \
+# The record PLUS the keys every state query carries (installed/status/remedy,
+# and remedy_hint when the remedy needs explaining) and the `skills` verdict
+# block: strip those and what is left must be the manifest.
+if python3 -c 'import json,sys; d=json.loads(sys.argv[2]); r=json.load(open(sys.argv[1])); [d.pop(k, None) for k in ("installed","status","remedy","remedy_hint","skills")]; sys.exit(0 if d == r else 1)' "$_ij/have/manifest.json" "$_ij_out" && \
    [ "$_ij_alias" = "$_ij_out" ] && \
    [ ! -s "$_ij/err" ] && \
    printf '%s' "$_ij_none" | python3 -m json.tool >/dev/null 2>&1 && \
@@ -1051,15 +1051,25 @@ else
     check "rerun(refreshes_stale_command)" "yes" "no"
 fi
 # The Kit 2 surface: both wrappers, the update target, and the Windows answer.
-# The catalog rows are deliberately NOT part of it - Kit 2 is off the help
-# screen, so setup/help/exakit.json carries no kit2 entry to grep for. Whether
-# Kit 2 is ADVERTISED is a separate switch (the kit2 block in versions.json)
-# and is asserted in tests/versions-manifest.sh.
+# Kit 2 stays off the help screen and off `catalog --json` - but by being marked
+# "hidden": true in setup/help/exakit.json, not by being absent from it. A
+# command in the dispatcher and in NO document at all is one an agent can only
+# find by reading the source (the audit's AGK-10); hidden gives it a page that
+# `exakit upgrade-kit2 --help` answers with while keeping it out of discovery.
+# Whether Kit 2 is ADVERTISED is a separate switch (the kit2 block in
+# versions.json) and is asserted in tests/versions-manifest.sh.
 if grep -q 'upgrade-kit2)  cmd_kit2_script' "$ROOT/setup/exakit" && \
    grep -q 'rollback-kit2) cmd_kit2_script' "$ROOT/setup/exakit" && \
    grep -q 'exakit_update_kit2' "$ROOT/setup/lib/common.sh" && \
    grep -q 'manifest_set kit2.version' "$ROOT/upgrade/upgrade-kit2.sh" && \
-   ! grep -q 'upgrade-kit2' "$ROOT/setup/help/exakit.json" && \
+   python3 -c '
+import json, sys
+doc = json.load(open(sys.argv[1]))
+for name in ("upgrade-kit2", "rollback-kit2"):
+    entry = [c for c in doc["commands"] if c["command"] == name]
+    assert entry and entry[0].get("hidden") is True, name
+' "$ROOT/setup/help/exakit.json" && \
+   ! bash "$ROOT/setup/exakit" catalog --json 2>/dev/null | grep -q 'upgrade-kit2' && \
    grep -q 'Write-ExakitKit2NotAvailable' "$ROOT/setup/exakit.ps1"; then
     check "kit2(cli_surface)" "yes" "yes"
 else
@@ -1617,6 +1627,156 @@ if grep -q 'step_artifact_state' "$ROOT/setup/lib/common.sh" && \
 else
     check "step_state(ps_parity)" "yes" "no"
 fi
+
+echo
+# ---------------------------------------------------------------------------
+# Naming the process that holds a port, on a machine WITHOUT lsof.
+# ---------------------------------------------------------------------------
+# THE BUG: port_holder_desc bailed out unless lsof was installed. lsof is on
+# every macOS and on no minimal Linux (Fedora @core, Ubuntu Server), so on
+# exactly the hosts most likely to be running something else on 8563 the
+# remedy degraded back to the unactionable "stop it" the naming was added to
+# replace. ss (iproute2) is there instead, and net-tools' netstat on older
+# images.
+echo "port holder identification without lsof:"
+phd_stub="$(mktemp -d)"
+cat > "$phd_stub/ss" <<'EOF'
+#!/bin/sh
+echo 'State  Recv-Q Send-Q Local Address:Port  Peer Address:Port Process'
+echo 'LISTEN 0      4096   127.0.0.1:8563      0.0.0.0:*         users:(("some-server",pid=4242,fd=6))'
+EOF
+chmod +x "$phd_stub/ss"
+# lsof is not merely absent, it FAILS: the stub dir is prepended to the real
+# PATH, so a developer machine's real lsof would otherwise answer for it.
+printf '#!/bin/sh\nexit 1\n' > "$phd_stub/lsof" && chmod +x "$phd_stub/lsof"
+got="$(PATH="$phd_stub:$PATH" bash -c ". '$ROOT/setup/lib/detect.sh'; port_holder_desc 8563")"
+case "$got" in "pid 4242 ("*) got_r="named" ;; *) got_r="${got:-<nothing>}" ;; esac
+check "port_holder_desc(ss, no lsof)" "named" "$got_r"
+
+# net-tools only: ss present but silent, lsof failing.
+printf '#!/bin/sh\nexit 0\n' > "$phd_stub/ss" && chmod +x "$phd_stub/ss"
+cat > "$phd_stub/netstat" <<'EOF'
+#!/bin/sh
+echo 'Active Internet connections (only servers)'
+echo 'tcp        0      0 127.0.0.1:8563          0.0.0.0:*               LISTEN      4243/some-server'
+EOF
+chmod +x "$phd_stub/netstat"
+got="$(PATH="$phd_stub:$PATH" bash -c ". '$ROOT/setup/lib/detect.sh'; port_holder_desc 8563")"
+case "$got" in "pid 4243 ("*) got_r="named" ;; *) got_r="${got:-<nothing>}" ;; esac
+check "port_holder_desc(netstat only)" "named" "$got_r"
+
+# Nothing can tell: the function must fail cleanly rather than invent a holder.
+printf '#!/bin/sh\nexit 0\n' > "$phd_stub/netstat" && chmod +x "$phd_stub/netstat"
+got="$(PATH="$phd_stub:$PATH" bash -c ". '$ROOT/setup/lib/detect.sh'; port_holder_desc 8563 || echo UNKNOWN")"
+check "port_holder_desc(nothing available)" "UNKNOWN" "$got"
+rm -rf "$phd_stub"
+
+# The bash side of the WSL port remedy, whose PowerShell half tests/deploy-
+# progress.sh has asserted since 12cc3a1: inside a distro no local tool can see
+# a Windows-side holder, so the remedy has to say where to look.
+grep -q 'Get-NetTCPConnection -LocalPort' "$ROOT/setup/lib/runtime-nano.sh" && \
+    check "the shell names the Windows-side probe" "yes" "yes" || \
+    check "the shell names the Windows-side probe" "yes" "no"
+grep -q 'wsl --shutdown' "$ROOT/setup/lib/runtime-nano.sh" && \
+    check "...and the relay case" "yes" "yes" || \
+    check "...and the relay case" "yes" "no"
+
+echo
+# ---------------------------------------------------------------------------
+# install.sh refuses a bash-less machine BEFORE it downloads anything.
+# ---------------------------------------------------------------------------
+# THE BUG: install.sh is POSIX sh but every script it hands off to is bash. With
+# no `command -v bash` check it downloaded and unpacked the whole kit and then
+# died at `exec bash` with the shell's own "exec: bash: not found" — past fail(),
+# so not even the .last-failure note an agent reads in the next session existed.
+echo "install.sh requires bash:"
+bash_stub="$(mktemp -d)"
+bash_home="$(mktemp -d)"
+for _tool in sh id curl tar mkdir date cat uname grep sed; do
+    _p="$(command -v "$_tool")" && ln -s "$_p" "$bash_stub/$_tool" 2>/dev/null
+done
+_iout="$(PATH="$bash_stub" HOME="$bash_home" EXAKIT_HOME="$bash_home/kit-home" \
+    "$bash_stub/sh" "$ROOT/install.sh" 2>&1)"
+_icode=$?
+case "$_iout" in *"bash is required"*) _ir="refused" ;; *) _ir="$(printf '%s' "$_iout" | head -n 1)" ;; esac
+check "install.sh(no bash on PATH)" "refused" "$_ir"
+check "install.sh(no bash) exit code" "1" "$_icode"
+# ...and it refused before fetching: nothing was written into the kit dir.
+check "install.sh(no bash) downloaded nothing" "no" \
+    "$([ -d "$bash_home/kit-home/kit" ] && echo yes || echo no)"
+# The failure IS recorded, which is the whole point of failing through fail().
+check "install.sh(no bash) left a note" "yes" \
+    "$([ -s "$bash_home/kit-home/.last-failure" ] && echo yes || echo no)"
+rm -rf "$bash_stub" "$bash_home"
+
+echo
+# ---------------------------------------------------------------------------
+# The container argv, for both engines.
+# ---------------------------------------------------------------------------
+# Engine SELECTION was covered thoroughly above; what the chosen engine is
+# actually handed was not, so the one place the deploy branches (the SELinux
+# label on the password secret) had no test at all — and it used to branch on
+# the engine name rather than on SELinux, which silently broke Docker on Fedora.
+echo "nano container argv:"
+nano_argv() { # nano_argv <engine> <selinux-enforcing 0|1>
+    ROOT="$ROOT" ENGINE="$1" ENFORCE="$2" bash <<'HARNESS' 2>/dev/null
+set -u
+SB="$(mktemp -d)"
+trap 'rm -rf "$SB"' EXIT
+# The engine binary is called directly for `volume inspect`; a stub that says
+# "no such volume" puts the run on the first-deploy branch.
+mkdir -p "$SB/bin" "$SB/credentials"
+printf '#!/bin/sh\nexit 1\n' > "$SB/bin/$ENGINE" && chmod +x "$SB/bin/$ENGINE"
+PATH="$SB/bin:$PATH"
+export EXAKIT_CREDS_DIR="$SB/credentials"
+printf 'secret' > "$EXAKIT_CREDS_DIR/nano_sys_password"
+EXAKIT_DB_PORT=8563
+. "$ROOT/setup/lib/runtime-nano.sh"
+# Everything outside the argv construction is stubbed, so what the run prints
+# is exactly what the engine would have been handed.
+info(){ :; }; ok(){ :; }; warn(){ :; }; error(){ :; }
+ok_step(){ :; }; info_step(){ :; }; _exakit_log_file(){ :; }
+die(){ printf 'die: %s\n' "$*"; exit 1; }
+push_rollback(){ :; }; nano_pull_image(){ :; }; nano_wait_ready(){ :; }
+nano_record_manifest(){ :; }; nano_repair_creds(){ :; }
+read_credential(){ cat "$EXAKIT_CREDS_DIR/$1" 2>/dev/null; }
+generate_password(){ printf 'secret'; }; store_credential(){ :; }
+detect_os(){ echo linux; }
+nano_engine(){ printf '%s' "$ENGINE"; }
+nano_image_ref(){ printf 'exasol/nano:test'; }
+nano_container_exists(){ return 1; }
+nano_container_running(){ return 1; }
+port_in_use(){ return 1; }
+_exakit_selinux_enforcing(){ [ "$ENFORCE" = "1" ]; }
+run_logged(){ printf '%s\n' "$*"; }
+nano_install
+HARNESS
+}
+_argv_podman="$(nano_argv podman 0 | grep ' run -d ' | head -1)"
+_argv_docker="$(nano_argv docker 0 | grep ' run -d ' | head -1)"
+_argv_selinux="$(nano_argv docker 1 | grep ' run -d ' | head -1)"
+
+case "$_argv_podman" in *"-p 127.0.0.1:8563:8563"*) _r=yes ;; *) _r=no ;; esac
+check "argv binds loopback only" "yes" "$_r"
+case "$_argv_podman" in *"-v exasol-nano-data:/exa"*) _r=yes ;; *) _r=no ;; esac
+check "argv mounts the named volume" "yes" "$_r"
+case "$_argv_podman" in *"--label com.exasol.exakit.os=linux"*) _r=yes ;; *) _r=no ;; esac
+check "argv stamps the creating platform" "yes" "$_r"
+case "$_argv_podman" in *"--shm-size=512mb"*"--pids-limit=-1"*) _r=yes ;; *) _r=no ;; esac
+check "argv carries the image's limits" "yes" "$_r"
+case "$_argv_podman" in *"init sys_password_file=/run/secrets/sys_password"*) _r=yes ;; *) _r=no ;; esac
+check "a first deploy passes init" "yes" "$_r"
+# The label keys on SELINUX, not on the engine name: podman without SELinux
+# must NOT get it, and docker with SELinux must.
+case "$_argv_podman" in *"/run/secrets/sys_password:ro,z"*) _r=labelled ;; *) _r=plain ;; esac
+check "podman without SELinux: no ,z" "plain" "$_r"
+case "$_argv_selinux" in *"/run/secrets/sys_password:ro,z"*) _r=labelled ;; *) _r=plain ;; esac
+check "docker with SELinux: ,z" "labelled" "$_r"
+# Nothing else may differ between the two engines. Each run gets its own
+# sandbox, so the secret's absolute path is normalised away first.
+_norm() { printf '%s' "$1" | sed 's|-v /[^ ]*/credentials/nano_sys_password:|-v CREDS:|'; }
+check "podman and docker argv agree" \
+    "$(_norm "${_argv_docker#docker }")" "$(_norm "${_argv_podman#podman }")"
 
 echo
 

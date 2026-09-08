@@ -61,15 +61,27 @@ IS the blast radius of the scheduler:
 GRANT SELECT, INSERT ON SCHEMA MY_SCHEMA TO SCHEDULER_SVC;
 ```
 
-Its password lives in `~/.exasol-starter-kit/credentials/exasol_scheduler_password`
-(mode 600), read at run time by the launcher — never placed on an argv where
-`ps` would show it, and never for you to print or log.
+Its password lives in the kit's credentials directory, readable only by you —
+`~/.exasol-starter-kit/credentials/exasol_scheduler_password` (file mode `600`)
+on macOS, Linux and WSL, and
+`%USERPROFILE%\.exasol-starter-kit\credentials\exasol_scheduler_password`
+(an owner-only NTFS ACL — file modes mean nothing there) on native Windows.
+The launcher reads it at run time — never placed on an argv where `ps` would
+show it, and never for you to print or log.
 
 ## Install and operate
 
 ```bash
 exakit marketplace                          # Space selects, Enter installs
 EXAKIT_MARKETPLACE_ADDONS=exasol-scheduler exakit marketplace   # scripted
+```
+
+In PowerShell on native Windows, an environment variable is its own statement —
+the `VAR=value command` form above is shell syntax and will not run there:
+
+```powershell
+exakit marketplace                          # Space selects, Enter installs
+$env:EXAKIT_MARKETPLACE_ADDONS = "exasol-scheduler"; exakit marketplace   # scripted
 ```
 
 The install downloads a digest-verified prebuilt binary (no Rust, ever),

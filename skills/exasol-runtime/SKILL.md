@@ -78,8 +78,8 @@ you when it finishes, then poll `exakit status`.
 
 ```bash
 exakit autostart        # show the current state
-exakit autostart on     # come back after a reboot
-exakit autostart off    # do not
+exakit autostart        # asks, then flips it; EXAKIT_AUTOSTART_CHANGE=1 pre-answers
+EXAKIT_AUTOSTART_CHANGE=0 exakit autostart   # scripted: leave it off
 ```
 
 On by default from a fresh install. The mechanism differs per platform —

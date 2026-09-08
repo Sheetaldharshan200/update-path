@@ -36,7 +36,9 @@
 #
 #   Non-interactive answers (for agent-driven or scripted installs, so the
 #   install honours a choice instead of silently taking the default):
-#   EXAKIT_REUSE_DB=0|1     reuse a running database (macOS): 0 deploy fresh, 1 reuse
+#   EXAKIT_REUSE_DB=0|1     adopt an existing database: 1 reuse (default), 0 decline.
+#                           On macOS declining never deletes; replacing a stopped
+#                           deployment (and losing its data) needs EXAKIT_REPLACE_DB=1.
 #   EXAKIT_MCP_CLIENTS=...  which MCP clients to configure, BY NAME (names are
 #                           stable across releases; menu numbers are not):
 #                           claude (= both the desktop app and the Claude Code
@@ -118,6 +120,14 @@ main() {
     [ "$(id -u)" -ne 0 ] || fail "Please run as a regular user, not root."
     command -v curl >/dev/null 2>&1 || fail "curl is required."
     command -v tar  >/dev/null 2>&1 || fail "tar is required."
+    # THIS SCRIPT is POSIX sh, but everything it hands off to is bash: the setup
+    # scripts, every module under setup/lib, and the exakit command itself. Left
+    # unchecked, a bash-less distro (Alpine/BusyBox, a minimal image) downloaded
+    # and unpacked the whole kit and then died at `exec bash` with the shell's
+    # own "exec: bash: not found" and exit 127 — past fail(), so not even a
+    # .last-failure note was written for the next session to read. Checked here,
+    # beside curl and tar, so the refusal comes before anything is downloaded.
+    command -v bash >/dev/null 2>&1 || fail "bash is required (the setup scripts and the exakit command are bash). Install it with your package manager — e.g. 'sudo apk add bash', 'sudo apt-get install -y bash' or 'sudo dnf install -y bash' — then re-run this installer."
 
     # --- 2. detect -----------------------------------------------------------
     os="$(uname -s)"
@@ -147,7 +157,13 @@ main() {
     esac
 
     # --- 3. fetch the kit ----------------------------------------------------
-    mkdir -p "$kit_dir" || fail "Could not create $kit_dir. Check that $EXAKIT_HOME is writable and the disk is not full."
+    # The failure text names the OWNERSHIP case explicitly. "Check that it is
+    # writable" is not an action, and the documented escape hatch for a
+    # /mnt/c or cloud-synced HOME (EXAKIT_HOME=/opt/exakit) lands here on every
+    # distro, because /opt is root-owned — while the installer separately, and
+    # correctly, refuses to be run with sudo. The two messages read as a
+    # contradiction unless this one says which sudo command is the right one.
+    mkdir -p "$kit_dir" || fail "Could not create $kit_dir: $EXAKIT_HOME is not writable by $(id -un). If EXAKIT_HOME points at a system path such as /opt, create it and take ownership once — sudo mkdir -p '$EXAKIT_HOME' && sudo chown \"\$(id -un)\" '$EXAKIT_HOME' — then re-run this installer as your normal user (never with sudo). Otherwise pick a path you own, or check the disk is not full."
     if [ -n "${EXAKIT_LOCAL_KIT:-}" ]; then
         [ -f "$EXAKIT_LOCAL_KIT/install.sh" ] || fail "EXAKIT_LOCAL_KIT does not look like a kit checkout: $EXAKIT_LOCAL_KIT"
         EXAKIT_KIT_SOURCE="local:$EXAKIT_LOCAL_KIT"

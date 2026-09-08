@@ -46,14 +46,30 @@ if (-not (Get-Command Invoke-ExakitUninstallRun -ErrorAction SilentlyContinue)) 
 # --- sandbox + stubs -------------------------------------------------------
 $sandbox = Join-Path ([System.IO.Path]::GetTempPath()) ("exakit-uninst-" + [guid]::NewGuid())
 $fakeHome = Join-Path $sandbox "home"
+# A SECOND home, on purpose. On a domain-joined Windows machine PowerShell's
+# $HOME (the account's home-directory attribute, often H:\ or a UNC share) and
+# %USERPROFILE% (the local profile) are different directories. exapump.exe
+# reads its config from the second; uninstall used to delete only the first,
+# so it reported success and left an admin-credentialed config.toml behind.
+# The suite models the split machine, because the same-path machine hides it.
+$fakeProfile = Join-Path $sandbox "profile"
 Set-Variable -Name HOME -Value $fakeHome -Scope Global -Force
 $script:ExakitHome = Join-Path $fakeHome ".exasol-starter-kit"
 $script:BinDir     = Join-Path $fakeHome ".local\bin"
 
 $script:markers = @{}
-function Info($m) {}; function Ok($m) {}; function OkStep($m) {}; function InfoStep($m) {}; function Warn2($m) {}; function Fail($m) { throw $m }
+function Info($m) {}; function Ok($m) {}; function OkStep($m) {}; function InfoStep($m) {}; function Fail($m) { throw $m }
+# Warn2 is RECORDED, not swallowed: one of the things this suite has to prove
+# is that a warning was said at all, and when.
+$script:warnings = @()
+function Warn2($m) { $script:warnings += "$m" }
+# The manifest is not seeded here, so the target-name helper falls through to
+# the defaults - which is the case that matters, since those are the names a
+# Windows and a WSL install collide on.
+function Get-ExakitManifestValue { param([string]$Path) return "" }
 function Get-RuntimeType { "nano" }
 function Get-ExakitRepoRoot { return $null }   # force fallback skill list
+function Get-ExakitProfileHome { return $fakeProfile }
 function Remove-Nano { param([switch]$Data) $script:markers.nano = [bool]$Data }
 function Invoke-McpOperation { param($Operation, $InputArgs) $script:markers.mcp = $Operation; return $true }
 # The real helper defers deletion to a detached process (so cmd.exe does not
@@ -101,6 +117,7 @@ function Seed {
         "$fakeHome\.claude\skills\trusted-ai-workflow",
         "$fakeHome\.agents\skills\local-agent-ready-starter",
         "$fakeHome\.exapump",
+        "$fakeProfile\.exapump",
         "$($script:ExakitHome)\credentials")) {
         New-Item -ItemType Directory -Force -Path $d | Out-Null
     }
@@ -109,7 +126,9 @@ function Seed {
     }
     New-Item -ItemType File -Force -Path (Join-Path $script:ExakitHome "manifest.json") | Out-Null
     New-Item -ItemType File -Force -Path (Join-Path $fakeHome ".exapump\config.toml") | Out-Null
+    New-Item -ItemType File -Force -Path (Join-Path $fakeProfile ".exapump\config.toml") | Out-Null
     $script:markers = @{}
+    $script:warnings = @()
 }
 function Ex($p) { if (Test-Path $p) { "yes" } else { "no" } }
 
@@ -120,6 +139,7 @@ Seed
 Invoke-ExakitUninstallRun -DryRun
 Check "dry: kit home kept"   "yes" (Ex $script:ExakitHome)
 Check "dry: exapump kept"    "yes" (Ex (Join-Path $fakeHome ".exapump"))
+Check "dry: exapump under the profile home kept" "yes" (Ex (Join-Path $fakeProfile ".exapump"))
 Check "dry: skill kept"      "yes" (Ex "$fakeHome\.claude\skills\trusted-ai-workflow")
 Check "dry: no db teardown"  ""    ("" + $script:markers.nano)
 # A dry run must not unregister anything either: it reports, it does not act.
@@ -135,7 +155,16 @@ Check "real: mcp uninstall"     "uninstall" ("" + $script:markers.mcp)
 # after this suite was written, and the suite had no caller to notice.
 Check "real: autostart unregistered" "database" ("" + $script:markers.autostart)
 Check "real: kit home gone"     "no"  (Ex $script:ExakitHome)
+# The shared-engine hazard is said while the removal is still being narrated,
+# not only in the record line after the container is gone. On -Yes there is no
+# gate to read, so this is the only warning a scripted caller ever sees.
+Check "real: the shared-engine hazard was warned" "yes" `
+    $(if (($script:warnings -join " ") -match "share one Docker engine") { "yes" } else { "no" })
+Check "real: it names the container and the volume" "yes" `
+    $(if (($script:warnings -join " ") -match "exasol-nano.*exasol-nano-data") { "yes" } else { "no" })
 Check "real: exapump gone"      "no"  (Ex (Join-Path $fakeHome ".exapump"))
+# The one an ordinary machine cannot tell apart from the line above.
+Check "real: exapump under the profile home gone" "no" (Ex (Join-Path $fakeProfile ".exapump"))
 Check "real: exapump.exe gone"  "no"  (Ex (Join-Path $script:BinDir "exapump.exe"))
 Check "real: exakit.cmd gone"   "no"  (Ex (Join-Path $script:BinDir "exakit.cmd"))
 Check "real: skill A gone"      "no"  (Ex "$fakeHome\.claude\skills\local-agent-ready-starter")

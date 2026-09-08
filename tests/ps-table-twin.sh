@@ -516,5 +516,55 @@ has "...and so does the twin"           '$nameLen = $plain.Length' "$UI_PS1"
 has "the shell guards the cell on width" 'if [ "${UI_TABLE_STAT_W:-0}" -gt 0 ]; then' "$UI_SH"
 has "...and the twin guards it too"      'if ($StatusWidth -gt 0) {' "$UI_PS1"
 
+printf '\n== no PowerShell module builds a path out of a raw $HOME ==\n'
+# PowerShell's $HOME is the account's home-directory ATTRIBUTE, which on a
+# domain-joined machine is routinely H:\ or a UNC share. Every other tool the
+# kit talks to -- exapump.exe, uv's installer, Claude Code, Codex -- resolves
+# "home" as %USERPROFILE%. So a path built from $HOME is written where the tool
+# that has to read it never looks: the exapump profile, the uv binary and the
+# skills all landed in the wrong tree, and each failure looked like something
+# else. Get-ExakitProfileHome is the one resolver; this fails if a module goes
+# back to $HOME.
+#
+# Four things legitimately still name $HOME and are skipped by name:
+#   the resolvers themselves      - $HOME is their documented fallback
+#   comment lines                 - they explain exactly this
+#   $HOME with a FORWARD slash    - literal text ("$HOME/.local/bin/exakit")
+#                                   matched against Claude settings entries,
+#                                   never dereferenced as a path
+#   Get-ExakitTilde / Get-ExakitNormalizedPath / Show-McpOperationSummary
+#                                 - display abbreviation and expanding a ~ the
+#                                   USER typed, where $HOME is the right answer
+raw_home_hits() { # raw_home_hits <file>
+    awk '
+        /^function [A-Za-z]+-[A-Za-z0-9]+/ { fn = $2 }
+        /\$HOME/ {
+            line = $0
+            sub(/^[ \t]+/, "", line)
+            if (line ~ /^#/) next
+            if (line ~ /\$HOME\//) next
+            if (fn == "Get-ExakitHomeBase") next
+            if (fn == "Get-ExakitProfileHome") next
+            if (fn == "Get-ExakitAgentHome") next
+            if (fn == "Get-ExakitTilde") next
+            if (fn == "Get-ExakitNormalizedPath") next
+            if (fn == "Show-McpOperationSummary") next
+            printf "%d ", NR
+        }
+    ' "$1"
+}
+for ps_module in exakit-common.ps1 exapump.ps1 mcp.ps1 nano.ps1 pyexasol.ps1; do
+    hits="$(raw_home_hits "$ROOT/setup/lib/$ps_module")"
+    if [ -n "$hits" ]; then
+        fail "setup/lib/$ps_module builds a path from \$HOME (lines: $hits) -- use Get-ExakitProfileHome"
+    else
+        pass "setup/lib/$ps_module routes every home through the resolver"
+    fi
+done
+has "the profile-home resolver exists"        'function Get-ExakitProfileHome' "$COMMON_PS1"
+has "the agent home is the same resolver"     'return (Get-ExakitProfileHome)' "$COMMON_PS1"
+has "the exapump profile follows it"          'Join-Path (Get-ExakitProfileHome) ".exapump\config.toml"' "$PUMP_PS1"
+has "so does uv's installer directory"        'Join-Path (Get-ExakitProfileHome) ".local\bin\uv.exe"' "$COMMON_PS1"
+
 printf '\n%d checks, %d failed\n' "$checks" "$fails"
 [ "$fails" -eq 0 ]

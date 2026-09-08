@@ -10,8 +10,9 @@
 #      reports it, and a second marketplace run offers nothing to install.
 #   3. `exakit_uninstall_run` sweeps the venv, state and launcher.
 #
-# Needs the network (GitHub + PyPI) and uv; SKIPs cleanly when either is
-# missing so it is safe in a dry CI environment. No database is required:
+# Needs the network (GitHub + PyPI) AND uv, and skips cleanly when any of the
+# three is missing, so it is safe in a dry CI environment. It performs a real
+# install when they are all present -- that is the point of it. No database is required:
 # dash-server starts and answers /mcp without a bootstrapped profile.
 #
 #   bash tests/marketplace-e2e.sh
@@ -24,7 +25,13 @@ say()  { printf '\n[marketplace-e2e] %s\n' "$1"; }
 skip() { echo "SKIP: $1"; exit 0; }
 fail() { echo "[marketplace-e2e] FAIL: $1" >&2; exit 1; }
 
-command -v uv >/dev/null 2>&1 || command -v curl >/dev/null 2>&1 || skip "neither uv nor curl is available"
+# uv is REQUIRED, not one of two alternatives. Written as
+# `uv || curl || skip`, a machine with curl and no uv skipped nothing and
+# walked into the real `uv pip install` below -- which is how an auditor's
+# sandbox began a live install while the header promised this suite "SKIPs
+# cleanly". curl cannot substitute for uv: it is the venv this test builds.
+command -v uv >/dev/null 2>&1 || skip "uv is not available (this suite builds a real venv with it)"
+command -v curl >/dev/null 2>&1 || skip "curl is not available"
 # Probe the host the install actually downloads from; a HEAD of the release
 # page avoids the API rate limit that a busy CI runner can hit.
 curl -fsSIL --max-time 10 https://github.com >/dev/null 2>&1 || skip "no network (github.com unreachable)"

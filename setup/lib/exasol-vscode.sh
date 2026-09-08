@@ -12,7 +12,9 @@
 #     with a sha256 digest published by the release API — so the download is
 #     checksum-verified with the same three-tier chain exapump uses
 #     (versions.json -> the pinned digest below -> the release API).
-#   - installed with VS Code's own CLI: code --install-extension <vsix>.
+#   - installed with the editor's own CLI: code --install-extension <vsix>.
+#     VS Code Insiders, Cursor, VSCodium and Windsurf ship the same CLI
+#     contract and are accepted too (exasol_vscode_code_cli), VS Code first.
 #     The extension lives in VS Code's extensions dir, NOT under the kit home;
 #     `exakit uninstall` removes a KIT-INSTALLED copy through the
 #     exasol_vscode_uninstall hook below (selectable on its own from the
@@ -30,10 +32,19 @@ EXAKIT_EXASOL_VSCODE_EXT_ID="${EXAKIT_EXASOL_VSCODE_EXT_ID:-exasol.exasol-vscode
 # install never touches the user's VS Code profile.
 EXAKIT_EXASOL_VSCODE_EXTDIR="${EXAKIT_EXASOL_VSCODE_EXTDIR:-}"
 
-# exasol_vscode_code_cli — VS Code's `code` command, discovered the way the
-# kit discovers Docker Desktop: PATH first, then the places the app actually
-# lives when the user never ran "Shell Command: Install 'code' command".
-# Empty output means "no VS Code on this machine".
+# exasol_vscode_code_cli — the editor CLI this add-on drives, discovered the
+# way the kit discovers Docker Desktop: PATH first, then the places the app
+# actually lives when the user never ran "Shell Command: Install 'code'
+# command". Empty output means "no VS Code-compatible editor on this machine".
+#
+# FORKS COUNT. VS Code Insiders, Cursor, VSCodium and Windsurf each ship a CLI
+# with the same --install-extension / --uninstall-extension /
+# --list-extensions --show-versions contract and take the same .vsix, so every
+# call this module makes works unchanged on them. Probing only `code` hid the
+# add-on entirely on those machines — no marketplace row, no line in the
+# closing offer — while the kit was happily writing MCP config for the very
+# same editors. VS Code proper is tried first, so a machine with both gets the
+# build the extension is tested against.
 # ⇄ twin: Get-ExasolVscodeCodeCli in exasol-vscode.ps1.
 exasol_vscode_code_cli() {
     _evc_recorded="$(manifest_get components.exasol_vscode.code_cli 2>/dev/null || true)"
@@ -41,14 +52,28 @@ exasol_vscode_code_cli() {
         printf '%s\n' "$_evc_recorded"
         return 0
     fi
-    if command -v code >/dev/null 2>&1; then
-        command -v code
-        return 0
-    fi
+    for _evc_name in code code-insiders cursor windsurf codium; do
+        if command -v "$_evc_name" >/dev/null 2>&1; then
+            command -v "$_evc_name"
+            return 0
+        fi
+    done
     for _evc_app in \
         "/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code" \
         "$HOME/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code" \
-        "/usr/share/code/bin/code"; do
+        "/usr/share/code/bin/code" \
+        "/Applications/Visual Studio Code - Insiders.app/Contents/Resources/app/bin/code-insiders" \
+        "$HOME/Applications/Visual Studio Code - Insiders.app/Contents/Resources/app/bin/code-insiders" \
+        "/usr/share/code-insiders/bin/code-insiders" \
+        "/Applications/Cursor.app/Contents/Resources/app/bin/cursor" \
+        "$HOME/Applications/Cursor.app/Contents/Resources/app/bin/cursor" \
+        "/usr/share/cursor/bin/cursor" \
+        "/Applications/Windsurf.app/Contents/Resources/app/bin/windsurf" \
+        "$HOME/Applications/Windsurf.app/Contents/Resources/app/bin/windsurf" \
+        "/usr/share/windsurf/bin/windsurf" \
+        "/Applications/VSCodium.app/Contents/Resources/app/bin/codium" \
+        "$HOME/Applications/VSCodium.app/Contents/Resources/app/bin/codium" \
+        "/usr/share/codium/bin/codium"; do
         if [ -x "$_evc_app" ]; then
             printf '%s\n' "$_evc_app"
             return 0
@@ -198,7 +223,7 @@ exasol_vscode_applicable() {
 }
 
 exasol_vscode_applicable_reason() {
-    printf '%s\n' "VS Code was not found (install it from https://code.visualstudio.com, then run: exakit marketplace)"
+    printf '%s\n' "VS Code was not found, and neither was a fork the kit can drive (VS Code Insiders, Cursor, VSCodium or Windsurf). Install VS Code from https://code.visualstudio.com — or, on a fork, put its CLI on PATH — then run: exakit marketplace"
 }
 
 exasol_vscode_asset_name() {

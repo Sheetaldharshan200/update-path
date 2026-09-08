@@ -43,10 +43,13 @@
     },
     {
       "command": "exakit autostart",
-      "options": "[on|off]",
+      "options": "",
       "summary": "Container restart policy.",
       "examples": [
-        "exakit autostart on"
+        "exakit autostart"
+      ],
+      "environment": [
+        "EXAKIT_AUTOSTART_CHANGE=1|0 pre-answers the question for scripts"
       ]
     },
     {
@@ -79,7 +82,7 @@
   "troubleshooting": [
     {
       "symptom": "Docker is installed but not running",
-      "remedy": "Start Docker Desktop, or run: podman machine start."
+      "remedy": "macOS/Windows: start Docker Desktop, or run: podman machine start. Linux: sudo systemctl start docker - there is no Podman machine on Linux, so for Podman check the user-namespace ranges instead: grep $(id -un) /etc/subuid /etc/subgid."
     },
     {
       "symptom": "Port 8563 is already in use",

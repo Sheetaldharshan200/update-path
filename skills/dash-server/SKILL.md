@@ -1,7 +1,7 @@
 ---
 name: dash-server
 addon: dash-server
-description: Build and operate live dashboards on the local Exasol database with the dash-server add-on — an agent-operated Dash hosting server the AI drives through its MCP control plane while the user opens a browser URL. Covers installing it from the marketplace, starting and stopping it as a kit service, the port it serves on, how the control plane is registered with AI clients as an MCP server named dash-server, and diagnosing a control plane that answers while the dashboards page does not. Triggers — "build me a dashboard", "visualize this Exasol data", "install dash-server", "dash-server is not running", "port 5100", "my dashboard page is blank or 500", "deploy a dashboard on my database", "I do not see the dash-server MCP tools", "register dash-server with my AI client".
+description: Build and operate live dashboards on the local Exasol database with the dash-server add-on — an agent-operated Dash hosting server the AI drives through its MCP control plane while the user opens a browser URL. Covers installing it from the marketplace, starting and stopping it as a kit service, the port it serves on, how the control plane is registered with AI clients as an MCP server named dash-server, and diagnosing a control plane that answers while the dashboards page does not. Triggers — "build me a dashboard", "chart this", "plot this data", "make a graph from this table", "visualize this Exasol data", "install dash-server", "dash-server is not running", "port 5100", "my dashboard page is blank or 500", "deploy a dashboard on my database", "I do not see the dash-server MCP tools", "register dash-server with my AI client".
 ---
 
 # dash-server — agent-built dashboards
@@ -32,9 +32,12 @@ install **moves to the next free one and records it** — so read the real port
 from the machine rather than assuming:
 
 ```bash
-exakit info        # dash-server's recorded port
-exakit status      # running / stopped per service
+exakit status --json    # .urls["dash-server"] is the full URL; .services["dash-server"] is running / stopped
+exakit info --json      # .components.dash_server.port — the recorded port
 ```
+
+The plain `exakit info` panel does **not** carry the port; it is in the JSON,
+and `status --json` carries the whole URL ready to hand to the user.
 
 Move it deliberately with:
 
@@ -75,7 +78,7 @@ dash-server          # the launcher, starts it directly
 exakit start         # the database AND every installed service, including this
 exakit stop
 exakit status        # running | stopped | not installed
-exakit autostart on  # bring it back after a reboot
+exakit autostart     # asks, then flips it; EXAKIT_AUTOSTART_CHANGE=1 pre-answers
 exakit logs dash-server
 ```
 

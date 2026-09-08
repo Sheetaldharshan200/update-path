@@ -72,7 +72,10 @@ function Get-McpConfiguredClients {
 function Get-UvxPath {
     $cmd = Get-Command uvx -ErrorAction SilentlyContinue
     if ($cmd) { return $cmd.Source }
-    foreach ($dir in @($script:BinDir, (Join-Path $HOME ".local\bin"))) {
+    # The second candidate is where uv's own installer writes: that is
+    # %USERPROFILE%\.local\bin, not PowerShell's $HOME, which on a redirected
+    # home is a directory nothing ever installed into.
+    foreach ($dir in @($script:BinDir, (Join-Path (Get-ExakitProfileHome) ".local\bin"))) {
         $candidate = Join-Path $dir "uvx.exe"
         if (Test-Path $candidate) { return $candidate }
     }
@@ -793,7 +796,7 @@ function Invoke-McpModule {
 function Invoke-McpSetupCli {
     param([Parameter(Mandatory)][string[]]$Clients)
     $repoRoot = Get-ExakitRepoRoot
-    if (-not $repoRoot) { Warn2 "Could not find the MCP package source to configure MCP clients."; return $null }
+    if (-not $repoRoot) { Warn2 "Could not find the MCP package source to configure your AI clients."; return $null }
     # The caller may have prepared the read-only user already: it narrates as it
     # goes, and the client table is animating by the time this runs, so nothing
     # may print. ONE call only - the flag is cleared here, so a later run in the
@@ -811,7 +814,7 @@ function Invoke-McpSetupCli {
         # screen before anyone could read it. Fail() stops the animation for the
         # same reason.
         Stop-ExakitAnimation
-        Warn2 "MCP client setup failed (see log)."
+        Warn2 "AI client setup failed (see log)."
         return $null
     }
     return $result.Output
@@ -820,7 +823,7 @@ function Invoke-McpSetupCli {
 function Invoke-McpOperationCli {
     param([Parameter(Mandatory)][string]$Operation, [Parameter(Mandatory)][string[]]$Clients, [string]$SnapshotId = "", [string]$ServerName = "")
     $repoRoot = Get-ExakitRepoRoot
-    if (-not $repoRoot) { Warn2 "Could not find the MCP package source to manage MCP clients."; return $null }
+    if (-not $repoRoot) { Warn2 "Could not find the MCP package source to manage your AI clients."; return $null }
     if ($Operation -in @("validate", "repair", "doctor")) {
         try { Set-McpReadonlyAccess } catch { return $null }
     }

@@ -47,6 +47,34 @@ function Get-JsonTablesLogPath {
     return (Join-Path $script:LogDir "json-tables.log")
 }
 
+# Invoke-JsonTablesLogged <exe> <args...> - run an engine invocation with its
+# own words ALSO kept in the add-on's log. Error messages and the help
+# document say "see: exakit logs json-tables", and for that command to have an
+# answer, something has to write the file - nothing ever did. Returns the
+# exit code, like Invoke-ExakitLogged. Twin of _json_tables_logged.
+function Invoke-JsonTablesLogged {
+    param([Parameter(Mandatory)][string]$Exe, [string[]]$Arguments = @())
+    $log = Get-JsonTablesLogPath
+    try {
+        New-Item -ItemType Directory -Force -Path (Split-Path -Parent $log) | Out-Null
+        Add-Content -Path $log -Value ("=== " + (Get-Date -Format "yyyy-MM-dd HH:mm:ss") + " " + $Exe + " " + ($Arguments -join " "))
+    } catch { }
+    $previousErrorActionPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = "Continue"
+        $out = @(& $Exe @Arguments 2>&1) -join "`n"
+        $code = $LASTEXITCODE
+    } catch {
+        $out = "$_"
+        $code = 1
+    } finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
+    try { if ($out) { Add-Content -Path $log -Value $out } } catch { }
+    if ($out) { Write-ExakitLog "INFO" $out }
+    return $code
+}
+
 function Get-JsonTablesVenvPython {
     return (Join-Path $script:JsonTablesVenv "Scripts\python.exe")
 }
@@ -324,7 +352,7 @@ function Get-JsonTablesVerifiedAsset {
         return $true
     }
     Remove-Item -Force -ErrorAction SilentlyContinue $Destination
-    Warn2 "No checksum is available for $Asset; refusing an unverified artifact. Usually the release is still publishing or the GitHub API was unreachable - retry with: exakit update json-tables"
+    Warn2 "No checksum is available for $Asset; refusing an unverified artifact. Usually the release is still publishing or the GitHub API was unreachable - retry with: exakit update json-tables. Add its digest to versions.json (components.json-tables.sha256) or, at your own risk, override with EXAKIT_ALLOW_UNVERIFIED_JSON_TABLES=1."
     return $false
 }
 
@@ -546,7 +574,7 @@ function Test-JsonTables {
         $sample = Join-Path $tmp "sample.json"
         Set-Content -Path $sample -Value '[{"id":1,"name":"alpha"},{"id":2,"name":"beta"}]' -Encoding ASCII
         $outDir = Join-Path $tmp "out"
-        $code = Invoke-ExakitLogged (Get-JsonTablesEnginePath) "--input" $sample "--output-dir" $outDir
+        $code = Invoke-JsonTablesLogged -Exe (Get-JsonTablesEnginePath) -Arguments @("--input", $sample, "--output-dir", $outDir)
         $parquet = @()
         if (Test-Path $outDir) {
             $parquet = @(Get-ChildItem -Path $outDir -Filter *.parquet -Recurse -ErrorAction SilentlyContinue)
@@ -615,6 +643,21 @@ function Update-JsonTables {
     $available = Get-ExakitAddonAdvertisedVersion -Id "json-tables" -Fallback $script:JsonTablesVersionFallback
     if (-not $available) { Fail "Could not resolve the advertised json-tables version." }
     $current = Get-JsonTablesInstalledVersion
+    # Same build, and every downloaded piece still on disk: rewrite the
+    # launcher so a newer kit's improvements reach an existing install, then
+    # stop. Without this, `exakit update` re-downloaded the wheel, the ingest
+    # engine AND the compiled cargo shim on every single run - three release
+    # assets for no change - while macOS and Linux did nothing and said
+    # "already current". A missing engine or shim falls through to the full
+    # install, which is the repair path. Twin of the early return in
+    # json_tables_update.
+    $shimPath = Join-Path (Get-JsonTablesShimDir) "cargo.exe"
+    if ($current -and $current -eq $available -and
+        (Test-Path (Get-JsonTablesEnginePath)) -and (Test-Path $shimPath)) {
+        [void](Write-JsonTablesLauncher)
+        Ok "JSON Tables is already current ($current)"
+        return $true
+    }
     if ($current) { Info "Updating JSON Tables $current -> $available" }
     else { Info "Installing JSON Tables $available" }
     $script:JsonTablesVersion = $available

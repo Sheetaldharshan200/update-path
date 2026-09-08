@@ -1,12 +1,18 @@
 ---
 name: exasol-ecosystem
-description: Catalog and routing guide for the public Exasol tool ecosystem — which repository, driver, connector, virtual-schema adapter, extension or integration to reach for, which GitHub organization owns it, and which ones are archived and must not be recommended. Use it to answer "is there an Exasol X" and to pick between several tools that overlap. Triggers — "how do I connect Exasol to <tool>", "is there an Exasol connector for", "which virtual schema adapter", "how do I load Parquet/Kafka/S3 into Exasol", "what Exasol drivers exist", "Exasol dbt/Power BI/Tableau/Grafana/Metabase/n8n", "extend Exasol with a UDF", "does Exasol have an MCP server", "what is exasol-labs", "is this Exasol project still maintained".
+description: Catalog and routing guide for the public Exasol tool ecosystem BEYOND this kit — which repository, driver, connector, virtual-schema adapter, extension or integration to reach for, which GitHub organization owns it, and which ones are archived and must not be recommended. Use it to answer "is there an Exasol X" and to pick between several tools that overlap; for the tools this kit already installs (exapump loading, the kit MCP bridge, pyexasol) use their own skills. Triggers — "how do I connect Exasol to another tool", "is there an Exasol connector for", "which virtual schema adapter", "stream Kafka or Kinesis into Exasol", "load from S3 or cloud storage", "what Exasol drivers exist", "Exasol dbt/Power BI/Tableau/Grafana/Metabase/n8n", "extend Exasol with a UDF", "what is exasol-labs", "is this Exasol project still maintained".
 ---
 
 # The Exasol ecosystem — what exists, and which one to reach for
 
 This is a lookup table, not a tutorial. Use it to find the right repository,
 then read that repository's own README for install and configuration steps.
+
+**Rows marked "already installed" are on this machine already.** The starter kit
+ships exapump, the kit's MCP server and pyexasol, so for those the answer is a
+command the user can run now, not a repository to go and find. Route the request
+to that tool's own skill (`exasol-exapump`, `exasol-mcp`, `exasol-pyexasol`) and
+mention the GitHub project only if the user asks about the upstream source.
 
 ## Two organizations, two support levels
 
@@ -66,7 +72,7 @@ SQL with optimizer pushdown: `exasol/virtual-schemas` is the umbrella.
 | Want | Reach for |
 |---|---|
 | Parquet, Avro, ORC, CSV from object storage | `exasol/cloud-storage-extension` |
-| CLI import/export, CSV and Parquet | `exasol-labs/exapump` |
+| CLI import/export, CSV and Parquet | `exasol-labs/exapump` — **already installed** by this kit and on `PATH`; see the `exasol-exapump` skill |
 | JSON / NDJSON shredded into tables | `exasol-labs/exasol-json-tables` |
 | Arrow / ADBC / high-throughput movement | `exasol-labs/exarrow-rs` |
 | Kafka / Kinesis streams | `exasol/kafka-connector-extension`, `exasol/kinesis-connector-extension` |
@@ -80,7 +86,7 @@ SQL with optimizer pushdown: `exasol/virtual-schemas` is the umbrella.
 
 | Want | Reach for |
 |---|---|
-| An AI assistant that can query the database | `exasol/mcp-server` |
+| An AI client that can query the database | `exasol/mcp-server` — **already installed** and configured by this kit (`exakit mcp-setup`, `exakit mcp-doctor`); see the `exasol-mcp` skill |
 | Notebooks and worked AI/ML examples | `exasol/ai-lab`, `exasol/notebook-connector` |
 | SQL in the editor | Exasol for VS Code (marketplace add-on in this kit) |
 | Governed business-facing views | `exasol-labs/exasol-semantic-views` |
@@ -102,7 +108,7 @@ dedicated Exasol repository — see the
 
 | Want | Reach for |
 |---|---|
-| Agent access to the database over MCP | `exasol/mcp-server` |
+| Agent access to the database over MCP | `exasol/mcp-server` — **already installed** and configured by this kit; see the `exasol-mcp` skill |
 | Skills that teach an agent to drive Exasol | `exasol-labs/exasol-agent-skills` |
 | Reference agentic workloads | `exasol-labs/agentic-solutions` |
 | Hugging Face model inference in-database | `exasol/transformers-extension` |
@@ -120,7 +126,7 @@ rather than inventing a GitHub link.
 
 | Language / interface | Driver |
 |---|---|
-| Python | `exasol/pyexasol` (SQLAlchemy: `exasol/sqlalchemy-exasol`) |
+| Python | `exasol/pyexasol` — **already installed** by this kit in `~/.exasol-starter-kit/pyexasol-venv`; see the `exasol-pyexasol` skill (SQLAlchemy: `exasol/sqlalchemy-exasol`) |
 | Java / JVM | JDBC — [downloads.exasol.com](https://downloads.exasol.com/) |
 | Go | `exasol/exasol-driver-go` |
 | TypeScript / JavaScript | `exasol/exasol-driver-ts` |

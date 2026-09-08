@@ -218,6 +218,47 @@ fi
 
 # ---------------------------------------------------------------------------
 echo
+echo "a skill dropped from the set is retired, not orphaned:"
+# ---------------------------------------------------------------------------
+# THE ORPHAN THIS PINS: skills-install copied the new set but never removed a
+# previously placed skill the new set dropped, so it stayed in the discovery
+# roots forever, firing its triggers for a workflow the kit no longer ships.
+# Only names the MANIFEST recorded are removed — a skill the user placed
+# themselves is never the kit's to touch.
+mkdir -p "$WORK/fakekit/skills/zz-keeper"
+cat > "$WORK/fakekit/skills/zz-keeper/SKILL.md" <<'EOF'
+---
+name: zz-keeper
+description: Stays in the set. Triggers — "never".
+---
+Body.
+EOF
+mkdir -p "$WORK/claude/zz-user-own"
+printf 'the user put this here themselves\n' > "$WORK/claude/zz-user-own/SKILL.md"
+rm -rf "$WORK/fakekit/skills/zz-invented-skill"
+exakit_install_skills >"$WORK/retire.log" 2>&1
+check "the dropped skill left every root" "available" "$(exakit_skill_state zz-invented-skill)"
+check "the kept skill is untouched" "installed" "$(exakit_skill_state zz-keeper)"
+check "a skill the user placed themselves is never removed" "yes" \
+    "$([ -f "$WORK/claude/zz-user-own/SKILL.md" ] && echo yes || echo no)"
+has "the retirement is said out loud" "Retired 1 skill" "$(cat "$WORK/retire.log")"
+lacks "the record no longer names the dropped skill" "zz-invented-skill" \
+    "$(manifest_get components.skills.installed 2>/dev/null || true)"
+# Put the fixture back the way the sections below expect it: the invented
+# skill in the kit and placed, the keeper and the user's own skill gone.
+rm -rf "$WORK/fakekit/skills/zz-keeper" "$WORK/claude/zz-user-own"
+mkdir -p "$WORK/fakekit/skills/zz-invented-skill"
+cat > "$WORK/fakekit/skills/zz-invented-skill/SKILL.md" <<'EOF'
+---
+name: zz-invented-skill
+description: A skill that exists only in this test. Triggers — "never".
+---
+Body.
+EOF
+exakit_install_skills >/dev/null 2>&1
+
+# ---------------------------------------------------------------------------
+echo
 echo "an add-on's skill ships with its add-on, not before it:"
 # ---------------------------------------------------------------------------
 # A skill for a marketplace add-on is no use until the add-on is there: its
@@ -562,6 +603,104 @@ lacks "the shell offers no command when there is nothing to do" \
     "All installed. Refresh after a kit update" "$SH_COMMON"
 lacks "...nor does the twin" \
     "All installed. Refresh after a kit update" "$PS_COMMON"
+
+# ---------------------------------------------------------------------------
+echo
+echo "triggers route to one skill, and gated skills say whose they are:"
+# ---------------------------------------------------------------------------
+# SKL-04: a verbatim trigger in two skills leaves the agent a coin flip.
+check "'connect my AI to Exasol' belongs to exactly one skill" "1" \
+    "$(grep -l 'connect my AI to Exasol' "$ROOT"/skills/*/SKILL.md | wc -l | tr -d ' ')"
+# SKL-05: the ecosystem skill routes AROUND the kit, never over it - no
+# literal template trigger, and no claim on the loading the installed tools own.
+lacks "the ecosystem skill has no template trigger" '<tool>' \
+    "$(cat "$ROOT/skills/exasol-ecosystem/SKILL.md")"
+lacks "...and does not claim local Parquet loading" 'load Parquet' \
+    "$(sed -n '4p' "$ROOT/skills/exasol-ecosystem/SKILL.md")"
+has  "...and scopes itself beyond the kit" 'BEYOND this kit' \
+    "$(cat "$ROOT/skills/exasol-ecosystem/SKILL.md")"
+# SKL-03: an add-on-gated, uninstalled skill is not "available" to
+# skills-install; the listing says whose it is and stops prescribing a command
+# that skips it. Proven against the fake kit: gate a skill on an add-on that
+# is not installed and read the listing both ways.
+# A section above repointed exakit_repo_root at its own kit copy; this block
+# builds a minimal kit of its own so the gated fixture is actually visible.
+GATEKIT="$WORK/gatekit"
+mkdir -p "$GATEKIT/skills/zz-gated"
+cp "$ROOT/versions.json" "$GATEKIT/versions.json"
+cat > "$GATEKIT/skills/zz-gated/SKILL.md" <<'EOF'
+---
+name: zz-gated
+addon: zz-never-addon
+description: Arrives with its add-on. Triggers — "never".
+---
+Body.
+EOF
+exakit_repo_root() { printf '%s
+' "$GATEKIT"; }
+_gated_json="$(exakit_skills_list --json 2>/dev/null)"
+has "the JSON says needs-addon" '"name":"zz-gated","state":"needs-addon","addon":"zz-never-addon"' "$_gated_json"
+has "...with the runnable remedy" '"remedy":"exakit marketplace zz-never-addon"' "$_gated_json"
+_gated_panel="$(exakit_skills_list 2>/dev/null)"
+has "the panel names the owning add-on" "with zz-never-addon" "$_gated_panel"
+lacks "...and does not prescribe skills-install for it" "exakit skills-install" "$_gated_panel"
+rm -rf "$GATEKIT"
+
+# ---------------------------------------------------------------------------
+echo
+echo "the PowerShell twin carries the same three properties:"
+# ---------------------------------------------------------------------------
+# There is no pwsh here, so these are asserted as text. Every one of them is a
+# property the shell side is exercised on for real above, and each shipped to
+# Windows unchecked before it was written down here.
+PS_SKILLS="$(cat "$ROOT/setup/lib/exakit-common.ps1")"
+
+# SKL-13: the discovery roots must be overridable, or nothing can exercise this
+# layer on Windows without writing into the developer's own ~\.claude\skills --
+# which is why tests/skills.sh has no Windows twin at all.
+_PS_ROOTS="$(awk '/^function Get-ExakitSkillRoots/,/^}/' "$ROOT/setup/lib/exakit-common.ps1")"
+has "the twin branches on EXAKIT_SKILL_ROOTS" 'if ($env:EXAKIT_SKILL_ROOTS) {' "$_PS_ROOTS"
+has "...and returns them instead of the real home" '$env:EXAKIT_SKILL_ROOTS -split' "$_PS_ROOTS"
+has "...returning the override, not falling through" 'return $roots' "$_PS_ROOTS"
+
+# SKL-02: the prune, on the Windows side. The shell retires a skill the new set
+# dropped (proven for real above); without this block Install-ExakitSkills only
+# ever PLACED, so renaming or retiring a skill left every Windows machine with
+# the old copy firing its triggers forever.
+_PS_INSTALL="$(awk '/^function Install-ExakitSkills/,/^}$/' "$ROOT/setup/lib/exakit-common.ps1")"
+has "the twin reads what it placed before" 'Get-ExakitManifestValue "components.skills.installed"' "$_PS_INSTALL"
+has "...and unplaces a name the new set no longer carries" 'Remove-ExakitSkillCopy -Name $prevName' "$_PS_INSTALL"
+has "...only when the source set really dropped it" 'if (Test-Path (Join-Path (Join-Path $skillsSrc $prevName) "SKILL.md")) { continue }' "$_PS_INSTALL"
+has "...and says so out loud" 'Ok "Retired $retired $retiredUnit the new set no longer carries"' "$_PS_INSTALL"
+
+# SKL-03: an add-on-gated skill is not counted pending on EITHER half. The shell
+# is proven above against a real fixture; the twin's pending count must exclude
+# the same rows, or Windows keeps prescribing skills-install for skills that
+# command deliberately skips.
+has "the twin reads the gating add-on"   "function Get-ExakitSkillGatingAddon" "$PS_SKILLS"
+_PS_SHOW="$(awk '/^function Show-ExakitSkills/,/^}$/' "$ROOT/setup/lib/exakit-common.ps1")"
+has "...and gives the case its own state" 'state = "needs-addon"' "$_PS_SHOW"
+has "...naming the add-on that owns it"   'remedy = "exakit marketplace $owner"' "$_PS_SHOW"
+has "...and leaves it out of the pending count" '$skjMissing = $pending' "$_PS_SHOW"
+# The gated branch must `continue` BEFORE the pending++ line, or the state word
+# changes and the count does not -- the exact half-fix this guards against.
+has "...by skipping the count entirely" "continue" \
+    "$(printf '%s\n' "$_PS_SHOW" | sed -n '/state = "needs-addon"/,/if ($state -ne "installed") { $pending++ }/p')"
+
+# ---------------------------------------------------------------------------
+echo
+echo "no two skills claim the same trigger:"
+# ---------------------------------------------------------------------------
+# A trigger list is how an agent routes a request. The same utterance in two
+# descriptions is a coin flip, and it is invisible until someone reads all
+# eleven files side by side. Keyed off the filesystem, so a new skill is
+# checked the moment it lands and no skill name appears here.
+_dupe_triggers="$(for _t_file in "$ROOT"/skills/*/SKILL.md; do
+    [ -f "$_t_file" ] || continue
+    awk '/^description:/ { print; exit }' "$_t_file" \
+        | grep -o '"[^"]*"' | sort -u | sed "s|\$| $(basename "$(dirname "$_t_file")")|"
+done | awk '{ key = $0; sub(/ [^ ]*$/, "", key); count[key]++ } END { for (k in count) if (count[k] > 1) print k }')"
+check "every trigger belongs to exactly one skill" "" "$_dupe_triggers"
 
 echo
 printf 'passed: %d, failed: %d\n' "$PASS" "$FAIL"

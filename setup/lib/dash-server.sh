@@ -12,11 +12,18 @@
 #     browser URL.
 #   - Pure-Python package with a `dash-server` console script; releases carry
 #     no prebuilt binaries, so the install is `uv pip install` of the tag's
-#     source tarball into a dedicated venv under the kit home — the same
-#     tag-pinned, package-manager-verified posture as the mcp and pyexasol
+#     source tarball into a dedicated venv under the kit home — tag-pinned like
+#     the mcp and pyexasol components, but with NO digest verification: the
+#     release publishes no digest for the tarball, unlike the binary add-ons
 #     components. (GitHub source tarballs have no stable published digest, so
 #     there is nothing kit-side to pin a checksum against.)
-#   - Control plane: 127.0.0.1:5100 by default (env DASH_SERVER_HOST/PORT).
+#   - Control plane: 127.0.0.1:5100. The PORT half is settable
+#     (DASH_SERVER_PORT, and the kit records the port it chose). The HOST
+#     half is NOT: every start below passes --host 127.0.0.1 explicitly,
+#     which outranks DASH_SERVER_HOST. This control plane is
+#     unauthenticated, so binding it off loopback would publish the
+#     database to the LAN. The env setdefault in the launcher is a floor
+#     for someone running that launcher by hand, not a knob the kit reads.
 #   - Exasol profile bootstrap at startup via DASH_SERVER_EXASOL_* env vars;
 #     the launcher below feeds it the kit's local database.
 #
@@ -69,8 +76,29 @@ _dash_server_resolve_port() {
 # add-on that was never started. These three answer the real question.
 
 _dash_server_port_pids() {
+    # Through the shared probe, which tries ss, then lsof, then netstat. Asking
+    # lsof alone meant a stock Fedora or Ubuntu Server -- neither ships it --
+    # answered "nobody is listening" for every question below, and ownership
+    # detection fell back to the bare HTTP probe: exactly the bug the two
+    # functions under this one exist to prevent. Only when NONE of the three is
+    # present is the answer unknown, and _dash_server_port_probe_degraded says
+    # so once, so a wrong verdict is never silent.
+    if command -v port_listener_pids >/dev/null 2>&1; then
+        port_listener_pids "$EXAKIT_DASH_SERVER_PORT" 2>/dev/null
+        return 0
+    fi
     command -v lsof >/dev/null 2>&1 || return 0
     lsof -nP -iTCP:"$EXAKIT_DASH_SERVER_PORT" -sTCP:LISTEN -t 2>/dev/null | sort -u
+}
+
+# True when no tool on this machine can name a listener, so "not ours" below is
+# "cannot tell", not "checked and no". Callers that would otherwise report a
+# confident verdict say which it was.
+_dash_server_port_probe_degraded() {
+    command -v ss >/dev/null 2>&1 && return 1
+    command -v lsof >/dev/null 2>&1 && return 1
+    command -v netstat >/dev/null 2>&1 && return 1
+    return 0
 }
 
 # Is the listener one of OUR processes? Matched on the venv path, which is
@@ -103,7 +131,11 @@ _dash_server_port_foreign_desc() {
 # Is OUR server up? lsof answers precisely; without it fall back to the HTTP
 # probe, which is the old behaviour and the best a machine without lsof allows.
 _dash_server_running() {
-    if command -v lsof >/dev/null 2>&1; then
+    # Keyed on whether ANY listener probe exists, not on lsof specifically.
+    # Gating this on lsof alone sent every machine without it (stock Fedora,
+    # Ubuntu Server) to the HTTP probe, which any other program on the port
+    # passes -- so the kit reported a healthy add-on it had never started.
+    if ! _dash_server_port_probe_degraded; then
         _dash_server_port_is_ours
         return $?
     fi
@@ -268,9 +300,10 @@ dash_server_install() {
 # renders nothing), which is why validation passed while the browser page
 # answered 500 with TemplateNotFound: dashboard_catalog.html.
 #
-# Rather than ship a broken UI, the install re-downloads the same verified
-# release tarball and copies across any non-.py file that the source has and
-# the installed package lacks. Nothing is overwritten, so a fixed release
+# Rather than ship a broken UI, the install re-downloads the same tag-pinned
+# release tarball — NOT checksum-verified, because a GitHub source tarball
+# publishes no digest to pin (see the module header) — and copies across any
+# non-.py file that the source has and the installed package lacks. Nothing is overwritten, so a fixed release
 # simply makes this a no-op — the day upstream declares the data, this quietly
 # stops doing anything and can be deleted.
 _dash_server_restore_package_data() {
@@ -440,6 +473,15 @@ if [ -n "@DSN@" ] && [ -z "${DASH_SERVER_EXASOL_DSN:-}" ]; then
         export DASH_SERVER_EXASOL_TLS_VERIFY="${DASH_SERVER_EXASOL_TLS_VERIFY:-false}"
     fi
 fi
+# Bind where the kit says, not where dash-server defaults. Without these the
+# pre-flight check above verdicts @PORT@ and the server then binds its own
+# built-in default, so an install that stepped up past a busy 5100 starts on
+# the busy port - or, if the upstream default host is not loopback, exposes an
+# unauthenticated control plane on the LAN. Setdefaults, like
+# DASH_SERVER_INSTANCE_PATH above: a user who exports their own still wins.
+: "${DASH_SERVER_HOST:=127.0.0.1}"
+: "${DASH_SERVER_PORT:=@PORT@}"
+export DASH_SERVER_HOST DASH_SERVER_PORT
 exec "@VENVBIN@" "$@"
 EXAKIT_DS_EOF
     # sed with | as the delimiter: the substituted values are paths, DSNs and
@@ -650,6 +692,15 @@ dash_server_log_path() {
 # dash_server_status — running | stopped | not installed. The HTTP probe is the
 # truth: the process may have been started by launchd, by the user in a
 # terminal, or by exakit, and only one of those leaves a pidfile.
+# dash_server_url — the one address everything about this add-on hangs off.
+# A convention hook (_exakit_addon_fn <id> url): status --json surfaces it, so
+# an agent finally has a JSON key for the URL instead of parsing the human
+# screen or guessing the port.
+dash_server_url() {
+    _dash_server_resolve_port
+    printf 'http://127.0.0.1:%s\n' "$EXAKIT_DASH_SERVER_PORT"
+}
+
 dash_server_status() {
     _dash_server_resolve_port
     if [ ! -x "$EXAKIT_DASH_SERVER_BIN" ]; then

@@ -10,8 +10,10 @@
 #   - releases carry ONE platform-independent exasol-vscode-<ver>.vsix with a
 #     sha256 digest published by the release API - verified with the same
 #     three-tier chain exapump uses (versions.json -> pinned -> release API).
-#   - installed with VS Code's own CLI: code --install-extension <vsix>. The
-#     extension lives in VS Code's extensions dir, NOT under the kit home;
+#   - installed with the editor's own CLI: code --install-extension <vsix>.
+#     VS Code Insiders, Cursor, VSCodium and Windsurf ship the same CLI
+#     contract and are accepted too (Get-ExasolVscodeCodeCli), VS Code first.
+#     The extension lives in the editor's extensions dir, NOT under the kit home;
 #     `exakit uninstall` removes a KIT-INSTALLED copy through the
 #     Uninstall-ExasolVscode hook below (selectable on its own from the
 #     uninstall menu), and never touches one the user installed themselves.
@@ -26,19 +28,44 @@ $script:ExasolVscodeExtId = if ($env:EXAKIT_EXASOL_VSCODE_EXT_ID) { $env:EXAKIT_
 # install never touches the user's VS Code profile.
 $script:ExasolVscodeExtDir = if ($env:EXAKIT_EXASOL_VSCODE_EXTDIR) { $env:EXAKIT_EXASOL_VSCODE_EXTDIR } else { "" }
 
-# VS Code's `code` command, discovered the way the kit discovers Docker
-# Desktop: PATH first, then the places the app actually lives when the user
-# never registered the shell command. $null means "no VS Code on this machine".
+# The editor CLI this add-on drives, discovered the way the kit discovers
+# Docker Desktop: PATH first, then the places the app actually lives when the
+# user never registered the shell command. $null means "no VS Code-compatible
+# editor on this machine".
+#
+# FORKS COUNT. VS Code Insiders, Cursor, VSCodium and Windsurf each ship a CLI
+# with the same --install-extension / --uninstall-extension /
+# --list-extensions --show-versions contract and take the same .vsix, so every
+# call this module makes works unchanged on them. Probing only `code` hid the
+# add-on entirely on those machines while the kit was happily writing MCP
+# config for the very same editors. VS Code proper is tried first, so a machine
+# with both gets the build the extension is tested against.
 # Twin of exasol_vscode_code_cli in exasol-vscode.sh.
 function Get-ExasolVscodeCodeCli {
     $recorded = Get-ExakitManifestValue "components.exasol_vscode.code_cli"
     if ($recorded -and (Test-Path $recorded)) { return $recorded }
-    $found = Get-Command code -ErrorAction SilentlyContinue
-    if ($found -and $found.Source) { return $found.Source }
-    $candidates = @(
-        (Join-Path $env:LOCALAPPDATA "Programs\Microsoft VS Code\bin\code.cmd"),
-        "$env:ProgramFiles\Microsoft VS Code\bin\code.cmd"
-    )
+    foreach ($name in @("code", "code-insiders", "cursor", "windsurf", "codium")) {
+        $found = Get-Command $name -ErrorAction SilentlyContinue
+        if ($found -and $found.Source) { return $found.Source }
+    }
+    # Guarded: under the global Stop preference, Join-Path with a null base
+    # (LOCALAPPDATA does not exist on a non-Windows pwsh, and can be absent in
+    # a stripped service environment) throws - and this resolver is reached
+    # from the version table through the system-present detector, where one
+    # null environment variable used to take down the whole command.
+    $candidates = @()
+    if ($env:LOCALAPPDATA) {
+        $candidates += (Join-Path $env:LOCALAPPDATA "Programs\Microsoft VS Code\bin\code.cmd")
+        $candidates += (Join-Path $env:LOCALAPPDATA "Programs\Microsoft VS Code Insiders\bin\code-insiders.cmd")
+        $candidates += (Join-Path $env:LOCALAPPDATA "Programs\cursor\resources\app\bin\cursor.cmd")
+        $candidates += (Join-Path $env:LOCALAPPDATA "Programs\Windsurf\bin\windsurf.cmd")
+        $candidates += (Join-Path $env:LOCALAPPDATA "Programs\VSCodium\bin\codium.cmd")
+    }
+    if ($env:ProgramFiles) {
+        $candidates += (Join-Path $env:ProgramFiles "Microsoft VS Code\bin\code.cmd")
+        $candidates += (Join-Path $env:ProgramFiles "Microsoft VS Code Insiders\bin\code-insiders.cmd")
+        $candidates += (Join-Path $env:ProgramFiles "VSCodium\bin\codium.cmd")
+    }
     foreach ($candidate in $candidates) {
         if ($candidate -and (Test-Path $candidate)) { return $candidate }
     }
@@ -46,6 +73,17 @@ function Get-ExasolVscodeCodeCli {
 }
 
 # Run the code CLI with the optional sandbox extensions-dir applied.
+#
+# STDIN IS CLOSED FOR THE CHILD, and that is not tidiness. Twin of the
+# `</dev/null` on _exasol_vscode_code in exasol-vscode.sh, which records the
+# measured bug: the code CLI reads and drains whatever stdin it inherits, so
+# called from inside the marketplace's row-by-row loop it swallowed the rest of
+# that loop's input and every add-on listed AFTER exasol-vscode vanished from
+# the menu, silently. code.cmd on Windows is a batch wrapper around the same
+# Node process reading the same inherited console handle. Piping into a native
+# command makes PowerShell redirect its standard input, so it cannot reach the
+# console. CI never exercises this: a runner has no VS Code, so the CLI is
+# never run.
 function Invoke-ExasolVscodeCode {
     param([Parameter(Mandatory)][string[]]$Arguments)
     $cli = Get-ExasolVscodeCodeCli
@@ -53,7 +91,7 @@ function Invoke-ExasolVscodeCode {
     if ($script:ExasolVscodeExtDir) {
         $Arguments = @("--extensions-dir", $script:ExasolVscodeExtDir) + $Arguments
     }
-    return (& $cli @Arguments 2>$null)
+    return ($null | & $cli @Arguments 2>$null)
 }
 
 # The version VS Code itself reports for the extension; $null when it is not
@@ -77,6 +115,15 @@ function Get-ExasolVscodeInstalledVersion {
     return (Get-ExasolVscodeLiveVersion)
 }
 
+# The extension is on this machine but the KIT did not put it there: the user
+# installed it from the VS Code Marketplace themselves. Without this detector
+# Windows adopted such a copy as its own and a later uninstall DELETED an
+# extension the kit never installed. Twin of exasol_vscode_system_present.
+function Test-ExasolVscodeSystemPresent {
+    if (Get-ExakitManifestValue "components.exasol_vscode.version") { return $false }
+    return [bool](Get-ExasolVscodeLiveVersion)
+}
+
 # An editor extension is only an option when the editor is here. Without VS
 # Code the add-on is not offered at all: no row in the marketplace, no mention
 # in the closing offer or the discovery lines. An already kit-installed copy
@@ -87,7 +134,7 @@ function Test-ExasolVscodeApplicable {
 }
 
 function Get-ExasolVscodeApplicableReason {
-    return "VS Code was not found (install it from https://code.visualstudio.com, then run: exakit marketplace)"
+    return "VS Code was not found, and neither was a fork the kit can drive (VS Code Insiders, Cursor, VSCodium or Windsurf). Install VS Code from https://code.visualstudio.com - or, on a fork, put its CLI on PATH - then run: exakit marketplace"
 }
 
 function Get-ExasolVscodeAssetName {

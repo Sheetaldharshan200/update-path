@@ -51,7 +51,12 @@ has "and the loaded datasets" '"tpch"' "$_sj"
 # panel row says so.
 has "the human screen names the datasets too" "tpch" \
     "$(EXAKIT_HOME="$WORK/stopped" bash "$ROOT/setup/exakit" status 2>/dev/null)"
-has "prose names the fix" "exakit start" "$(EXAKIT_HOME="$WORK/stopped" bash "$ROOT/setup/exakit" status 2>/dev/null | tail -1)"
+# The fixture's container does not exist, so there is no runtime to start:
+# "exakit start" was the pre-runtime remedy bug this suite used to PIN as
+# correct (the audit's AGK-18). The fix an agent can act on is the installer -
+# and the row names the RUNNABLE command, byte for byte the same string
+# `status --json` hoists into `remedy`, not the prose "re-run the installer".
+has "prose names the fix, as a runnable command" "curl -fsSL" "$(EXAKIT_HOME="$WORK/stopped" bash "$ROOT/setup/exakit" status 2>/dev/null | tail -1)"
 # 2, not 1: bad input has its own code across the CLI now (the same one an
 # unknown subcommand uses), so an agent can tell "I typed it wrong" from "the
 # command ran and failed". It also records no failure note — see the reject
@@ -101,6 +106,19 @@ print('bare ok' if 'Bash(exakit status:*)' in allow else 'bare MISSING',
       '| deny all 3' if len([d for d in deny if 'uninstall' in d]) == 3 else '| deny ONLY %d' % len([d for d in deny if 'uninstall' in d]))")"
 check "and the PowerShell twin lists the same spellings" "yes" \
     "$(grep -q '\$prefixes = @("exakit", "~/.local/bin/exakit"' "$ROOT/setup/lib/exakit-common.ps1" && echo yes || echo no)"
+# WINDOWS HOME RESOLUTION: install.ps1 used $HOME while exakit resolves from
+# USERPROFILE, so a domain machine with a redirected home installed into one
+# tree and looked in another - a successful install reported "not installed"
+# and re-running never converged. And everything written FOR AN AGENT (skills,
+# the ~/.claude allowlist) must build on the home agents resolve "~" from,
+# which on Windows is USERPROFILE, never a redirected $HOME.
+_ps_install="$(cat "$ROOT/install.ps1")"
+_ps_common="$(cat "$ROOT/setup/lib/exakit-common.ps1")"
+has "install.ps1 resolves its home like exakit does" "function Get-ExakitInstallHomeBase" "$_ps_install"
+has "...and exports the result for the setup run" '$env:EXAKIT_HOME = $ExakitHome' "$_ps_install"
+has "agent-facing paths have one resolver" "function Get-ExakitAgentHome" "$_ps_common"
+check "no agent-facing path builds on raw \$HOME" "0" \
+    "$(printf '%s\n' "$_ps_common" | grep -c 'Join-Path \$HOME "\.claude\|Join-Path \$HOME "\.agents')"
 # exapump sql must NEVER be pre-approved: that profile is the admin connection,
 # and auto-allowing it is exactly the trust model the kit sells being switched off.
 check "exapump sql is still gated" "gated" "$(python3 -c "
@@ -237,7 +255,13 @@ echo
 echo "the JSON carries the remedy the prose already had:"
 _rj="$(EXAKIT_HOME="$WORK/stopped" bash "$ROOT/setup/exakit" status --json 2>/dev/null)"
 has "status --json has a remedies map" '"remedies"' "$_rj"
-has "a stopped database names exakit start" 'exakit start' "$_rj"
+# A missing runtime (this fixture's container does not exist) is repaired by
+# the installer; a merely STOPPED one still answers "exakit start" - see the
+# remedy arms in the status heredoc.
+# The remedy is the installer's RUNNABLE command now (AGK-08: "when remedy
+# is not null, run it"); the resume note lives beside it in remedy_hints.
+has "a missing runtime hands the runnable install command" 'curl -fsSL' "$_rj"
+has "...with the resume note as its hint" '"remedy_hints"' "$_rj"
 has "a missing pyexasol names its repair" 'exakit update' "$_rj"
 has "status --json exposes last_failure" '"last_failure"' "$_rj"
 
@@ -841,6 +865,17 @@ has "the personal runtime honours it" 'confirm_env EXAKIT_REUSE_DB' \
     "$(cat "$ROOT/setup/lib/runtime-personal.sh")"
 has "the nano runtime honours it too" '[ "${EXAKIT_REUSE_DB:-1}" = "0" ] && nano_container_exists' \
     "$(cat "$ROOT/setup/lib/runtime-nano.sh")"
+# On macOS, declining reuse of a STOPPED deployment must be as harmless as
+# declining it for a running one: the deletion has its own question and its
+# own variable, so EXAKIT_REUSE_DB=0 alone can never destroy in one state
+# what it safely refuses in the other. repair-runtime is the one caller
+# allowed to pre-answer that question, because it just asked its own.
+has "personal deletion has its own consent" 'confirm_env EXAKIT_REPLACE_DB' \
+    "$(cat "$ROOT/setup/lib/runtime-personal.sh")"
+has "repair-runtime carries that consent" 'export EXAKIT_REPLACE_DB=1' "$EXAKIT_SH"
+has "the delete prompt names the consequence first" \
+    'DELETE the stopped deployment and its data' \
+    "$(cat "$ROOT/setup/lib/runtime-personal.sh")"
 has "...and its twin"                 '$env:EXAKIT_REUSE_DB -eq "0" -and (Test-NanoContainerExists)' \
     "$(cat "$ROOT/setup/lib/nano.ps1")"
 # The data volume goes with the container, or the rebuild wraps the same
@@ -848,5 +883,152 @@ has "...and its twin"                 '$env:EXAKIT_REUSE_DB -eq "0" -and (Test-N
 has "nano drops the data volume as well" 'volume" "rm' "$(cat "$ROOT/setup/lib/nano.ps1")"
 has "...on the shell side too" 'volume rm "$EXAKIT_NANO_VOLUME"' "$(cat "$ROOT/setup/lib/runtime-nano.sh")"
 
+echo
+echo "the JSON contract holds on the unhappy paths too:"
+# sql --json used to leave stdout EMPTY when the kit was not installed (a
+# human error card on stderr, exit 1 where the contract says 4), and to hand
+# the parser bash's own "No such file or directory" line-number noise when
+# exapump was missing (exit 127).
+_jc="$WORK/jc"; mkdir -p "$_jc"
+_jc_out="$(EXAKIT_HOME="$_jc" bash "$ROOT/setup/exakit" sql --json 'SELECT 1' 2>/dev/null)"
+check "sql --json answers JSON when not installed" "yes" \
+    "$(printf '%s' "$_jc_out" | python3 -m json.tool >/dev/null 2>&1 && echo yes || echo no)"
+has "and says why, with a runnable remedy" '"remedy": "curl -fsSL' "$_jc_out"
+check "with the not-installed exit code" "4" \
+    "$(EXAKIT_HOME="$_jc" bash "$ROOT/setup/exakit" sql --json 'SELECT 1' >/dev/null 2>&1; echo $?)"
+printf '{\n  "runtime": {\n    "type": "nano"\n  }\n}\n' > "$_jc/manifest.json"
+# EXAKIT_BIN_DIR must be sandboxed too: exapump.sh derives its binary path
+# from it at load time, so leaving it at the default finds the developer's
+# real exapump and runs a real query.
+# The stripped PATH must starve the test of EXAPUMP, not of Python: hand the
+# real uv through so manifest reads keep working on a Mac whose system
+# python3 is below the kit's floor. (On CI the system python suffices and
+# the variable is simply empty.)
+_jc_nx="$(EXAKIT_HOME="$_jc" EXAKIT_BIN_DIR="$_jc/bin" EXAKIT_UV_BIN="$(command -v uv 2>/dev/null || true)" PATH="/usr/bin:/bin" bash "$ROOT/setup/exakit" sql --json 'SELECT 1' 2>/dev/null)"
+has "a missing exapump is a real error, not bash noise" '"error": "exapump (the SQL client) is not installed"' "$_jc_nx"
+has "...with a runnable remedy" '"remedy": "exakit update"' "$_jc_nx"
+
+# version --json: `status` is a fixed vocabulary a parser can switch on; the
+# action a human would take moved to a per-row runnable `remedy`. An add-on
+# row used to carry the literal command "exakit marketplace" AS its status.
+_jc_ver="$(EXAKIT_HOME="$_jc" bash "$ROOT/setup/exakit" version --json 2>/dev/null)"
+check "no component status is a shell command" "0" \
+    "$(printf '%s' "$_jc_ver" | python3 -c "
+import json,sys
+d = json.load(sys.stdin)
+print(sum(1 for c in d['components'] if c['status'].startswith('exakit ')))")"
+check "an uninstalled add-on reads as available, remedy runnable" "available|exakit marketplace json-tables" \
+    "$(printf '%s' "$_jc_ver" | python3 -c "
+import json,sys
+d = json.load(sys.stdin)
+row = next(c for c in d['components'] if c['component'] == 'json-tables')
+print('%s|%s' % (row['status'], row['remedy']))")"
+
+# status --json: 'installed: true' beside 'status: not installed' was one
+# object contradicting itself; and a state query must never write the
+# .last-failure note it reports.
+EXAKIT_SH_JC="$(cat "$ROOT/setup/exakit")"
+has "the kit-level status says no database, not 'not installed'" 'top_status = "no database"' "$EXAKIT_SH_JC"
+has "...with the runnable installer command as the remedy, never exakit start" \
+    'remedies["database"] = install_cmd' "$EXAKIT_SH_JC"
+has "state queries raise the read-only flag" 'export EXAKIT_READONLY_QUERY=1' "$EXAKIT_SH_JC"
+check "and the note writer honours it" "kept-clean" "$( (
+    EXAKIT_READONLY_QUERY=1 exakit_note_failure "should never land" 2>/dev/null
+    [ -f "$(exakit_failure_note_file)" ] && echo WROTE || echo kept-clean
+) )"
+has "status --json carries per-service urls" '"urls": umap' "$EXAKIT_SH_JC"
+
+echo
+echo "every remedy is runnable, and nothing advertises a rejected command:"
+# AGK-08: AGENTS.md line 21 says "when remedy is not null, run it" - so an
+# English sentence at that key breaks the very contract the doc states. Every
+# remedy in the remedies map is now a command; prose moved to remedy_hints.
+_rem_check="$(printf '%s' "$_rj" | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+bad = [k for k, v in d.get('remedies', {}).items()
+       if ' — ' in v or v.split(' ', 1)[0] not in ('exakit', 'curl', 'irm', 'bash', 'sh')]
+print('all-runnable' if not bad else 'PROSE in ' + ','.join(bad))")"
+check "every remedies value starts with a command" "all-runnable" "$_rem_check"
+# SKL-06: `exakit autostart on` was named by three skills and two help
+# documents, and the CLI hard-rejects it. No shipped guidance may advertise it.
+check "no skill advertises 'exakit autostart on'" "0" \
+    "$(grep -rl 'exakit autostart on' "$ROOT/skills" 2>/dev/null | wc -l | tr -d ' ')"
+check "...and no help document either" "0" \
+    "$(grep -rl 'exakit autostart on' "$ROOT/setup/help" 2>/dev/null | wc -l | tr -d ' ')"
+has "dash-server declares its url hook" 'dash_server_url()' "$(cat "$ROOT/setup/lib/dash-server.sh")"
+
+echo
+echo "the lifecycle keeps its promises on the unhappy paths:"
+# ADD-04: uninstalling one add-on removes its boot entry too - left behind,
+# launchd/systemd fired a launcher that no longer exists on every login.
+has "add-on uninstall retires the boot entry" '_exakit_autostart_unregister "$_uc_key"' \
+    "$(cat "$ROOT/setup/lib/common.sh")"
+has "...and on Windows too" 'Unregister-ExakitAutostart -Id $Key' "$(cat "$ROOT/setup/exakit.ps1")"
+# AGK-07: the uv bootstrap runs lazily from INSIDE a --json answer; its
+# narration must never share stdout with the JSON object.
+check "uv bootstrap narration goes to stderr" "4" \
+    "$(sed -n '/^exakit_ensure_uv()/,/^}/p' "$ROOT/setup/lib/common.sh" | grep -c '>&2$')"
+# MAC-05: adopting or reusing a deployment records the version ON DISK, never
+# the advertised one.
+has "the manifest records the deployed version first" 'personal_deployed_version 2>/dev/null' \
+    "$(sed -n '/^personal_record_manifest()/,/^}/p' "$ROOT/setup/lib/runtime-personal.sh")"
+# CPY-16: the read-only guardrail speaks to whoever is reading, with an action.
+lacks "the guardrail no longer talks past the human" "say so and let the user decide" \
+    "$(cat "$ROOT/setup/lib/common.sh" "$ROOT/setup/lib/exakit-common.ps1")"
+has "...and names the deliberate write path" "exakit sql --write" \
+    "$(sed -n '/insufficient privileges/,+8p' "$ROOT/setup/lib/common.sh")"
+# SAY-08: the documented Personal major-upgrade route is accepted by the
+# option guard instead of being a phantom.
+_su="$WORK/say08"; mkdir -p "$_su"
+printf '{\n  "runtime": {\n    "type": "personal"\n  }\n}\n' > "$_su/manifest.json"
+_su_out="$(EXAKIT_HOME="$_su" bash "$ROOT/setup/exakit" update runtime --plan 2>&1)"
+lacks "update runtime --plan is not refused" "Unknown option" "$_su_out"
+# AGK-02: a DEAD installer answers with installing:false, the step it died at,
+# and remedies.install naming the re-run - the exact shape AGENTS.md promises.
+printf '{\n  "runtime": {\n    "type": "nano"\n  },\n  "install": {\n    "current_step": "mcp"\n  }\n}\n' > "$_su/manifest.json"
+_su_dead="$(EXAKIT_HOME="$_su" bash "$ROOT/setup/exakit" status --json 2>/dev/null)"
+check "dead installer keeps its step and remedy" "False|mcp|yes" "$(printf '%s' "$_su_dead" | python3 -c "
+import json,sys
+d = json.load(sys.stdin)
+print('%s|%s|%s' % (d['installing'], d['install_step'],
+                    'yes' if d['remedies'].get('install') else 'no'))")"
+# CPY-05: a panel never wraps what a capture will grep - the width cap applies
+# only where a terminal is rendering.
+has "the panel width cap is tty-gated" '[ -t 1 ]' \
+    "$(sed -n '/^ui_panel_end()/,/^}/p' "$ROOT/setup/lib/ui.sh")"
+echo "windows and wsl keep their promises:"
+_ps_inst="$(cat "$ROOT/install.ps1")"
+# WIN-05: HTTPS_PROXY is honoured by the download, not just documented -
+# Invoke-WebRequest ignores the environment variable on its own - and a 407 is
+# named as the proxy refusing, not a generic network failure.
+has "the installer passes HTTPS_PROXY explicitly" '$webArgs["Proxy"] = $env:HTTPS_PROXY' "$_ps_inst"
+has "...and names a 407 for what it is" "HTTP 407, authentication required" "$_ps_inst"
+# WIN-06: Group Policy outranks -ExecutionPolicy Bypass; the installer detects
+# the pinned policy before downloading anything and names the real fix.
+has "GPO-pinned execution policy is detected up front" 'Get-ExecutionPolicy -Scope $gpoScope' "$_ps_inst"
+# WIN-07: Move-Item cannot move a directory across volumes, so the update
+# stages BESIDE the kit, never in TEMP - or an EXAKIT_HOME on another drive
+# recorded a version it never installed.
+_ps_common_w="$(cat "$ROOT/setup/lib/exakit-common.ps1")"
+has "the kit update stages beside the kit"   '.kit-stage-' "$_ps_common_w"
+has "...and the skills update does too"      '.skills-stage-' "$_ps_common_w"
+lacks "no stage directory lives in TEMP" 'GetTempPath()) "exakit-kit-stage' "$_ps_common_w"
+# WIN-08: chmod is a no-op on Windows; the Python runtime protects secrets
+# with an owner-only ACL there and never reports a protection it did not apply.
+# protect_path in mcp/runtime/filesystem.py is the single implementation - the
+# snapshot copies and the directories holding them need the same thing the
+# client configs do, and a second copy of the icacls call is how they drift.
+_py_fs="$(cat "$ROOT/mcp/runtime/filesystem.py")"
+has "the python runtime uses an ACL on Windows" '"icacls", str(path)' "$_py_fs"
+has "...and posix keeps the 0600 chmod" 'stat.S_IRUSR | stat.S_IWUSR' "$_py_fs"
+has "...and the security policy shares it" 'return protect_path(path)' "$(cat "$ROOT/mcp/security/policy.py")"
+has "snapshot copies are protected too" 'protect_path(target)' "$_py_fs"
+has "...and so are the directories holding them" 'protect_path(directory)' "$(cat "$ROOT/mcp/runtime/paths.py")"
+# WSL-04: the after-a-restart promise names WSL's exception instead of lying.
+has "the restart promise carries the WSL exception" "WSL is the exception" "$(cat "$ROOT/AGENTS.md")"
+# WSL-06: the WSL launch wrapper is a command plus arguments, never one string.
+lacks "no doc offers the unspawnable one-string wsl wrapper" 'wsl uvx exasol-mcp-server' \
+    "$(cat "$ROOT/quickstarts/windows-wsl.md")"
 echo "passed: $PASS, failed: $FAIL"
 [ "$FAIL" -eq 0 ]

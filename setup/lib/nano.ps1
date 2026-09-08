@@ -442,7 +442,7 @@ function Test-NanoRequirements {
     try { $ramGb = [math]::Floor((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1GB) } catch { $ramGb = -1 }
     if ($env:EXAKIT_FORCE -ne "1") {
         if ($ramGb -lt 0) {
-            Fail "Could not determine this machine's memory. Set EXAKIT_FORCE=1 to install anyway."
+            Fail "Could not determine this machine's memory. Fix the environment or set EXAKIT_FORCE=1 to install anyway."
         } elseif ($ramGb -lt $script:NanoMinRamGb) {
             # On-grid outcome line (6-space cross), mirroring bash's error() + die() pair.
             Write-Host ("      {0}{1}{2} This machine is not compatible: Exasol Nano needs at least {3} GB RAM and this machine has {4} GB." -f $script:UiErr, $script:UiCross, $script:UiReset, $script:NanoMinRamGb, $ramGb)
@@ -535,7 +535,7 @@ function Start-NanoExisting {
         Info "Recreating the Nano container (first-deploy options are single-use; the data volume is kept)"
         $code = Invoke-ExakitLogged $engine "rm" "-f" $script:NanoContainer
         if ($code -ne 0) { Fail "Could not replace the old container (see log)" }
-        $code = Invoke-ExakitLogged $engine "run" "-d" "--name" $script:NanoContainer `
+        $code = Invoke-ExakitLogged $engine "run" "-d" "--label" "com.exasol.exakit.os=windows" "--name" $script:NanoContainer `
             "--shm-size=512mb" "--pids-limit=-1" `
             "-p" "127.0.0.1:$($script:DbPort):8563" `
             "-v" "$($script:NanoVolume):/exa" `
@@ -631,8 +631,35 @@ function Install-Nano {
         }
     }
 
+    # ADOPTION NEEDS THE PASSWORD. Windows and WSL share one Docker engine, so
+    # a container found here may be the OTHER side's database: adopting it
+    # without that side's stored SYS password used to record a password_file
+    # that does not exist, report "already running and healthy", and then fail
+    # at the MCP step demanding a password this machine never had. Refuse the
+    # silent takeover: name the creator when the container carries the label,
+    # and give the three real ways out.
+    # Twin of the same guard in nano_install (runtime-nano.sh).
+    $storedPw = Get-ExakitCredential "nano_sys_password"
+    if ((Test-NanoContainerExists) -and -not $storedPw) {
+        $creator = ""
+        try {
+            $creator = "" + (& $engine container inspect -f '{{ index .Config.Labels "com.exasol.exakit.os" }}' $script:NanoContainer 2>$null)
+        } catch { }
+        $creatorNote = ""
+        if ($creator) { $creatorNote = " - it was created by a $creator install" }
+        Warn2 "An Exasol Nano container ($($script:NanoContainer)) already exists, but this machine has no stored password for it$creatorNote."
+        Warn2 "Windows and WSL share one Docker engine, so this is usually the other side's database. Three ways forward:"
+        InfoStep "1. Adopt it WITH its password: copy the creating side's ~/.exasol-starter-kit/credentials/nano_sys_password into $($script:CredsDir) and re-run."
+        InfoStep "2. Run your own database beside it: re-run with EXAKIT_NANO_CONTAINER and EXAKIT_NANO_VOLUME set to new names (and EXAKIT_DB_PORT to a free port)."
+        InfoStep "3. Last resort - DELETES the other side's database and its data: re-run with EXAKIT_REUSE_DB=0."
+        Fail "Refusing to silently adopt a database this install has no password for."
+    }
+
     if ((Test-NanoContainerRunning) -and (Test-NanoReadyInLogs)) {
-        Ok "Nano container already running and healthy"
+        # OkStep, not Ok: adoption must reach the SCREEN even under a one-line
+        # step narration - a user whose database was just adopted rather than
+        # deployed deserves to see it happen.
+        OkStep "Adopting the running Nano container $($script:NanoContainer) - already healthy (its data and password are kept)"
         Set-NanoManifest
         return
     }
@@ -640,6 +667,7 @@ function Install-Nano {
     if ((Test-NanoContainerExists) -and -not (Test-NanoContainerRunning)) {
         Info "Found existing Nano container - starting it"
         Start-NanoExisting
+        OkStep "Adopted the existing Nano container $($script:NanoContainer) (started; its data and password are kept)"
         Set-NanoManifest
         return
     }
@@ -706,9 +734,17 @@ function Install-Nano {
             Fail "The database password path could not be repaired automatically."
         }
         $password = Get-ExakitCredential "nano_sys_password"
+        # Whether this run MINTED the password decides whether the adopted-volume
+        # warning below applies: an adopted volume already has a password, and it
+        # is inside the volume, not here. Twin of the same branch in nano_install
+        # (runtime-nano.sh), which this side never had - Windows adopted the
+        # volume silently and then failed against a credential it reported as
+        # correct.
+        $mintedPassword = $false
         if (-not $password) {
             $password = New-ExakitPassword
             Set-ExakitCredential "nano_sys_password" $password
+            $mintedPassword = $true
         }
         $pwFile = Join-Path $script:CredsDir "nano_sys_password"
         # The twin of the guard in nano_install (runtime-nano.sh), which this
@@ -757,19 +793,40 @@ function Install-Nano {
             $volumeExisted = $false
         }
 
+        # An ADOPTED volume already has a password, and it is inside the volume -
+        # not here. The one this run just minted is a password the database has
+        # never heard of, so say so before the install goes on to record it.
+        # Twin of the same block in nano_install (runtime-nano.sh).
+        if ($volumeExisted -and $mintedPassword) {
+            Warn2 "Reusing the database in volume $($script:NanoVolume), but this machine has no password for it."
+            Info "The database keeps the SYS password set by the install that created the volume - often this machine's other side (WSL or Windows), in ~\.exasol-starter-kit\credentials\nano_sys_password."
+            Info "Safest: copy that file into $($script:CredsDir) and re-run - the database and its data stay intact."
+            Info "Last resort, if the password is truly gone: re-run with EXAKIT_REUSE_DB=0 - that DELETES the volume and every table in it."
+            Warn2 "This install continues with a NEW password the database will not accept, so exakit status, exakit info and your AI client will fail until you supply the real one."
+        }
+
         Info "Starting Nano container ($($script:NanoContainer))"
         if ($volumeExisted) {
             # An adopted volume gets neither the init options nor the secret
             # mount: the database and its password already live inside it.
-            Info "Adopting the existing database volume $($script:NanoVolume) (its data and password are kept)"
-            $code = Invoke-ExakitLogged $engine "run" "-d" "--name" $script:NanoContainer `
+            #
+            # InfoStep, not Info: this branch runs inside the one-line quiet
+            # window, which sends Info to the LOGFILE only - so the single most
+            # consequential sentence on the shared-engine path (THIS INSTALL DID
+            # NOT CREATE THE DATABASE IT IS ABOUT TO USE) was invisible, while
+            # the warning about its missing password printed. The reader got the
+            # consequence without the sentence that explains it.
+            # <-> twin: nano_install in runtime-nano.sh.
+            InfoStep "Adopting the existing database volume $($script:NanoVolume) - this install did not create it, and its data and SYS password are kept as they are."
+            InfoStep "On a Windows+WSL machine this volume is often a WSL install's database: Docker Desktop is one engine shared by both sides."
+            $code = Invoke-ExakitLogged $engine "run" "-d" "--label" "com.exasol.exakit.os=windows" "--name" $script:NanoContainer `
                 "--shm-size=512mb" "--pids-limit=-1" `
                 "-p" "127.0.0.1:$($script:DbPort):8563" `
                 "-v" "$($script:NanoVolume):/exa" `
                 $image
         } else {
             $script:NanoFirstDeploy = $true
-            $code = Invoke-ExakitLogged $engine "run" "-d" "--name" $script:NanoContainer `
+            $code = Invoke-ExakitLogged $engine "run" "-d" "--label" "com.exasol.exakit.os=windows" "--name" $script:NanoContainer `
                 "--shm-size=512mb" "--pids-limit=-1" `
                 "-p" "127.0.0.1:$($script:DbPort):8563" `
                 "-v" "$($script:NanoVolume):/exa" `
@@ -1042,7 +1099,9 @@ function Wait-NanoReady {
         Write-Host "      $engine rm -f $($script:NanoContainer) && $engine volume rm $($script:NanoVolume)"
     } else {
         Write-Host "    Do NOT remove the volume $($script:NanoVolume) - it IS your database."
-        Write-Host "    If the container is genuinely wedged:  exakit repair-runtime"
+        Write-Host "    Often it is just slow: wait a minute, then check exakit status."
+        Write-Host "    If the container is genuinely wedged: exakit repair-runtime"
+        Write-Host "    (asks first; REPLACES the database, deleting its data)."
     }
     Fail "The database did not become ready in time."
 }
@@ -1190,7 +1249,7 @@ function Update-Nano {
         if ($code -ne 0) { Fail "Could not remove old Nano container" }
     }
 
-    $code = Invoke-ExakitLogged $engine "run" "-d" "--name" $script:NanoContainer `
+    $code = Invoke-ExakitLogged $engine "run" "-d" "--label" "com.exasol.exakit.os=windows" "--name" $script:NanoContainer `
         "--shm-size=512mb" "--pids-limit=-1" `
         "-p" "127.0.0.1:$($script:DbPort):8563" `
         "-v" "$($script:NanoVolume):/exa" `
@@ -1239,7 +1298,7 @@ function Restore-PreviousNanoContainer {
     Warn2 "Restoring the previous Nano container image ($Image)"
     $engine = Get-NanoEngine
     Invoke-ExakitLogged $engine "rm" "-f" $script:NanoContainer | Out-Null
-    $code = Invoke-ExakitLogged $engine "run" "-d" "--name" $script:NanoContainer `
+    $code = Invoke-ExakitLogged $engine "run" "-d" "--label" "com.exasol.exakit.os=windows" "--name" $script:NanoContainer `
         "--shm-size=512mb" "--pids-limit=-1" `
         "-p" "127.0.0.1:$($script:DbPort):8563" `
         "-v" "$($script:NanoVolume):/exa" `

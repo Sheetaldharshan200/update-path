@@ -1,6 +1,6 @@
 ---
 name: local-agent-ready-starter
-description: Use this to set up the Exasol Personal Local Starter Kit and run a first trusted, AI-assisted query against a local Exasol database — installing the local runtime, connecting an AI client over MCP, loading the sample data, and running the ask → inspect-SQL → run → validate → rerun loop. Triggers — "set up the Exasol starter kit", "install Exasol locally", "connect my AI to Exasol", "run my first query on my local database", "help me get started with the starter kit".
+description: Use this to set up the Exasol Personal Local Starter Kit and run a first trusted, AI-assisted query against a local Exasol database — installing the local runtime, connecting an AI client over MCP, loading the sample data, and running the ask → inspect-SQL → run → validate → rerun loop. Triggers — "set up the Exasol starter kit", "install Exasol locally", "set up the starter kit and connect my AI", "run my first query on my local database", "help me get started with the starter kit".
 ---
 
 # Local Agent-Ready Starter
@@ -192,7 +192,8 @@ ASK  ->  INSPECT (show the SQL first)  ->  RUN (read-only)  ->  VALIDATE (indepe
    and confirm the number moves the way you'd expect.
 5. **Make it rerunnable.** Save the approved SQL to a file the user can rerun tomorrow:
    `~/.exasol-starter-kit/workflows/` exists for exactly this and is created by the install.
-   Point to the walkthrough in `~/.exasol-starter-kit/kit/demo/first-revenue-analysis.md`.
+   Tell the user the file's path and how to rerun it:
+   `exakit sql --file ~/.exasol-starter-kit/workflows/<name>.sql`.
 
 ## Non-negotiable guardrails
 

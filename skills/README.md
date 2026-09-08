@@ -1,7 +1,7 @@
-# Skills — AI assistant guidance for the starter kit
+# Skills — agent guidance for the starter kit
 
-> **TL;DR** — These are AI *skills*: small `SKILL.md` recipes that teach an AI
-> assistant how to drive this kit. The installer copies them into
+> **TL;DR** — These are AI *skills*: small `SKILL.md` recipes that teach an
+> agent how to drive this kit. The installer copies them into
 > `~/.claude/skills/` and `~/.agents/skills/`; `exakit update` fetches a newer set.
 
 **What is verified, and what is assumed.** Claude Code reads `~/.claude/skills/`
@@ -34,6 +34,7 @@ user's request actually needs, not a manual for the whole kit.
 | [`exasol-exapump`](exasol-exapump/SKILL.md) | Running SQL, opening a SQL shell, bulk-loading CSV/Parquet — and knowing that the `starter-kit` profile is the **admin**, unsandboxed connection. |
 | [`exasol-mcp`](exasol-mcp/SKILL.md) | Connecting AI clients over MCP, diagnosing `mcp-doctor`, repairing config drift, proving the read-only user really is read-only. |
 | [`exasol-pyexasol`](exasol-pyexasol/SKILL.md) | Querying the database from Python — the right interpreter, the TLS setting the self-signed certificate needs, reading credentials safely. |
+| [`exakit-lifecycle`](exakit-lifecycle/SKILL.md) | Operating the kit itself — versions and what changed, updates, logs, the command surface, where the credential files live, and uninstalling with `--dry-run` first. |
 
 **The wider Exasol ecosystem** — installed with the kit; it catalogs tools that are *not* part of it
 
@@ -43,9 +44,10 @@ user's request actually needs, not a manual for the whole kit.
 
 **The marketplace** — opt-in add-ons
 
-The four add-on skills below are **installed with their add-on**, not with the
-kit: each declares `addon: <id>` in its frontmatter, and the marketplace places
-it as part of installing that add-on and removes it again when the add-on goes.
+`exasol-marketplace` itself installs with the kit; the other four skills below
+are **installed with their add-on**, not with the kit: each declares
+`addon: <id>` in its frontmatter, and the marketplace places it as part of
+installing that add-on and removes it again when the add-on goes.
 A skill is a set of triggers for an agent to match on, and matching them for a
 tool that is not on the machine is worse than not shipping the skill at all.
 
@@ -80,13 +82,19 @@ exakit skills --json   # the same, machine-readable
 ```
 
 States are `installed` (in every discovery folder), `partial` (in some — a
-half-finished install or a hand deletion) and `available` (in none).
+half-finished install or a hand deletion), `needs-addon` (it belongs to a
+marketplace add-on you have not installed; it arrives with the add-on, and
+`skills-install` will not place it) and `available` (in none, and it should be).
+The panel spells the third one `with <add-on id>` so you can see whose it is;
+`--json` reports it as `"state":"needs-addon"` with an `addon` and a runnable
+`remedy`. Only `partial` and `available` count as pending, so a healthy machine
+with add-ons it never installed does not read as half-installed.
 
 ## How a skill reaches your agent
 
 Skills auto-load only from an agent's discovery folders, **not** from this repo
-path. The installer copies each skill into the standard per-user locations so
-your CLI agent finds it automatically, and `exakit skills` shows the result:
+path. The installer copies each skill into the standard per-user locations, and
+`exakit skills` shows the result:
 
 ```bash
 exakit skills
@@ -94,13 +102,20 @@ exakit skills
 
 The per-user locations:
 
-- **Claude Code** → `~/.claude/skills/<name>/`
-- **Codex / Cursor / other open-standard agents** → `~/.agents/skills/<name>/`
+- **Claude Code** → `~/.claude/skills/<name>/` — **verified**: Claude Code reads
+  this and picks the skills up on its next start.
+- **Open-standard agents** → `~/.agents/skills/<name>/` — the shared
+  **convention**. The kit writes it; whether a given tool reads it is that
+  tool's business, and the kit has not verified each one. `exakit skills`
+  reports that the file is in place, not that your agent read it. If your client
+  shows no Exasol skills, check its own docs for where it looks — nothing in the
+  kit depends on this path (see [AGENTS.md](../AGENTS.md)).
 
-Re-running is safe — it places the set the local kit copy carries. The kit
-setup also offers to do this once at the end of an install. To move to a
-**newer** set the maintainers have published, run `exakit update`: it fetches
-the set first, then places it.
+`exakit skills` only reports; it changes nothing, so it is safe to run any time.
+The installer places the set, and `exakit skills` names the next command when one
+is needed — `exakit update` to move to a **newer** set the maintainers have
+published (it fetches the set first, then places it), or `exakit skills-install`
+to put back a skill folder that has gone missing.
 
 > **Chat-only clients (Claude, Cursor GUI over MCP):** these do not read
 > filesystem skills the same way. There, the skill still works as guidance you

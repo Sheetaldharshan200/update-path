@@ -5,6 +5,14 @@
 # module's version resolution, launcher generation and soft-fail accounting.
 # Pure logic against a sandboxed kit home: no network, no installs.
 #
+# EXPECT THREE TO FOUR MINUTES. A run that looks stuck is almost certainly not:
+# the suite is hermetic and offline, and the time goes on hundreds of
+# manifest_get / manifest_set calls, each of which starts a Python process.
+# (Measured with EXAKIT_ABOUT_OFFLINE=1 as well, so the About fetch is not the
+# cause.) Nothing here reaches the network or installs anything, so a long run
+# is slow, never hung — leave it to finish rather than interrupting it, which
+# is how a half-run gets mistaken for a failure.
+#
 #   bash tests/marketplace.sh
 
 set -u
@@ -233,6 +241,23 @@ has  "profile bootstrap goes through the env secret" "DASH_SERVER_EXASOL_SECRET_
 # the user dash-server's single-coordinator traceback.
 has  "the launcher refuses a duplicate politely" "already running" "$_launcher_body"
 has  "and points at the state and log commands" "exakit logs dash-server" "$_launcher_body"
+# ADD-07: the launcher printed a pre-flight verdict for the RECORDED port and
+# then execed dash-server with no port at all, so it bound the upstream default
+# - on a machine that moved off 5100, the busy one. The bind host was left to
+# upstream too, on the one path the kit does not control, while the module
+# asserts loopback everywhere else. Both are setdefaults, so an exported value
+# still wins.
+( EXAKIT_DASH_SERVER_PORT=5177 dash_server_write_launcher >/dev/null 2>&1 )
+_launcher_5177="$(cat "$_launcher" 2>/dev/null)"
+has  "the launcher passes the recorded port to the server" 'DASH_SERVER_PORT:=5177' "$_launcher_5177"
+has  "...and pins the bind host to loopback"               'DASH_SERVER_HOST:=127.0.0.1' "$_launcher_5177"
+has  "...exported, or the child never sees them"           'export DASH_SERVER_HOST DASH_SERVER_PORT' "$_launcher_5177"
+# The twin: Windows had the identical hole.
+has  "the PowerShell launcher does the same" 'if not defined DASH_SERVER_PORT set' \
+    "$(cat "$ROOT/setup/lib/dash-server.ps1")"
+has  "...host too"                           'if not defined DASH_SERVER_HOST set' \
+    "$(cat "$ROOT/setup/lib/dash-server.ps1")"
+( dash_server_write_launcher >/dev/null 2>&1 )   # back to the recorded port
 
 echo "generic registry (no per-add-on case arms):"
 # The whole point of the generic arms: an id the registry does not carry must
@@ -724,6 +749,9 @@ check "without the host app it is hidden everywhere" \
 # With VS Code present it is a normal, selectable add-on again.
 _with_code="$( (
     exasol_vscode_code_cli() { printf '/stub/code\n'; }
+    # The menu installs nothing without a terminal, so probing its DRAWN
+    # content needs one faked; the guard itself has its own assertions below.
+    _exakit_prompt_tty() { printf 'stub\n'; }
     printf 'applicable=%s ' "$(_exakit_addon_applicable exasol-vscode && echo yes || echo no)"
     printf 'in-menu=%s' "$(exakit_marketplace_menu 2>&1 | grep -c exasol-vscode)"
 ) )"
@@ -1342,6 +1370,8 @@ check "a manually installed add-on reads as present" "present" "$( (
 ) )"
 check "the menu says so instead of offering an install" "managed outside the kit" "$( (
     PATH="$WORK/manual-bin:$PATH"
+    # A faked terminal, or the no-TTY guard answers before the row is drawn.
+    _exakit_prompt_tty() { printf 'stub\n'; }
     # The row sits inside a panel now, so strip whatever border precedes it -
     # ASCII here, since a redirected run is always in plain mode - before
     # anchoring on the id.
@@ -1895,6 +1925,91 @@ check "...and so does the error printer" "2" \
 # The log still gets every line: deferring must never mean losing.
 check "the shell still logs both"       "2" \
     "$(printf '%s\n' "$COMMON_D" | grep -cE 'if _exakit_defer_under_addon_table .*_exakit_log_file')"
+
+echo
+echo "without a terminal, browsing never installs:"
+# THE REGRESSION THIS PINS: with no TTY and no env answer, the pre-ticked menu
+# rows used to stand as the answer, so `exakit marketplace` - the command every
+# doc calls "browse" - performed a full install with a live daemon, triggered
+# by agents that were told to look, not to install. Skip is the no-TTY answer.
+_mm_notty="$( (
+    _exakit_prompt_tty() { :; }                  # no terminal anywhere
+    _exakit_marketplace_apply() { printf 'INSTALLED %s\n' "$1"; }
+    # Offline: the interactive path resolves descriptions before the guard.
+    exakit_marketplace_addon_description() { printf 'stub\n'; }
+    exakit_marketplace_menu 2>&1
+) )"
+has  "no TTY answers Skip out loud" "nothing was installed" "$_mm_notty"
+lacks "and nothing is installed"    "INSTALLED"             "$_mm_notty"
+has  "the read-only surface is named"  "marketplace --list" "$_mm_notty"
+# The env answer still installs without a TTY - that is the explicit consent.
+_mm_env="$( (
+    _exakit_prompt_tty() { :; }
+    _exakit_marketplace_apply() { printf 'INSTALLED %s\n' "$1"; }
+    EXAKIT_MARKETPLACE_ADDONS=json-tables exakit_marketplace_menu 2>&1
+) )"
+has "an explicit env answer still installs" "INSTALLED json-tables" "$_mm_env"
+
+echo
+echo "the read-only list surface:"
+_mm_list="$(cover_every_addon; exakit_marketplace_list 0 2>&1)"
+has "every add-on has a row" "json-tables" "$_mm_list"
+has "...dash-server too"     "dash-server" "$_mm_list"
+_mm_listjson="$(cover_every_addon; exakit_marketplace_list 1 2>/dev/null)"
+check "the JSON form is valid JSON" "yes" \
+    "$(printf '%s' "$_mm_listjson" | python3 -m json.tool >/dev/null 2>&1 && echo yes || echo no)"
+has "and carries a status per add-on" '"status": ' "$_mm_listjson"
+has "and an installed boolean"        '"installed": ' "$_mm_listjson"
+
+echo
+echo "the Windows registry dispatches the same per-add-on hooks as the shell:"
+# THE PARITY GAP THIS PINS: the PS registry had no field for the per-add-on
+# hooks the shell registry dispatches to. Get-JsonTablesSystemPresent and
+# Get-ExasolSchedulerSystemPresent were dead code, exasol-vscode had no
+# Windows detector at all (the kit adopted and later DELETED a user's own
+# Marketplace extension), "never offered twice" held on three platforms and
+# failed on Windows, and "latest" was always empty there so the update check
+# could not see either binary add-on.
+COMMON_PS_TP="$(cat "$ROOT/setup/lib/exakit-common.ps1")"
+has "the registry declares json-tables' detector"   'SystemPresentFn = "Get-JsonTablesSystemPresent"' "$COMMON_PS_TP"
+has "...and the scheduler's"                        'SystemPresentFn = "Get-ExasolSchedulerSystemPresent"' "$COMMON_PS_TP"
+has "...and the VS Code extension's"                'SystemPresentFn = "Test-ExasolVscodeSystemPresent"' "$COMMON_PS_TP"
+has "the detector exists for VS Code"               'function Test-ExasolVscodeSystemPresent' "$(cat "$ROOT/setup/lib/exasol-vscode.ps1")"
+has "the present probe dispatches the hook first"   '$addon.SystemPresentFn' "$COMMON_PS_TP"
+has "the registry declares json-tables' latest"     'LatestFn     = "Get-JsonTablesLatest"' "$COMMON_PS_TP"
+has "...and the scheduler's"                        'LatestFn     = "Get-ExasolSchedulerLatest"' "$COMMON_PS_TP"
+has "the latest lookup dispatches the hook first"   '$addon.LatestFn' "$COMMON_PS_TP"
+# ADD-01/CPY-02: "recorded, so every command agrees" was false on Windows -
+# the module never read the port back. The audit's own zero-occurrence check,
+# inverted into the guard.
+check "dash-server.ps1 reads the recorded port back" "1" \
+    "$(grep -c 'Get-ExakitManifestValue "components.dash_server.port"' "$ROOT/setup/lib/dash-server.ps1")"
+has "...resolved before every entry point" 'function Resolve-DashServerPort' "$(cat "$ROOT/setup/lib/dash-server.ps1")"
+
+# ADD-09: json_tables_update returns early when the installed build already IS
+# the advertised one; Update-JsonTables had no such comparison and no
+# already-installed guard behind it, so `exakit update` on Windows re-downloaded
+# the wheel, the ingest engine and the compiled cargo shim on every run while
+# macOS and Linux did nothing. The two halves also have to AGREE in the sentence
+# an agent parses.
+JT_PS_TP="$(cat "$ROOT/setup/lib/json-tables.ps1")"
+JT_SH_TP="$(cat "$ROOT/setup/lib/json-tables.sh")"
+has "Update-JsonTables compares the installed build" \
+    '$current -and $current -eq $available' "$JT_PS_TP"
+has "...and stops instead of re-downloading" \
+    'Ok "JSON Tables is already current ($current)"' "$JT_PS_TP"
+has "...rewriting the launcher first, like the shell half" \
+    '[void](Write-JsonTablesLauncher)' "$JT_PS_TP"
+has "the shell half says the same words" \
+    'JSON Tables is already current' "$JT_SH_TP"
+
+# ADD-11: the code CLI drains inherited stdin, which ate the marketplace's own
+# row loop and silently dropped every add-on listed after exasol-vscode. The
+# shell half closes stdin (</dev/null); the Windows half must redirect it too -
+# code.cmd is a batch wrapper around the same Node process. CI never catches
+# this: a runner has no VS Code, so the CLI is never run.
+has "the code CLI cannot reach the console on Windows" \
+    '$null | & $cli @Arguments' "$(cat "$ROOT/setup/lib/exasol-vscode.ps1")"
 
 echo "passed: $PASS, failed: $FAIL"
 [ "$FAIL" -eq 0 ]

@@ -229,8 +229,16 @@ _exasol_scheduler_fetch_verified() {
     fetch_quiet "$(_exasol_scheduler_asset_url "$_esf_asset")" "$_esf_dest" || return 1
     _esf_expected="$(_exasol_scheduler_digest "$_esf_asset" 2>/dev/null || true)"
     if [ -z "$_esf_expected" ]; then
+        # The escape hatch the other components already carry, named in the
+        # refusal rather than left as folklore: a refusal that offers only a
+        # retry is a dead end on an offline machine or a fork whose packaging
+        # workflow has not run. ⇄ twin: Get-ExasolSchedulerVerifiedAsset.
+        if [ "${EXAKIT_ALLOW_UNVERIFIED_EXASOL_SCHEDULER:-0}" = "1" ]; then
+            warn "No digest available for $_esf_asset — proceeding WITHOUT checksum verification (EXAKIT_ALLOW_UNVERIFIED_EXASOL_SCHEDULER=1)."
+            return 0
+        fi
         rm -f "$_esf_dest"
-        warn "No checksum is available for $_esf_asset; refusing an unverified artifact. Usually the release is still publishing or the GitHub API was unreachable - retry with: exakit update exasol-scheduler"
+        warn "No checksum is available for $_esf_asset; refusing an unverified artifact. Usually the release is still publishing or the GitHub API was unreachable - retry with: exakit update exasol-scheduler. Add its digest to versions.json (components.exasol-scheduler.sha256.<platform>) or, at your own risk, override with EXAKIT_ALLOW_UNVERIFIED_EXASOL_SCHEDULER=1."
         return 1
     fi
     _esf_actual="$(sha256_of "$_esf_dest")"

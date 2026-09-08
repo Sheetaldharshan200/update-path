@@ -186,6 +186,25 @@ EXAKIT_ABOUT_WIDTH="${EXAKIT_ABOUT_WIDTH:-44}"
 EXAKIT_DB_PORT_EXPLICIT="${EXAKIT_DB_PORT:+1}"
 EXAKIT_DB_PORT="${EXAKIT_DB_PORT:-8563}"
 
+# VALIDATED HERE, at the one place the value enters the kit. A port typed wrong
+# used to travel all the way to the container engine and come back as the
+# engine's own complaint -- "invalid published port", six frames down, naming
+# neither the variable nor what was wrong with it. A leading zero is rejected
+# too: `[ 08563 -lt 1 ]` is an arithmetic error in bash, not a comparison, so
+# the range test below would itself fail on one. Exit 2 is the contract's
+# "bad input", the same code an unknown subcommand answers with. die() and the
+# UI palette are defined much further down this file, so this speaks plainly.
+case "$EXAKIT_DB_PORT" in
+    ''|*[!0-9]*|0*)
+        printf '\n  [x] EXAKIT_DB_PORT must be a whole number from 1 to 65535, with no leading zero (got: %s)\n\n' "$EXAKIT_DB_PORT" >&2
+        exit 2
+        ;;
+esac
+if [ "$EXAKIT_DB_PORT" -gt 65535 ]; then
+    printf '\n  [x] EXAKIT_DB_PORT must be a whole number from 1 to 65535 (got: %s)\n\n' "$EXAKIT_DB_PORT" >&2
+    exit 2
+fi
+
 # ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
@@ -823,6 +842,13 @@ exakit_failure_note_file() {
 # Never fails: a note is a nicety, and losing it must not turn a soft failure
 # into a hard one.
 exakit_note_failure() {
+    # A READ-ONLY state query must never write state. status --json surfaces
+    # this note as last_failure - "a step of your install did not finish" -
+    # and a probe that dies inside status/version/info/mcp-doctor is not that:
+    # recording it left a permanent "install failure" on a machine where
+    # nothing was installed wrong, re-written on every poll. The read-only
+    # commands raise this flag; everything they call inherits it.
+    [ "${EXAKIT_READONLY_QUERY:-0}" = "1" ] && return 0
     _nf_file="$(exakit_failure_note_file)"
     [ -d "$(dirname "$_nf_file")" ] || return 0
     # Line 1 stays the reason, byte for byte: every existing reader takes
@@ -981,8 +1007,13 @@ exakit_db_error_remedy() {
     # trust model. Say so where the error appears, not only in the docs.
     case "$1" in
         *"insufficient privileges"*|*"42500"*)
-            printf '%s\n' "That write was refused by the DATABASE: the MCP user is read-only by design, and this is the guardrail working as intended."
-            printf '%s\n' "Do NOT re-run it through 'exapump -p starter-kit' — that profile is the ADMIN user and is not sandboxed. If a write is genuinely wanted, say so and let the user decide."
+            # Written for BOTH readers of this stream — the person at the
+            # terminal and an agent driving the CLI. "Say so and let the user
+            # decide" addressed only the agent, so the human it was printed to
+            # was handed a message about themselves in the third person with
+            # no action in it.
+            printf '%s\n' "That write was refused by the DATABASE: the connection that ran it is read-only by design — the guardrail working as intended."
+            printf '%s\n' "To run a write deliberately, use the admin path: exakit sql --write '<statement>'. Never route it through 'exapump -p starter-kit' by reflex — that profile is the ADMIN user and is not sandboxed."
             ;;
     esac
     return 0
@@ -1126,11 +1157,24 @@ _exakit_has_system_python3() {
     [ "${EXAKIT_DISABLE_SYSTEM_PYTHON:-0}" != "1" ] || return 1
     command -v python3 >/dev/null 2>&1 || return 1
     if [ -z "$_EXAKIT_SYSTEM_PY_OK" ]; then
-        if python3 -c "import sys; req = tuple(map(int, '$EXAKIT_MIN_PYTHON'.split('.'))); raise SystemExit(0 if sys.version_info[:2] >= req else 1)" 2>/dev/null; then
+        # Keep the probe's stderr: it is the difference between an interpreter
+        # that is too old and one that is not an interpreter at all.
+        if _ehsp_err="$(python3 -c "import sys; req = tuple(map(int, '$EXAKIT_MIN_PYTHON'.split('.'))); raise SystemExit(0 if sys.version_info[:2] >= req else 1)" 2>&1)"; then
             _EXAKIT_SYSTEM_PY_OK="yes"
         else
             _EXAKIT_SYSTEM_PY_OK="no"
-            _exakit_log_file "INFO  system python3 is older than $EXAKIT_MIN_PYTHON — using the uv-managed Python runtime instead"
+            # SAY THE REAL REASON. On a Mac without the Xcode Command Line
+            # Tools /usr/bin/python3 is a 118 KB xcrun shim: it exists, it
+            # satisfies `command -v`, and it fails to run at all. Logging
+            # "older than 3.11" about an interpreter that is not there is the
+            # only record of the decision, and it sent readers to
+            # `brew install python` to fix a version that was never the problem.
+            case "$_ehsp_err" in
+                *xcrun*|*"invalid active developer path"*|*"command line developer tools"*)
+                    _exakit_log_file "INFO  /usr/bin/python3 is the Xcode Command Line Tools stub, not a real interpreter — using the uv-managed Python runtime instead" ;;
+                *)
+                    _exakit_log_file "INFO  the system python3 is not usable for this kit (needs >= $EXAKIT_MIN_PYTHON) — using the uv-managed Python runtime instead" ;;
+            esac
         fi
     fi
     [ "$_EXAKIT_SYSTEM_PY_OK" = "yes" ]
@@ -1148,7 +1192,24 @@ exakit_ensure_uv() {
         EXAKIT_UV_BIN="$EXAKIT_BIN_DIR/uv"
         return 0
     fi
-    info "Installing the managed Python bootstrapper (uv)"
+    # A READ-ONLY STATE QUERY INSTALLS NOTHING. `exakit status --json` is
+    # documented as a state query, and on a stock macOS (system python3 is
+    # 3.9.6, below the tomllib floor) the very first one used to arrive here
+    # and download a 36 MB binary into the user's ~/.local/bin, over the
+    # network, with no prompt and no mention in AGENTS.md. Report "no
+    # interpreter" instead and let the caller degrade honestly; every command
+    # that may CHANGE the machine (install, update, mcp-setup) still
+    # bootstraps.
+    if [ "${EXAKIT_READONLY_QUERY:-0}" = "1" ]; then
+        _exakit_log_file "INFO  uv bootstrap skipped: this is a read-only state query"
+        return 1
+    fi
+    # Narration to STDERR, always: this bootstrap runs lazily from inside
+    # run_python, including in the MIDDLE of composing a --json answer — on a
+    # stock macOS with no Python 3.11+, the very first `exakit status --json`
+    # lands here, and these lines used to interleave with the JSON object on
+    # stdout, corrupting the one answer the contract promises is parseable.
+    info "Installing the managed Python bootstrapper (uv)" >&2
     mkdir -p "$EXAKIT_BIN_DIR"
     if command -v curl >/dev/null 2>&1; then
         env UV_NO_MODIFY_PATH=1 INSTALLER_NO_MODIFY_PATH=1 sh -c \
@@ -1157,15 +1218,15 @@ exakit_ensure_uv() {
         env UV_NO_MODIFY_PATH=1 INSTALLER_NO_MODIFY_PATH=1 sh -c \
             'wget -qO- https://astral.sh/uv/install.sh | sh' >> "${EXAKIT_LOG_FILE:-/dev/null}" 2>&1 || return 1
     else
-        warn "Neither curl nor wget is available to install uv."
+        warn "Neither curl nor wget is available to install uv." >&2
         return 1
     fi
     if [ -x "$EXAKIT_BIN_DIR/uv" ]; then
         EXAKIT_UV_BIN="$EXAKIT_BIN_DIR/uv"
-        ok "uv installed at $EXAKIT_UV_BIN"
+        ok "uv installed at $EXAKIT_UV_BIN" >&2
         return 0
     fi
-    warn "uv installation finished but the binary was not found in $EXAKIT_BIN_DIR."
+    warn "uv installation finished but the binary was not found in $EXAKIT_BIN_DIR." >&2
     return 1
 }
 
@@ -1184,6 +1245,34 @@ run_python() {
 exakit_can_run_python() {
     _exakit_has_system_python3 && return 0
     exakit_ensure_uv >/dev/null 2>&1
+}
+
+# run_python_any — run a script on ANY Python 3 that is already on the machine.
+#
+# run_python holds the kit to EXAKIT_MIN_PYTHON (3.11) because exactly ONE
+# thing needs it: the MCP client-config writer parses TOML with the stdlib's
+# tomllib. Reading the manifest and composing a --json answer need `json` and
+# nothing else — but they went through the same gate, so on a stock macOS
+# (python3 3.9.6) every state query fell through to the uv bootstrap: a
+# documented read-only command downloading 36 MB, and — until that narration
+# moved to stderr — splicing its progress lines into the very value it was
+# computing, which is how `runtime.type` came back as a multi-line blob.
+# Anything that needs only the standard library runs here instead.
+run_python_any() {
+    if [ "${EXAKIT_DISABLE_SYSTEM_PYTHON:-0}" != "1" ] && command -v python3 >/dev/null 2>&1; then
+        python3 "$@"
+        return $?
+    fi
+    run_python "$@"
+}
+
+# Is there any Python 3 at all? Never installs one from a read-only query
+# (exakit_ensure_uv enforces that); callers degrade instead of failing.
+exakit_can_run_python_any() {
+    if [ "${EXAKIT_DISABLE_SYSTEM_PYTHON:-0}" != "1" ] && command -v python3 >/dev/null 2>&1; then
+        return 0
+    fi
+    exakit_can_run_python
 }
 
 manifest_init() {
@@ -1453,9 +1542,17 @@ PY
 }
 
 # manifest_get <dot.path> — prints the value; exits non-zero if missing.
+#
+# Reads through run_python_any: parsing this file needs `json`, not 3.11, and
+# routing it through the 3.11 gate is what made `exakit status` install uv on
+# a stock Mac. With no interpreter at all a read-only query answers "missing"
+# rather than dying; everything else still gets the explicit failure.
 manifest_get() {
-    require_python3
-    run_python - "$EXAKIT_MANIFEST" "$1" <<'PY'
+    if ! exakit_can_run_python_any; then
+        [ "${EXAKIT_READONLY_QUERY:-0}" = "1" ] && return 1
+        die "A Python runtime is required, and the automatic uv bootstrap failed."
+    fi
+    run_python_any - "$EXAKIT_MANIFEST" "$1" <<'PY'
 import json, sys
 path, key = sys.argv[1], sys.argv[2]
 try:
@@ -1490,8 +1587,11 @@ PY
 # way is a DSN, a username or a path; if that ever stops being true, this is
 # the line-oriented assumption that breaks.
 manifest_get_many() {
-    require_python3
-    run_python - "$EXAKIT_MANIFEST" "$@" <<'PY'
+    if ! exakit_can_run_python_any; then
+        [ "${EXAKIT_READONLY_QUERY:-0}" = "1" ] && return 1
+        die "A Python runtime is required, and the automatic uv bootstrap failed."
+    fi
+    run_python_any - "$EXAKIT_MANIFEST" "$@" <<'PY'
 import json, sys
 path, keys = sys.argv[1], sys.argv[2:]
 try:
@@ -2158,9 +2258,15 @@ exakit_run_bounded() {
         sleep 1
         _rb_waited=$((_rb_waited + 1))
     done
-    kill -TERM "$_rb_pid" 2>/dev/null
+    # The GROUP first, then the child: a probe captured with $( ) stays blocked
+    # until every process holding the pipe's write end exits, so killing only
+    # the direct child leaves its own children keeping the capture open. When
+    # the child leads no group of its own (non-interactive shells put it in
+    # the script's group, where a group kill must never land), the group kill
+    # is a no-op and the direct one still applies.
+    kill -TERM -- "-$_rb_pid" 2>/dev/null || kill -TERM "$_rb_pid" 2>/dev/null
     sleep 1
-    kill -KILL "$_rb_pid" 2>/dev/null
+    kill -KILL -- "-$_rb_pid" 2>/dev/null || kill -KILL "$_rb_pid" 2>/dev/null
     wait "$_rb_pid" 2>/dev/null
     return 124
 }
@@ -3965,12 +4071,27 @@ EXAKIT_MM_COVERED
         return 0
     fi
 
+    # WITHOUT A TERMINAL, THE ANSWER IS SKIP. The pre-ticked rows exist so a
+    # human's bare Enter installs what is on offer; keeping them as the answer
+    # when nobody could see the question turned `exakit marketplace` from a
+    # browse into a full multi-hundred-MB install with a live daemon — run by
+    # agents that were told to look, not to install. Installing without a
+    # terminal takes an explicit answer: EXAKIT_MARKETPLACE_ADDONS, or ids on
+    # the command line. ⇄ twin: the same guard in Show-ExakitMarketplaceMenu.
+    if [ -z "$(_exakit_prompt_tty)" ]; then
+        info "No terminal to ask on — nothing was installed."
+        info "See what is available (read-only): exakit marketplace --list   (--json for scripts)"
+        info "Install explicitly: exakit marketplace <id>   or EXAKIT_MARKETPLACE_ADDONS=<ids>|all exakit marketplace"
+        return 0
+    fi
+
     # The selection — the same live table the data-load menu draws: a group row
     # with the add-ons hanging off connectors (UI_TEE/UI_CORNER from the ui
     # palette; ASCII in plain mode), the available add-ons pre-selected so Enter
-    # alone installs what is on offer, and Skip as the exclusive opt-out. A
-    # non-interactive run keeps the pre-selected defaults, exactly like the
-    # data-load menu (EXAKIT_MARKETPLACE_ADDONS=none is the scripted opt-out).
+    # alone installs what is on offer, and Skip as the exclusive opt-out. An
+    # interactive run that cannot draw still keeps the pre-selected defaults
+    # (EXAKIT_MARKETPLACE_ADDONS=none is the scripted opt-out); a run with no
+    # terminal at all never reaches this point.
     # Mirrors exakit_data_load_select / Show-ExakitMarketplaceMenu.
     #
     # The rows the reader ticks here are the rows _exakit_marketplace_apply then
@@ -4027,6 +4148,72 @@ EXAKIT_MM_COVERED
         return 0
     fi
     _exakit_marketplace_apply "$_mm_picked"
+}
+
+# exakit_marketplace_list <json01> — the READ-ONLY answer to "what add-ons
+# exist and where do they stand?", for agents and scripts that must never
+# trigger an install by looking. One row per registered add-on, whatever its
+# state; nothing here writes the manifest, a failure note, or a log. The
+# status vocabulary is fixed: installed / available / managed outside the
+# kit / not in this kit copy / not available on this machine.
+exakit_marketplace_list() {
+    _ml_json="${1:-0}"
+    _ml_rows=""
+    while IFS='|' read -r _ml_id _ml_label; do
+        [ -n "$_ml_id" ] || continue
+        _ml_ver=""
+        _ml_reason=""
+        if ! _exakit_addon_applicable "$_ml_id" 2>/dev/null && \
+           ! exakit_marketplace_addon_installed "$_ml_id" 2>/dev/null; then
+            _ml_status="not available on this machine"
+            _ml_reason="$(_exakit_addon_applicable_reason "$_ml_id" 2>/dev/null || true)"
+        elif exakit_marketplace_addon_installed "$_ml_id"; then
+            _ml_status="installed"
+            _ml_ver="$(exakit_version_plain "$(exakit_component_current "$_ml_id" 2>/dev/null || true)")"
+        elif _exakit_addon_system_present "$_ml_id"; then
+            _ml_status="managed outside the kit"
+        elif ! exakit_marketplace_addon_available "$_ml_id"; then
+            _ml_status="not in this kit copy"
+        else
+            _ml_status="available"
+            _ml_ver="$(exakit_version_plain "$(exakit_component_available "$_ml_id" 2>/dev/null || true)")"
+        fi
+        _ml_rows="$_ml_rows$_ml_id|$_ml_status|$_ml_ver|$_ml_reason
+"
+    done <<EXAKIT_ML_EOF
+$(exakit_marketplace_addons)
+EXAKIT_ML_EOF
+
+    if [ "$_ml_json" = "1" ]; then
+        _ml_first=1
+        printf '{\n  "addons": [\n'
+        while IFS='|' read -r _ml_id _ml_status _ml_ver _ml_reason; do
+            [ -n "$_ml_id" ] || continue
+            [ "$_ml_first" -eq 1 ] || printf ',\n'
+            _ml_first=0
+            printf '    {"id": "%s", "status": "%s", "installed": %s' \
+                "$_ml_id" "$_ml_status" \
+                "$([ "$_ml_status" = "installed" ] && echo true || echo false)"
+            [ -n "$_ml_ver" ] && printf ', "version": "%s"' "$_ml_ver"
+            [ -n "$_ml_reason" ] && printf ', "reason": "%s"' \
+                "$(printf '%s' "$_ml_reason" | sed 's/\\/\\\\/g; s/"/\\"/g')"
+            printf '}'
+        done <<EXAKIT_ML_JSON
+$_ml_rows
+EXAKIT_ML_JSON
+        printf '\n  ]\n}\n'
+        return 0
+    fi
+
+    while IFS='|' read -r _ml_id _ml_status _ml_ver _ml_reason; do
+        [ -n "$_ml_id" ] || continue
+        printf '%-16s %s%s%s\n' "$_ml_id" "$_ml_status" \
+            "${_ml_ver:+ }" "$_ml_ver"
+        [ -n "$_ml_reason" ] && printf '%-16s %s\n' "" "($_ml_reason)"
+    done <<EXAKIT_ML_OUT
+$_ml_rows
+EXAKIT_ML_OUT
+    return 0
 }
 
 # exakit_marketplace_offer — the closing moment of an install: everything ran,
@@ -4827,8 +5014,15 @@ exakit_print_version_table() {
             _uvt_i=$((_uvt_i + 1))
         done
         run_python - "$_uvt_tmp" "$_pending" "$(exakit_component_current exakit 2>/dev/null || printf unknown)" \
-            "$(manifest_get installed_at 2>/dev/null || true)" "$(exakit_versions_source 2>/dev/null || true)" <<'EXAKIT_VJ_PY'
+            "$(manifest_get installed_at 2>/dev/null || true)" "$(exakit_versions_source 2>/dev/null || true)" \
+            "$(exakit_marketplace_addons 2>/dev/null | cut -d'|' -f1 | tr '\n' ' ')" <<'EXAKIT_VJ_PY'
 import json, sys
+# WHICH ROWS ARE OPTIONAL. Nothing in a component object said whether it is
+# part of the kit or an add-on someone chose, so an agent reading
+# `status: "available"` could not tell "you have not installed this optional
+# tool" from "a piece of your kit is missing". The registry is the source:
+# these are the ids exakit_marketplace_addons lists, never a hand-written set.
+addon_ids = set((sys.argv[6] if len(sys.argv) > 6 else "").split())
 rows = []
 with open(sys.argv[1], encoding="utf-8") as handle:
     for line in handle:
@@ -4836,12 +5030,38 @@ with open(sys.argv[1], encoding="utf-8") as handle:
         if not line:
             continue
         comp, ver, avail, status, sev, maint, note = (line.split("\t") + [""] * 7)[:7]
+        # The raw cell doubles as the HUMAN Action column, so it carried
+        # whatever a human should do next - "exakit marketplace",
+        # "2.2.0 available (repair)" - which is a command or a sentence, not a
+        # status. The JSON key gets a fixed vocabulary a parser can switch on,
+        # and the action moves to a per-row remedy that is runnable as-is.
+        if status == "current":
+            row_status, remedy = "current", None
+        elif status == "none":
+            # Installed is ahead of the published set; nothing to do.
+            row_status, remedy = "ahead", None
+        elif status == "-":
+            row_status, remedy = "unsupported", None
+        elif status == "inspect":
+            row_status, remedy = "unknown", None
+        elif status == "exakit marketplace":
+            row_status, remedy = "available", "exakit marketplace %s" % comp
+        elif status.startswith("update exakit first"):
+            row_status, remedy = "blocked_on_kit", "exakit update exakit"
+        elif status.endswith("available (repair)"):
+            row_status, remedy = "missing", "exakit update %s" % comp
+        elif status.endswith("available"):
+            row_status, remedy = "update_available", "exakit update %s" % comp
+        else:
+            row_status, remedy = status, None
         rows.append({
             "component": comp,
+            "addon": comp in addon_ids,
             "installed": None if ver in ("not installed", "not available", "") else ver,
             "installed_label": ver,
             "advertised": None if avail in ("unknown", "") else avail,
-            "status": status,
+            "status": row_status,
+            "remedy": remedy,
             "severity": sev or "normal",
             "note": maint or None,
             "platform_note": note or None,
@@ -5413,7 +5633,7 @@ exakit_runtime_update_explain() {
             ;;
         personal)
             info "The launcher is replaced; the database is checked afterwards and started again if it ends up down — usually under a minute."
-            info "Your data is kept: this update neither deletes nor migrates the deployment's database content."
+            info "Your data is kept: this update neither deletes nor migrates the tables in your database."
             ;;
         *)
             info "The database goes down for the update and is started again afterwards."
@@ -5490,7 +5710,7 @@ exakit_offer_runtime_update() {
             exakit_runtime_update_explain "$_oru_actual" "$_oru_cur" "$_oru_avail"
             ;;
         no)
-            warn "$_oru_actual $_oru_cur -> $_oru_avail was left alone: the runtime update is answered 'no' (EXAKIT_CONFIRM_RUNTIME_UPDATE)."
+            warn "$_oru_actual $_oru_cur -> $_oru_avail was left alone: the database update is answered 'no' (EXAKIT_CONFIRM_RUNTIME_UPDATE)."
             info "Apply it when convenient:  exakit update"
             return 1
             ;;
@@ -6121,7 +6341,7 @@ sha256_of() {
     elif command -v sha256sum >/dev/null 2>&1; then
         sha256sum "$1" | awk '{print $1}'
     else
-        die "Neither shasum nor sha256sum available for checksum verification"
+        die "Cannot verify downloads: neither shasum nor sha256sum is installed. Install coreutils (Debian/Ubuntu: apt install coreutils; Fedora/RHEL: dnf install coreutils), then re-run the installer."
     fi
 }
 
@@ -6132,7 +6352,7 @@ verify_sha256() {
         error "Checksum mismatch for $(basename "$1")"
         error "  expected: $2"
         error "  actual:   $_actual"
-        die "Refusing to continue with an unverified artifact"
+        die "The download does not match the checksum the kit expects, so it will not be used. This is usually an interrupted or proxy-modified download - re-run the installer to fetch it again. If it keeps failing, report it with the two hashes above."
     fi
     ok "Checksum verified: $(basename "$1")"
 }
@@ -6173,9 +6393,32 @@ ensure_path_hint() {
 
     # The user's interactive shell decides which profile matters; fish has
     # no POSIX profile, so it keeps the printed hint instead of a bad edit.
-    case "$(basename "${SHELL:-}")" in
+    _eph_shell="$(basename "${SHELL:-}")"
+    # An empty $SHELL (cron, `env -i`, some CI images) used to fall through to
+    # the catch-all and write ~/.profile, which zsh does not read either.
+    # macOS has shipped zsh as the default login shell since Catalina, so that
+    # is the honest guess there rather than a file nobody sources.
+    if [ -z "$_eph_shell" ] && [ "$(uname -s 2>/dev/null)" = "Darwin" ]; then
+        _eph_shell="zsh"
+    fi
+    case "$_eph_shell" in
         zsh)  _eph_profile="$HOME/.zshrc" ;;
-        bash) _eph_profile="$HOME/.bashrc" ;;
+        bash)
+            # macOS Terminal.app and iTerm2 start bash as a LOGIN shell, which
+            # reads ~/.bash_profile (or ~/.profile) and NEVER ~/.bashrc. Writing
+            # .bashrc there earned a green tick for an edit no new terminal
+            # would ever read. Linux terminals start non-login interactive bash,
+            # which does read .bashrc, so only macOS diverges.
+            if [ "$(uname -s 2>/dev/null)" = "Darwin" ]; then
+                if [ -f "$HOME/.bash_profile" ] || [ ! -f "$HOME/.profile" ]; then
+                    _eph_profile="$HOME/.bash_profile"
+                else
+                    _eph_profile="$HOME/.profile"
+                fi
+            else
+                _eph_profile="$HOME/.bashrc"
+            fi
+            ;;
         fish)
             warn "$1 is not on your PATH. For fish, run: fish_add_path $1"
             return 0
@@ -6190,11 +6433,35 @@ ensure_path_hint() {
         return 0
     fi
     if { printf '\n%s\nexport PATH="%s:$PATH"\n' "$_eph_marker" "$1" >> "$_eph_profile"; } 2>/dev/null; then
-        ok "Added $1 to your PATH in $_eph_profile (new terminals pick it up automatically)"
+        ok "Added $1 to your PATH in $_eph_profile - new terminals pick it up. To undo, delete the two lines marked \"Added by the Exasol Personal Local Starter Kit\"; EXAKIT_NO_PROFILE_EDIT=1 skips this edit."
     else
         warn "$1 is not on your PATH and $_eph_profile is not writable. Add this to your shell profile:"
         printf '      %s%s%s   export PATH="%s:$PATH"\n' "${UI_DIM:-}" "${UI_VB:-|}" "${UI_RESET:-}" "$1" >&2
     fi
+}
+
+# exakit_unsigned_binary_hint <path> <exit-status> — the macOS diagnosis for a
+# freshly downloaded binary that was KILLED instead of run. Prints nothing and
+# returns 1 when that is not what happened.
+#
+# On Apple silicon the kernel refuses to execute an arm64 Mach-O that carries no
+# code signature at all: the process dies on SIGKILL (137) with nothing on
+# stderr. Every probe downstream then reads that silence as an answer — the
+# launcher capability probe concludes "this launcher version has no explicit
+# start command" — so the one thing nobody is told is that the binary never ran.
+# Quarantine is NOT this: curl does not set com.apple.quarantine, so no `xattr`
+# step is needed or offered here.
+exakit_unsigned_binary_hint() {
+    [ "$(uname -s 2>/dev/null)" = "Darwin" ] || return 1
+    case "${2:-}" in
+        137|9) ;;
+        *) return 1 ;;
+    esac
+    error "$1 was installed but the kernel killed it on its first run (SIGKILL, no output)."
+    info "On Apple silicon that is a code-signature problem in the downloaded release, not a problem with this machine."
+    info "Confirm it with: codesign -dv \"$1\"   (\"code object is not signed at all\" is the signature failure)"
+    info "That is a broken release and worth reporting. An ad-hoc signature unblocks you locally: codesign -s - \"$1\""
+    return 0
 }
 
 exakit_repo_root() {
@@ -6258,6 +6525,17 @@ exakit_skill_field() {
 # skill.
 exakit_skill_addon() {
     exakit_skill_field "$1" addon
+}
+
+# _exakit_skill_gating_addon <skill-name> — the add-on that gates this skill
+# and is NOT installed; empty when the skill is not gated, or the gate is open.
+_exakit_skill_gating_addon() {
+    _sga_dir="$(exakit_skills_dir 2>/dev/null)" || return 0
+    [ -f "$_sga_dir/$1/SKILL.md" ] || return 0
+    _sga_owner="$(exakit_skill_addon "$_sga_dir/$1/SKILL.md" 2>/dev/null || true)"
+    [ -n "$_sga_owner" ] || return 0
+    exakit_marketplace_addon_installed "$_sga_owner" 2>/dev/null && return 0
+    printf '%s\n' "$_sga_owner"
 }
 
 # exakit_skills_for_addon <addon-id> — the skill folder names that add-on owns.
@@ -6430,9 +6708,21 @@ exakit_skills_list() {
             [ -n "$_skl_id" ] || continue
             [ "$_skl_first" -eq 1 ] || printf ','
             _skl_first=0
-            printf '{"name":"%s","state":"%s","summary":"%s"}' \
-                "$_skl_id" "$(exakit_skill_state "$_skl_id")" \
-                "$(printf '%s' "$_skl_sum" | sed 's/\\/\\\\/g; s/"/\\"/g')"
+            _skl_state="$(exakit_skill_state "$_skl_id")"
+            _skl_owner="$(_exakit_skill_gating_addon "$_skl_id")"
+            # An add-on's skill is never "available" to skills-install — that
+            # command deliberately skips it, so calling it available
+            # prescribed a command that cannot change it. It arrives with its
+            # add-on, and the state says so, naming whose it is.
+            if [ "$_skl_state" = "available" ] && [ -n "$_skl_owner" ]; then
+                printf '{"name":"%s","state":"needs-addon","addon":"%s","remedy":"exakit marketplace %s","summary":"%s"}' \
+                    "$_skl_id" "$_skl_owner" "$_skl_owner" \
+                    "$(printf '%s' "$_skl_sum" | sed 's/\\/\\\\/g; s/"/\\"/g')"
+            else
+                printf '{"name":"%s","state":"%s","summary":"%s"}' \
+                    "$_skl_id" "$_skl_state" \
+                    "$(printf '%s' "$_skl_sum" | sed 's/\\/\\\\/g; s/"/\\"/g')"
+            fi
         done <<EXAKIT_SKL_EOF
 $(exakit_skills_registry)
 EXAKIT_SKL_EOF
@@ -6445,7 +6735,12 @@ EXAKIT_SKL_EOF
         _skj_missing=0
         while IFS='|' read -r _skj_id _skj_sum; do
             [ -n "$_skj_id" ] || continue
-            [ "$(exakit_skill_state "$_skj_id")" = "installed" ] || _skj_missing=$((_skj_missing + 1))
+            # An add-on-gated skill whose add-on is absent is not MISSING:
+            # skills-install cannot place it, so counting it would prescribe a
+            # command that changes nothing, forever.
+            [ "$(exakit_skill_state "$_skj_id")" = "installed" ] || \
+                [ -n "$(_exakit_skill_gating_addon "$_skj_id")" ] || \
+                _skj_missing=$((_skj_missing + 1))
         done <<EXAKIT_SKJ_EOF
 $(exakit_skills_registry)
 EXAKIT_SKJ_EOF
@@ -6469,8 +6764,17 @@ EXAKIT_SKJ_EOF
     while IFS='|' read -r _skl_id _skl_sum; do
         [ -n "$_skl_id" ] || continue
         _skl_state="$(exakit_skill_state "$_skl_id")"
-        [ "$_skl_state" = "installed" ] || _skl_pending=$((_skl_pending + 1))
-        ui_panel_line "$(printf '%-26s %-10s %s' "$_skl_id" "$_skl_state" "$_skl_sum")"
+        # An add-on's skill arrives with its add-on; "available" beside advice
+        # to run skills-install prescribed a command that deliberately skips
+        # it. Say whose it is instead, and leave it out of the pending count
+        # the advice below is computed from.
+        _skl_owner="$(_exakit_skill_gating_addon "$_skl_id")"
+        if [ "$_skl_state" = "available" ] && [ -n "$_skl_owner" ]; then
+            _skl_state="with $_skl_owner"
+        elif [ "$_skl_state" != "installed" ]; then
+            _skl_pending=$((_skl_pending + 1))
+        fi
+        ui_panel_line "$(printf '%-26s %-22s %s' "$_skl_id" "$_skl_state" "$_skl_sum")"
         _skl_count=$((_skl_count + 1))
     done <<EXAKIT_SKL_EOF
 $(exakit_skills_registry)
@@ -6564,6 +6868,24 @@ exakit_install_skills() {
         return 1
     fi
     ok "Installed $_installed AI skill$([ "$_installed" = 1 ] || printf 's') for Claude Code (~/.claude/skills) and open-standard agents (~/.agents/skills)"
+
+    # A skill the NEW set no longer carries leaves the discovery roots with the
+    # update: it was placed by the kit — the manifest's installed list is the
+    # proof — and left behind it keeps firing its triggers forever for a
+    # workflow this kit no longer ships. Only recorded names are touched; the
+    # roots also hold skills the user installed themselves, which the kit must
+    # never remove.
+    _isk_prev="$(manifest_get components.skills.installed 2>/dev/null | tr -d '[]"' | tr ',' ' ')"
+    _isk_retired=0
+    for _isk_name in $_isk_prev; do
+        [ -n "$_isk_name" ] || continue
+        [ -f "$_skills_src/$_isk_name/SKILL.md" ] && continue
+        _exakit_skill_unplace "$_isk_name"
+        _exakit_log_file "OK    Retired skill: $_isk_name (no longer in the kit's skill set)"
+        _isk_retired=$((_isk_retired + 1))
+    done
+    [ "$_isk_retired" -gt 0 ] && \
+        ok "Retired $_isk_retired skill$([ "$_isk_retired" = 1 ] || printf 's') the new set no longer carries"
 
     # Record what was placed and which skill-set version it came from. This is
     # the only honest source for two later questions: which skill directories
@@ -6895,29 +7217,29 @@ _exakit_assert_mcp_readonly_posture() {
     _exakit_exapump_sql_has_token \
         "$_config_path" "admin" \
         "SELECT CASE WHEN EXISTS (SELECT 1 FROM EXA_DBA_SYS_PRIVS WHERE GRANTEE = '$_user_lit' AND PRIVILEGE = 'CREATE SESSION') THEN 'EXAKIT_CREATE_SESSION_OK' ELSE 'EXAKIT_CREATE_SESSION_MISSING' END AS STATUS" \
-        "EXAKIT_CREATE_SESSION_OK" || die "The MCP read-only user is missing CREATE SESSION."
+        "EXAKIT_CREATE_SESSION_OK" || die "The read-only database login for your AI client is incomplete (no CREATE SESSION, so it cannot connect). Rebuild it with: exakit mcp-setup"
 
     _exakit_exapump_sql_has_token \
         "$_config_path" "admin" \
         "SELECT CASE WHEN EXISTS (SELECT 1 FROM EXA_DBA_SYS_PRIVS WHERE GRANTEE = '$_user_lit' AND PRIVILEGE = 'USE ANY SCHEMA') THEN 'EXAKIT_USE_ANY_SCHEMA_OK' ELSE 'EXAKIT_USE_ANY_SCHEMA_MISSING' END AS STATUS" \
-        "EXAKIT_USE_ANY_SCHEMA_OK" || die "The MCP read-only user is missing USE ANY SCHEMA (needed to read every schema)."
+        "EXAKIT_USE_ANY_SCHEMA_OK" || die "The read-only database login for your AI client cannot see your schemas. Rebuild it with: exakit mcp-setup"
 
     _exakit_exapump_sql_has_token \
         "$_config_path" "admin" \
         "SELECT CASE WHEN EXISTS (SELECT 1 FROM EXA_DBA_SYS_PRIVS WHERE GRANTEE = '$_user_lit' AND PRIVILEGE = 'SELECT ANY TABLE') THEN 'EXAKIT_SELECT_ANY_TABLE_OK' ELSE 'EXAKIT_SELECT_ANY_TABLE_MISSING' END AS STATUS" \
-        "EXAKIT_SELECT_ANY_TABLE_OK" || die "The MCP read-only user is missing SELECT ANY TABLE (needed to read every table)."
+        "EXAKIT_SELECT_ANY_TABLE_OK" || die "The read-only database login for your AI client cannot read your tables. Rebuild it with: exakit mcp-setup"
 
     _exakit_exapump_sql_has_token \
         "$_config_path" "admin" \
         "SELECT CASE WHEN COUNT(*) = 0 THEN 'EXAKIT_SYS_PRIV_SCOPE_OK' ELSE 'EXAKIT_SYS_PRIV_SCOPE_TOO_WIDE' END AS STATUS FROM EXA_DBA_SYS_PRIVS WHERE GRANTEE = '$_user_lit' AND PRIVILEGE NOT IN ('CREATE SESSION', 'USE ANY SCHEMA', 'SELECT ANY TABLE')" \
-        "EXAKIT_SYS_PRIV_SCOPE_OK" || die "The MCP read-only user has system privileges beyond the read-only set (CREATE SESSION, USE ANY SCHEMA, SELECT ANY TABLE)."
+        "EXAKIT_SYS_PRIV_SCOPE_OK" || die "The database login for your AI client has more than read-only access, so the kit will not hand it over. Rebuild it with: exakit mcp-setup (or check EXAKIT_MCP_READONLY_USER, which is '$_readonly_user' here, for a login you granted extra privileges to)."
 
     # No object privilege may be anything other than SELECT — i.e. the user
     # holds no INSERT/UPDATE/DELETE/ALTER/etc. object grant anywhere.
     _exakit_exapump_sql_has_token \
         "$_config_path" "admin" \
         "SELECT CASE WHEN COUNT(*) = 0 THEN 'EXAKIT_OBJ_PRIV_SCOPE_OK' ELSE 'EXAKIT_OBJ_PRIV_SCOPE_TOO_WIDE' END AS STATUS FROM EXA_DBA_OBJ_PRIVS WHERE GRANTEE = '$_user_lit' AND PRIVILEGE <> 'SELECT'" \
-        "EXAKIT_OBJ_PRIV_SCOPE_OK" || die "The MCP read-only user has a write object privilege; it must be read-only."
+        "EXAKIT_OBJ_PRIV_SCOPE_OK" || die "The database login for your AI client can write to at least one table, so the kit will not hand it over. Rebuild it with: exakit mcp-setup"
 
     # Live proof the user cannot write: creating a table in the default schema
     # (which USE ANY SCHEMA lets it OPEN) MUST be rejected, since neither read
@@ -7030,13 +7352,18 @@ _exakit_generate_sql_password_token() {
 # across future shell sessions. Works for bash, zsh, and sh.
 _exakit_add_bin_to_shell_rc() {
     _bin_dir="$1"
+    # MARKED, like ensure_path_hint's edit. An anonymous `export PATH=...` line
+    # in a dotfile is untraceable months later, and uninstall deliberately
+    # leaves the entry in place - so the marker is the only thing that tells the
+    # reader which kit put it there and what to delete.
+    _bin_marker="# Added by the Exasol Personal Local Starter Kit (exakit CLIs)"
     _export_line="export PATH=\"$_bin_dir:\$PATH\""
     
     # Prefer ~/.bashrc (most common for interactive bash shells)
     if [ -f "$HOME/.bashrc" ]; then
         if ! grep -Fq "$_bin_dir" "$HOME/.bashrc" 2>/dev/null; then
-            printf '\n%s\n' "$_export_line" >> "$HOME/.bashrc"
-            ok "Added $_bin_dir to PATH in $HOME/.bashrc"
+            printf '\n%s\n%s\n' "$_bin_marker" "$_export_line" >> "$HOME/.bashrc"
+            ok "Added $_bin_dir to PATH in $HOME/.bashrc (tagged \"Added by the Exasol Personal Local Starter Kit\" - delete that block to undo)"
         fi
         return 0
     fi
@@ -7044,8 +7371,8 @@ _exakit_add_bin_to_shell_rc() {
     # Fall back to ~/.profile (POSIX shell / login shells)
     if [ -f "$HOME/.profile" ]; then
         if ! grep -Fq "$_bin_dir" "$HOME/.profile" 2>/dev/null; then
-            printf '\n%s\n' "$_export_line" >> "$HOME/.profile"
-            ok "Added $_bin_dir to PATH in $HOME/.profile"
+            printf '\n%s\n%s\n' "$_bin_marker" "$_export_line" >> "$HOME/.profile"
+            ok "Added $_bin_dir to PATH in $HOME/.profile (tagged \"Added by the Exasol Personal Local Starter Kit\" - delete that block to undo)"
         fi
         return 0
     fi
@@ -7053,16 +7380,16 @@ _exakit_add_bin_to_shell_rc() {
     # For macOS or when ~/.bashrc doesn't exist, try ~/.zshrc
     if [ -f "$HOME/.zshrc" ]; then
         if ! grep -Fq "$_bin_dir" "$HOME/.zshrc" 2>/dev/null; then
-            printf '\n%s\n' "$_export_line" >> "$HOME/.zshrc"
-            ok "Added $_bin_dir to PATH in $HOME/.zshrc"
+            printf '\n%s\n%s\n' "$_bin_marker" "$_export_line" >> "$HOME/.zshrc"
+            ok "Added $_bin_dir to PATH in $HOME/.zshrc (tagged \"Added by the Exasol Personal Local Starter Kit\" - delete that block to undo)"
         fi
         return 0
     fi
     
     # If no startup file exists yet, create ~/.profile
     if ! grep -Fq "$_bin_dir" "$HOME/.profile" 2>/dev/null; then
-        printf '%s\n' "$_export_line" >> "$HOME/.profile"
-        ok "Added $_bin_dir to PATH in new $HOME/.profile"
+        printf '%s\n%s\n' "$_bin_marker" "$_export_line" >> "$HOME/.profile"
+        ok "Added $_bin_dir to PATH in new $HOME/.profile (tagged \"Added by the Exasol Personal Local Starter Kit\" - delete that block to undo)"
     fi
 }
 
@@ -7121,7 +7448,7 @@ exakit_configure_mcp_readonly_access() {
     esac
     
     _runtime_user="$(_exakit_manifest_runtime_value runtime.user)"
-    [ -n "$_runtime_user" ] || die "runtime.user is missing; cannot prepare the MCP read-only database user."
+    [ -n "$_runtime_user" ] || die "The install record is incomplete (no database user recorded), so the read-only login for your AI client cannot be created. Re-run the installer to rebuild it: $(exakit_install_command)"
     _runtime_password_file="$(_exakit_manifest_runtime_value runtime.password_file)"
     _admin_password=""
     if [ -n "$_runtime_password_file" ] && [ -f "$_runtime_password_file" ]; then
@@ -7143,8 +7470,8 @@ exakit_configure_mcp_readonly_access() {
     [ -n "$_admin_password" ] || die "No runtime database password is available (runtime.password_file is missing and the exapump '$EXAKIT_EXAPUMP_PROFILE' profile has none). Set it with 'exapump profile init $EXAKIT_EXAPUMP_PROFILE', then re-run."
     _host="$(_exakit_parse_runtime_host)"
     _port="$(_exakit_parse_runtime_port)"
-    [ -n "$_host" ] || die "runtime.dsn is missing a host; cannot prepare the MCP read-only database user."
-    [ -n "$_port" ] || die "runtime.dsn is missing a port; cannot prepare the MCP read-only database user."
+    [ -n "$_host" ] || die "The install record is incomplete (no database host recorded), so the read-only login for your AI client cannot be created. Re-run the installer to rebuild it: $(exakit_install_command)"
+    [ -n "$_port" ] || die "The install record is incomplete (no database port recorded), so the read-only login for your AI client cannot be created. Re-run the installer to rebuild it: $(exakit_install_command)"
 
     _readonly_user="$EXAKIT_MCP_READONLY_USER"
     # The MCP user gets database-wide READ (USE ANY SCHEMA + SELECT ANY TABLE),
@@ -7341,7 +7668,7 @@ exakit_run_mcp_setup_cli() {
     _output_file="$2"
     require_python3
     _repo_root="$(exakit_repo_root)" || {
-        warn "Could not find the MCP package source to configure MCP clients."
+        warn "Could not find the MCP package source to configure your AI clients."
         return 1
     }
     # The caller may have prepared the read-only user already: it narrates as it
@@ -7370,7 +7697,7 @@ exakit_run_mcp_setup_cli() {
         # screen before anyone could read it. die() stops the animation for the
         # same reason.
         command -v ui_animation_stop >/dev/null 2>&1 && ui_animation_stop
-        warn "MCP client setup failed (see log)."
+        warn "AI client setup failed (see log)."
         return 1
     fi
     return 0
@@ -7439,7 +7766,7 @@ exakit_run_mcp_operation_cli() {
     _snapshot_id="${4:-}"
     require_python3
     _repo_root="$(exakit_repo_root)" || {
-        warn "Could not find the MCP package source to manage MCP clients."
+        warn "Could not find the MCP package source to manage your AI clients."
         return 1
     }
     case "$_operation" in
@@ -8010,7 +8337,7 @@ exakit_ensure_runtime_running() {
                 personal_deploy_local
                 return 0
             fi
-            die "No database deployment found. Deploy one with: exakit start (or re-run the installer)"
+            die "No database found. Start one with: exakit start (or re-run the installer)"
             ;;
         nano)
             command -v nano_status >/dev/null 2>&1 || return 0
@@ -8027,7 +8354,7 @@ exakit_ensure_runtime_running() {
                 nano_install
                 return 0
             fi
-            die "No database container found. Create one with: exakit start (or re-run the installer)"
+            die "No database found. Start one with: exakit start (or re-run the installer)"
             ;;
         *) return 0 ;;
     esac
@@ -8101,7 +8428,7 @@ exakit_mcp_setup() {
     if [ -n "${EXAKIT_MCP_CLIENTS:-}" ]; then
         case "$EXAKIT_MCP_CLIENTS" in
             skip|SKIP|Skip|none|NONE|None)
-                info "Skipping MCP client setup (EXAKIT_MCP_CLIENTS=$EXAKIT_MCP_CLIENTS) — run 'exakit mcp-setup' any time."
+                info "Skipping AI client setup (EXAKIT_MCP_CLIENTS=$EXAKIT_MCP_CLIENTS) — run 'exakit mcp-setup' any time."
                 return 0
                 ;;
         esac
@@ -8393,7 +8720,7 @@ exakit_mcp_operation() {
     _operation="$1"
     shift
     _clients_csv="$(exakit_mcp_clients_from_args "$@")" || {
-        warn "Please choose valid MCP clients: claude, claude_desktop, claude_code, codex, cursor, copilot, gemini, opencode, continue, or all."
+        warn "Please choose valid AI clients: claude, claude_desktop, claude_code, codex, cursor, copilot, gemini, opencode, continue, or all."
         return 1
     }
     _result_file="$(mktemp "${TMPDIR:-/tmp}/exakit-mcp-operation.XXXXXX")"
@@ -8515,7 +8842,7 @@ exakit_maybe_offer_mcp_setup() {
     _already_done="$(manifest_get components.mcp_server.client_setup.completed 2>/dev/null || true)"
     [ "$_already_done" = "true" ] && return 0
     if [ "${EXAKIT_SKIP_MCP:-}" = "1" ]; then
-        info "Skipping MCP client setup (EXAKIT_SKIP_MCP=1). Run it any time with: exakit mcp-setup"
+        info "Skipping AI client setup (EXAKIT_SKIP_MCP=1). Run it any time with: exakit mcp-setup"
         return 0
     fi
     # Connecting an AI client is the point of the kit, so this step always
@@ -8525,7 +8852,7 @@ exakit_maybe_offer_mcp_setup() {
     # No lead-in: the ticks directly above already said the runtime and the
     # server are ready, and this restated them in a sentence.
     if ! exakit_mcp_setup; then
-        warn "Your local runtime is installed, but MCP client setup did not finish cleanly."
+        warn "Your local database is installed, but AI client setup did not finish cleanly."
         warn "Retry any time with: exakit mcp-setup"
         exakit_note_failure "the AI client configuration did not finish (see the log)"
         return 1
@@ -9605,6 +9932,36 @@ store_credential() {
     fi
     chmod 600 "$EXAKIT_CREDS_DIR/$1.tmp"
     mv "$EXAKIT_CREDS_DIR/$1.tmp" "$EXAKIT_CREDS_DIR/$1" || die "Could not save credential '$1'."
+    _exakit_warn_unprotected_credentials "$EXAKIT_CREDS_DIR/$1"
+}
+
+# _exakit_warn_unprotected_credentials <file> — say so when the chmod above did
+# not actually take.
+#
+# A chmod on a filesystem with no Unix permission bits SUCCEEDS and stores
+# nothing. That is the default state of a Windows drive mounted into WSL
+# (DrvFs without the `metadata` option): the kit's one protection on a
+# plaintext database password is accepted and discarded, every file stays mode
+# 0777, and the install prints its usual ticks. read_credential's own
+# permission warning only fires when a file is UNreadable, never when it is too
+# readable — so nothing in the kit noticed. Warned ONCE per run: the same home
+# holds every credential and the sentence does not improve by repetition.
+_exakit_warn_unprotected_credentials() {
+    [ "${EXAKIT_CREDS_MODE_WARNED:-0}" = "1" ] && return 0
+    _wuc_file="$1"
+    [ -f "$_wuc_file" ] || return 0
+    # The portable test: find is the only mode query that behaves the same on
+    # BSD and GNU. A filesystem that reports the mode we asked for is fine.
+    [ "$(find "$_wuc_file" -perm 0600 -print 2>/dev/null)" = "$_wuc_file" ] && return 0
+    EXAKIT_CREDS_MODE_WARNED=1
+    warn "The database passwords in $EXAKIT_CREDS_DIR cannot be protected on this filesystem: 'chmod 600' was accepted and had no effect."
+    if detect_wsl_drvfs_path "$EXAKIT_CREDS_DIR" 2>/dev/null; then
+        warn "That is a Windows drive mounted into WSL — every Windows user and process on this machine can read them, and OneDrive will sync them if the profile is backed up."
+        info "Fix it by moving the kit to the Linux filesystem: re-run the installer with EXAKIT_HOME=\$HOME/exakit (any path you own on the Linux side), and keep that variable exported for later exakit commands."
+    else
+        info "Move the kit to a filesystem that supports Unix permissions: re-run the installer with EXAKIT_HOME set to a path there."
+    fi
+    return 0
 }
 
 read_credential() {
@@ -9693,6 +10050,40 @@ _exakit_remove_installed_skills() {
     return 0
 }
 
+# _exakit_nano_target_names — "<container>|<volume>" for the Nano deployment
+# this install recorded, so a destructive prompt can NAME what it is about to
+# delete. The manifest first (the names this install actually used, which
+# EXAKIT_NANO_CONTAINER/VOLUME may have moved), then the defaults.
+_exakit_nano_target_names() {
+    _ntn_c="$(manifest_get runtime.container 2>/dev/null || true)"
+    _ntn_v="$(manifest_get runtime.volume 2>/dev/null || true)"
+    [ -n "$_ntn_c" ] || _ntn_c="${EXAKIT_NANO_CONTAINER:-exasol-nano}"
+    [ -n "$_ntn_v" ] || _ntn_v="${EXAKIT_NANO_VOLUME:-exasol-nano-data}"
+    printf '%s|%s' "$_ntn_c" "$_ntn_v"
+}
+
+# _exakit_shared_engine_db_warning — the shared-Docker-engine hazard, said
+# BEFORE consent is taken.
+#
+# It used to be printed from inside _exakit_uninstall_component, i.e. after the
+# user had already typed UNINSTALL — the one sentence that might have changed
+# their answer, delivered once the answer could no longer be changed. The
+# confirmation itself named neither the container nor the volume (those appeared
+# only in the post-removal record line), so there was no moment at which a WSL
+# user could have noticed they were about to delete a Windows install's
+# database. Returns non-zero when the hazard does not apply, so a caller can
+# use it as a test. ⇄ twin: Show-ExakitUninstallMenu in setup/exakit.ps1.
+_exakit_shared_engine_db_warning() {
+    [ "$(manifest_get runtime.type 2>/dev/null || true)" = "nano" ] || return 1
+    case "$(detect_os 2>/dev/null || true)" in
+        wsl|windows) ;;
+        *) return 1 ;;
+    esac
+    _sedw_names="$(_exakit_nano_target_names)"
+    warn "Windows and WSL share one Docker engine. If this machine also has a Windows or WSL install of the kit, removing the container '${_sedw_names%|*}' and the volume '${_sedw_names#*|}' deletes that database too, and it cannot be recovered."
+    return 0
+}
+
 # _exakit_uninstall_component <key> <dry> — one selectable piece of the kit,
 # removed on its own. Each removal also clears its manifest record and step
 # flag, so `exakit status`, `exakit version` and an installer re-run all read the
@@ -9704,10 +10095,22 @@ _exakit_uninstall_component() {
     case "$_uc_key" in
         database)
             _uc_type="$(manifest_get runtime.type 2>/dev/null || true)"
+            # Windows and WSL share one Docker engine: the container and the
+            # data volume being removed here may be the database the OTHER
+            # side installed and still uses. Say so before it is gone — the
+            # other side's kit has no way to warn from here.
+            _uc_shared=""
+            case "$(detect_os)" in
+                wsl|windows) _uc_shared=" (Windows and WSL share one Docker engine — if the other side installed this database, this removes it for both)" ;;
+            esac
             if [ "$_uc_dry" = "1" ]; then
-                info "  will remove: the local Exasol $_uc_type deployment and ALL its data"
+                info "  will remove: the local Exasol $_uc_type deployment and ALL its data$_uc_shared"
                 return 0
             fi
+            # NO warning here any more: by this line the user has typed
+            # UNINSTALL and the removal is under way. The hazard is stated
+            # before the gate instead (_exakit_shared_engine_db_warning, called
+            # from exakit_uninstall_menu and exakit_uninstall_run).
             info "Removing the local Exasol $_uc_type deployment and all data"
             case "$_uc_type" in
                 nano)     nano_teardown --data     || warn "Database removal reported errors" ;;
@@ -9724,7 +10127,7 @@ _exakit_uninstall_component() {
             info "Removing the managed MCP configuration from the AI clients"
             if command -v exakit_mcp_operation >/dev/null 2>&1; then
                 exakit_mcp_operation uninstall >/dev/null 2>&1 || \
-                    warn "Removing the managed MCP client config reported issues"
+                    warn "Removing the managed AI client config reported issues"
             fi
             ;;
         skills)
@@ -9766,6 +10169,11 @@ _exakit_uninstall_component() {
                     # ...and the skills it owns go with it. Here rather than in
                     # the module, so every add-on gets it without writing a line.
                     [ "$_uc_dry" = "1" ] || exakit_remove_addon_skills "$_uc_key" || true
+                    # ...and so does its BOOT ENTRY. Left behind, launchd or
+                    # systemd kept firing a launcher that no longer exists on
+                    # every login, forever — the one artifact of the add-on
+                    # nothing would ever clean up again.
+                    [ "$_uc_dry" = "1" ] || _exakit_autostart_unregister "$_uc_key" || true
                 else
                     warn "The $_uc_key module carries no uninstall — update the kit: exakit update"
                 fi
@@ -10081,14 +10489,24 @@ _exakit_autostart_register() {
     _ar_id="$1"
     _ar_cmd="$(_exakit_service_autostart_command "$_ar_id")"
     if [ -z "$_ar_cmd" ]; then
-        # Nano: the container itself carries the policy.
+        # Nano: the container itself carries the policy — under DOCKER, whose
+        # daemon is up at boot to honour it. Rootless Podman has no daemon:
+        # its restart policy is a recorded no-op, and reporting it as
+        # autostart was a lie the machine only exposed after the next reboot.
+        # There, the start goes through a systemd user unit like any other
+        # service: fall through to the linux arm below with the start command.
         if [ "$_ar_id" = "database" ] && \
            [ "$(exakit_installation_runtime_type 2>/dev/null || true)" = "nano" ]; then
-            _exakit_nano_restart_policy always && \
-                ok "database: the container restarts with Docker"
-            return $?
+            if _exakit_nano_rootless_podman; then
+                _ar_cmd="podman start ${EXAKIT_NANO_CONTAINER:-exasol-nano}"
+            else
+                _exakit_nano_restart_policy always && \
+                    ok "database: the container restarts with Docker"
+                return $?
+            fi
+        else
+            return 0
         fi
-        return 0
     fi
     _ar_label="$(_exakit_autostart_label "$_ar_id")"
     case "$(detect_os)" in
@@ -10135,19 +10553,54 @@ _exakit_autostart_register() {
         linux|wsl)
             if ! command -v systemctl >/dev/null 2>&1 || ! systemctl --user show-environment >/dev/null 2>&1; then
                 warn "$_ar_id: this session has no systemd --user, so nothing was registered."
+                # WSL2 ships with systemd OFF by default, so on a stock
+                # Ubuntu-under-WSL this is the branch that runs — and the
+                # remedy that makes it work is a two-line edit on the Windows
+                # side that appeared nowhere in the kit. A guard that refuses
+                # without naming the fix leaves the reader with no move.
+                if [ "$(detect_os)" = "wsl" ]; then
+                    warn "On WSL, systemd is off by default. Turn it on, then register again:"
+                    info "  1. add these two lines to /etc/wsl.conf:  [boot]  and  systemd=true"
+                    info "  2. from Windows: wsl --shutdown   (then reopen this distro)"
+                    info "  3. exakit autostart"
+                    info "Until then, start it by hand after a reboot with: exakit start"
+                    return 1
+                fi
                 info "Start it by hand after a reboot with: exakit start"
                 return 1
             fi
             mkdir -p "$EXAKIT_SYSTEMD_USER_DIR" || { warn "Could not create $EXAKIT_SYSTEMD_USER_DIR"; return 1; }
             _ar_unit="$EXAKIT_SYSTEMD_USER_DIR/$_ar_label.service"
+            # A `podman start` trigger exits the moment the container is up:
+            # under Type=simple that reads as the service dying, and
+            # Restart=on-failure would loop it at boot. oneshot+RemainAfterExit
+            # is the honest shape for a starter that hands off.
+            case "$_ar_cmd" in
+                "podman start"*) _ar_svc='Type=oneshot\nRemainAfterExit=yes' ;;
+                *)               _ar_svc='Type=simple\nRestart=on-failure' ;;
+            esac
             {
                 printf '[Unit]\nDescription=Exasol Starter Kit: %s\n\n' "$_ar_id"
-                printf '[Service]\nType=simple\nExecStart=%s\nRestart=on-failure\n\n' "$_ar_cmd"
+                printf "[Service]\n${_ar_svc}\nExecStart=%s\n\n" "$_ar_cmd"
                 printf '[Install]\nWantedBy=default.target\n'
             } > "$_ar_unit" || { warn "Could not write $_ar_unit"; return 1; }
             systemctl --user daemon-reload >/dev/null 2>&1
             systemctl --user enable "$_ar_label.service" >/dev/null 2>&1 || {
                 warn "Could not enable $_ar_label.service"; return 1; }
+            # WITHOUT LINGER, a user unit dies at logout and never runs at boot
+            # on a headless box - "starts at login" was silently "starts only
+            # while you are logged in". Best-effort self-linger; when it is
+            # refused (some distros gate it behind polkit), say what the
+            # machine's admin has to run rather than pretending.
+            if command -v loginctl >/dev/null 2>&1 && \
+               [ "$(loginctl show-user "$USER" --property=Linger --value 2>/dev/null)" != "yes" ]; then
+                if loginctl enable-linger >/dev/null 2>&1; then
+                    _exakit_log_file "OK    lingering enabled: $_ar_id survives logout and runs at boot"
+                else
+                    warn "$_ar_id starts at login, but only while you stay logged in: enabling lingering was refused."
+                    info "On a headless or shared box, have an admin run: loginctl enable-linger $USER"
+                fi
+            fi
             _exakit_log_file "OK    $_ar_id: starts at login ($_ar_unit)"
             ;;
         *)
@@ -10176,14 +10629,28 @@ _exakit_autostart_unregister() {
     return 0
 }
 
+# _exakit_nano_rootless_podman — rootless Podman has no daemon at boot, so a
+# container restart policy is a recorded no-op there: only a systemd user
+# unit actually brings the database back after a reboot.
+_exakit_nano_rootless_podman() {
+    command -v detect_container_runtime >/dev/null 2>&1 || return 1
+    [ "$(detect_container_runtime 2>/dev/null)" = "podman" ] || return 1
+    [ "$(podman info --format '{{.Host.Security.Rootless}}' 2>/dev/null)" = "true" ]
+}
+
 # _exakit_autostart_registered <id> — is a boot entry in place?
 _exakit_autostart_registered() {
     _arg_label="$(_exakit_autostart_label "$1")"
     [ -f "$EXAKIT_LAUNCHAGENT_DIR/$_arg_label.plist" ] && return 0
     [ -f "$EXAKIT_SYSTEMD_USER_DIR/$_arg_label.service" ] && return 0
-    # Nano needs no file: the container carries the policy itself.
+    # Nano needs no file when the ENGINE honours the policy: only Docker's
+    # daemon is up at boot to do so. For rootless Podman the policy proves
+    # nothing — the unit file checked above is the only real registration —
+    # so status stops reporting "autostart: true" for a database nothing
+    # will restart.
     if [ "$1" = "database" ] && \
-       [ "$(exakit_installation_runtime_type 2>/dev/null || true)" = "nano" ]; then
+       [ "$(exakit_installation_runtime_type 2>/dev/null || true)" = "nano" ] && \
+       ! _exakit_nano_rootless_podman; then
         _exakit_nano_restart_policy_is_set && return 0
     fi
     return 1
@@ -10464,11 +10931,31 @@ exakit_uninstall_menu() {
     done <<EXAKIT_UM_PANEL_EOF
 $_um_picked_labels
 EXAKIT_UM_PANEL_EOF
+    # NAME THE DATABASE. "EVERYTHING - the full kit (database + data, ...)" is
+    # a category; the container and the volume are the things the engine
+    # deletes, and until now they were printed only in the record line AFTER the
+    # removal. A reader who has one of them on the screen can recognise it as
+    # the database the other side of the machine is using; a reader who has the
+    # word "database" cannot.
+    case " $_um_picked " in
+        *" database "*|*" everything "*)
+            if [ "$(manifest_get runtime.type 2>/dev/null || true)" = "nano" ]; then
+                _um_names="$(_exakit_nano_target_names)"
+                ui_panel_line ""
+                ui_panel_line "Database: Nano container '${_um_names%|*}', data volume '${_um_names#*|}'"
+                ui_panel_line "The volume IS the database - removing it cannot be undone."
+            fi
+            ;;
+    esac
     ui_panel_end
     printf '\n'
     warn "This is IRREVERSIBLE. Removed data cannot be recovered."
     case " $_um_picked " in
-        *" database "*|everything*) warn "The database selection deletes ALL local database data." ;;
+        *" database "*|*" everything "*)
+            warn "The database selection deletes ALL local database data."
+            # BEFORE the typed gate, never after it.
+            _exakit_shared_engine_db_warning || true
+            ;;
     esac
     _um_tty="$(_exakit_prompt_tty)"
     [ -n "$_um_tty" ] || die "uninstall needs an interactive terminal to confirm; use --yes for the scripted full uninstall."
@@ -10573,7 +11060,18 @@ exakit_uninstall_run() {
     #    which for Personal also reaps any orphaned runner daemon on the DB port.
     _type="$(manifest_get runtime.type 2>/dev/null || true)"
     if [ -n "$_type" ]; then
-        _step "local Exasol $_type deployment and ALL its data"
+        # Named BEFORE the removal, not only in the record line after it: on
+        # `--yes` there is no gate to read, so this line and the shared-engine
+        # warning below it are the last chance to recognise the container as one
+        # the other side of a Windows+WSL machine is also using.
+        if [ "$_type" = "nano" ] && command -v _exakit_nano_target_names >/dev/null 2>&1; then
+            _un_names="$(_exakit_nano_target_names)"
+            _step "local Exasol nano deployment and ALL its data: container '${_un_names%|*}', data volume '${_un_names#*|}'"
+        else
+            _step "local Exasol $_type deployment and ALL its data"
+        fi
+        command -v _exakit_shared_engine_db_warning >/dev/null 2>&1 && \
+            { _exakit_shared_engine_db_warning || true; }
         if [ "$_dry" != "1" ]; then
             case "$_type" in
                 nano)     nano_teardown --data     || warn "Database removal reported errors (continuing uninstall)" ;;
@@ -10604,7 +11102,7 @@ exakit_uninstall_run() {
         _step "managed MCP configuration in the AI clients (${_un_mcp_clients:-all managed clients})"
         if [ "$_dry" != "1" ]; then
             exakit_mcp_operation uninstall >/dev/null 2>&1 || \
-                warn "Removing the managed MCP client config reported issues (continuing uninstall)"
+                warn "Removing the managed AI client config reported issues (continuing uninstall)"
         fi
         _done "MCP entry removed from the AI clients the kit manages: ${_un_mcp_clients:-all managed clients}"
     fi
@@ -10630,7 +11128,7 @@ exakit_uninstall_run() {
         if [ "$_dry" != "1" ] && [ -d "$EXAKIT_HOME/backups" ] && [ -n "$(ls -A "$EXAKIT_HOME/backups" 2>/dev/null)" ]; then
             _un_keep="${EXAKIT_HOME}-backups-$(date +%Y%m%d-%H%M%S)"
             if mv "$EXAKIT_HOME/backups" "$_un_keep" 2>/dev/null; then
-                info "MCP client config snapshots kept at $_un_keep (delete it when you are sure)"
+                info "AI client config snapshots kept at $_un_keep (delete it when you are sure)"
             fi
         fi
         _step "kit home $EXAKIT_HOME (credentials, logs, manifest, snapshots, pyexasol venv, add-ons)"

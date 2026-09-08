@@ -28,6 +28,19 @@ EXAKIT_NANO_READY_TIMEOUT="${EXAKIT_NANO_READY_TIMEOUT:-600}"
 # (see nano_repair_creds); pulled on demand, never on the happy path.
 EXAKIT_NANO_REPAIR_IMAGE="${EXAKIT_NANO_REPAIR_IMAGE:-docker.io/library/busybox:stable}"
 
+# _exakit_selinux_enforcing — is SELinux actually enforcing on this host?
+# getenforce where it exists, the kernel's own answer where it does not.
+# Anything unreadable is "no": the label this gates is only NEEDED under
+# enforcement, and a wrong "yes" would hand :z to engines that reject it.
+_exakit_selinux_enforcing() {
+    if command -v getenforce >/dev/null 2>&1; then
+        [ "$(getenforce 2>/dev/null)" = "Enforcing" ]
+        return $?
+    fi
+    [ -r /sys/fs/selinux/enforce ] && \
+        [ "$(cat /sys/fs/selinux/enforce 2>/dev/null)" = "1" ]
+}
+
 # nano_engine — the usable container engine, cached after first call.
 nano_engine() {
     if [ -z "${EXAKIT_NANO_ENGINE:-}" ]; then
@@ -83,10 +96,32 @@ nano_check_requirements() {
     [ "$(detect_arch)" != "unsupported" ] || \
         die "Unsupported CPU architecture: $(uname -m). Exasol Nano images exist for x86_64 and arm64 only."
 
+    # WSL 1 BEFORE the engine check, because every remedy the engine check has
+    # is a loop here: WSL 1 has no Linux kernel, so no container engine can run
+    # in it (Docker Desktop dropped WSL 1 support), and a user told to "install
+    # Docker" or to "enable WSL integration for this distro" is being sent after
+    # something that cannot exist. One sentence ends it instead.
+    if [ "$(detect_wsl_version 2>/dev/null)" = "1" ]; then
+        error "This distro is running on WSL 1, which has no Linux kernel and cannot run a container engine — the local database cannot be installed here."
+        printf '    Convert it to WSL 2 from an admin PowerShell (your files are kept):\n' >&2
+        printf '      wsl --set-version <distro> 2\n' >&2
+        printf '    List your distros and their versions with: wsl -l -v\n' >&2
+        die "WSL 1 is not supported — convert this distro to WSL 2, then re-run."
+    fi
+
     _engine="$(detect_container_runtime_detail)"
     case "$_engine" in
         docker|podman)
             ok "Container runtime: $_engine"
+            # Rootless Podman answers `podman info` and then fails at `run` when
+            # the machine is missing what rootless actually needs (user-namespace
+            # ranges, cgroups v2). Cheap to check here; the engine's own error
+            # names neither, and nothing in the kit translates it.
+            if [ "$_engine" = "podman" ]; then
+                _nano_podman_gap="$(detect_rootless_podman_gap 2>/dev/null || true)"
+                [ -n "$_nano_podman_gap" ] && \
+                    warn "Rootless Podman: $_nano_podman_gap"
+            fi
             ;;
         docker-permission)
             # The daemon is up — the USER cannot reach the socket (classic
@@ -96,8 +131,14 @@ nano_check_requirements() {
             error "Docker is running, but this user is not allowed to use it (permission denied on the Docker socket)."
             printf '    Your user is not in the docker group. Fix it and re-run this installer:\n' >&2
             printf '      1. sudo usermod -aG docker $USER\n' >&2
-            printf '      2. log out and back in (or run: newgrp docker)\n' >&2
+            printf '      2. start a session that has the new group: run "newgrp docker" here, or log out and back in\n' >&2
             printf '      3. confirm it works without sudo: docker ps\n' >&2
+            # "Log out and back in" is the one instruction that does NOT work in
+            # WSL: there is no login session to leave, and closing the terminal
+            # changes nothing — the group is picked up when the distro's init
+            # restarts. Twin of the same sentence in preflight_report (detect.sh).
+            [ "$(detect_os)" = "wsl" ] && \
+                printf '    On WSL, closing the terminal is not enough: run "wsl --terminate <distro>" from Windows, then reopen it.\n' >&2
             printf '    Do not run this installer with sudo — it must run as your normal user.\n' >&2
             die "No usable container runtime — fix the Docker socket permission, then re-run."
             ;;
@@ -107,8 +148,21 @@ nano_check_requirements() {
             # second), so tell the user the whole picture: what failed, what was
             # tried, and how to fix either one.
             if command -v podman >/dev/null 2>&1; then
-                _podman_hint="Podman was tried as a fallback, but its machine/service is not running either."
-                _podman_fix="start it: podman machine start (or: sudo systemctl start podman)"
+                # BRANCHED on the platform. `podman machine` is the macOS/Windows
+                # VM wrapper — it does not exist on Linux or in WSL, and
+                # `sudo systemctl start podman` starts the ROOT socket, which
+                # does nothing for the rootless user this installer insists on
+                # being. On Linux `podman info` fails for a different reason
+                # entirely, almost always the user-namespace ranges.
+                if [ "$(detect_os)" = "macos" ]; then
+                    _podman_hint="Podman was tried as a fallback, but its machine is not running either."
+                    _podman_fix="start its VM: podman machine start"
+                else
+                    _podman_hint="Podman was tried as a fallback, but 'podman info' failed too."
+                    _podman_fix="$(detect_rootless_podman_gap 2>/dev/null || true)"
+                    [ -n "$_podman_fix" ] || \
+                        _podman_fix="check the user-namespace ranges first: grep \$(id -un) /etc/subuid /etc/subgid (using the Podman socket? systemctl --user start podman.socket)"
+                fi
             else
                 _podman_hint="Podman was tried as a fallback, but it is not installed."
                 _podman_fix="install it (https://podman.io/docs/installation), then re-run"
@@ -130,11 +184,27 @@ nano_check_requirements() {
             die "No usable container runtime — start Docker or provide Podman, then re-run."
             ;;
         podman-stopped)
-            error "Podman is installed but its machine/service is not running (Docker was not found)."
-            printf '    Fix either runtime and re-run this installer:\n' >&2
-            printf '      Podman:  podman machine start (or: sudo systemctl start podman)\n' >&2
+            # Same platform branch as the docker-stopped arm above: a Linux user
+            # told to start a VM that does not exist on their OS has been handed
+            # a remedy that cannot work, twice over.
+            if [ "$(detect_os)" = "macos" ]; then
+                error "Podman is installed but its machine is not running (Docker was not found)."
+                printf '    Fix either runtime and re-run this installer:\n' >&2
+                printf '      Podman:  podman machine start\n' >&2
+            else
+                error "Podman is installed but 'podman info' failed (Docker was not found)."
+                _podman_gap="$(detect_rootless_podman_gap 2>/dev/null || true)"
+                printf '    Fix either runtime and re-run this installer:\n' >&2
+                if [ -n "$_podman_gap" ]; then
+                    printf '      Podman:  %s\n' "$_podman_gap" >&2
+                else
+                    printf '      Podman:  on Linux this is usually the user-namespace ranges — check:\n' >&2
+                    printf '                 grep $(id -un) /etc/subuid /etc/subgid\n' >&2
+                    printf '               using the Podman socket? systemctl --user start podman.socket\n' >&2
+                fi
+            fi
             printf '      Docker:  install it (https://docs.docker.com/get-docker/)\n' >&2
-            die "No usable container runtime — start Podman or install Docker, then re-run."
+            die "No usable container runtime — fix Podman or install Docker, then re-run."
             ;;
         none)
             error "No container runtime found. Exasol Nano needs Docker or Podman."
@@ -327,6 +397,7 @@ nano_start_existing() {
         run_logged "$_engine" rm -f "$EXAKIT_NANO_CONTAINER" || die "Could not replace the old container (see log)"
         run_logged "$_engine" run -d \
             --name "$EXAKIT_NANO_CONTAINER" \
+            --label "com.exasol.exakit.os=$(detect_os)" \
             --shm-size=512mb \
             --pids-limit=-1 \
             -p "127.0.0.1:${EXAKIT_DB_PORT}:8563" \
@@ -430,7 +501,7 @@ nano_pull_image() {
         fi
         [ "$_npi_attempt" -lt 3 ] && { warn "Pull attempt $_npi_attempt failed — retrying in $((_npi_attempt * 10))s"; sleep $((_npi_attempt * 10)); }
     done
-    [ "$_npi_pulled" -eq 1 ] || die "Image pull failed after 3 attempts: $_npi_image (network/Docker Hub issue — see log)"
+    [ "$_npi_pulled" -eq 1 ] || die "Image pull failed after 3 attempts: $_npi_image (network/Docker Hub issue, or an invalid image reference — see log)"
     ok_step "Runtime image ready: $_npi_image"
     return 0
 }
@@ -459,8 +530,31 @@ nano_install() {
             warn "Could not remove the existing Nano data volume; the rebuild may reuse its data."
     fi
 
+    # ADOPTION NEEDS THE PASSWORD. Windows and WSL share one Docker engine, so
+    # a container found here may be the OTHER side's database: adopting it
+    # without that side's stored SYS password used to record a password_file
+    # that does not exist, report "already running and healthy", and then fail
+    # at the MCP step demanding a password this machine never had — a silent
+    # takeover that left the Windows kit with no database. Refuse it instead:
+    # name the creator when the container carries the label, and give the
+    # three real ways out.
+    if nano_container_exists && [ ! -s "${EXAKIT_CREDS_DIR}/nano_sys_password" ]; then
+        _nano_creator="$("$_engine" container inspect \
+            -f '{{ index .Config.Labels "com.exasol.exakit.os" }}' \
+            "$EXAKIT_NANO_CONTAINER" 2>/dev/null || true)"
+        warn "An Exasol Nano container ($EXAKIT_NANO_CONTAINER) already exists, but this machine has no stored password for it${_nano_creator:+ — it was created by a $_nano_creator install}."
+        warn "Windows and WSL share one Docker engine, so this is usually the other side's database. Three ways forward:"
+        info_step "1. Adopt it WITH its password: copy the creating side's ~/.exasol-starter-kit/credentials/nano_sys_password into $EXAKIT_CREDS_DIR and re-run."
+        info_step "2. Run your own database beside it: re-run with EXAKIT_NANO_CONTAINER and EXAKIT_NANO_VOLUME set to new names (and EXAKIT_DB_PORT to a free port)."
+        info_step "3. Last resort — DELETES the other side's database and its data: re-run with EXAKIT_REUSE_DB=0."
+        die "Refusing to silently adopt a database this install has no password for."
+    fi
+
     if nano_container_running && nano_ready_in_logs; then
-        ok "Nano container already running and healthy"
+        # ok_step, not ok: adoption must reach the SCREEN even under a
+        # one-line step narration — a user whose database was just adopted
+        # rather than deployed deserves to see it happen.
+        ok_step "Adopting the running Nano container $EXAKIT_NANO_CONTAINER — already healthy (its data and password are kept)"
         nano_record_manifest
         return 0
     fi
@@ -468,6 +562,7 @@ nano_install() {
     if nano_container_exists && ! nano_container_running; then
         info "Found existing Nano container — starting it"
         nano_start_existing
+        ok_step "Adopted the existing Nano container $EXAKIT_NANO_CONTAINER (started; its data and password are kept)"
         nano_record_manifest
         return 0
     fi
@@ -497,10 +592,26 @@ nano_install() {
             # this port long after its container is gone.
             _nip_who="$(port_holder_desc "$EXAKIT_DB_PORT" 2>/dev/null || true)"
             error "Port $EXAKIT_DB_PORT is already taken${_nip_who:+ by $_nip_who}."
-            printf '    Free it, or run the database on another port:
+            # The non-destructive remedy first, with the same promise the
+            # Windows twin makes: the port is recorded at install and every
+            # later `exakit start` reuses it, so this is a one-time choice.
+            printf '    Free it, or run the database on another port (the kit records it; later commands reuse it):
 ' >&2
             printf '      EXAKIT_DB_PORT=8564 %s
 ' "$(exakit_install_command 2>/dev/null || echo 'bash setup/setup-wsl.sh')" >&2
+            if [ "$(detect_os)" = "wsl" ]; then
+                # Inside WSL the holder is often INVISIBLE from here: Windows
+                # and WSL share localhost, so a Windows-side Exasol install or
+                # Docker Desktop container can hold this port while nothing in
+                # this distro shows up in lsof. Twin of the WSL guidance in
+                # Install-Nano (nano.ps1).
+                printf '    Nothing here holding it? Windows and WSL share localhost - check the WINDOWS side\n' >&2
+                printf '    of this machine (a Windows Exasol install, a Docker Desktop container, or "wslrelay"\n' >&2
+                printf '    still holding the port after an earlier WSL container). From PowerShell:\n' >&2
+                printf '      Get-NetTCPConnection -LocalPort %s -State Listen\n' "$EXAKIT_DB_PORT" >&2
+                printf '    If it is a leftover relay and nothing in WSL needs it: wsl --shutdown\n' >&2
+                printf '    If it is another database you still want, leave it alone and take another port.\n' >&2
+            fi
             die "Port $EXAKIT_DB_PORT is not available."
         fi
         # The pull is its own STEP now, and this is the same function that step
@@ -545,18 +656,30 @@ nano_install() {
             # so instead. (Reachable when the kit home was removed but the
             # volume was not, which a partial uninstall leaves behind.)
             if [ "$_nano_volume_existed" -eq 1 ]; then
-                warn "The data volume $EXAKIT_NANO_VOLUME is being adopted, but this machine has no stored password for it."
-                info "Its SYS password lives inside the volume, from the install that created it."
-                info "If you no longer have it, replace the volume and lose its data with: EXAKIT_REUSE_DB=0"
+                warn "Reusing the database in volume $EXAKIT_NANO_VOLUME, but this machine has no password for it."
+                info "The database keeps the SYS password set by the install that created the volume - often this machine's other side (Windows or WSL), in ~/.exasol-starter-kit/credentials/nano_sys_password."
+                info "Safest: copy that file into $EXAKIT_CREDS_DIR and re-run - the database and its data stay intact."
+                info "Last resort, if the password is truly gone: re-run with EXAKIT_REUSE_DB=0 - that DELETES the volume and every table in it."
+                # SAY WHAT HAPPENS NEXT. The install does not stop here: it mints
+                # a password so the rest of the run has something to record, and
+                # the database inside the volume has never heard of it. Without
+                # this sentence the reader is told their data is fine and then
+                # watches status, info and every AI client fail against a
+                # credential the kit itself reports as correct.
+                warn "This install continues with a NEW password the database will not accept, so exakit status, exakit info and your AI client will fail until you supply the real one."
             fi
             _password="$(generate_password)"
             store_credential nano_sys_password "$_password"
         fi
 
-        # SELinux systems (Fedora, RHEL) need the :z label on bind mounts;
-        # harmless elsewhere, so apply it for podman across the board.
+        # SELinux systems (Fedora, RHEL) need the :z label on bind mounts —
+        # DETECTED, not inferred from the engine name. The old test keyed on
+        # podman, which matched a correlation: Docker on Fedora (the README's
+        # own preference) needs the label exactly as much, could not read the
+        # bind-mounted password without it, and misread the result as an empty
+        # secret file; Podman on Ubuntu never needed it at all.
         _secret_mount="${EXAKIT_CREDS_DIR}/nano_sys_password:/run/secrets/sys_password:ro"
-        [ "$_engine" = "podman" ] && _secret_mount="${_secret_mount},z"
+        _exakit_selinux_enforcing && _secret_mount="${_secret_mount},z"
 
         # The secret must exist as a regular NON-EMPTY file before the engine
         # sees the bind mount. Two distinct hazards, one guard:
@@ -581,9 +704,21 @@ nano_install() {
         # and the image refuses to boot when handed init options over an
         # initialised /exa - so an adopted volume gets neither.
         if [ "$_nano_volume_existed" -eq 1 ]; then
-            info "Adopting the existing database volume $EXAKIT_NANO_VOLUME (its data and password are kept)"
+            # info_step, not info: this whole branch runs inside the one-line
+            # quiet window opened above, which routes info() to the LOGFILE. The
+            # single most consequential sentence on the shared-engine path -
+            # THIS INSTALL DID NOT CREATE THE DATABASE IT IS ABOUT TO USE - was
+            # therefore invisible on every terminal install, while the warning
+            # about its missing password (never gated) printed: the reader got
+            # the scary consequence without the sentence that explains it.
+            # ⇄ twin: Install-Nano in nano.ps1.
+            info_step "Adopting the existing database volume $EXAKIT_NANO_VOLUME — this install did not create it, and its data and SYS password are kept as they are."
+            if [ "$(detect_os)" = "wsl" ]; then
+                info_step "On a Windows+WSL machine this volume is usually a Windows install's database: Docker Desktop is one engine shared by both sides."
+            fi
             run_logged "$_engine" run -d \
                 --name "$EXAKIT_NANO_CONTAINER" \
+                --label "com.exasol.exakit.os=$(detect_os)" \
                 --shm-size=512mb \
                 --pids-limit=-1 \
                 -p "127.0.0.1:${EXAKIT_DB_PORT}:8563" \
@@ -595,6 +730,7 @@ nano_install() {
         else
             run_logged "$_engine" run -d \
                 --name "$EXAKIT_NANO_CONTAINER" \
+                --label "com.exasol.exakit.os=$(detect_os)" \
                 --shm-size=512mb \
                 --pids-limit=-1 \
                 -p "127.0.0.1:${EXAKIT_DB_PORT}:8563" \
@@ -735,7 +871,9 @@ nano_wait_ready_soft() {
             "$(nano_engine)" "$EXAKIT_NANO_CONTAINER" "$(nano_engine)" "$EXAKIT_NANO_VOLUME" >&2
     else
         printf '    Do NOT remove the volume %s - it IS your database.\n' "$EXAKIT_NANO_VOLUME" >&2
-        printf '    If the container is genuinely wedged:  exakit repair-runtime\n' >&2
+        printf '    Often it is just slow: wait a minute, then check exakit status.\n' >&2
+        printf '    If the container is genuinely wedged: exakit repair-runtime\n' >&2
+        printf '    (asks first; REPLACES the database, deleting its data).\n' >&2
     fi
     return 1
 }
@@ -852,6 +990,7 @@ nano_update() {
     info "Starting Nano with the existing data volume"
     run_logged "$_engine" run -d \
         --name "$EXAKIT_NANO_CONTAINER" \
+        --label "com.exasol.exakit.os=$(detect_os)" \
         --shm-size=512mb \
         --pids-limit=-1 \
         -p "127.0.0.1:${EXAKIT_DB_PORT}:8563" \
@@ -902,6 +1041,7 @@ nano_restore_previous_container() {
     run_logged "$(nano_engine)" rm -f "$EXAKIT_NANO_CONTAINER" || true
     run_logged "$(nano_engine)" run -d \
         --name "$EXAKIT_NANO_CONTAINER" \
+        --label "com.exasol.exakit.os=$(detect_os)" \
         --shm-size=512mb \
         --pids-limit=-1 \
         -p "127.0.0.1:${EXAKIT_DB_PORT}:8563" \

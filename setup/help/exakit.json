@@ -45,6 +45,7 @@
     {
       "title": "Repair and removal",
       "commands": [
+        "preflight",
         "repair-runtime",
         "uninstall"
       ]
@@ -54,6 +55,7 @@
       "commands": [
         "guide",
         "skills",
+        "preflight",
         "help",
         "catalog",
         "whats-new"
@@ -61,6 +63,15 @@
     }
   ],
   "commands": [
+    {
+      "command": "preflight",
+      "options": "",
+      "summary": "Check this machine's requirements; install nothing.",
+      "description": "Re-runs the machine-requirement checks the installer runs first - RAM, free disk, the container engine or the macOS runtime, and the ports the database needs - against an installed kit, and changes nothing. The same checks run before an install with EXAKIT_PREFLIGHT=1.",
+      "examples": [
+        "exakit preflight"
+      ]
+    },
     {
       "command": "status",
       "options": "[--json | -j]",
@@ -90,7 +101,7 @@
       "command": "info",
       "options": "[--json | -j]",
       "summary": "Your connection details.",
-      "description": "The connection panel: DSN, admin and MCP users, where each password file lives, TLS mode and paths. --json prints the install record (manifest.json) verbatim on stdout with nothing else on it.",
+      "description": "The connection panel: DSN, admin and MCP users, where each password file lives, TLS mode and paths. --json prints the install record (manifest.json) plus the state keys installed / status / remedy / skills on stdout, with nothing else on it.",
       "exit_codes": {
         "0": "running",
         "3": "database stopped",
@@ -185,7 +196,7 @@
     {
       "command": "mcp-setup",
       "options": "",
-      "summary": "Connect your AI assistants.",
+      "summary": "Connect your AI clients.",
       "description": "Permanently configures the exasol MCP server in every supported AI client. Existing configs are backed up first. Restart the client afterwards and look for a server named exasol. Takes no options: clients are named with EXAKIT_MCP_CLIENTS (an option or argument exits 2). A client whose config no longer holds the kit's entry is offered again.",
       "environment": [
         "EXAKIT_MCP_CLIENTS=claude,codex names clients by name (never menu numbers)",
@@ -253,14 +264,17 @@
     },
     {
       "command": "marketplace",
-      "options": "",
+      "options": "[--list [--json]] [<addon-id>...]",
       "summary": "Optional add-ons (dashboards and more).",
-      "description": "Browse and install optional tools: Space selects, Enter installs. Installed add-ons then update through exakit update. A tool you installed yourself is recognised and never re-offered.",
+      "description": "Browse and install optional tools: Space selects, Enter installs. Bare and without a terminal it installs NOTHING - installing non-interactively takes an explicit answer. --list shows every add-on and its state without installing anything (--json for scripts). Naming ids installs exactly those: exakit marketplace dash-server. Installed add-ons then update through exakit update, and one can be removed with exakit uninstall <id>. A tool you installed yourself is recognised and never re-offered.",
       "environment": [
         "EXAKIT_MARKETPLACE_ADDONS=dash-server answers the menu non-interactively (ids csv, all, or none)"
       ],
       "examples": [
         "exakit marketplace",
+        "exakit marketplace --list",
+        "exakit marketplace --json",
+        "exakit marketplace dash-server",
         "EXAKIT_MARKETPLACE_ADDONS=dash-server exakit marketplace"
       ]
     },
@@ -270,7 +284,7 @@
       "summary": "Apply the updates that are waiting.",
       "description": "Applies the quick components (kit scripts, exapump, MCP server, pyexasol, the AI skills, installed add-ons) in seconds. A newer skill set published by the maintainers is fetched and installed here too, with no kit release needed. A database change stops the database, so it is only applied for an answer the run was actually given: on a terminal you are asked, and an unattended run defers it with the exact command. Your data is kept either way. An unknown option or target is refused (exit 2) and records nothing.",
       "environment": [
-        "EXAKIT_CONFIRM_RUNTIME_UPDATE=1 pre-answers yes to the runtime change",
+        "EXAKIT_CONFIRM_RUNTIME_UPDATE=1 pre-answers yes to the database change",
         "EXAKIT_<COMPONENT>_VERSION pins one component by hand"
       ],
       "examples": [
@@ -280,26 +294,36 @@
     },
     {
       "command": "repair-runtime",
-      "options": "[--yes]",
+      "options": "[--yes] [--json | -j]",
       "summary": "Rebuild a database that cannot start.",
-      "description": "For a deployment the launcher reports interrupted where every start fails the same way.",
-      "warning": "DESTRUCTIVE: the deployment is replaced and its data is not recoverable. Bundled datasets are reloaded afterwards.",
+      "description": "For a deployment the launcher reports interrupted where every start fails the same way. Without --yes it asks, and without a terminal the answer is no: declining changes nothing and exits 5, so a scripted caller can tell \"not confirmed\" from \"repaired\". --json answers with one object ({\"ok\", \"status\", \"changed\", \"remedy\"}) instead of the panel.",
+      "warning": "DESTRUCTIVE: your database is rebuilt from empty and its data is not recoverable. Bundled datasets are reloaded afterwards.",
       "environment": [
         "EXAKIT_CONFIRM_RUNTIME_REPAIR=1 pre-answers the confirmation"
       ],
       "examples": [
-        "exakit repair-runtime"
-      ]
+        "exakit repair-runtime",
+        "exakit repair-runtime --yes",
+        "exakit repair-runtime --json"
+      ],
+      "exit_codes": {
+        "0": "the runtime was rebuilt",
+        "2": "bad input",
+        "3": "the rebuild did not finish",
+        "4": "not installed",
+        "5": "declined - not confirmed, nothing was changed"
+      }
     },
     {
       "command": "uninstall",
-      "options": "[--yes | --dry-run]",
+      "options": "[--yes] [--dry-run] [<addon-id>]",
       "summary": "Remove what the kit installed.",
-      "description": "Pick what to remove (Skip, each add-on, or EVERYTHING) with a confirmation summary and a typed gate. --dry-run previews the full plan and changes nothing.",
+      "description": "Pick what to remove (Skip, each add-on, or EVERYTHING) with a confirmation summary and a typed gate. --dry-run previews the full plan and changes nothing. Removing one add-on only: exakit uninstall <addon-id> [--yes] - the rest of the kit is untouched.",
       "warning": "A full uninstall removes the database AND its data, the MCP configs, the skills and the binaries.",
       "examples": [
         "exakit uninstall --dry-run",
-        "exakit uninstall --yes"
+        "exakit uninstall --yes",
+        "exakit uninstall json-tables --yes"
       ]
     },
     {
@@ -311,6 +335,15 @@
         "exakit help",
         "exakit help --all",
         "exakit help exapump"
+      ]
+    },
+    {
+      "command": "preflight",
+      "options": "",
+      "summary": "Can this machine run the kit?",
+      "description": "Checks every requirement - operating system, CPU architecture, memory, free disk, the container engine where one is needed - and prints a pass/fail line for each with the remedy inline. Installs nothing and changes nothing, so it is safe to run before an install or after one. Exits non-zero with the number of hard requirements still missing.",
+      "examples": [
+        "exakit preflight"
       ]
     },
     {
@@ -333,6 +366,26 @@
         "exakit whats-new",
         "exakit whats-new 0.2.0"
       ]
+    },
+    {
+      "command": "upgrade-kit2",
+      "options": "",
+      "summary": "Add the Kit 2 trust assets to this install (internal).",
+      "description": "Runs the kit's own upgrade/upgrade-kit2.sh against this install: the Trusted AI Workflow add-on is layered on top and nothing is reinstalled. An upgrade path the kit runs for itself, not a command to reach for by hand.",
+      "examples": [
+        "exakit upgrade-kit2"
+      ],
+      "hidden": true
+    },
+    {
+      "command": "rollback-kit2",
+      "options": "",
+      "summary": "Remove exactly what upgrade-kit2 added (internal).",
+      "description": "Runs the kit's own upgrade/rollback-kit2.sh: everything upgrade-kit2 added is removed, and the database and every Kit 1 component stay untouched.",
+      "examples": [
+        "exakit rollback-kit2"
+      ],
+      "hidden": true
     }
   ],
   "environment": [

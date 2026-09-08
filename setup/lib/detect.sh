@@ -2,7 +2,11 @@
 # detect.sh — environment detection for the Exasol Personal Local Starter Kit.
 #
 # Sourced by install.sh and setup-*.sh. Pure read-only checks, no side effects.
-# Compatible with bash 3.2 and POSIX sh.
+# Compatible with bash 3.2 and POSIX sh — every function here must also run
+# under dash/ash. The one bash-only feature this file uses, the /dev/tcp probe
+# in port_in_use, is now guarded by $BASH_VERSION and has a POSIX fallback, so
+# the claim on this line is true rather than aspirational: read it before
+# reaching for a bashism.
 
 # detect_os — prints: macos | linux | wsl | unsupported
 detect_os() {
@@ -21,6 +25,49 @@ detect_os() {
             echo "unsupported"
             ;;
     esac
+}
+
+# detect_wsl_version — 1 or 2 for a WSL distro; empty (and non-zero) elsewhere.
+#
+# /proc/version says "Microsoft" on BOTH WSL versions, so detect_os classifies
+# them both as `wsl` — and the install then walks a WSL 1 user into the
+# container-runtime remedy, telling them to install Docker on a system that has
+# no Linux kernel to run it (Docker Desktop dropped WSL 1 support). The kernel
+# RELEASE is what tells them apart: WSL 2 ships a Microsoft kernel whose release
+# carries "microsoft-standard" / "WSL2", while WSL 1's emulated release is the
+# 4.4.x "-Microsoft" string. Anything unrecognised answers 2: this gates a hard
+# refusal, and a guess must never be the thing that blocks a working install.
+detect_wsl_version() {
+    [ "$(detect_os)" = "wsl" ] || return 1
+    _dwv="$(cat /proc/sys/kernel/osrelease 2>/dev/null)"
+    case "$_dwv" in
+        *WSL2*|*wsl2*|*microsoft-standard*) echo 2 ;;
+        4.4.*Microsoft*|4.4.*microsoft*)    echo 1 ;;
+        *)                                  echo 2 ;;
+    esac
+}
+
+# detect_wsl_drvfs_path <path> — true when the path lives on a Windows drive
+# mounted into the distro (DrvFs), rather than on the Linux filesystem.
+#
+# This matters for SECRETS. DrvFs is mounted without the `metadata` option by
+# default, so `chmod 600` on it returns success and stores nothing: every file
+# keeps mode 0777. The kit's database passwords are plaintext files protected by
+# exactly that chmod, so a kit home under /mnt/c leaves them readable by every
+# Windows user on the machine — and uploaded, when the profile is OneDrive-backed.
+detect_wsl_drvfs_path() {
+    [ "$(detect_os)" = "wsl" ] || return 1
+    _ddp="${1:-$HOME}"
+    case "$_ddp" in
+        /mnt/[a-zA-Z]|/mnt/[a-zA-Z]/*) return 0 ;;
+    esac
+    # A drive mounted somewhere else (or a bind): ask the mount table. DrvFs
+    # reports the Windows device itself ("C:\") as its source.
+    _ddp_src="$(df -P "$_ddp" 2>/dev/null | awk 'NR == 2 { print $1 }')"
+    case "$_ddp_src" in
+        [A-Za-z]:*|*drvfs*|*DrvFs*) return 0 ;;
+    esac
+    return 1
 }
 
 # detect_arch — prints: arm64 | x86_64 | unsupported
@@ -46,13 +93,38 @@ detect_cpu_advertises_sve() {
 
 # detect_sve_remedy_hint — the permanent, system-wide fix for the faked-SVE
 # crash, printed wherever the per-component workaround is applied. Kernels
-# before ~5.16 ignore arm64.nosve, hence the HWE kernel step.
+# before ~5.16 ignore arm64.nosve, hence the newer-kernel step.
+#
+# BRANCHED, because this used to print three Debian/Ubuntu commands to every
+# aarch64 Linux: `apt-get`, `linux-generic-hwe-*`, `lsb_release` and
+# `update-grub` do not exist on Fedora/RHEL, and NONE of them applies inside
+# WSL, where the kernel comes from Windows and there is no GRUB at all. Three
+# impossible instructions labelled "permanent fix" is worse than no hint.
 detect_sve_remedy_hint() {
     info "This guest advertises SVE support its host CPU cannot execute (common with VirtualBox on Apple Silicon)."
-    info "Permanent fix: install a kernel that honors arm64.nosve and disable SVE at boot:"
-    info "  sudo apt-get install -y linux-generic-hwe-\$(lsb_release -rs 2>/dev/null || echo 22.04)"
-    info "  add 'arm64.nosve arm64.nosme' to GRUB_CMDLINE_LINUX_DEFAULT in /etc/default/grub"
-    info "  sudo update-grub && sudo reboot"
+    if [ "$(detect_os)" = "wsl" ]; then
+        # WSL boots a kernel Windows supplies; the equivalent of a GRUB edit is
+        # .wslconfig on the Windows side, and the equivalent of a reboot is
+        # `wsl --shutdown`.
+        info "Permanent fix (WSL): add the boot flags on the WINDOWS side, in %USERPROFILE%\\.wslconfig:"
+        info "  [wsl2]"
+        info "  kernelCommandLine = arm64.nosve arm64.nosme"
+        info "Then apply it from PowerShell: wsl --shutdown  (reopen this distro afterwards)"
+        return 0
+    fi
+    info "Permanent fix: run a kernel that honors arm64.nosve and disable SVE at boot:"
+    if command -v apt-get >/dev/null 2>&1; then
+        info "  sudo apt-get install -y linux-generic-hwe-\$(lsb_release -rs 2>/dev/null || echo 22.04)"
+        info "  add 'arm64.nosve arm64.nosme' to GRUB_CMDLINE_LINUX_DEFAULT in /etc/default/grub"
+        info "  sudo update-grub && sudo reboot"
+    elif command -v grubby >/dev/null 2>&1; then
+        info "  sudo grubby --update-kernel=ALL --args='arm64.nosve arm64.nosme'"
+        info "  sudo reboot"
+    else
+        info "  add 'arm64.nosve arm64.nosme' to this machine's kernel command line, then reboot"
+        info "  (Debian/Ubuntu: /etc/default/grub then 'sudo update-grub'; Fedora/RHEL: 'sudo grubby --update-kernel=ALL --args=...')"
+    fi
+    info "A kernel newer than 5.16 is required for the flag to be honored."
 }
 
 # detect_ram_gb — total physical memory in whole GB. ALWAYS prints a
@@ -186,6 +258,41 @@ detect_container_runtime_detail() {
     echo "none"
 }
 
+# port_listener_pids <port> — the pids of whatever is LISTENING on the port,
+# newest tool first, empty when nothing can tell. The one place in the kit that
+# answers "who has this port?", so a machine without lsof degrades the same way
+# everywhere instead of once per caller.
+#
+# lsof is on every macOS and on no minimal Linux: a Fedora @core or Ubuntu
+# Server image ships iproute2 (`ss`) and nothing else, so an lsof-only probe was
+# silently unavailable on exactly the hosts most likely to be running something
+# else on a port. ss first on Linux, then lsof, then net-tools' netstat, which is
+# still what some older images carry.
+port_listener_pids() {
+    _plp_port="$1"
+    _plp_out=""
+    if command -v ss >/dev/null 2>&1; then
+        # "LISTEN 0 4096 127.0.0.1:5100 0.0.0.0:* users:(("python3",pid=42,fd=6))"
+        # -H is not in older iproute2, so match the address column instead of
+        # trusting a header to be absent.
+        _plp_out="$(ss -ltnp 2>/dev/null \
+            | awk -v p=":$_plp_port" '$4 ~ p"$" { print }' \
+            | sed -n 's/.*pid=\([0-9][0-9]*\).*/\1/p')"
+    fi
+    if [ -z "$_plp_out" ] && command -v lsof >/dev/null 2>&1; then
+        _plp_out="$(lsof -nP -iTCP:"$_plp_port" -sTCP:LISTEN -t 2>/dev/null)"
+    fi
+    if [ -z "$_plp_out" ] && command -v netstat >/dev/null 2>&1; then
+        # net-tools prints "pid/name" in the last column of a LISTEN row.
+        _plp_out="$(netstat -ltnp 2>/dev/null \
+            | awk -v p=":$_plp_port" '$4 ~ p"$" { print $NF }' \
+            | sed -n 's|^\([0-9][0-9]*\)/.*|\1|p')"
+    fi
+    [ -n "$_plp_out" ] || return 1
+    printf '%s\n' "$_plp_out" | sort -u
+    return 0
+}
+
 # port_holder_desc <port> — "pid N (name)" for whatever is listening, or empty.
 #
 # "Stop it or set EXAKIT_DB_PORT" is unactionable when "it" is never named, and
@@ -193,19 +300,77 @@ detect_container_runtime_detail() {
 # a failed WSL install leaves wslrelay holding the port after its container is
 # long gone. dash-server has named its port's holder this way for a while
 # (_dash_server_port_foreign_desc); the database port deserves the same.
+#
+# Inside a WSL distro this can still come back empty while the port really is
+# taken: Windows and WSL share localhost, and no tool in the distro can see a
+# Windows process. The callers say so (runtime-nano.sh's port remedy) rather
+# than leaving the reader with an unexplained blank.
 port_holder_desc() {
     _phd_port="$1"
-    command -v lsof >/dev/null 2>&1 || return 1
-    _phd_pid="$(lsof -nP -iTCP:"$_phd_port" -sTCP:LISTEN -t 2>/dev/null | head -1)"
+    _phd_pid="$(port_listener_pids "$_phd_port" 2>/dev/null | head -1)"
     [ -n "$_phd_pid" ] || return 1
-    printf 'pid %s (%s)' "$_phd_pid" \
-        "$(ps -o comm= -p "$_phd_pid" 2>/dev/null | sed 's|.*/||' | tr -d ' ')"
+    _phd_name="$(ps -o comm= -p "$_phd_pid" 2>/dev/null | sed 's|.*/||' | tr -d ' ')"
+    [ -n "$_phd_name" ] || _phd_name="unknown"
+    printf 'pid %s (%s)' "$_phd_pid" "$_phd_name"
     return 0
 }
 
 # port_in_use <port> — succeeds when something already listens on the port.
+#
+# /dev/tcp is a bash/ksh feature, not POSIX: under dash or BusyBox ash the
+# redirection simply fails and the function answered "the port is free" — a
+# fail-OPEN answer in a file whose every other probe fails closed. Guard it on
+# $BASH_VERSION and give the POSIX shells a real probe instead.
 port_in_use() {
-    (exec 3<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null && { exec 3>&- 3<&-; return 0; }
+    _piu_port="$1"
+    if [ -n "${BASH_VERSION:-}" ]; then
+        (exec 3<>"/dev/tcp/127.0.0.1/$_piu_port") 2>/dev/null && { exec 3>&- 3<&-; return 0; }
+        return 1
+    fi
+    if command -v ss >/dev/null 2>&1; then
+        ss -ltn 2>/dev/null | awk -v p=":$_piu_port" '$4 ~ p"$" { found = 1 } END { exit !found }' && return 0
+        return 1
+    fi
+    if command -v nc >/dev/null 2>&1; then
+        nc -z 127.0.0.1 "$_piu_port" >/dev/null 2>&1 && return 0
+        return 1
+    fi
+    port_listener_pids "$_piu_port" >/dev/null 2>&1 && return 0
+    return 1
+}
+
+# detect_rootless_podman_gap — one sentence naming a rootless-Podman
+# precondition this machine does not meet, with its remedy; empty (and non-zero)
+# when the machine looks fine. Cheap: two greps and a file test, no engine call.
+#
+# The README asks for "Docker or Podman (running)" and stops there, but rootless
+# Podman needs two more things and says so only through an engine error the kit
+# does not translate:
+#   - subordinate id ranges for this user (/etc/subuid, /etc/subgid). Without
+#     them `podman info` itself fails with "no subuid ranges found for user".
+#   - cgroups v2. The container is started with --pids-limit and --shm-size,
+#     and rootless Podman refuses resource limits on a cgroups-v1 host.
+# Neither applies to root, to macOS (where Podman runs in a VM), or to Docker.
+detect_rootless_podman_gap() {
+    [ "$(detect_os)" != "macos" ] || return 1
+    [ "$(id -u 2>/dev/null || echo 0)" != "0" ] || return 1
+    _drp_user="$(id -un 2>/dev/null || printf '%s' "${USER:-}")"
+    [ -n "$_drp_user" ] || return 1
+    for _drp_file in /etc/subuid /etc/subgid; do
+        # An unreadable or absent file is not evidence of a gap — some
+        # distributions manage the ranges elsewhere. Only a readable file that
+        # does not list this user is.
+        [ -r "$_drp_file" ] || continue
+        if ! grep -q "^${_drp_user}:" "$_drp_file" 2>/dev/null; then
+            printf 'no user-namespace range for %s in %s — add one with: sudo usermod --add-subuids 100000-165535 --add-subgids 100000-165535 %s && podman system migrate' \
+                "$_drp_user" "$_drp_file" "$_drp_user"
+            return 0
+        fi
+    done
+    if [ ! -f /sys/fs/cgroup/cgroup.controllers ]; then
+        printf 'cgroups v2 is not active, so rootless Podman cannot apply the container resource limits the kit sets — boot with systemd.unified_cgroup_hierarchy=1, or run the database under Docker instead'
+        return 0
+    fi
     return 1
 }
 
@@ -244,6 +409,19 @@ preflight_report() {
     else
         _pf_ok "CPU architecture: $_arch"
     fi
+    # WSL 1 has no Linux kernel, so no container engine can run in it. Said
+    # HERE, before the engine check, because the engine check's own remedy
+    # ("install Docker") is a loop on this platform: nothing to install helps.
+    if [ "$(detect_wsl_version 2>/dev/null)" = "1" ]; then
+        _pf_bad "This distro runs on WSL 1, which cannot run a container engine — convert it from an admin PowerShell (files are kept): wsl --set-version <distro> 2 (list them with: wsl -l -v)"
+    fi
+    # A kit home on a Windows drive cannot hold a protected secret: DrvFs is
+    # mounted without Linux permissions, so the chmod 600 on the database
+    # passwords is accepted and discarded. Warned BEFORE the install writes one.
+    _pf_home="${EXAKIT_HOME:-$HOME/.exasol-starter-kit}"
+    if detect_wsl_drvfs_path "$_pf_home" 2>/dev/null; then
+        _pf_bad "Kit home $_pf_home is on a Windows drive: WSL mounts those without Linux file permissions, so the database passwords stored there cannot be protected (any Windows user can read them, and OneDrive syncs them) — set EXAKIT_HOME to a path on the Linux filesystem, e.g. EXAKIT_HOME=\$HOME/.exasol-starter-kit"
+    fi
 
     # memory and disk, against the target runtime for this OS
     _ram="$(detect_ram_gb)"
@@ -277,8 +455,10 @@ preflight_report() {
         fi
     fi
 
-    # base tools
-    for _tool in curl tar; do
+    # base tools. bash is one of them: install.sh is POSIX sh, but every setup
+    # script and library it hands off to is bash, so a bash-less distro fails at
+    # the handoff with a bare "exec: bash: not found".
+    for _tool in curl tar bash; do
         if command -v "$_tool" >/dev/null 2>&1; then _pf_ok "$_tool available"
         else _pf_bad "$_tool missing — install it with your package manager"; fi
     done
@@ -302,7 +482,13 @@ preflight_report() {
     if [ "$_os" != "macos" ]; then
         case "$(detect_container_runtime_detail)" in
             docker)         _pf_ok "Container runtime: docker (running)" ;;
-            podman)         _pf_ok "Container runtime: podman (running)" ;;
+            podman)
+                _pf_ok "Container runtime: podman (running)"
+                # Rootless Podman answers `podman info` happily and then fails
+                # at `run` when the machine is missing what rootless needs.
+                _pf_podman_gap="$(detect_rootless_podman_gap 2>/dev/null || true)"
+                [ -n "$_pf_podman_gap" ] && _pf_bad "Rootless Podman: $_pf_podman_gap"
+                ;;
             docker-stopped)
                 if command -v podman >/dev/null 2>&1; then
                     _pf_podman="Podman (the fallback) is installed but not running either"
@@ -314,8 +500,31 @@ preflight_report() {
                 else
                     _pf_bad "Docker is installed but unreachable (daemon not responding) — start Docker (e.g. Docker Desktop); $_pf_podman"
                 fi ;;
-            docker-permission) _pf_bad "Docker is running but this user may not use it (permission denied on the Docker socket) — add yourself to the docker group: sudo usermod -aG docker \$USER, then log out and back in" ;;
-            podman-stopped) _pf_bad "Podman is installed but not running (Docker not found) — try: podman machine start, or install Docker" ;;
+            docker-permission)
+                # Twin of the same remedy in nano_check_requirements
+                # (runtime-nano.sh): both name newgrp, because "log out and back
+                # in" is the one instruction that does NOT work in WSL — there is
+                # no login session to leave, and the group only takes effect when
+                # the distro's init restarts.
+                _pf_bad "Docker is running but this user may not use it (permission denied on the Docker socket) — add yourself to the docker group: sudo usermod -aG docker \$USER, then start a session that has it: run 'newgrp docker' in this shell, or log out and back in"
+                [ "$_os" = "wsl" ] && _pf_note "On WSL, closing the terminal is not enough: run 'wsl --terminate <distro>' from Windows, then reopen it"
+                ;;
+            podman-stopped)
+                # `podman machine` is the macOS/Windows VM wrapper and does not
+                # exist on Linux; `sudo systemctl start podman` starts the ROOT
+                # socket, which does nothing for the rootless user the installer
+                # insists on being. On Linux the real cause is almost always the
+                # user-namespace ranges.
+                if [ "$_os" = "macos" ]; then
+                    _pf_bad "Podman is installed but its VM is not running (Docker not found) — start it: podman machine start, or install Docker"
+                else
+                    _pf_podman_gap="$(detect_rootless_podman_gap 2>/dev/null || true)"
+                    if [ -n "$_pf_podman_gap" ]; then
+                        _pf_bad "Podman is installed but 'podman info' failed (Docker not found): $_pf_podman_gap"
+                    else
+                        _pf_bad "Podman is installed but 'podman info' failed (Docker not found) — on Linux this is usually the user-namespace ranges: check 'grep \$(id -un) /etc/subuid /etc/subgid'. Using the Podman socket? Start it per user: systemctl --user start podman.socket"
+                    fi
+                fi ;;
             none)           _pf_bad "No container runtime — install Docker (docs.docker.com/get-docker) or Podman (podman.io)" ;;
         esac
     fi
@@ -329,10 +538,28 @@ preflight_report() {
     fi
 
     # port
-    if port_in_use "${EXAKIT_DB_PORT:-8563}"; then
-        _pf_note "Port ${EXAKIT_DB_PORT:-8563} is in use — fine if that is an existing local Exasol; otherwise stop the other application or set EXAKIT_DB_PORT"
+    #
+    # PROBE THE PORT THE INSTALL WILL ACTUALLY BIND. EXAKIT_DB_PORT only moves
+    # the CONTAINER deployments; the macOS deployment always binds 8563. The
+    # preflight honoured the variable everywhere, so on a Mac with
+    # EXAKIT_DB_PORT=8564 it reported "Port 8564 is free" — a green tick for a
+    # port the deploy never touches — and never looked at 8563 at all. The
+    # preflight's whole job is to answer "will this work here", so it asks
+    # about the right port and drops the knob from the remedy where it does
+    # nothing.
+    if [ "$(detect_os)" = "macos" ]; then
+        _pf_port=8563
     else
-        _pf_ok "Port ${EXAKIT_DB_PORT:-8563} is free"
+        _pf_port="${EXAKIT_DB_PORT:-8563}"
+    fi
+    if port_in_use "$_pf_port"; then
+        if [ "$(detect_os)" = "macos" ]; then
+            _pf_note "Port $_pf_port is in use — fine if that is an existing local Exasol (it is adopted); otherwise stop the other application (the macOS deployment cannot use a different port)"
+        else
+            _pf_note "Port $_pf_port is in use — fine if that is an existing local Exasol; otherwise stop the other application or set EXAKIT_DB_PORT"
+        fi
+    else
+        _pf_ok "Port $_pf_port is free"
     fi
 
     # network reachability (downloads come from these). Any HTTP response

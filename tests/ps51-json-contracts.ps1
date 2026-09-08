@@ -142,7 +142,12 @@ $r = Run-Cli @("status", "--json")
 $doc = Parse-Json "status --json (crashed install)" $r.Out
 if ($doc) {
     Check "status --json: a dead install is not 'installing'" ($doc.installing -eq $false -and $doc.status -ne "installing") "status=$($doc.status) installing=$($doc.installing)"
-    Check "status --json: a dead install names the re-run" ("$($doc.remedies.install)" -match "re-run the installer") "remedies.install=$($doc.remedies.install)"
+    # `remedy` is a RUNNABLE command and prose lives in `remedy_hint`, so the
+    # dead-install remedy is the installer invocation, not the sentence it used
+    # to be. Both halves are asserted: the command in remedies.install, the
+    # explanation in remedy_hints.install.
+    Check "status --json: a dead install names the runnable re-run" ("$($doc.remedies.install)" -match "iex") "remedies.install=$($doc.remedies.install)"
+    Check "status --json: the prose moved to remedy_hints" ("$($doc.remedy_hints.install)" -match "resumes|re-runn?ing") "remedy_hints.install=$($doc.remedy_hints.install)"
     Check "status --json: a dead install still reports install_step" ($doc.install_step -eq "runtime") "install_step=$($doc.install_step)"
 }
 

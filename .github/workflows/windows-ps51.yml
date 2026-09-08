@@ -22,3 +22,28 @@ jobs:
       - name: contracts under PowerShell 7
         shell: pwsh
         run: pwsh -NoProfile -File tests/ps51-json-contracts.ps1
+
+  # Everything below runs on a real Windows machine because that is the only
+  # place it means anything. The AST guard and both PowerShell-native suites
+  # already run on the Linux runner under pwsh 7, which is a different engine
+  # with a different cmdlet set: it cannot resolve Get-Acl or
+  # Get-NetTCPConnection, so those are taken on trust in an allowlist, and it
+  # accepts syntax 5.1 rejects. Here the allowlist is checked instead of
+  # trusted, and the suites execute under the engine exakit.cmd actually
+  # invokes.
+  powershell-suites:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: undefined-function sweep under Windows PowerShell 5.1
+        shell: bash
+        run: EXAKIT_PS_BIN=powershell bash tests/ps-undefined-functions.sh
+      - name: encoding guard
+        shell: bash
+        run: bash tests/ps-encoding-guard.sh
+      - name: uninstall suite under 5.1
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File tests/uninstall-ps.ps1
+      - name: non-interactive answers under 5.1
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File tests/noninteractive-answers.ps1

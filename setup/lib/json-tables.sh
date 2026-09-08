@@ -73,6 +73,18 @@ json_tables_log_path() {
     printf '%s\n' "$EXAKIT_JSON_TABLES_LOG"
 }
 
+# _json_tables_logged <cmd...> — run an engine invocation with its own words
+# ALSO kept in the add-on's log. Two error messages and the help document say
+# "see: exakit logs json-tables", and for that command to have an answer,
+# something has to write the file — nothing ever did. Output still flows to
+# stdout, so a caller's own logging (run_logged, a >> redirect) keeps working.
+_json_tables_logged() {
+    { mkdir -p "$(dirname "$EXAKIT_JSON_TABLES_LOG")" && \
+      printf '=== %s %s\n' "$(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null || echo now)" "$*" >> "$EXAKIT_JSON_TABLES_LOG"; } 2>/dev/null || true
+    "$@" 2>&1 | tee -a "$EXAKIT_JSON_TABLES_LOG" 2>/dev/null
+    return "${PIPESTATUS[0]}"
+}
+
 # json_tables_mirror_repo — where the prebuilt artifacts live: the repository
 # THIS KIT WAS INSTALLED FROM, so a fork that runs the packaging workflow
 # serves its own users without any configuration. The manifest records the
@@ -480,7 +492,7 @@ _json_tables_fetch_verified() {
         return 0
     fi
     rm -f "$_jfv_dest"
-    warn "No checksum is available for $_jfv_asset; refusing an unverified artifact. Usually the release is still publishing or the GitHub API was unreachable - retry with: exakit update json-tables"
+    warn "No checksum is available for $_jfv_asset; refusing an unverified artifact. Usually the release is still publishing or the GitHub API was unreachable - retry with: exakit update json-tables. Add its digest to versions.json (components.json-tables.sha256) or, at your own risk, override with EXAKIT_ALLOW_UNVERIFIED_JSON_TABLES=1."
     return 1
 }
 
@@ -723,7 +735,7 @@ json_tables_validate() {
     info "Validating JSON Tables (a real JSON file through the prebuilt engine)"
     _jtv_tmp="$(mktemp -d "${TMPDIR:-/tmp}/exakit-jt-check.XXXXXX")" || return 0
     printf '[{"id":1,"name":"alpha"},{"id":2,"name":"beta"}]\n' > "$_jtv_tmp/sample.json"
-    if ( PATH="$(json_tables_shim_dir):$PATH" "$(json_tables_engine_path)" \
+    if ( PATH="$(json_tables_shim_dir):$PATH" _json_tables_logged "$(json_tables_engine_path)" \
             --input "$_jtv_tmp/sample.json" --output-dir "$_jtv_tmp/out" && : ) \
             >>"${EXAKIT_LOG_FILE:-/dev/null}" 2>&1 && \
        [ -n "$(find "$_jtv_tmp/out" -name '*.parquet' 2>/dev/null | head -1)" ]; then

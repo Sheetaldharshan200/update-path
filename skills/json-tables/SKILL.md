@@ -56,7 +56,39 @@ exasol-json-tables ingest --input <file.json>
 ```
 
 The launcher is installed on `PATH` by the kit. Run `--help` before composing
-a command — read the real flags rather than guessing them.
+a command — read the real flags rather than guessing them. `--help` is also
+where the full subcommand list lives (`ingest`, `ingest-and-wrap`, `wrap`,
+`describe`, `compile`, `validate`, `structured-results`), and each subcommand
+has its own `--help`.
+
+## After the ingest — find out what it made
+
+An ingest is not finished until you can tell the user **where their data
+landed**. Never guess a table name; ask, in this order.
+
+```bash
+exasol-json-tables describe wrappers          # what the add-on itself recorded
+```
+
+`describe wrappers` lists the wrapper surfaces the add-on discovered from its
+helper-schema metadata tables — it exists for exactly this, and it is the only
+answer that knows which of them came from your ingest. `describe wrapper` (no
+`s`) drills into one of them. Run `exasol-json-tables describe --help` for the
+exact flags before composing either, including whether this build offers a
+machine-readable output flag.
+
+Then confirm against the database itself, which is the ground truth for what a
+query can name:
+
+```bash
+exakit sql "SELECT TABLE_NAME FROM SYS.EXA_ALL_TABLES WHERE TABLE_SCHEMA = 'STARTER_KIT' ORDER BY 1"
+exakit sql "SELECT VIEW_NAME  FROM SYS.EXA_ALL_VIEWS  WHERE VIEW_SCHEMA  = 'STARTER_KIT' ORDER BY 1"
+```
+
+`STARTER_KIT` is the kit's default target schema; substitute the schema you or
+the user actually loaded into. Report the real names back to the user with a
+sample query — `exakit sql "SELECT * FROM STARTER_KIT.<table> LIMIT 5"` — rather
+than telling them the load succeeded and leaving them to find it.
 
 ## No Rust toolchain, ever
 
@@ -107,3 +139,6 @@ exakit uninstall                 # selectable on its own
 - **Loading data writes to the database.** Confirm the target schema and table
   with the user first; uploads default to the `STARTER_KIT` schema.
 - **Do not invent** `exasol-json-tables` subcommands or flags. Run `--help`.
+- **Do not invent table names either.** After an ingest, learn them from
+  `exasol-json-tables describe wrappers` and `SYS.EXA_ALL_TABLES` — see
+  *After the ingest*, above.

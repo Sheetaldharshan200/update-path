@@ -13,7 +13,11 @@
 
 $script:ExapumpProfile = if ($env:EXAKIT_EXAPUMP_PROFILE) { $env:EXAKIT_EXAPUMP_PROFILE } else { "starter-kit" }
 $script:ExapumpBinPath = Join-Path $script:BinDir "exapump.exe"
-$script:ExapumpConfigPath = Join-Path $HOME ".exapump\config.toml"
+# %USERPROFILE%, not PowerShell's $HOME - exapump.exe resolves its profile from
+# the former and nothing passes --config or EXAPUMP_CONFIG, so on a domain
+# machine with a redirected home the kit wrote H:\.exapump\config.toml while the
+# binary read C:\Users\<you>\.exapump\config.toml and reported no such profile.
+$script:ExapumpConfigPath = Join-Path (Get-ExakitProfileHome) ".exapump\config.toml"
 
 # Test-ExapumpSucceeded - decide whether an exapump invocation succeeded.
 #
@@ -1182,7 +1186,9 @@ function Import-ExakitLocalJson {
 
         $outDir = Join-Path $tmpDir "out"
         $engine = Get-JsonTablesBin
-        if ((Invoke-ExakitLogged $engine "ingest" "--input" $ingestInput "--output-dir" $outDir) -ne 0) {
+        # Through Invoke-JsonTablesLogged so the engine's own words land in the
+        # add-on's log too - the very file the failure message below points at.
+        if ((Invoke-JsonTablesLogged -Exe $engine -Arguments @("ingest", "--input", $ingestInput, "--output-dir", $outDir)) -ne 0) {
             Warn2 "This JSON file could not be read - see: exakit logs json-tables"
             Info "It must be one JSON document, or NDJSON with one document per line."
             Info "Nothing was loaded; the database is unchanged."

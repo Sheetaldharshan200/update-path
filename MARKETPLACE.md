@@ -36,7 +36,7 @@ Contents:
   with Yes pre-ticked and No as the opt-out. Yes opens the marketplace
   selection, where the available add-ons come pre-selected (exactly like the
   data-load menu pre-selects pending datasets), so Enter installs them and
-  Cancel still backs out; No prints the one command to come back with. No
+  the Skip row still backs out; No prints the one command to come back with. No
   typing anywhere.
 - **`exakit marketplace`** is the command: every add-on with a one-line
   description, Space selects, Enter installs. Non-interactive runs (agents,
@@ -107,7 +107,7 @@ flowchart TD
     G -->|Yes| I[Done and working - gate question:<br>Do you want to add optional tools?<br>Yes pre-ticked / No]
     I -->|Yes| J2[Marketplace selection opens,<br>add-ons pre-selected]
     J2 -->|Enter| J[Pre-selected add-ons install]
-    J2 -->|Pick Cancel| K[Nothing installed - browse any<br>time with: exakit marketplace]
+    J2 -->|Pick Skip| K[Nothing installed - browse any<br>time with: exakit marketplace]
     I -->|No| K
 
     click J "#scenario-3-browsing-and-installing"
@@ -121,17 +121,11 @@ What the user sees on an interactive run — a selection, never typing:
  -   Do you want to add optional tools?
     > [x] Yes - show the marketplace
       [ ] No - maybe later
-
-  Marketplace add-ons
-  -------------------
-Add-on         Status               Version        Action
-dash-server    available            0.1.0          select below to install
-
-    - Select add-ons to install
-    > [x] Available add-ons
-      [x]  - dash-server (AI dashboard host) - Agent-built live dashboards ...
-      [ ] Cancel (install nothing)
 ```
+
+Answering yes opens exactly the screen
+[Scenario 3](#scenario-3-browsing-and-installing) shows — the same table, the
+same pre-ticked rows, the same `Skip`.
 
 Details that matter:
 
@@ -175,24 +169,39 @@ carry.
 
 ## Scenario 3: Browsing and installing
 
-`exakit marketplace` is one screen in the kit's established look: first the
-state of every add-on as an aligned table (the same shape `exakit
-version` prints), then — when anything is installable — the same
-tree-checkbox the data-load menu uses. The available add-ons come
+`exakit marketplace` is one screen in the kit's established look: a single
+tree-checkbox table, the same component the data-load menu uses, carrying the
+add-on, its version and its one-line description. The available add-ons come
 pre-selected (exactly like the data-load menu pre-selects pending datasets),
-so Enter installs them; Space toggles, and Cancel is the explicit opt-out.
+so Enter installs them; Space toggles, and the `Skip` row is the explicit
+opt-out. With no terminal nothing is installed at all — the run says so and
+names `exakit marketplace --list`, `exakit marketplace <id>` and
+`EXAKIT_MARKETPLACE_ADDONS`.
 
 ```
-  Marketplace add-ons
-  -------------------
-Add-on         Status               Version        Action
-dash-server    available            0.1.0          select below to install
-
-    - Select add-ons to install
-    > [x] Available add-ons
-      [x]  - dash-server (AI dashboard host) - Agent-built live dashboards ...
-      [ ] Cancel (install nothing)
+  ╭─ Marketplace add-ons ────────────────────────────────────────────────────╮
+  │     Add-on               Version  Description                            │
+  │ [✓] Select All                                                           │
+  │ [✓] ├─ dash-server       0.1.0    Agent-operated Dash hosting for live   │
+  │     │                             analytical apps                        │
+  │ [✓] ├─ exasol-scheduler  0.2      Lightweight table-driven SQL job       │
+  │     │                             scheduling for Exasol                  │
+  │ [✓] ├─ exasol-vscode     1.7.0    A Visual Studio Code extension for     │
+  │     │                             working with Exasol databases.         │
+  │ [✓] └─ json-tables       0.3      Exasol JSON Tables: ingest, query, and │
+  │                                   reshape JSON-shaped data in Exasol.    │
+  │ [ ] Skip                                                                 │
+  ╰──────────────────────────────────────────────────────────────────────────╯
 ```
+
+An add-on this machine cannot install — no VS Code-compatible editor, no
+prebuilt binary for the architecture, already installed outside the kit — gets
+a dimmed, unpickable row carrying the reason instead, or no row at all when it
+is neither applicable nor present. The descriptions are each repository's
+GitHub About, fetched and cached; offline the kit falls back to the tagline in
+`setup/help/<id>.json`, so the wording of a row can differ from the capture
+above. The same rows fill in with progress as each pick installs — the
+selection and the install are one table, not two screens.
 
 ```mermaid
 flowchart TD
@@ -205,7 +214,7 @@ flowchart TD
     E -->|On the system,<br>outside the kit| H[Dimmed: already on this system -<br>the kit leaves it alone]
     E -->|Module missing<br>from this kit copy| I[Dimmed: not part of this kit copy -<br>run: exakit update]
     F --> J{User confirms a selection?}
-    J -->|Cancel or nothing| K[Marketplace closed -<br>nothing was installed]
+    J -->|Skip or nothing| K[Marketplace closed -<br>nothing was installed]
     J -->|Yes| L[Install each picked add-on:<br>venv under the kit home,<br>launcher, live validation]
     L --> M{Install succeeded?}
     M -->|Yes| N[Installed - it now updates with:<br>exakit update]
@@ -221,6 +230,17 @@ self-repaired if a pre-existing venv lacks pip), a launcher at
 run time (the password itself is never written into any file), and a live
 check that the MCP control plane answers on `http://127.0.0.1:5100/mcp`
 before the add-on is reported ready.
+
+**That control plane is loopback-only and unauthenticated.** Anything that can
+reach `127.0.0.1` on the machine can call its tools, which build, deploy and
+pip-install dependencies for Dash apps as the installing user. Fine on a
+personal laptop; on a shared or multi-user machine, stop dash-server when it is
+not in use (`exakit stop`), and never expose the port on a LAN or through a
+tunnel. dash-server is also the one add-on installed **without a kit-pinned
+checksum** — the version is tag-pinned, but a GitHub source tarball publishes no
+digest to verify the download against, and its Python dependencies come from
+PyPI unpinned. Every other add-on refuses an artifact whose digest it cannot
+check.
 
 Non-interactive use, same contract as the closing offer:
 
@@ -305,7 +325,7 @@ flowchart TD
 
 | Situation | Command or event | Outcome |
 |---|---|---|
-| Fresh install, interactive, all green | closing offer | gate question (Yes pre-ticked / No), then the selection menu with add-ons pre-selected; Enter installs, Cancel or No skips |
+| Fresh install, interactive, all green | closing offer | gate question (Yes pre-ticked / No), then the selection menu with add-ons pre-selected; Enter installs, Skip or No skips |
 | Fresh install, scripted | `EXAKIT_MARKETPLACE_ADDONS=...` | Installs the named add-ons, no questions |
 | Kit from before the marketplace | `exakit update` | Kit self-update delivers the command; discovery lines take over |
 | Browse | `exakit marketplace` | One row per add-on with live state; Space and Enter |
@@ -356,7 +376,12 @@ implementation — copy them when in doubt.
 
 Pick your reference by what the tool is:
 
-- **A Python package with a working wheel** → copy dash-server.
+- **A Python package that installs straight from its tagged source** → copy
+  dash-server (venv, launcher, live validation). Copy its *shape*, not its
+  supply chain: it installs a GitHub source tarball, which publishes no digest,
+  so it is the one add-on with nothing to verify. If your tool publishes a wheel
+  or an sdist, pin its `sha256` in versions.json and fail closed on a missing
+  digest, the way the other three do.
 - **An extension to a host application** → copy exasol-vscode (the
   `_applicable` gate, the host-app CLI discovery, the refusal to touch a copy
   the user installed themselves).
@@ -626,6 +651,10 @@ arms fails CI.
 ---
 
 ## Verifying
+
+Every behaviour this document describes is enforced by the automated suites —
+the contract above, the scenarios, and the twin parity between each module's
+`.sh` and `.ps1`. If a claim here and the code disagree, one of these fails.
 
 ```bash
 bash tests/marketplace.sh        # registry, gating, offer, non-interactive contract
