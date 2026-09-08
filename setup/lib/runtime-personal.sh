@@ -696,6 +696,13 @@ personal_deploy_local() {
     _pdl_prev_quiet="${EXAKIT_QUIET_DETAIL:-0}"
     [ -t 1 ] && EXAKIT_QUIET_DETAIL=1
 
+    # BEFORE the deploy, not only after it. The launcher's own EULA notice is
+    # captured out of its output and replayed once the deploy succeeds, which
+    # means the terms could only ever be read after the deployment existed. The
+    # replay stays where it is -- it is Exasol's wording, verbatim, and there is
+    # nothing to capture until the launcher has run -- so this line goes ahead
+    # of it, saying which licence covers what while the reader can still stop.
+    info "Exasol Personal is free to use and ships under Exasol's own licence terms, not the kit's MIT licence. The launcher shows them below."
     info "Deploying Exasol Personal locally — about 2 minutes"
     push_rollback "$(personal_cli) destroy --remove --auto-approve || true"
 

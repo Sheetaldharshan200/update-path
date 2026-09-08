@@ -47,3 +47,9 @@ jobs:
       - name: non-interactive answers under 5.1
         shell: powershell
         run: powershell -NoProfile -ExecutionPolicy Bypass -File tests/noninteractive-answers.ps1
+      # The skill layer, executed rather than grepped. tests/skills.sh asserts
+      # this half with awk against exakit-common.ps1, which catches a deleted
+      # line and nothing else.
+      - name: skills under 5.1
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File tests/skills.ps1

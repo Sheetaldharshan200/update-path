@@ -48,5 +48,37 @@ done <<EOF
 $(find "$ROOT" -name '*.ps1' -not -path "$ROOT/.git/*" -not -path "$ROOT/.claude/*" | sort)
 EOF
 
+# 3. "$var:" inside a double-quoted string is a PARSE ERROR, not a runtime one.
+#
+# PowerShell reads $name: as a drive-qualified variable ($env:, $script:,
+# $global: are the ones people know), so "FAIL $label: expected ..." refuses to
+# parse and the WHOLE FILE dies before a single line of it runs. There is no
+# pwsh on the machine this kit is developed on, so the first time anyone found
+# out was a red Windows job - which is a full CI round to learn something a
+# regular expression can say in a second. ${label} is the fix.
+#
+# Only the known scope prefixes are allowed; anything else is the mistake.
+while IFS= read -r file; do
+    rel="${file#"$ROOT"/}"
+    # Whole-line comments are skipped: they discuss the hazard (this file's own
+    # note, and Test-ExakitLocalPath's "answers $true: ...") without being it.
+    # The known scope prefixes are removed before the test, since $env: and
+    # $script: are the legitimate form of exactly this syntax.
+    hits="$(awk '
+        /^[[:space:]]*#/ { next }
+        {
+            line = $0
+            gsub(/\$(env|script|global|local|private|using|workflow):/, "", line)
+            if (line ~ /"[^"]*\$[A-Za-z_][A-Za-z0-9_]*:/) print NR
+        }' "$file" 2>/dev/null | tr '\n' ',' | sed 's/,$//')"
+    if [ -n "$hits" ]; then
+        fail "$rel has \$name: in a string (lines $hits) - PowerShell reads it as a drive; write \${name}:"
+    else
+        pass "$rel has no drive-ambiguous variable reference"
+    fi
+done <<EOF
+$(find "$ROOT" -name '*.ps1' -not -path "$ROOT/.git/*" -not -path "$ROOT/.claude/*" | sort)
+EOF
+
 printf '\n%d checks, %d failed\n' "$checks" "$fails"
 [ "$fails" -eq 0 ]

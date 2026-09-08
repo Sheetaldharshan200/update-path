@@ -307,7 +307,7 @@
         "exakit repair-runtime --json"
       ],
       "exit_codes": {
-        "0": "the runtime was rebuilt",
+        "0": "your database was rebuilt",
         "2": "bad input",
         "3": "the rebuild did not finish",
         "4": "not installed",

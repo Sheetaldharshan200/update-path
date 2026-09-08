@@ -491,6 +491,15 @@ nano_pull_image() {
         _exakit_log_file "INFO  Image $_npi_image is already present; not pulling again"
         return 0
     fi
+    # SAID BEFORE THE SOFTWARE ARRIVES, and on this path it was said nowhere at
+    # all: grep for "licen" across this file and nano.ps1 used to return
+    # nothing. The kit is MIT; the database inside this image is not, and a
+    # reader deciding whether they may use it at work was left to infer the
+    # answer from the kit's own LICENSE file. The macOS path replays Exasol's
+    # own notice verbatim; there is no equivalent notice to capture here, so
+    # this states the fact and points at the terms rather than paraphrasing
+    # them.
+    info "Exasol Nano is free to use and ships under Exasol's own licence terms, not the kit's MIT licence: https://www.exasol.com/legal/"
     EXAKIT_ACTIVE_LABEL="Pulling image $_npi_image"
     info "Pulling image $_npi_image"
     _npi_pulled=0

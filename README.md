@@ -76,7 +76,7 @@ You already use AI. The hard part is trusting it with your data. This kit gives 
 
 ## 🚀 Local Agent-Ready Starter
 
-*Install, connect an AI assistant, ask your first question.*
+*Install, connect an AI client, ask your first question.*
 
 ### Will it run on my machine?
 
@@ -98,7 +98,7 @@ At the end you get a connection panel with everything you need, and a first prom
 
 Installing from a script or an AI agent? See [AGENTS.md](AGENTS.md).
 
-## Connect your AI assistant
+## Connect your AI client
 
 ```bash
 exakit mcp-setup
@@ -112,7 +112,7 @@ The installer runs this step for you automatically. `exakit mcp-setup` re-runs i
 
 Health check any time: `exakit mcp-doctor`.
 
-## Let an AI assistant drive the kit (the skills)
+## Let an AI client drive the kit (the skills)
 
 The installer gives your AI agent seven skills, one per thing it may need to drive: setup, the database, exapump, MCP, Python, the Exasol tool ecosystem and the marketplace, plus one per installed add-on. They work in Claude Code, Codex, Cursor and any tool that reads the open skill standard, and load only when relevant. `exakit skills` lists them, `exakit update` refreshes them. Index: [skills/README.md](skills/README.md).
 
@@ -203,6 +203,7 @@ exakit update     # apply what is pending (asks before it stops the database)
 - **Repo stays pure source.** Runtime state, logs, credentials, backups, and generated configs live under `~/.exasol-starter-kit/`, never in this repo.
 - **Everything is inspectable.** Install scripts, MCP configs, backups, and logs remain available on disk.
 - **Local only.** The database listens on `127.0.0.1` only, passwords live in local files and are never shown on screen, and AI client configs are backed up before every change.
+- **One edit outside its own home.** The installer appends a PATH line to your shell profile, marked with a kit comment so you can find it, and says so when it does. Set `EXAKIT_NO_PROFILE_EDIT=1` to keep it out and put `~/.local/bin` on PATH yourself.
 - **Reversible lifecycle.** `exakit` manages the kit end to end: `status`, `start`/`stop`, `data-load`, MCP setup and maintenance (`mcp-setup`, `mcp-doctor`), `logs`, and a guarded `uninstall`. Run `exakit help` (or `exakit catalog`) to see the commands it offers. A few maintenance commands are deliberately left off both lists; `exakit help <name>` still answers for them.
 
 ## See it in action
@@ -216,7 +217,7 @@ https://github.com/user-attachments/assets/77916db0-d273-4720-8d59-1aedac95d5e8
 | Question | Answer |
 |---|---|
 | Do&nbsp;I&nbsp;need&nbsp;Rust&nbsp;/&nbsp;Python&nbsp;/&nbsp;Homebrew? | **None of them.** The kit uses a system Python 3.11+ if you have one, and otherwise installs a managed Python for its own use. |
-| Does&nbsp;it&nbsp;cost&nbsp;anything? | No. Exasol Personal Local is free. |
+| Does&nbsp;it&nbsp;cost&nbsp;anything? | No. Exasol Personal Local is free to use. It is free of charge, not open source: the database ships under [Exasol's own licence terms](https://www.exasol.com/legal/), while this kit's scripts are [MIT](LICENSE). |
 | What&nbsp;makes&nbsp;this&nbsp;"for&nbsp;Agentic&nbsp;AI"? | An MCP server ships in the box with a dedicated read-only login, so Claude, Cursor, and other MCP clients can query your data directly, with every SQL statement inspectable before it runs. |
 | What&nbsp;sample&nbsp;data&nbsp;is&nbsp;included? | Three bundled datasets: TPC-H retail, smart-meter energy, daily weather, each in its own schema. See the [data dictionary](data/data-dictionary.md). |
 | Can&nbsp;I&nbsp;load&nbsp;my&nbsp;own&nbsp;data? | Yes. `exakit data-load` has a local CSV or Parquet option, and `exapump upload` works from the terminal. |

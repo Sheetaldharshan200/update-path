@@ -647,5 +647,43 @@ personal_record_manifest "healthy" >/dev/null 2>&1
 check "...and a caller that just watched it answer records healthy" "healthy" \
     "$(sed -n 's/^runtime\.status=//p' "$_rec_log" | tail -1)"
 
+# CPY-10. THE LICENCE, SAID BEFORE THE SOFTWARE ARRIVES.
+#
+# The container path mentioned no licence anywhere: `grep -i licen` over
+# runtime-nano.sh and nano.ps1 returned nothing, so a Linux, WSL or Windows
+# user was never told the database ships under terms other than the kit's MIT.
+# On macOS the launcher's own notice IS replayed verbatim, but only after
+# `install local` has succeeded - i.e. once the deployment already exists.
+# Both halves now say which licence covers what while the reader can still
+# stop, and the ORDER is the point: an assertion that the sentence merely
+# exists would pass with it printed at the end.
+echo
+echo "the licence is named before the software arrives:"
+_lic_before() { # _lic_before <file> <function-opener> <marker-after>
+    _lb_body="$(awk -v o="$2" 'index($0,o)==1{f=1} f{print} f&&/^}$/{if(f)exit}' "$ROOT/$1")"
+    _lb_lic="$(printf '%s\n' "$_lb_body" | grep -n "own licence terms" | head -1 | cut -d: -f1)"
+    _lb_mark="$(printf '%s\n' "$_lb_body" | grep -n "$3" | head -1 | cut -d: -f1)"
+    if [ -z "$_lb_lic" ]; then printf 'missing\n'; return; fi
+    if [ -z "$_lb_mark" ]; then printf 'no-marker\n'; return; fi
+    if [ "$_lb_lic" -lt "$_lb_mark" ]; then printf 'before\n'; else printf 'after\n'; fi
+}
+check "container path: before the image pull" "before" \
+    "$(_lic_before setup/lib/runtime-nano.sh 'nano_pull_image() {' 'Pulling image')"
+check "macOS path: before the deploy" "before" \
+    "$(_lic_before setup/lib/runtime-personal.sh 'personal_deploy_local() {' 'Deploying Exasol Personal locally')"
+# The PowerShell twin is not run here; its ordering is read the same way.
+_ps_nano="$(awk '/^function Install-NanoImage/{f=1} f{print} f&&/^}$/{if(f)exit}' "$ROOT/setup/lib/nano.ps1")"
+_ps_lic="$(printf '%s\n' "$_ps_nano" | grep -n "own licence terms" | head -1 | cut -d: -f1)"
+_ps_pull="$(printf '%s\n' "$_ps_nano" | grep -n 'Info "Pulling image' | head -1 | cut -d: -f1)"
+if [ -n "$_ps_lic" ] && [ -n "$_ps_pull" ] && [ "$_ps_lic" -lt "$_ps_pull" ]; then
+    check "the twin says it before its pull too" "before" "before"
+else
+    check "the twin says it before its pull too" "before" "lic=${_ps_lic:-none} pull=${_ps_pull:-none}"
+fi
+# And it points at terms rather than paraphrasing them: this kit must never
+# state Exasol's licence in words of its own.
+has "the container line points at Exasol's terms, not a paraphrase" \
+    "https://www.exasol.com/legal/" "$(cat "$ROOT/setup/lib/runtime-nano.sh")"
+
 printf '\n%s: %d passed, %d failed\n' "$(basename "$0")" "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

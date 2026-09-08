@@ -35,8 +35,15 @@ if ($errors.Count -gt 0) { throw "exakit.ps1 has parse errors" }
 # top-level code, so nothing here runs a command or touches the machine. The
 # stubs below are defined AFTER this and override the real ones by name, which
 # is what keeps the sandbox sealed.
+# Top-level functions only. exakit.ps1 declares no class today, but
+# exakit-common.ps1 does, and on Windows PowerShell 5.1 a class constructor
+# comes back from this walk looking like a function definition - running its
+# extent is then a call to a command named after the class, which killed
+# tests/skills.ps1 outright before its first check. The same filter here so
+# that adding a class to this file is a change, not an outage.
 $fns = $ast.FindAll({ param($n)
-    $n -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true)
+    $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+    $n.Extent.Text -match '^\s*(function|filter)\s' }, $true)
 if (-not $fns) { throw "no function definitions found in exakit.ps1" }
 foreach ($f in $fns) { Invoke-Expression $f.Extent.Text }
 if (-not (Get-Command Invoke-ExakitUninstallRun -ErrorAction SilentlyContinue)) {

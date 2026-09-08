@@ -594,6 +594,11 @@ function Install-NanoImage {
         Write-ExakitLog "INFO" "Image $image is already present; not pulling again"
         return
     }
+    # SAID BEFORE THE SOFTWARE ARRIVES, and on this path it was said nowhere at
+    # all: a grep for "licen" across this file and runtime-nano.sh used to
+    # return nothing. The kit is MIT; the database inside this image is not.
+    # Twin of the same line in nano_pull_image (runtime-nano.sh).
+    Info "Exasol Nano is free to use and ships under Exasol's own licence terms, not the kit's MIT licence: https://www.exasol.com/legal/"
     $script:ExakitActiveLabel = "Pulling image $image"
     Info "Pulling image $image"
     $pulled = $false
