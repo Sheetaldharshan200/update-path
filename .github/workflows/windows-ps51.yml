@@ -57,6 +57,13 @@ jobs:
       - name: non-interactive answers under 5.1
         shell: powershell
         run: powershell -NoProfile -ExecutionPolicy Bypass -File tests/noninteractive-answers.ps1
+      # The Windows Personal runtime module, executed against a sandboxed kit
+      # home: port from deployment.json, deployed-version state files, the
+      # wedge probe, the guest-rebuild recognition, the manifest keys, and the
+      # per-subcommand --auto-approve probe against a stub launcher.
+      - name: personal runtime module under 5.1
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File tests/runtime-personal-ps.ps1
       # The skill layer, executed rather than grepped. tests/skills.sh asserts
       # this half with awk against exakit-common.ps1, which catches a deleted
       # line and nothing else.
