@@ -1164,8 +1164,16 @@ check "asset(linux/x86_64)" "exasol-personal_Linux_x86_64.tar.gz" "$(_p2 linux x
 # of the case arm.
 _p2gate() { # _p2gate <os> <with-podman:0|1> -> last die/ok marker
     _pg_bin="$WORK/p2-bin-$1-$2"; mkdir -p "$_pg_bin"
+    # A PATH with the tools the probe needs and NOTHING found by accident:
+    # GitHub's ubuntu runners ship podman in /usr/bin, so scrubbing to
+    # "$stub:/usr/bin:/bin" made the no-podman case find the real one and
+    # pass a gate this check exists to see refuse.
+    for _pg_tool in bash sed tr grep head cat uname sleep; do
+        _pg_src="$(command -v "$_pg_tool" 2>/dev/null || true)"
+        [ -n "$_pg_src" ] && ln -sf "$_pg_src" "$_pg_bin/$_pg_tool"
+    done
     [ "$2" = 1 ] && { printf '#!/bin/sh\nexit 0\n' > "$_pg_bin/podman"; chmod +x "$_pg_bin/podman"; }
-    PATH="$_pg_bin:/usr/bin:/bin" bash -c '
+    PATH="$_pg_bin" bash -c '
         die() { echo "DIED: $*"; exit 1; }
         error() { :; }; info() { :; }; warn() { :; }; ok() { echo "OK: $*"; }
         confirm_env() { return 0; }

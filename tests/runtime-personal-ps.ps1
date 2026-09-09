@@ -92,7 +92,10 @@ $stub = Join-Path $stubDir "exasol.cmd"
 # runner onto the sh stub (and its chmod).
 $onWindows = ($env:OS -like "*Windows*")
 if ($onWindows) {
-    Set-Content -Path $stub -Value "@echo off`r`nif `"%1 %2`"==`"install --help`" (echo   -a, --auto-approve   Approve host preparation) else (echo   --help    help)"
+    # %~1/%~2, not %1/%2: Invoke-ExakitBounded quotes every argument, and cmd
+    # keeps those quotes in %1 - so the unstripped compare never matched and the
+    # probe read the else-branch help. The tilde strips them.
+    Set-Content -Path $stub -Value "@echo off`r`nif `"%~1 %~2`"==`"install --help`" (echo   -a, --auto-approve   Approve host preparation) else (echo   --help    help)"
 } else {
     $stub = Join-Path $stubDir "exasol"
     Set-Content -Path $stub -Value "#!/bin/sh`ncase `"`$1 `$2`" in`n  'install --help') printf '  -a, --auto-approve   Approve host preparation\n' ;;`n  *) printf '  --help    help\n' ;;`nesac"
