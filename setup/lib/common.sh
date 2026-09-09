@@ -5688,6 +5688,21 @@ exakit_runtime_update_explain() {
         personal)
             info "The launcher is replaced; the database is checked afterwards and started again if it ends up down — usually under a minute."
             info "Your data is kept: this update neither deletes nor migrates the tables in your database."
+            # A minor bump is not always a small operation. From Exasol Personal
+            # 2.3 a deployment runs the VM guest belonging to its launcher's
+            # runner, so the first start after the launcher changes rebuilds that
+            # guest. It is not a major upgrade and does not become a staged one,
+            # but a single unexplained y/N covering a ten-minute start is not
+            # informed consent either — so the wait is named before it happens.
+            #
+            # The sentinel is how "2.3 or newer" is asked with the comparator
+            # this module already has: outranks is true only when the first
+            # version is demonstrably higher than the second.
+            _rue_guest_rebuild_from=2.2.99999
+            if command -v personal_deployment_outranks >/dev/null 2>&1 && \
+               personal_deployment_outranks "$3" "$_rue_guest_rebuild_from"; then
+                info "The first start after this update rebuilds the deployment's VM guest — several minutes, once, and only that first start."
+            fi
             ;;
         *)
             info "The database goes down for the update and is started again afterwards."
