@@ -116,6 +116,24 @@ if ($env:OS -notlike "*Windows*") {
     throw "This installer is for Windows. On macOS/Linux/WSL use install.sh."
 }
 
+# EXAKIT_RUNTIME chooses which database runtime a FRESH install deploys. On
+# Windows the default - and today the only available runtime - is the Exasol
+# Nano container; the Personal-based Windows path lands with the runtime
+# migration. Validated before anything is downloaded, and an explicit request
+# for the unavailable runtime fails loudly rather than quietly installing the
+# other one. Twin of the EXAKIT_RUNTIME gate in install.sh.
+if ($env:EXAKIT_RUNTIME) {
+    switch ($env:EXAKIT_RUNTIME) {
+        "nano" { }
+        "personal" {
+            throw "EXAKIT_RUNTIME=personal is not available on Windows yet - the migration to the Exasol Personal runtime is in progress. Unset EXAKIT_RUNTIME to install Exasol Nano."
+        }
+        default {
+            throw "EXAKIT_RUNTIME='$env:EXAKIT_RUNTIME' is not a runtime this kit knows. Valid values: personal, nano - or unset it for the platform default."
+        }
+    }
+}
+
 # GROUP POLICY OUTRANKS -ExecutionPolicy Bypass, by design: on a machine where
 # MachinePolicy or UserPolicy pins the execution policy, the handoff below
 # (`powershell -ExecutionPolicy Bypass -File setup\...`) and every later

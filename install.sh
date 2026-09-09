@@ -132,9 +132,29 @@ main() {
     # --- 2. detect -----------------------------------------------------------
     os="$(uname -s)"
     arch="$(uname -m)"
+    # EXAKIT_RUNTIME chooses which database runtime a FRESH install deploys:
+    # "personal" (the Exasol Personal launcher) or "nano" (the Exasol Nano
+    # container). Unset, each platform keeps the runtime it has always had, so
+    # this knob changes nothing until someone asks it to. It never rewires an
+    # existing install - the recorded runtime.type in the manifest stays what
+    # it is; this only routes the setup for a machine being installed now.
+    #
+    # Validated HERE, before anything is downloaded: a typo'd value silently
+    # falling back to a platform default would deploy a database the user did
+    # not ask for, which is worse than any refusal.
+    runtime_choice="${EXAKIT_RUNTIME:-}"
+    case "$runtime_choice" in
+        ""|personal|nano) : ;;
+        *) fail "EXAKIT_RUNTIME='$runtime_choice' is not a runtime this kit knows. Valid values: personal (the Exasol Personal launcher), nano (the Exasol Nano container) - or unset it for the platform default." ;;
+    esac
     case "$os" in
         Darwin)
             platform="macos"
+            [ -n "$runtime_choice" ] || runtime_choice="personal"
+            # There is no Nano path on macOS: the container runtime modules are
+            # written for Linux engines, and pretending otherwise would download
+            # the kit and fail later, deeper and less clearly.
+            [ "$runtime_choice" = "personal" ] ||                 fail "EXAKIT_RUNTIME=nano is not available on macOS - the macOS runtime is Exasol Personal. Unset EXAKIT_RUNTIME to proceed."
             target="Exasol Personal (local deployment)"
             setup_script="setup/setup-macos.sh"
             ;;
@@ -144,6 +164,11 @@ main() {
             else
                 platform="linux"
             fi
+            [ -n "$runtime_choice" ] || runtime_choice="nano"
+            # The Personal-based Linux path lands with the runtime migration; an
+            # explicit request for it must fail loudly TODAY rather than quietly
+            # installing the other runtime and calling it done.
+            [ "$runtime_choice" = "nano" ] ||                 fail "EXAKIT_RUNTIME=personal is not available on Linux/WSL yet - the migration to the Exasol Personal runtime is in progress. Unset EXAKIT_RUNTIME to install Exasol Nano."
             target="Exasol Nano (container: Docker preferred, Podman fallback)"
             setup_script="setup/setup-wsl.sh"
             ;;
