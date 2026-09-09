@@ -2368,6 +2368,28 @@ exakit_installation_runtime_type() {
     manifest_get runtime.type 2>/dev/null
 }
 
+# exakit_runtime_choice — which runtime a FRESH install deploys on this machine:
+# EXAKIT_RUNTIME when the user set it, the platform default otherwise. The
+# defaults reproduce what each platform has always done, so with the variable
+# unset this function changes nothing anywhere.
+#
+# This is a CHOICE for installers, not a record: an installed kit's runtime is
+# exakit_installation_runtime_type (the manifest), and nothing here overrides
+# it. install.sh validates the value before the kit is even downloaded; this
+# validates again because setup scripts also run standalone from a checkout.
+# ⇄ twin: Get-ExakitRuntimeChoice in setup/lib/exakit-common.ps1.
+exakit_runtime_choice() {
+    case "${EXAKIT_RUNTIME:-}" in
+        personal|nano) printf '%s' "$EXAKIT_RUNTIME"; return 0 ;;
+        "") ;;
+        *) die "EXAKIT_RUNTIME='${EXAKIT_RUNTIME}' is not a runtime this kit knows. Valid values: personal, nano - or unset it for the platform default." ;;
+    esac
+    case "$(detect_os)" in
+        macos) printf '%s' "personal" ;;
+        *)     printf '%s' "nano" ;;
+    esac
+}
+
 # exakit_runtime_is_running — one question, no side effects: is the installed
 # database runtime up right now? The pure check that `exakit status` branches
 # its exit code on and `exakit mcp-doctor` consults BEFORE any operation that

@@ -5905,6 +5905,20 @@ function Get-ExakitUpdateTargets {
 
 function Get-RuntimeType { return (Get-ExakitManifestValue "runtime.type") }
 
+# Get-ExakitRuntimeChoice - which runtime a FRESH install deploys on this
+# machine: EXAKIT_RUNTIME when the user set it, "nano" otherwise (the Windows
+# default, unchanged). A choice for installers, never a record - an installed
+# kit answers Get-RuntimeType from the manifest, and nothing here overrides it.
+# An unknown value is a hard stop: a typo silently falling back to the default
+# would deploy a database the user did not ask for.
+# Twin of exakit_runtime_choice in setup/lib/common.sh.
+function Get-ExakitRuntimeChoice {
+    $choice = $env:EXAKIT_RUNTIME
+    if ([string]::IsNullOrEmpty($choice)) { return "nano" }
+    if ($choice -eq "nano" -or $choice -eq "personal") { return $choice }
+    Fail "EXAKIT_RUNTIME='$choice' is not a runtime this kit knows. Valid values: personal, nano - or unset it for the platform default."
+}
+
 function Register-ExakitAutostart {
     param([Parameter(Mandatory)][string]$Id)
     if ($Id -eq "database") {

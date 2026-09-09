@@ -112,6 +112,44 @@ grep -q 'setup_script="setup/setup-wsl.sh"' "$ROOT/install.sh" && \
     check "dispatch(linux/wsl)" "setup-wsl.sh" "setup-wsl.sh" || \
     check "dispatch(linux/wsl)" "setup-wsl.sh" "missing"
 
+echo "runtime choice (EXAKIT_RUNTIME):"
+# The knob's contract has two halves. Unset, every platform keeps the runtime
+# it has always had - exercised BEHAVIOURALLY through exakit_runtime_choice
+# with detect_os stubbed, not by grepping the routing table. Set, an impossible
+# or unknown value must be refused before anything happens; a typo silently
+# falling back to a default would deploy a database nobody asked for.
+_rc() { # _rc <os> <env-value> -> stdout of exakit_runtime_choice (or "died")
+    _rc_os="$1"; _rc_val="$2"
+    bash -c '
+        die() { echo died; exit 1; }
+        manifest_get() { :; }
+        . "$0/setup/lib/detect.sh" 2>/dev/null
+        detect_os() { echo "'"$_rc_os"'"; }
+        . /dev/stdin <<EOF
+$(sed -n "/^exakit_runtime_choice()/,/^}/p" "$0/setup/lib/common.sh")
+EOF
+        '"${_rc_val:+EXAKIT_RUNTIME=$_rc_val}"' exakit_runtime_choice' "$ROOT" 2>/dev/null
+}
+check "choice(macos, unset)"   "personal" "$(_rc macos "")"
+check "choice(linux, unset)"   "nano"     "$(_rc linux "")"
+check "choice(wsl, unset)"     "nano"     "$(_rc wsl "")"
+check "choice(explicit nano)"  "nano"     "$(EXAKIT_RUNTIME= _rc macos nano)"
+check "choice(unknown value dies)" "died" "$(_rc linux docker)"
+# install.sh refuses the combinations that do not exist yet, by name - never
+# routing them to the other runtime.
+grep -q "is not a runtime this kit knows" "$ROOT/install.sh" && \
+    check "install.sh validates the knob before downloading" present present || \
+    check "install.sh validates the knob before downloading" present MISSING
+grep -q 'not available on macOS' "$ROOT/install.sh" && \
+    check "install.sh refuses nano-on-macos by name" present present || \
+    check "install.sh refuses nano-on-macos by name" present MISSING
+grep -q 'not available on Linux/WSL yet' "$ROOT/install.sh" && \
+    check "install.sh refuses personal-on-linux by name (for now)" present present || \
+    check "install.sh refuses personal-on-linux by name (for now)" present MISSING
+grep -q 'not available on Windows yet' "$ROOT/install.ps1" && \
+    check "install.ps1 refuses personal-on-windows by name (for now)" present present || \
+    check "install.ps1 refuses personal-on-windows by name (for now)" present MISSING
+
 echo "mcp credential fallback:"
 _mcp_test_dir="$(mktemp -d)"
 EXAKIT_CREDS_DIR="$_mcp_test_dir/credentials"
