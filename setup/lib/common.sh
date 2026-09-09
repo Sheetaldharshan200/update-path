@@ -4202,6 +4202,19 @@ EXAKIT_MM_COVERED
     ui_table_menu "$EXAKIT_ADDON_TABLE_STATE"
     UI_TABLE_COL2=""
     UI_TABLE_COL3=""
+    # ONLY A PRESSED ENTER INSTALLS. The menu pre-selects everything so that
+    # Enter alone acts on what is on offer - which is only a safe posture while
+    # there is an Enter. Without one (a dumb terminal where the interactive
+    # table cannot draw, a stdin that hit EOF mid-menu), ui_table_menu returns
+    # those same defaults as the standing selection, and applying them here
+    # installed EVERY add-on on a machine where nobody chose anything - real
+    # venvs, real downloads. The scripted route stays EXAKIT_MARKETPLACE_ADDONS.
+    if [ "${EXAKIT_TABLE_CONFIRMED:-0}" != 1 ]; then
+        _exakit_addon_table_cleanup
+        info "No interactive terminal to confirm a selection — nothing was installed."
+        info "Pick add-ons without the menu: EXAKIT_MARKETPLACE_ADDONS=<ids|all> exakit marketplace"
+        return 0
+    fi
     case ",$EXAKIT_TABLE_SELECTION," in
         *",$EXAKIT_ADDON_TABLE_ROW_SKIP,"*)
             _exakit_addon_table_cleanup

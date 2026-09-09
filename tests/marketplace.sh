@@ -763,6 +763,28 @@ has "with the host app present it is offered again" "applicable=yes" "$_with_cod
 check "and appears in the menu" "yes" "$(
     printf '%s' "$_with_code" | grep -q 'in-menu=0' && echo no || echo yes
 )"
+# ONLY A PRESSED ENTER INSTALLS. The menu pre-selects every add-on so Enter
+# alone acts on the offer - and without a real Enter (a dumb terminal, an EOF
+# mid-menu, or this suite's faked TTY probe) ui_table_menu returns those same
+# defaults as the standing selection. Applying them installed EVERY add-on for
+# real: venvs, wheel downloads, a dbt debug - which is also what ate the CI
+# job's six-hour budget from inside this very block. The gate is
+# EXAKIT_TABLE_CONFIRMED, and this pins both halves: the refusal is said, and
+# the apply path is never entered.
+check "an unconfirmed menu installs nothing" "refused apply=0" "$( (
+    _exakit_prompt_tty() { printf 'stub
+'; }
+    _exakit_marketplace_apply() { echo "APPLY-CALLED"; }
+    _mm_out="$(exakit_marketplace_menu 2>&1)"
+    printf '%s' "$_mm_out" | grep -q "nothing was installed" && printf 'refused ' || printf 'confirmed?! '
+    printf 'apply=%s' "$(printf '%s' "$_mm_out" | grep -c APPLY-CALLED)"
+) )"
+# ...and names the scripted route instead of a dead end.
+check "the refusal names EXAKIT_MARKETPLACE_ADDONS" "yes" "$( (
+    _exakit_prompt_tty() { printf 'stub
+'; }
+    exakit_marketplace_menu 2>&1 | grep -q EXAKIT_MARKETPLACE_ADDONS && echo yes || echo no
+) )"
 # Naming it explicitly on a machine without the app explains why, instead of
 # claiming the add-on is unknown or failing deep in the installer.
 _named="$( (
