@@ -82,6 +82,7 @@ if (Test-Path (Join-Path $scriptDir "lib\exakit-common.ps1")) {
 
 . (Join-Path $libDir "exakit-common.ps1")
 . (Join-Path $libDir "nano.ps1")
+. (Join-Path $libDir "runtime-personal.ps1")
 . (Join-Path $libDir "exapump.ps1")
 . (Join-Path $libDir "mcp.ps1")
 # pyexasol is an update target of its own (and its own repair command), so the
@@ -208,7 +209,7 @@ function Invoke-CmdStatus {
         # none of the arms downstream, so the screen fell through to "Start it:
         # exakit start" - a command that in this state can only fail. Twin of
         # the same case in cmd_status.
-        switch ($type) { "nano" { Get-NanoStatus } default { "not installed" } }
+        switch ($type) { "nano" { Get-NanoStatus } "personal" { Get-PersonalStatus } default { "not installed" } }
     }
     $running = "$status".StartsWith("running")
     $steps = @(Get-ExakitManifestValue "steps_completed")
@@ -623,7 +624,10 @@ function Get-ExakitServiceIds {
 function Get-ExakitServiceStatus {
     param([Parameter(Mandatory)][string]$Id)
     if ($Id -eq "database") {
-        if ((Get-RuntimeType) -eq "nano") { return (Get-NanoStatus) }
+        switch (Get-RuntimeType) {
+            "nano"     { return (Get-NanoStatus) }
+            "personal" { return (Get-PersonalStatus) }
+        }
         return "unknown"
     }
     $addon = Get-ExakitMarketplaceAddon $Id
@@ -657,7 +661,10 @@ function Start-ExakitService {
 function Stop-ExakitService {
     param([Parameter(Mandatory)][string]$Id)
     if ($Id -eq "database") {
-        if ((Get-RuntimeType) -eq "nano") { Stop-Nano }
+        switch (Get-RuntimeType) {
+            "nano"     { Stop-Nano }
+            "personal" { Stop-Personal }
+        }
         return
     }
     $addon = Get-ExakitMarketplaceAddon $Id
@@ -798,6 +805,13 @@ function Invoke-CmdStart {
     # promises a running database), then every add-on service.
     if ((Get-RuntimeType) -eq "nano" -and (Get-NanoStatus) -eq "running") {
         Ok "Database is already running"
+    } elseif ((Get-RuntimeType) -eq "personal" -and (Test-PersonalDeploymentRunning)) {
+        Ok "Database is already running"
+    } elseif ((Get-RuntimeType) -eq "personal" -and (Get-PersonalStatus) -eq "conflict") {
+        # Port open is not database up: with another program on the port this
+        # said "already running" and exited 0 while status said stopped. Twin
+        # of the same arm in cmd_start (setup/exakit).
+        Fail "Port $(Get-PersonalDbPort) is held by another process, not by Exasol, so the database cannot start. Stop that process, then: exakit start"
     } else {
         Confirm-ExakitRuntimeRunning -Deploy
     }
@@ -819,7 +833,7 @@ function Invoke-CmdStop {
         if ($id -eq "database") { continue }
         Stop-ExakitService -Id $id
     }
-    switch (Get-RuntimeType) { "nano" { Stop-Nano } }
+    switch (Get-RuntimeType) { "nano" { Stop-Nano } "personal" { Stop-Personal } }
 }
 
 # Invoke-CmdRepairRuntime [-Yes] - rebuild a database that cannot be started.
@@ -1466,8 +1480,16 @@ function Invoke-ExakitUninstallComponent {
             # from Show-ExakitUninstallMenu), which is the only place saying it
             # can still change the answer. Twin of the same move in
             # _exakit_uninstall_component.
-            Info "Removing the local Exasol Nano deployment and all data"
-            try { Remove-Nano -Data } catch { Warn2 "Database removal reported errors" }
+            switch (Get-RuntimeType) {
+                "personal" {
+                    Info "Removing the local Exasol Personal deployment and all data"
+                    try { Remove-Personal } catch { Warn2 "Database removal reported errors" }
+                }
+                default {
+                    Info "Removing the local Exasol Nano deployment and all data"
+                    try { Remove-Nano -Data } catch { Warn2 "Database removal reported errors" }
+                }
+            }
             Remove-ExakitStepDone "runtime"
         }
         "mcp_configs" {
@@ -2061,30 +2083,35 @@ function Invoke-ExakitRuntimeComponentUpdate {
     switch ($Component) {
         "runtime" {
             if ((Get-RuntimeType) -eq "nano" -and $Advertised) { Update-Nano -LatestTag $Advertised }
+            if ((Get-RuntimeType) -eq "personal" -and $Advertised) { Update-Personal -Advertised $Advertised }
         }
         "nano" {
             if ($Advertised) { Update-Nano -LatestTag $Advertised }
         }
         "personal" {
-            Warn2 "Exasol Personal local deployments are macOS-only in this kit. On Windows this target is reported for catalog parity but cannot be applied."
+            if ($Advertised) { Update-Personal -Advertised $Advertised }
         }
     }
 }
 
 # Get-ExakitRuntimeStatus / Start-ExakitRuntime - the runtime-agnostic pair the
 # inline offer needs to keep its promise ("the database is running again
-# afterwards"). Only Nano exists on this path; anything else answers "" for
-# "cannot tell", which is not the same as "not running".
+# afterwards"). Anything unrecognised answers "" for "cannot tell", which is
+# not the same as "not running".
 # Twins of exakit_runtime_status / exakit_runtime_start in setup/lib/common.sh.
 function Get-ExakitRuntimeStatus {
-    if ((Get-RuntimeType) -eq "nano") {
-        try { return (Get-NanoStatus) } catch { return "" }
+    switch (Get-RuntimeType) {
+        "nano"     { try { return (Get-NanoStatus) } catch { return "" } }
+        "personal" { try { return (Get-PersonalStatus) } catch { return "" } }
     }
     return ""
 }
 
 function Start-ExakitRuntime {
-    if ((Get-RuntimeType) -eq "nano") { Start-Nano }
+    switch (Get-RuntimeType) {
+        "nano"     { Start-Nano }
+        "personal" { Start-Personal }
+    }
 }
 
 # Test-ExakitRuntimeUpdateStaged - true for an Exasol Personal MAJOR upgrade: a
@@ -3020,7 +3047,17 @@ try {
         }
     }
     switch ($Command) {
-        "preflight"    { Assert-ExakitKnownOptions -CommandName "preflight" -Allowed @() -Arguments $RestArgs; Test-NanoRequirements }
+        "preflight"    {
+            Assert-ExakitKnownOptions -CommandName "preflight" -Allowed @() -Arguments $RestArgs
+            # A fresh machine is asked about the runtime the KNOB would install;
+            # an installed kit about the one it runs.
+            $preflightRuntime = Get-RuntimeType
+            if (-not $preflightRuntime) { $preflightRuntime = Get-ExakitRuntimeChoice }
+            switch ($preflightRuntime) {
+                "personal" { Test-PersonalRequirements }
+                default    { Test-NanoRequirements }
+            }
+        }
         "status"       {
             $statusJson = ($RestArgs -contains "--json" -or $RestArgs -contains "-j")
             $statusUnknown = @($RestArgs | Where-Object { $_ -notin @("--json", "-j") })
@@ -3177,7 +3214,8 @@ try {
             }
             $doctorArgs = @($RestArgs | Where-Object { $_ -notin @("--json", "-j") })
             $doctorType = Get-RuntimeType
-            $doctorUp = ($doctorType -eq "nano" -and "$(Get-NanoStatus)".StartsWith("running"))
+            $doctorUp = (($doctorType -eq "nano" -and "$(Get-NanoStatus)".StartsWith("running")) -or
+                         ($doctorType -eq "personal" -and (Get-PersonalStatus) -eq "running"))
             if (-not $doctorUp) {
                 if ($doctorJson) {
                     # The same three keys every --json state answer carries.
