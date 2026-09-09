@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
-# runtime-personal.sh — Exasol Personal local runtime module (macOS).
+# runtime-personal.sh — Exasol Personal local runtime module (macOS and Linux).
 #
 # Sourced by setup scripts after common.sh and detect.sh. Installs the Exasol
 # launcher from the resolved GitHub release (checksum-verified) and deploys a
 # local database with `exasol install local`.
 #
 # Launcher facts:
-#   - release assets: exasol-personal_macOS_{arm64,x86_64}.tar.gz + checksums
-#   - local deployment needs macOS with at least 8 GB RAM
+#   - release assets: exasol-personal_{macOS,Linux}_{arm64,x86_64}.tar.gz
+#     + checksums; Linux local deployments exist from launcher 2.3 and need
+#     Podman (rootless is fine) — the launcher does not install it on Linux
+#   - local deployment needs at least 8 GB RAM
 #   - deployment state: ~/.exasol/personal/deployments/default
 #   - `exasol info` prints connection details for the current deployment
 #   - rerunning `exasol install local` with the same preset is safe
@@ -26,11 +28,35 @@ EXAKIT_PERSONAL_DEPLOY_DIR="${EXAKIT_PERSONAL_DEPLOY_DIR:-$HOME/.exasol/personal
 EXAKIT_PERSONAL_COMFORT_RAM_GB="${EXAKIT_PERSONAL_COMFORT_RAM_GB:-12}"
 EXAKIT_PERSONAL_COMFORT_DISK_GB="${EXAKIT_PERSONAL_COMFORT_DISK_GB:-40}"
 personal_check_requirements() {
-    if [ "$(detect_os)" != "macos" ]; then
-        error "This machine is not compatible: the Exasol Personal local deployment is macOS-only in this kit."
-        info "On Linux/WSL use the Linux installer (Exasol Nano via Docker/Podman); on Windows use install.ps1."
-        die "Incompatible platform: $(detect_os)."
-    fi
+    _pcr_os="$(detect_os)"
+    case "$_pcr_os" in
+        macos) : ;;
+        linux)
+            # The launcher's own requirement, checked here so the refusal comes
+            # before anything is downloaded: Linux local deployments run on
+            # Podman, and unlike on Windows the launcher does not offer to
+            # install it. Docker does not substitute - the launcher will not
+            # use it.
+            if ! command -v podman >/dev/null 2>&1; then
+                error "This machine is not ready: the Exasol Personal local deployment on Linux needs Podman, and 'podman' is not on PATH."
+                info "Install it with your package manager (e.g. 'sudo apt-get install -y podman' or 'sudo dnf install -y podman'), then re-run."
+                die "Podman is required for the Exasol Personal runtime on Linux."
+            fi
+            ;;
+        wsl)
+            # Personal's Windows path is host Podman inside a Podman machine,
+            # not WSL - and inside a distro the honest answer today is the
+            # container runtime this kit already ships there.
+            error "This machine is not compatible: the Exasol Personal local deployment does not target WSL."
+            info "Inside WSL use the container runtime (Exasol Nano) - unset EXAKIT_RUNTIME and re-run."
+            die "Incompatible platform: wsl."
+            ;;
+        *)
+            error "This machine is not compatible: the Exasol Personal local deployment supports macOS and Linux in this kit."
+            info "On Windows use install.ps1."
+            die "Incompatible platform: $_pcr_os."
+            ;;
+    esac
 
     _arch="$(detect_arch)"
     if [ "$_arch" = "unsupported" ]; then
@@ -65,7 +91,7 @@ personal_check_requirements() {
     # container deployments honour it - the launcher picks the port for a
     # personal deployment and the kit reads it back with personal_db_port.
     if [ -n "${EXAKIT_DB_PORT:-}" ] && [ "${EXAKIT_DB_PORT}" != "$(personal_db_port)" ]; then
-        warn "EXAKIT_DB_PORT does not choose the port on macOS: the launcher selects it for the deployment and the kit uses whatever it selected (currently $(personal_db_port))."
+        warn "EXAKIT_DB_PORT does not choose the port of an Exasol Personal deployment: the launcher selects it and the kit uses whatever it selected (currently $(personal_db_port))."
     fi
 
     # Bare minimum: run, but say what to expect.
@@ -75,13 +101,19 @@ personal_check_requirements() {
     if [ "$_disk" -lt "$EXAKIT_PERSONAL_COMFORT_DISK_GB" ]; then
         warn "Free disk is tight (${_disk} GB; comfortable: ${EXAKIT_PERSONAL_COMFORT_DISK_GB}+ GB) — fine for the bundled datasets, but watch space before loading large files."
     fi
-    ok "Compatibility check passed (macOS $_arch, ${_ram} GB RAM, ${_disk} GB free)"
+    ok "Compatibility check passed ($_pcr_os $_arch, ${_ram} GB RAM, ${_disk} GB free)"
 }
 
 personal_asset_name() {
+    # The launcher's release spelling, verbatim: macOS capitalised mid-word,
+    # Linux capitalised - a lowercased guess here is a 404 at download time.
+    case "$(detect_os)" in
+        macos) _pan_os="macOS" ;;
+        *)     _pan_os="Linux" ;;
+    esac
     case "$(detect_arch)" in
-        arm64)  echo "exasol-personal_macOS_arm64.tar.gz" ;;
-        x86_64) echo "exasol-personal_macOS_x86_64.tar.gz" ;;
+        arm64)  echo "exasol-personal_${_pan_os}_arm64.tar.gz" ;;
+        x86_64) echo "exasol-personal_${_pan_os}_x86_64.tar.gz" ;;
     esac
 }
 
@@ -717,7 +749,7 @@ personal_deploy_local() {
     # usually our own orphaned runner daemon from a failed deploy or destroy —
     # reap it and continue. Only a genuinely foreign process (another database,
     # a stale container), which the reaper leaves untouched, is a hard stop.
-    # EXAKIT_DB_PORT does not apply to the macOS path, so name the real port.
+    # EXAKIT_DB_PORT does not apply to the personal path, so name the real port.
     if port_in_use "$(personal_db_port)"; then
         personal_reap_orphan_daemon || \
             die "Port $(personal_db_port) is in use by a process that is not a reachable Exasol Personal deployment. Stop that application and re-run (EXAKIT_DB_PORT does not choose the port of a personal deployment)."
@@ -791,7 +823,7 @@ personal_deploy_local() {
     # not the deploy's alone. The endpoint is the literal fallback
     # personal_record_manifest uses when deployment.json cannot be read; the
     # real DSN is not parsed out of it until a few lines later, and this is the
-    # same address either way on the macOS deployment.
+    # same address either way on a personal deployment.
     ok "Exasol Personal deployed and answering on 127.0.0.1:$(personal_db_port) ($(( $(date +%s 2>/dev/null || echo 0) - _deploy_t0 ))s)"
     _personal_deploy_print_notice "$_deploy_notice"
     rm -rf "$_deploy_tmp"
@@ -1107,7 +1139,7 @@ personal_stop() {
 # destroying data the documented contract says would be kept.
 personal_teardown() {
     if [ "${1:-}" != "--data" ]; then
-        warn "On macOS the database software and your data are one unit — removing it deletes every table you loaded."
+        warn "An Exasol Personal deployment keeps the database software and your data together — removing it deletes every table you loaded."
         info "Use 'exakit stop' to stop it without deleting, or 'exakit uninstall' to remove everything."
         return 1
     fi
