@@ -1636,6 +1636,13 @@ ui_table_menu() {
     [ "$_utm_n" -ge 2 ] && _utm_move 1
     _utm_pickable "$_utm_cur" || _utm_move 1
     _utm_sel="$EXAKIT_TABLE_DEFAULTS"
+    # CONFIRMED means a human pressed Enter on this table - nothing else. The
+    # defaults standing on a machine with no usable terminal is the right
+    # answer for the data-load and MCP-client menus, whose callers documented
+    # exactly that; a caller about to INSTALL things must be able to tell the
+    # two apart, because "Enter alone installs what is on offer" is only a safe
+    # posture while there is an Enter. See exakit_marketplace_menu.
+    EXAKIT_TABLE_CONFIRMED=0
     _utm_tty="$(_exakit_prompt_tty)"
     if [ -z "$_utm_tty" ] || [ "${UI_FANCY:-0}" != 1 ]; then
         # No terminal: the defaults stand, and the table is printed once so a
@@ -1671,7 +1678,7 @@ ui_table_menu() {
             IFS= read -rsn1 _utm_key || break
         fi
         case "$_utm_key" in
-            "") [ -n "$_utm_sel" ] && break ;;
+            "") [ -n "$_utm_sel" ] && { EXAKIT_TABLE_CONFIRMED=1; break; } ;;
             " ")
                 # A row that cannot be picked cannot be toggled either. The
                 # cursor never rests on one, so this catches only the keypress

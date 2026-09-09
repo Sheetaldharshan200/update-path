@@ -65,6 +65,7 @@ if (-not (Get-Command Start-ExakitSpinner -ErrorAction SilentlyContinue)) {
     function Invoke-ExakitTableMenu($Table = $null, [int[]]$Defaults = @(),
         [int]$ExclusiveIndex = 0, [int]$GroupParent = 0, [int]$GroupFirst = 0,
         [int]$GroupLast = 0, [string]$GroupMode = "any", [int]$OnScreen = 0) {
+        $script:ExakitTableConfirmed = $false
         return @($Defaults | Sort-Object)
     }
     function Get-ExakitTilde([string]$Path) { return $Path }
@@ -4909,6 +4910,15 @@ function Show-ExakitMarketplaceMenu {
     $selection = @(Invoke-ExakitTableMenu -Table $script:ExakitAddonTable -Defaults $defaults `
         -ExclusiveIndex $rowSkip -GroupParent 1 `
         -GroupFirst 2 -GroupLast ($addonCount + 1) -GroupMode "all")
+    # ONLY A PRESSED ENTER INSTALLS - the defaults standing without a console
+    # would install every add-on on a machine where nobody chose anything.
+    # Twin of the same gate in _exakit_marketplace_menu (common.sh).
+    if (-not $script:ExakitTableConfirmed) {
+        Reset-ExakitAddonTable
+        Info "No interactive console to confirm a selection - nothing was installed."
+        Info "Pick add-ons without the menu: `$env:EXAKIT_MARKETPLACE_ADDONS = '<ids|all>'; exakit marketplace"
+        return
+    }
     # Version and Description belong to the SELECTION, and are dropped the moment
     # it is made: the install below reuses this very table as its progress
     # display, and a heading left behind is how that screen ends up wearing the
