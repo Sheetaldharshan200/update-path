@@ -143,9 +143,43 @@ grep -q "is not a runtime this kit knows" "$ROOT/install.sh" && \
 grep -q 'not available on macOS' "$ROOT/install.sh" && \
     check "install.sh refuses nano-on-macos by name" present present || \
     check "install.sh refuses nano-on-macos by name" present MISSING
-grep -q 'not available on Linux/WSL yet' "$ROOT/install.sh" && \
-    check "install.sh refuses personal-on-linux by name (for now)" present present || \
-    check "install.sh refuses personal-on-linux by name (for now)" present MISSING
+grep -q 'does not target WSL' "$ROOT/install.sh" && \
+    check "install.sh refuses personal-on-WSL by name" present present || \
+    check "install.sh refuses personal-on-WSL by name" present MISSING
+grep -q 'Exasol Personal (local deployment via Podman)' "$ROOT/install.sh" && \
+    check "install.sh routes personal-on-linux and names the plan" present present || \
+    check "install.sh routes personal-on-linux and names the plan" present MISSING
+# The setup script sources the runtime module the knob chose - both ways.
+grep -q 'EXAKIT_SETUP_RUNTIME="$(exakit_runtime_choice)"' "$ROOT/setup/setup-wsl.sh" && \
+    check "setup-wsl.sh asks the knob" present present || \
+    check "setup-wsl.sh asks the knob" present MISSING
+_swr() { EXAKIT_RUNTIME="$1" bash -c '
+    . "$0/setup/lib/detect.sh" 2>/dev/null
+    detect_os() { echo linux; }
+    die() { echo died; exit 1; }
+    eval "$(sed -n "/^exakit_runtime_choice()/,/^}/p" "$0/setup/lib/common.sh")"
+    case "$(exakit_runtime_choice)" in
+        personal) echo "runtime-personal.sh" ;;
+        *)        echo "runtime-nano.sh" ;;
+    esac' "$ROOT" 2>/dev/null; }
+check "module(linux, unset)"    "runtime-nano.sh"     "$(EXAKIT_RUNTIME= _swr "")"
+check "module(linux, personal)" "runtime-personal.sh" "$(_swr personal)"
+# The preflight answers the question the chosen runtime actually asks: under
+# the knob it checks Podman by name and never runs the Docker triage, whose
+# remedies would send a Podman-only machine to install Docker.
+_pfr() { # _pfr <with-podman:0|1> -> the engine line of the preflight
+    _pfr_bin="$(mktemp -d)/pf-bin"; mkdir -p "$_pfr_bin"
+    [ "$1" = 1 ] && { printf '#!/bin/sh\nexit 0\n' > "$_pfr_bin/podman"; chmod +x "$_pfr_bin/podman"; }
+    EXAKIT_RUNTIME=personal PATH="$_pfr_bin:/usr/bin:/bin" bash -c '
+        . "$0/setup/lib/detect.sh"
+        detect_os() { echo linux; }; detect_arch() { echo x86_64; }
+        detect_ram_gb() { echo 16; }; detect_free_disk_gb() { echo 100; }
+        detect_wsl_version() { echo 2; }; detect_wsl_drvfs_path() { return 1; }
+        detect_docker_data_gb() { echo 0; }; detect_wsl_windows_free_gb() { echo 0; }
+        preflight_report' "$ROOT" 2>/dev/null | grep -ci "podman"
+}
+check "preflight(personal) asks about podman" "1" "$(_pfr 1)"
+check "preflight(personal, no podman) fails on podman by name" "1" "$(_pfr 0)"
 grep -q 'not available on Windows yet' "$ROOT/install.ps1" && \
     check "install.ps1 refuses personal-on-windows by name (for now)" present present || \
     check "install.ps1 refuses personal-on-windows by name (for now)" present MISSING
@@ -587,6 +621,17 @@ if grep -q 'personal_deployment_running' "$ROOT/setup/setup-macos.sh" && \
     check "install(rerun_starts_stopped_runtime)" "yes" "yes"
 else
     check "install(rerun_starts_stopped_runtime)" "yes" "no"
+fi
+# ...and the personal arm of setup-wsl.sh carries the same resume shape the
+# macOS script does: redeploy what is gone (disarming the registered destroy by
+# hand), start what is merely stopped.
+if grep -q 'personal_deployment_exists' "$ROOT/setup/setup-wsl.sh" && \
+   grep -q 'personal_deployment_running' "$ROOT/setup/setup-wsl.sh" && \
+   grep -q 'personal_wait_ready' "$ROOT/setup/setup-wsl.sh" && \
+   grep -q 'rollback_clear' "$ROOT/setup/setup-wsl.sh"; then
+    check "install(linux personal resume matches macos)" "yes" "yes"
+else
+    check "install(linux personal resume matches macos)" "yes" "no"
 fi
 
 # The marketplace, both sides. The registry, the installed-only gate on

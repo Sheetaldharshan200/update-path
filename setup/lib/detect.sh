@@ -479,7 +479,17 @@ preflight_report() {
     fi
 
     # container runtime (only the Nano platforms need one)
-    if [ "$_os" != "macos" ]; then
+    if [ "$_os" != "macos" ] && [ "${EXAKIT_RUNTIME:-}" = "personal" ]; then
+        # The personal runtime asks a narrower question than the container one:
+        # Podman specifically, because the launcher will not use Docker. The
+        # full engine triage below is the container runtime's story - running
+        # it here would fail a Podman-only machine for a stopped Docker.
+        if command -v podman >/dev/null 2>&1; then
+            _pf_ok "Podman: available (the Exasol Personal runtime deploys through it)"
+        else
+            _pf_bad "Podman is required for EXAKIT_RUNTIME=personal on Linux and is not on PATH — install it with your package manager (e.g. 'sudo apt-get install -y podman' or 'sudo dnf install -y podman')"
+        fi
+    elif [ "$_os" != "macos" ]; then
         case "$(detect_container_runtime_detail)" in
             docker)         _pf_ok "Container runtime: docker (running)" ;;
             podman)

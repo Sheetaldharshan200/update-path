@@ -154,7 +154,8 @@ main() {
             # There is no Nano path on macOS: the container runtime modules are
             # written for Linux engines, and pretending otherwise would download
             # the kit and fail later, deeper and less clearly.
-            [ "$runtime_choice" = "personal" ] ||                 fail "EXAKIT_RUNTIME=nano is not available on macOS - the macOS runtime is Exasol Personal. Unset EXAKIT_RUNTIME to proceed."
+            [ "$runtime_choice" = "personal" ] || \
+                fail "EXAKIT_RUNTIME=nano is not available on macOS - the macOS runtime is Exasol Personal. Unset EXAKIT_RUNTIME to proceed."
             target="Exasol Personal (local deployment)"
             setup_script="setup/setup-macos.sh"
             ;;
@@ -165,11 +166,18 @@ main() {
                 platform="linux"
             fi
             [ -n "$runtime_choice" ] || runtime_choice="nano"
-            # The Personal-based Linux path lands with the runtime migration; an
-            # explicit request for it must fail loudly TODAY rather than quietly
-            # installing the other runtime and calling it done.
-            [ "$runtime_choice" = "nano" ] ||                 fail "EXAKIT_RUNTIME=personal is not available on Linux/WSL yet - the migration to the Exasol Personal runtime is in progress. Unset EXAKIT_RUNTIME to install Exasol Nano."
-            target="Exasol Nano (container: Docker preferred, Podman fallback)"
+            if [ "$runtime_choice" = "personal" ]; then
+                # Available on native Linux (Podman required - the setup gate
+                # checks and names it). NOT on WSL: Personal has no WSL story,
+                # and inside a distro the honest runtime is the container this
+                # kit already ships there.
+                if [ "$platform" = "wsl" ]; then
+                    fail "EXAKIT_RUNTIME=personal does not target WSL - inside a distro use the container runtime. Unset EXAKIT_RUNTIME to install Exasol Nano."
+                fi
+                target="Exasol Personal (local deployment via Podman)"
+            else
+                target="Exasol Nano (container: Docker preferred, Podman fallback)"
+            fi
             setup_script="setup/setup-wsl.sh"
             ;;
         *)
