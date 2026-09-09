@@ -1,9 +1,13 @@
 #!/usr/bin/env bash
 # setup-wsl.sh — Exasol Personal Local Starter Kit, Linux and WSL path.
 #
-# Installs and connects: Exasol Nano (container, Docker preferred with Podman
-# fallback), exapump, the Exasol MCP server, and pyexasol. Prints connection
-# details when done.
+# Installs and connects a database runtime, exapump, the Exasol MCP server, and
+# pyexasol. Prints connection details when done. Which runtime is
+# exakit_runtime_choice's answer (EXAKIT_RUNTIME, or the platform default):
+#   nano      Exasol Nano container - Docker preferred, Podman fallback (default)
+#   personal  the Exasol Personal launcher (Linux local deployments, Podman)
+# The two runtimes differ ONLY in the requirements gate and the first two
+# steps; everything from exapump on is runtime-blind and shared.
 #
 # Usually launched by install.sh, but runs standalone from a checkout too:
 #   bash setup/setup-wsl.sh
@@ -20,7 +24,7 @@ KIT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 # Core libraries must exist; a truncated/partial download otherwise collapses
 # into a wall of "command not found". die() isn't defined until common.sh
 # loads, so report with a plain printf.
-for _lib in common.sh detect.sh runtime-nano.sh; do
+for _lib in common.sh detect.sh; do
     [ -f "$LIB_DIR/$_lib" ] || {
         printf '\033[1;31m  ✗\033[0m Kit file missing: %s — the download looks incomplete. Re-run the installer.\n' "$LIB_DIR/$_lib" >&2
         exit 1
@@ -28,7 +32,18 @@ for _lib in common.sh detect.sh runtime-nano.sh; do
 done
 . "$LIB_DIR/common.sh"
 . "$LIB_DIR/detect.sh"
-. "$LIB_DIR/runtime-nano.sh"
+# The runtime module is chosen, not assumed - and only the chosen one loads,
+# so the truncated-download check moves with the choice.
+EXAKIT_SETUP_RUNTIME="$(exakit_runtime_choice)"
+case "$EXAKIT_SETUP_RUNTIME" in
+    personal) _runtime_lib="runtime-personal.sh" ;;
+    *)        _runtime_lib="runtime-nano.sh" ;;
+esac
+[ -f "$LIB_DIR/$_runtime_lib" ] || {
+    printf '\033[1;31m  ✗\033[0m Kit file missing: %s — the download looks incomplete. Re-run the installer.\n' "$LIB_DIR/$_runtime_lib" >&2
+    exit 1
+}
+. "$LIB_DIR/$_runtime_lib"
 # Optional modules: a missing file legitimately skips its step, but a file
 # that FAILS to load (e.g. CRLF-corrupted copy whose syntax breaks bash) must
 # fail loudly - otherwise the step silently reports "not part of this
@@ -64,32 +79,60 @@ exakit_resolve_install_versions
 
 # --- step 1: requirements ---------------------------------------------------
 EXAKIT_CURRENT_STEP="requirements"
-nano_check_requirements
+case "$EXAKIT_SETUP_RUNTIME" in
+    personal) personal_check_requirements ;;
+    *)        nano_check_requirements ;;
+esac
 
 # --- step 2: the Runtime image ----------------------------------------------
-# Its own step, matching the macOS shape and heading. What it fetches is the
-# Nano image rather than a native launcher, so the lines UNDER the heading name
-# the image - the two platforms install different things through the same step.
+# Its own step, matching the macOS shape and heading. On the container runtime
+# what it fetches is the Nano image rather than a native launcher, so the lines
+# UNDER the heading name the image - different things through the same step.
 if begin_step launcher "Step 1/6  Exasol launcher"; then
-    nano_pull_image
+    case "$EXAKIT_SETUP_RUNTIME" in
+        personal) personal_install_launcher ;;
+        *)        nano_pull_image ;;
+    esac
     mark_step launcher
 fi
 
 # --- step 3: local deployment ------------------------------------------------
 if begin_step runtime "Step 2/6  Local database deployment"; then
-    nano_install
+    case "$EXAKIT_SETUP_RUNTIME" in
+        personal) personal_deploy_local ;;
+        *)        nano_install ;;
+    esac
     mark_step runtime
 else
-    if [ "$(nano_status)" != "running" ]; then
-        info "Runtime marked done but not running — starting it"
-        nano_install
-        # Same as the macOS resume: nano_install registers `volume rm` as its
-        # undo, and with no mark_step here it would stay armed. Worse than the
-        # macOS case, because that volume is armed whenever the CONTAINER is
-        # missing even if the volume already held data -- so the rollback could
-        # delete data this run never created.
-        rollback_clear
-    fi
+    case "$EXAKIT_SETUP_RUNTIME" in
+        personal)
+            # The macOS resume arms, verbatim: a recorded step whose deployment
+            # is gone is redeployed (and the armed destroy disarmed by hand,
+            # since there is no mark_step to do it); one that is merely stopped
+            # is started - every later step talks SQL to it.
+            if ! personal_deployment_exists; then
+                info "Deployment marked done but not reachable — redeploying"
+                personal_deploy_local
+                rollback_clear
+            elif ! personal_deployment_running; then
+                info "Database is deployed but not running — starting it"
+                personal_start
+                personal_wait_ready
+            fi
+            ;;
+        *)
+            if [ "$(nano_status)" != "running" ]; then
+                info "Runtime marked done but not running — starting it"
+                nano_install
+                # Same as the macOS resume: nano_install registers `volume rm` as its
+                # undo, and with no mark_step here it would stay armed. Worse than the
+                # macOS case, because that volume is armed whenever the CONTAINER is
+                # missing even if the volume already held data -- so the rollback could
+                # delete data this run never created.
+                rollback_clear
+            fi
+            ;;
+    esac
 fi
 
 # --- steps 3-6: exapump, MCP server, pyexasol, exakit helper (shared) ---------
