@@ -99,6 +99,7 @@ EXAKIT_ABOUT_OFFLINE=1
 export EXAKIT_ABOUT_OFFLINE
 . "$ROOT/setup/lib/common.sh"
 . "$ROOT/setup/lib/dash-server.sh"
+. "$ROOT/setup/lib/dbt-exasol.sh"
 . "$ROOT/setup/lib/exasol-vscode.sh"
 . "$ROOT/setup/lib/json-tables.sh"
 . "$ROOT/setup/lib/exasol-scheduler.sh"
@@ -122,7 +123,7 @@ cover_every_addon() {
 }
 
 echo "registry:"
-check "addons list carries every registered add-on" "dash-server exasol-scheduler exasol-vscode json-tables" \
+check "addons list carries every registered add-on" "dash-server dbt-exasol exasol-scheduler exasol-vscode json-tables" \
     "$(exakit_marketplace_addons | cut -d'|' -f1 | tr '\n' ' ' | sed 's/ $//')"
 check "addon module is loaded" "yes" "$(exakit_marketplace_addon_available dash-server && echo yes || echo no)"
 check "component block" "components.dash-server" "$(_exakit_component_block dash-server)"
@@ -195,21 +196,24 @@ echo "EXAKIT_MARKETPLACE_ADDONS (the non-interactive contract):"
 # The install functions are stubbed: this proves the routing, not pip.
 run_menu() ( # run_menu <env-answer> — echoes "installed:<ids>" + menu output
     _CALLED=""
-    dash_server_install() { _CALLED="${_CALLED} dash-server"; return 0; }
-    dash_server_validate() { return 0; }
-    exasol_vscode_install() { _CALLED="${_CALLED} exasol-vscode"; return 0; }
-    exasol_vscode_validate() { return 0; }
-    json_tables_install() { _CALLED="${_CALLED} json-tables"; return 0; }
-    json_tables_validate() { return 0; }
-    exasol_scheduler_install() { _CALLED="${_CALLED} exasol-scheduler"; return 0; }
-    exasol_scheduler_validate() { return 0; }
+    # Stubbed FROM THE REGISTRY, not add-on by add-on. The hand-listed version
+    # of this block silently let any add-on it had not been told about run its
+    # REAL installer: dbt-exasol pip-installed itself from PyPI, into the
+    # sandbox home, on every run of this suite - slowly, over the network, and
+    # leaving a genuine install behind that later checks then counted as an
+    # update target. A loop cannot forget the next add-on.
+    for _rm_id in $(exakit_marketplace_addons | cut -d'|' -f1); do
+        _rm_fn="$(printf '%s' "$_rm_id" | tr '-' '_')"
+        eval "${_rm_fn}_install() { _CALLED=\"\${_CALLED} $_rm_id\"; return 0; }"
+        eval "${_rm_fn}_validate() { return 0; }"
+    done
     EXAKIT_MARKETPLACE_ADDONS="$1"
     exakit_marketplace_menu >/dev/null 2>&1
     printf 'rc=%s called=%s' "$?" "${_CALLED# }"
 )
 check "none installs nothing" "rc=0 called=" "$(run_menu none)"
 check "naming one addon installs only it" "rc=0 called=dash-server" "$(run_menu dash-server)"
-check "all installs every pending addon" "rc=0 called=dash-server exasol-scheduler exasol-vscode json-tables" "$(run_menu all)"
+check "all installs every pending addon" "rc=0 called=dash-server dbt-exasol exasol-scheduler exasol-vscode json-tables" "$(run_menu all)"
 _unknown_out="$( (run_menu not-a-tool) 2>&1 || true)"
 check "an unknown id refuses" "yes" "$( (EXAKIT_MARKETPLACE_ADDONS=not-a-tool exakit_marketplace_menu >/dev/null 2>&1); [ $? -ne 0 ] && echo yes || echo no )"
 # An installer that fails must not report success.

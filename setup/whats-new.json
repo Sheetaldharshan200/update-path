@@ -20,6 +20,14 @@
     "install shows no cards at all, so every line here is read by someone who",
     "already had the kit working and wants to know what is different."
   ],
+  "0.2.1": [
+    "exakit version --json marks every add-on row: addon true or false.",
+    "Every remedy is a command you can run; the prose moved aside.",
+    "Autostart reports what the machine will do, not what you asked for.",
+    "Uninstall names the container and volume BEFORE it asks to remove.",
+    "New exakit-lifecycle skill: versions, logs, credentials, removal.",
+    "Windows: version and marketplace no longer crash on a stock python."
+  ],
   "0.2.0": [
     "exakit marketplace: dashboards, VS Code, JSON loading, a scheduler.",
     "exakit update applies the recommended version set, AI skills too.",

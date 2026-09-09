@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
-  "updated": "2026-09-07",
+  "updated": "2026-09-08",
   "kit": {
-    "version": "0.2.0"
+    "version": "0.2.1"
   },
   "components": {
     "personal": {
@@ -37,7 +37,7 @@
       "severity": "normal"
     },
     "skills": {
-      "version": "1.9.8",
+      "version": "1.9.9",
       "severity": "normal"
     },
     "dash-server": {
@@ -79,6 +79,11 @@
         "wheel": "bb071b7a96d7a79fae61ee4c827b7ab3e3f758d8282d1b8623f74a904fe5c0d6",
         "windows-x86_64": "445b26e67295a634dad4bf050874f0bf2b102ccf4039a47d37d5a2e2e243aacd"
       }
+    },
+    "dbt-exasol": {
+      "version": "1.12.1",
+      "package": "dbt-exasol",
+      "severity": "normal"
     }
   }
 }

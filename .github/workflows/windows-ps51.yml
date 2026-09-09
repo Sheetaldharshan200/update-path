@@ -41,6 +41,16 @@ jobs:
       - name: encoding guard
         shell: bash
         run: bash tests/ps-encoding-guard.sh
+      # First, because a file that does not parse makes every other suite here
+      # meaningless: they Invoke-Expression what they can and skip the rest.
+      - name: every .ps1 parses under 5.1
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File tests/ps-parse.ps1
+      # Parsing is not enough: a param() block below a statement parses fine and
+      # silently stops being a parameter block. See the file's header.
+      - name: every param() block is declared first
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File tests/ps-param-placement.ps1
       - name: uninstall suite under 5.1
         shell: powershell
         run: powershell -NoProfile -ExecutionPolicy Bypass -File tests/uninstall-ps.ps1

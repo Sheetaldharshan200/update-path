@@ -114,7 +114,7 @@ Health check any time: `exakit mcp-doctor`.
 
 ## Let an AI client drive the kit (the skills)
 
-The installer gives your AI agent seven skills, one per thing it may need to drive: setup, the database, exapump, MCP, Python, the Exasol tool ecosystem and the marketplace, plus one per installed add-on. They work in Claude Code, Codex, Cursor and any tool that reads the open skill standard, and load only when relevant. `exakit skills` lists them, `exakit update` refreshes them. Index: [skills/README.md](skills/README.md).
+The installer gives your AI agent eight skills, one per thing it may need to drive: setup, the database, exapump, MCP, Python, operating the kit itself, the Exasol tool ecosystem and the marketplace, plus one per installed add-on. They work in Claude Code, Codex, Cursor and any tool that reads the open skill standard, and load only when relevant. `exakit skills` lists them, `exakit update` refreshes them. Index: [skills/README.md](skills/README.md).
 
 ## The workflow this kit teaches
 

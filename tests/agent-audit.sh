@@ -511,6 +511,66 @@ _c_set="$(EXAKIT_DB_PORT=8564 EXAKIT_HOME="$WORK/bare3" bash "$CLI" --version >/
 _c_unset="$(EXAKIT_HOME="$WORK/bare3" bash "$CLI" --version >/dev/null 2>&1 </dev/null; echo $?)"
 check "a valid EXAKIT_DB_PORT is not refused" "$_c_unset" "$_c_set"
 
+# AUTOSTART IS A PROBE, NOT A RECORDED WISH.
+#
+# status --json and the status panel read the manifest's autostart.enabled -
+# what the user last ASKED for - so a machine whose boot entry had since gone
+# answered "autostart": true for a database nothing would restart. On the
+# container path that is routine: recreating the container drops its restart
+# policy, so a stop/start cycle turned autostart off while the manifest went on
+# saying it was on. Found on a real Windows machine, where `exakit status`
+# said true and `exakit autostart` said disabled at the same moment.
+echo
+echo "R6-1. autostart reports reality, not the recorded intent:"
+_cs_body="$(sed -n '/^cmd_status()/,/^}/p' "$CLI")"
+has "cmd_status probes the boot entries" "_exakit_autostart_registered" "$_cs_body"
+lacks "...and no longer reads the manifest's wish" "manifest_get autostart.enabled" "$_cs_body"
+_ps_status="$(awk '/^function Invoke-CmdStatus/{f=1} f{print} f&&/^}$/{if(f)exit}' "$ROOT/setup/exakit.ps1")"
+has "the twin probes too" "Test-ExakitAutostartAll" "$_ps_status"
+lacks "...and no longer reads the manifest there either" \
+    'Get-ExakitManifestValue "autostart.enabled"' "$_ps_status"
+has "the twin's probe requires EVERY service, like exakit autostart does" \
+    "Test-ExakitAutostartRegistered -Id" "$(awk '/^function Test-ExakitAutostartAll/{f=1} f{print} f&&/^}$/{if(f)exit}' "$ROOT/setup/exakit.ps1")"
+
+echo "R6-2. a multi-line failure keeps the line that names the cause:"
+# The note file's line 1 is the reason and every reader takes it. Keeping line
+# 1 of a Python traceback records "Traceback (most recent call last):" - which
+# is what `exakit status --json` then reported as last_failure, permanently,
+# for a crash whose cause was on line 4.
+_rs_tb="$(exakit_reason_summary "Traceback (most recent call last):
+  File \"<string>\", line 1, in <module>
+ModuleNotFoundError: No module named 'exasol_json_tables'")"
+has "a traceback yields its final line" "ModuleNotFoundError" "$_rs_tb"
+lacks "...not its boilerplate header" "most recent call last" "$_rs_tb"
+check "a one-line reason is unchanged" "the database refused the connection" \
+    "$(exakit_reason_summary "the database refused the connection")"
+check "the summary is always ONE line" "1" \
+    "$(printf '%s\n' "$_rs_tb" | wc -l | tr -d ' ')"
+# AND THE CALL SITES USE IT. Asserting the helper alone is a guard that cannot
+# fail: reverting exakit_note_failure to write "$*" left the helper sitting
+# there, correct and unreachable, and this section stayed green.
+has "exakit_note_failure runs the reason through it" "exakit_reason_summary" \
+    "$(sed -n '/^exakit_note_failure()/,/^}/p' "$ROOT/setup/lib/common.sh")"
+lacks "...and no longer writes the raw text as line 1" \
+    'printf '"'"'%s\\n%s\\n'"'"' "$*"' \
+    "$(sed -n '/^exakit_note_failure()/,/^}/p' "$ROOT/setup/lib/common.sh")"
+_ps_common="$(cat "$ROOT/setup/lib/exakit-common.ps1")"
+has "the PowerShell twin exists" "function Get-ExakitReasonSummary" "$_ps_common"
+has "...and its soft-failure note runs the reason through it" \
+    'Get-ExakitReasonSummary $note' "$_ps_common"
+has "...and the log keeps every line, not just the first" \
+    'foreach ($rline in @(("" + $reason) -split' "$_ps_common"
+
+echo "R6-3. a leading-dash argument is answered, not swallowed:"
+# The .cmd shim runs `powershell -File exakit.ps1 %*`, and that binder never
+# lets a "-"-prefixed token fill a positional parameter: --version landed in
+# $RestArgs, $Command kept its "help" default, and the CLI printed help and
+# exited 0. A script asking a CLI its version got success and the wrong output.
+_ps_cli="$(cat "$ROOT/setup/exakit.ps1")"
+has "the twin promotes a leading --version" '"--version" { $Command = "version"' "$_ps_cli"
+has "...and refuses an unknown one instead of printing help" \
+    "Unknown option '\$leading'" "$_ps_cli"
+
 echo "R5-6. a declined destructive repair is not a success:"
 _rr="$(sed -n '/^cmd_repair_runtime()/,/^}/p' "$CLI")"
 # The window from the confirmation to the end of the declined branch: the code

@@ -177,8 +177,33 @@ function Get-JsonTablesSystemPresent {
     if (-not $python -or -not $python.Source) { return $false }
     if ($python.Source.StartsWith($script:JsonTablesVenv, [StringComparison]::OrdinalIgnoreCase)) { return $false }
     if ($python.Source.StartsWith($script:ExakitHome, [StringComparison]::OrdinalIgnoreCase)) { return $false }
-    & $python.Source -c "import exasol_json_tables" 2>$null | Out-Null
-    return ($LASTEXITCODE -eq 0)
+    # 2>$null IS NOT ENOUGH, and this line is why `exakit version` and
+    # `exakit marketplace` died with a bare "Traceback (most recent call
+    # last):" on any Windows machine with a stock python on PATH.
+    #
+    # The subprocess is doing exactly its job: python exits 1 and prints a
+    # ModuleNotFoundError to stderr, which is the "not present" answer. But
+    # under $ErrorActionPreference = "Stop" - set globally in exakit.ps1 and
+    # exakit-common.ps1 - Windows PowerShell turns a native command's stderr
+    # into a TERMINATING RemoteException before $LASTEXITCODE is ever read. So
+    # the false answer escaped as an exception, through the marketplace list
+    # and the version table, into the top-level catch.
+    #
+    # Invoke-ExakitLogged already carries this defence and a long comment
+    # describing the quirk; this probe simply never used it. The bash twin
+    # (json_tables_system_present) has no equivalent problem because a shell
+    # does not promote stderr to an error.
+    $prevEap = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = "Continue"
+        & $python.Source -c "import exasol_json_tables" 2>&1 | Out-Null
+        return ($LASTEXITCODE -eq 0)
+    } catch {
+        # An interpreter that cannot be launched at all is also "not present".
+        return $false
+    } finally {
+        $ErrorActionPreference = $prevEap
+    }
 }
 
 # Twin of json_tables_installed_version: both halves must really be here. The
@@ -504,7 +529,13 @@ function Install-JsonTables {
 function Restore-JsonTablesPackageData {
     $python = Get-JsonTablesVenvPython
     if (-not (Test-Path $python)) { return }
-    $site = & $python -c "import exasol_json_tables, os; print(os.path.dirname(exasol_json_tables.__file__))" 2>$null
+    $prevEap = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = "Continue"
+        $site = & $python -c "import exasol_json_tables, os; print(os.path.dirname(exasol_json_tables.__file__))" 2>$null
+    } catch {
+        $site = $null
+    } finally { $ErrorActionPreference = $prevEap }
     if (-not $site -or -not (Test-Path $site)) { return }
     $asset = Join-Path $site "preprocessor_assets\jvs_preprocessor_lib.lua"
     if (Test-Path $asset) { return }
@@ -560,8 +591,23 @@ function Test-JsonTables {
     $python = Get-JsonTablesVenvPython
     if (-not (Test-Path $python)) { return }
 
-    & $python -c "import exasol_json_tables" 2>$null | Out-Null
-    if ($LASTEXITCODE -ne 0) {
+    # Same stderr-promotion trap as Get-JsonTablesSystemPresent: an import that
+    # fails writes to stderr, and under $ErrorActionPreference = "Stop" that is
+    # a terminating exception rather than a non-zero exit code. Here it would
+    # turn "installed but broken", which this branch exists to report, into an
+    # unhandled crash.
+    $importCode = 1
+    $prevEap = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = "Continue"
+        & $python -c "import exasol_json_tables" 2>&1 | Out-Null
+        $importCode = $LASTEXITCODE
+    } catch {
+        $importCode = 1
+    } finally {
+        $ErrorActionPreference = $prevEap
+    }
+    if ($importCode -ne 0) {
         Warn2 "JSON Tables is installed but cannot be imported from $($script:JsonTablesVenv) (see log). Recorded validated=false."
         Set-ExakitManifestValue "components.json_tables.validated" $false
         return

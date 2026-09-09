@@ -481,9 +481,10 @@ has "dash-server has a summary"     'function Get-DashServerSummary'     "$DS_PS
 has "json-tables has a summary"     'function Get-JsonTablesSummary'     "$JT_PS1"
 has "exasol-vscode has a summary"   'function Get-ExasolVscodeSummary'   "$VS_PS1"
 has "exasol-scheduler has a summary" 'function Get-ExasolSchedulerSummary' "$(cat "$ROOT/setup/lib/exasol-scheduler.ps1")"
+has "dbt-exasol has a summary"      'function Get-DbtExasolSummary'      "$(cat "$ROOT/setup/lib/dbt-exasol.ps1")"
 # Counted from the registry, so a new add-on that forgets its SummaryFn row
 # fails here by count even before its own has-check exists.
-check "every add-on is registered" "4" "$(printf '%s\n' "$COMMON_PS1" | grep -cE 'SummaryFn *= *"')"
+check "every add-on is registered" "5" "$(printf '%s\n' "$COMMON_PS1" | grep -cE 'SummaryFn *= *"')"
 has "the apply loop reads the hook" '$addon.PSObject.Properties["SummaryFn"]' "$COMMON_PS1"
 has "and only when it resolves"     'Get-Command $addon.SummaryFn -ErrorAction SilentlyContinue' "$COMMON_PS1"
 

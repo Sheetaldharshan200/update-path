@@ -504,7 +504,17 @@ function Test-NanoFirstDeployArgs {
     # template get mangled when PowerShell builds the native command line for
     # docker.exe on Windows, breaking the template. We only test for a token's
     # presence, so the bracketed form works and needs no embedded quotes.
-    $cmd = & (Get-NanoEngine) container inspect -f '{{.Config.Cmd}}' $script:NanoContainer 2>$null
+    # A container that is not there is the ORDINARY case here, and the engine
+    # says so on stderr ("No such container") - which the global "Stop"
+    # preference turns into a terminating error. Without this window the probe
+    # crashes exactly when it should be answering "no".
+    $prevEap = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = "Continue"
+        $cmd = & (Get-NanoEngine) container inspect -f '{{.Config.Cmd}}' $script:NanoContainer 2>$null
+    } catch {
+        $cmd = ""
+    } finally { $ErrorActionPreference = $prevEap }
     return ("$cmd" -match "sys_password_file")
 }
 

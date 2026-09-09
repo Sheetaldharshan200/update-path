@@ -911,7 +911,13 @@ has "...with a runnable remedy" '"remedy": "exakit update"' "$_jc_nx"
 # version --json: `status` is a fixed vocabulary a parser can switch on; the
 # action a human would take moved to a per-row runnable `remedy`. An add-on
 # row used to carry the literal command "exakit marketplace" AS its status.
-_jc_ver="$(EXAKIT_HOME="$_jc" bash "$ROOT/setup/exakit" version --json 2>/dev/null)"
+# PATH scrubbed like the sql fixture above: version --json probes the host
+# PATH for add-on binaries (system-present detection), so on a dev box with
+# the kit really installed the add-on rows silently changed shape and the
+# assertions below flipped on ambient host state — red locally, green in CI
+# only because CI runners lack the binaries. uv is handed through so manifest
+# reads still work where the system python is below the kit's floor.
+_jc_ver="$(EXAKIT_HOME="$_jc" EXAKIT_BIN_DIR="$_jc/bin" EXAKIT_UV_BIN="$(command -v uv 2>/dev/null || true)" PATH="/usr/bin:/bin" bash "$ROOT/setup/exakit" version --json 2>/dev/null)"
 check "no component status is a shell command" "0" \
     "$(printf '%s' "$_jc_ver" | python3 -c "
 import json,sys
@@ -1030,5 +1036,35 @@ has "the restart promise carries the WSL exception" "WSL is the exception" "$(ca
 # WSL-06: the WSL launch wrapper is a command plus arguments, never one string.
 lacks "no doc offers the unspawnable one-string wsl wrapper" 'wsl uvx exasol-mcp-server' \
     "$(cat "$ROOT/quickstarts/windows-wsl.md")"
+echo
+echo "round-3 residuals stay fixed:"
+# MAC-02: a start that fails once is NOT a licence to destroy. The reap runs
+# BEFORE any replace decision, start gets a second chance, and no path reaches
+# destroy without the explicit EXAKIT_REPLACE_DB consent - the _pdl_replace
+# bypass variable is gone entirely.
+RP_SH="$(cat "$ROOT/setup/lib/runtime-personal.sh")"
+has "a failed start reaps orphans and retries" "started after clearing an orphaned runner" "$RP_SH"
+lacks "the consent-bypass flag is gone" "_pdl_replace" "$RP_SH"
+has "no deploy path destroys without consent" "NO PATH DESTROYS WITHOUT THIS CONSENT" "$RP_SH"
+# MAC-01: one PATH-persistence policy - the second writer delegates to the
+# Darwin-aware ensure_path_hint instead of preferring ~/.bashrc.
+has "the second PATH writer delegates to the one Darwin-aware policy" \
+    'ensure_path_hint "$1"' \
+    "$(sed -n '/^_exakit_add_bin_to_shell_rc()/,/^}/p' "$ROOT/setup/lib/common.sh")"
+# AGK-10: sql --json separates the runnable command from the sentence.
+_r3="$WORK/r3"; mkdir -p "$_r3/bin"
+printf '#!/bin/sh\necho "Error: Connection refused (Errno 61)" >&2\nexit 1\n' > "$_r3/bin/exapump"
+chmod +x "$_r3/bin/exapump"
+printf '{\n  "runtime": {\n    "type": "nano"\n  },\n  "components": {\n    "exapump": {\n      "profile": "starter-kit"\n    }\n  }\n}\n' > "$_r3/manifest.json"
+_r3_out="$(EXAKIT_HOME="$_r3" EXAKIT_BIN_DIR="$_r3/bin" EXAKIT_UV_BIN="$(command -v uv 2>/dev/null || true)" PATH="/usr/bin:/bin" bash "$ROOT/setup/exakit" sql --json 'SELECT 1' 2>/dev/null)"
+check "sql --json remedy is the runnable command" "exakit start" "$(printf '%s' "$_r3_out" | python3 -c "
+import json,sys
+print(json.load(sys.stdin).get('remedy'))" 2>/dev/null)"
+has "and the sentence lives in remedy_hint" '"remedy_hint":' "$_r3_out"
+# LNX-01: the shared-engine warning is gated on the engine actually being
+# shared - rootless Podman inside the distro warns about nothing cross-side.
+has "the shared-engine warning excludes rootless podman" '_exakit_nano_rootless_podman 2>/dev/null && return 1' \
+    "$(cat "$ROOT/setup/lib/common.sh")"
+
 echo "passed: $PASS, failed: $FAIL"
 [ "$FAIL" -eq 0 ]

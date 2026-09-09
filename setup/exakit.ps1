@@ -91,6 +91,7 @@ if (Test-Path (Join-Path $scriptDir "lib\exakit-common.ps1")) {
 # marketplace) and updated (exakit update <addon>). A missing file only makes
 # the marketplace row unavailable - it must not break every other command.
 if (Test-Path (Join-Path $libDir "dash-server.ps1")) { . (Join-Path $libDir "dash-server.ps1") }
+if (Test-Path (Join-Path $libDir "dbt-exasol.ps1")) { . (Join-Path $libDir "dbt-exasol.ps1") }
 if (Test-Path (Join-Path $libDir "exasol-vscode.ps1")) { . (Join-Path $libDir "exasol-vscode.ps1") }
 if (Test-Path (Join-Path $libDir "json-tables.ps1")) { . (Join-Path $libDir "json-tables.ps1") }
 if (Test-Path (Join-Path $libDir "exasol-scheduler.ps1")) { . (Join-Path $libDir "exasol-scheduler.ps1") }
@@ -341,7 +342,8 @@ function Invoke-CmdStatus {
             # key an agent reads for "where is dash-server?" instead of scraping
             # the human screen. Twin of `urls` in cmd_status.
             urls            = $serviceUrls
-            autostart       = ((Get-ExakitManifestValue "autostart.enabled") -eq $true)
+            # REALITY, NOT THE RECORDED INTENT - see Test-ExakitAutostartAll.
+            autostart       = (Test-ExakitAutostartAll)
             datasets_loaded = $datasets
             datasets_source = $script:ExakitDatasetsSource
             steps_completed = $steps
@@ -422,7 +424,7 @@ function Invoke-CmdStatus {
     # "enabled"/"disabled", not "on"/"off": this row reports a STATE, and on/off
     # reads as the switch you flip rather than the position it is in. The
     # The command itself takes no verb: it shows this state and asks.
-    if ((Get-ExakitManifestValue "autostart.enabled") -eq $true) {
+    if (Test-ExakitAutostartAll) {
         Write-StatusPanelRow "Autostart" "enabled"
     } else {
         Write-StatusPanelRow "Autostart" "disabled - change it with: exakit autostart"
@@ -676,6 +678,28 @@ function Unregister-ExakitAutostart {
     }
 }
 
+# Test-ExakitAutostartAll - will this machine bring the kit back after a
+# reboot? REALITY, NOT THE RECORDED INTENT.
+#
+# `status --json` and the status panel read the manifest's autostart.enabled,
+# which is what the user last ASKED for. A machine whose boot entry had since
+# gone therefore reported "autostart: true" for a database nothing would
+# restart. On the container path that is routine rather than exotic:
+# recreating the container drops its restart policy, so a stop/start cycle was
+# enough to turn autostart off with the manifest still saying it was on.
+#
+# Same rule as Invoke-CmdAutostart: on means EVERY service is registered,
+# because a partly-registered set will not bring the kit back. Twin of the
+# loop in cmd_status (setup/exakit).
+function Test-ExakitAutostartAll {
+    $ids = @(Get-ExakitServiceIds)
+    if ($ids.Count -eq 0) { return $false }
+    foreach ($id in $ids) {
+        if (-not (Test-ExakitAutostartRegistered -Id $id)) { return $false }
+    }
+    return $true
+}
+
 function Test-ExakitAutostartRegistered {
     param([Parameter(Mandatory)][string]$Id)
     if (Test-Path (Get-ExakitAutostartEntryPath -Id $Id)) { return $true }
@@ -874,8 +898,25 @@ function Invoke-CmdRepairRuntime {
     if ($Json) {
         # One object on stdout and nothing else: the rebuild's own narration is
         # routed to stderr. Twin of the --json branch in cmd_repair_runtime.
-        & $setup 2>&1 | ForEach-Object { [Console]::Error.WriteLine("$_") }
-        if ($LASTEXITCODE -eq 0) {
+        # The rebuild narrates to stderr by design, and under
+        # $ErrorActionPreference = "Stop" a native command's stderr is a
+        # TERMINATING error before $LASTEXITCODE can be read - so a repair that
+        # printed one warning and then succeeded would have surfaced as an
+        # unhandled crash, on the one command whose whole job is answering
+        # ok/changed as JSON. Same window as Invoke-ExakitLogged.
+        $repairCode = 1
+        $prevRepairEap = $ErrorActionPreference
+        try {
+            $ErrorActionPreference = "Continue"
+            & $setup 2>&1 | ForEach-Object { [Console]::Error.WriteLine("$_") }
+            $repairCode = $LASTEXITCODE
+        } catch {
+            [Console]::Error.WriteLine("$_")
+            $repairCode = 1
+        } finally {
+            $ErrorActionPreference = $prevRepairEap
+        }
+        if ($repairCode -eq 0) {
             [ordered]@{ ok = $true; status = "repaired"; changed = $true; remedy = $null } |
                 ConvertTo-Json -Compress | Write-Output
             exit 0
@@ -887,8 +928,18 @@ function Invoke-CmdRepairRuntime {
         } | ConvertTo-Json -Compress | Write-Output
         exit 3
     }
-    & $setup
-    exit $LASTEXITCODE
+    # Same window as the --json branch above: the rebuild narrates, some of it
+    # to stderr, and under "Stop" that ends the CLI with "Unexpected error"
+    # instead of the setup script's own exit code.
+    $prevRepairEap = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = "Continue"
+        & $setup
+        $repairCode = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $prevRepairEap
+    }
+    exit $repairCode
 }
 
 # Get-ExakitNanoTargetNames - "<container>|<volume>" for the Nano deployment
@@ -2860,9 +2911,13 @@ function Invoke-CmdSql {
             }
             if ($detail -eq "query failed" -and $errLines.Count -gt 0) { $detail = $errLines[0].Trim() }
         }
-        $remedyText = $null
-        if ($remedyLines.Count -gt 0) { $remedyText = ($remedyLines -join " ") }
-        [ordered]@{ ok = $false; error = $detail; remedy = $remedyText } | ConvertTo-Json -Depth 3 -Compress | Write-Output
+        # The COMMAND and the SENTENCE travel separately: remedy is runnable
+        # verbatim or null, and the prose the human path prints is remedy_hint.
+        $remedyHint = $null
+        if ($remedyLines.Count -gt 0) { $remedyHint = ($remedyLines -join " ") }
+        $remedyCmd = Get-ExakitDbErrorRemedyCommand -Text $errText
+        if (-not $remedyCmd) { $remedyCmd = $null }
+        [ordered]@{ ok = $false; error = $detail; remedy = $remedyCmd; remedy_hint = $remedyHint } | ConvertTo-Json -Depth 3 -Compress | Write-Output
         exit 1
     }
     $result = Invoke-Exapump @("sql", "-p", $script:ExapumpProfile, $Statement)
@@ -2931,6 +2986,39 @@ try {
             }
         }
     }
+    # THE -File BINDER EATS LEADING-DASH ARGUMENTS, so `exakit --version` never
+    # reached the arm written for it.
+    #
+    # The .cmd shim runs `powershell -File exakit.ps1 %*`, and that binder never
+    # lets a "-"-prefixed token fill a positional parameter: `--version` lands
+    # in $RestArgs while $Command keeps its "help" default, so the CLI printed
+    # the help screen and exited 0. Two things wrong at once - --version is the
+    # commonest way anything asks a CLI its version, and a script that asked got
+    # a success code with the wrong output and no way to tell.
+    #
+    # Recovered here rather than in the shim: rewriting the shim to use
+    # -Command would put every argument through a second round of cmd.exe and
+    # PowerShell quoting, and `exakit sql "SELECT ..."` has to survive intact.
+    #
+    # `-v` cannot be recovered at all - that binder discards it before the
+    # script runs, so it does not even appear in $RestArgs - which is why it is
+    # no longer advertised on this side.
+    if ($Command -eq "help" -and @($RestArgs).Count -gt 0 -and "$($RestArgs[0])".StartsWith("-")) {
+        $leading = "$($RestArgs[0])"
+        $rest = @($RestArgs | Select-Object -Skip 1)
+        switch ($leading) {
+            "--version" { $Command = "version"; $RestArgs = $rest }
+            "--help"    { $Command = "help";    $RestArgs = $rest }
+            "-h"        { $Command = "help";    $RestArgs = $rest }
+            "-?"        { $Command = "help";    $RestArgs = $rest }
+            default {
+                # An unknown COMMAND already exits 2 with the help screen; an
+                # unknown leading OPTION used to exit 0 with it, which is the
+                # one shape a caller cannot detect.
+                Fail "Unknown option '$leading' (there is no top-level option by that name). Run 'exakit help' for the command list, or 'exakit version' for versions."
+            }
+        }
+    }
     switch ($Command) {
         "preflight"    { Assert-ExakitKnownOptions -CommandName "preflight" -Allowed @() -Arguments $RestArgs; Test-NanoRequirements }
         "status"       {
@@ -2946,8 +3034,10 @@ try {
             if ($versionJson) { $script:JsonOutput = $true }
             Invoke-CmdVersion -Json:$versionJson
         }
+        # Reachable when the script is invoked directly (pwsh setup\exakit.ps1
+        # --version) rather than through the shim; the block above covers the
+        # shim's path. "-v" is deliberately absent: see that block.
         "--version"    { Invoke-CmdVersion }
-        "-v"           { Invoke-CmdVersion }
         "update"        {
             Assert-ExakitKnownOptions -CommandName "update" -Allowed @("--yes", "-y", "-Yes") -Arguments $RestArgs
             # -y/--yes/-Yes answers the runtime offer, so it must not be mistaken

@@ -325,8 +325,9 @@ PY
         _exakit_log_file "OK    $_mras_label MCP endpoint registered with: $_mras_configured"
         return 0
     fi
-    # Every connected client was skipped: the two that cannot express a remote
-    # MCP server (Codex, Claude) are the usual reason, and that is a fact about
+    # Every connected client was skipped: a client that cannot express a
+    # remote MCP server (Claude Desktop; Codex gained HTTP support in
+    # mcp/adapters/codex.py) is the usual reason, and that is a fact about
     # the client, not a failure of this install.
     _exakit_mcp_addon_say info "No connected AI client can take a remote MCP endpoint - drive $_mras_label with: exakit help dash-server"
     return 0

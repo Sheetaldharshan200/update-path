@@ -112,8 +112,13 @@ function Invoke-Exapump {
 }
 
 function Get-ExapumpAssetName {
-    switch ($env:PROCESSOR_ARCHITECTURE) {
-        "AMD64" { return "exapump-$($script:ExapumpVersion)-windows-x86_64.exe" }
+    # Get-ExakitHostArch, not $env:PROCESSOR_ARCHITECTURE: under an x64-emulated
+    # PowerShell on ARM64 the env var says AMD64, and this function would offer
+    # a build the machine runs only under emulation while json-tables and the
+    # scheduler (which ask the hardware via WMI) refuse theirs - the kit
+    # disagreeing with itself about what machine it is on.
+    switch (Get-ExakitHostArch) {
+        "amd64" { return "exapump-$($script:ExapumpVersion)-windows-x86_64.exe" }
         default { return $null }  # no Windows ARM64 build published
     }
 }

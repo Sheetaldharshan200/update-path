@@ -645,7 +645,6 @@ personal_deploy_local() {
     # silently — because there is nothing left to reuse.
     if personal_deployment_exists; then
         info "An Exasol deployment was found, not running."
-        _pdl_replace=0
         if confirm_env EXAKIT_REUSE_DB "Start the existing database and keep its data?" y; then
             if personal_launcher_supports start && run_logged "$(personal_cli)" start; then
                 ok "Reusing the existing Exasol deployment (started)"
@@ -653,19 +652,33 @@ personal_deploy_local() {
                 personal_record_manifest "healthy"
                 return 0
             fi
-            warn "The existing deployment could not be started."
-            _pdl_replace=1
-        fi
-        if [ "$_pdl_replace" != "1" ]; then
-            if ! confirm_env EXAKIT_REPLACE_DB "DELETE the stopped deployment and its data, and deploy a fresh one? This cannot be undone." n; then
-                die "Declined to reuse the stopped deployment. Start it yourself with 'exakit start', or re-run with EXAKIT_REPLACE_DB=1 to replace it — deleting its data."
+            # `start` failing ONCE is not evidence the deployment is gone: the
+            # commonest cause is the module's own documented orphan runner
+            # daemon still holding port 8563 after a failed deploy or destroy.
+            # Reap it and try once more — the reaper used to run only AFTER
+            # this branch had already destroyed the data it would have saved.
+            if personal_reap_orphan_daemon 2>/dev/null && \
+               run_logged "$(personal_cli)" start; then
+                ok "Reusing the existing Exasol deployment (started after clearing an orphaned runner)"
+                personal_wait_ready
+                personal_record_manifest "healthy"
+                return 0
             fi
+            warn "The existing deployment could not be started, even after clearing orphaned runners."
+        fi
+        # NO PATH DESTROYS WITHOUT THIS CONSENT — not even a failed start. A
+        # deployment that will not start today may hold months of data and be
+        # one diagnosis away from starting tomorrow; deleting it is the user's
+        # call, made with the consequence in front of them. Interactive runs
+        # are asked (default no); automation says EXAKIT_REPLACE_DB=1, and
+        # exakit repair-runtime remains the sanctioned destructive repair.
+        if ! confirm_env EXAKIT_REPLACE_DB "DELETE the stopped deployment and its data, and deploy a fresh one? This cannot be undone." n; then
+            die "Nothing was deleted. Start it yourself with 'exakit start', diagnose with 'exakit status', repair with 'exakit repair-runtime' — or re-run with EXAKIT_REPLACE_DB=1 to replace it, deleting its data."
         fi
         info "Replacing the existing deployment — its previous data is not recoverable."
         # --auto-approve: destroy has its own [y/N] prompt, which a piped or
         # scripted install cannot answer; the consent came from the explicit
-        # replace question (or EXAKIT_REPLACE_DB=1) just above, or from the
-        # deployment being unstartable.
+        # replace question (or EXAKIT_REPLACE_DB=1) just above.
         run_logged "$(personal_cli)" destroy --remove --auto-approve || \
             warn "Could not fully remove the old deployment; the launcher will deploy over it."
     fi

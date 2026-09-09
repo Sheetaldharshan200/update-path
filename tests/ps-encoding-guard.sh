@@ -80,5 +80,55 @@ done <<EOF
 $(find "$ROOT" -name '*.ps1' -not -path "$ROOT/.git/*" -not -path "$ROOT/.claude/*" | sort)
 EOF
 
+# 4. A NATIVE COMMAND'S stderr IS A TERMINATING ERROR under
+# $ErrorActionPreference = "Stop", which both entry points set globally.
+#
+# `& $python -c "import x" 2>$null` looks like it swallows the noise and lets
+# $LASTEXITCODE answer. It does not: Windows PowerShell promotes the native
+# command's stderr to a RemoteException BEFORE the exit code can be read. That
+# is how `exakit version` and `exakit marketplace` came to die with a bare
+# "Traceback (most recent call last):" on any Windows machine carrying a stock
+# python without exasol-json-tables - which is the common case, not a corner
+# one. Invoke-ExakitLogged has carried the defence and a comment describing the
+# quirk for a long time; two probes simply never used it.
+#
+# The rule: a `&` invocation redirecting stderr must sit inside a window where
+# $ErrorActionPreference has been set to "Continue". Checked over the twelve
+# preceding lines, which covers the save/set/call/restore shape used
+# everywhere in this repo, and a bare try/catch counts too since the
+# exception is then handled.
+#
+# The match is deliberately NOT anchored to the start of the line. It was, and
+# that let the commonest shape of all through untouched: `$v = & $python -c ...
+# 2>$null`, which is a probe whose whole purpose is to answer a question about
+# a possibly-broken thing. Six sites were hiding behind the anchor, among them
+# Get-PyexasolInstalledVersion and Get-DashServerPackageVersion (both read by
+# `exakit version`) and Test-NanoFirstDeployArgs, where the engine writing
+# "No such container" to stderr is the ORDINARY case. Whole-line comments are
+# skipped so prose describing the trap does not trip it.
+while IFS= read -r file; do
+    rel="${file#"$ROOT"/}"
+    bad=""
+    while IFS= read -r n; do
+        [ -n "$n" ] || continue
+        from=$(( n - 12 )); [ "$from" -lt 1 ] && from=1
+        window="$(sed -n "${from},${n}p" "$file")"
+        case "$window" in
+            *'ErrorActionPreference = "Continue"'*) continue ;;
+            *"try {"*) continue ;;
+        esac
+        bad="${bad:+$bad,}$n"
+    done <<INNER
+$(grep -nE '(^|[^`])&[[:space:]]+[^ ]+.*2>(\$null|&1)' "$file" 2>/dev/null | grep -vE '^[0-9]+:[[:space:]]*#' | cut -d: -f1)
+INNER
+    if [ -n "$bad" ]; then
+        fail "$rel invokes a native command with redirected stderr outside a Continue window (lines $bad) - 5.1 turns that into a terminating error before \$LASTEXITCODE is read"
+    else
+        pass "$rel guards every native call that redirects stderr"
+    fi
+done <<EOF
+$(find "$ROOT" -name '*.ps1' -not -path "$ROOT/.git/*" -not -path "$ROOT/.claude/*" | sort)
+EOF
+
 printf '\n%d checks, %d failed\n' "$checks" "$fails"
 [ "$fails" -eq 0 ]

@@ -115,6 +115,7 @@ fi
 # marketplace) and updated (exakit update <addon>), so it loads every module
 # it ships. A missing file only makes the marketplace row unavailable.
 [ -f "$_lib_dir/dash-server.sh" ] && . "$_lib_dir/dash-server.sh"
+[ -f "$_lib_dir/dbt-exasol.sh" ] && . "$_lib_dir/dbt-exasol.sh"
 [ -f "$_lib_dir/exasol-vscode.sh" ] && . "$_lib_dir/exasol-vscode.sh"
 [ -f "$_lib_dir/json-tables.sh" ] && . "$_lib_dir/json-tables.sh"
 [ -f "$_lib_dir/exasol-scheduler.sh" ] && . "$_lib_dir/exasol-scheduler.sh"
@@ -280,7 +281,26 @@ cmd_status() {
     if [ "$_cs_json" -eq 0 ]; then ui_spin_end; fi
     _cs_running=0
     case "$_cs_db" in running*) _cs_running=1 ;; esac
-    _cs_autostart="$(manifest_get autostart.enabled 2>/dev/null || true)"
+    # REALITY, NOT THE RECORDED INTENT. This read the manifest's
+    # autostart.enabled, which is what the user last ASKED for - so a machine
+    # whose boot entry had since gone reported "autostart: true" for a database
+    # nothing would restart. On the container path that is routine: recreating
+    # the container drops its restart policy, and a stop/start cycle was enough
+    # to turn autostart off with the manifest still saying it was on. The
+    # answer to "will this come back after a reboot" has to be a probe, and
+    # _exakit_autostart_registered is the probe `exakit autostart` already
+    # uses. Same rule as that command: on means EVERY service is registered,
+    # because a partly-registered set will not bring the kit back.
+    _cs_autostart=false
+    _cs_as_total=0
+    _cs_as_on=0
+    for _cs_as_id in $(exakit_service_ids 2>/dev/null); do
+        _cs_as_total=$(( _cs_as_total + 1 ))
+        if _exakit_autostart_registered "$_cs_as_id" 2>/dev/null; then
+            _cs_as_on=$(( _cs_as_on + 1 ))
+        fi
+    done
+    [ "$_cs_as_total" -gt 0 ] && [ "$_cs_as_on" -eq "$_cs_as_total" ] && _cs_autostart=true
     if [ "$_cs_json" -eq 0 ]; then ui_spin_begin "Checking which datasets are loaded"; fi
     _cs_datasets="$(exakit_loaded_datasets 2>/dev/null | tr '\n' ' ' | sed 's/ $//')"
     if [ "$_cs_json" -eq 0 ]; then ui_spin_end; fi
@@ -1697,10 +1717,15 @@ cmd_sql() {
         _sql_remf="$(mktemp "${TMPDIR:-/tmp}/exakit-sql-remedy.XXXXXX")"
         "$(exapump_cli)" sql -p "$EXAKIT_EXAPUMP_PROFILE" -f json "$_sql_text" >"$_sql_rowsf" 2>"$_sql_err"
         _sql_rc=$?
+        _sql_cmd=""
         if [ "$_sql_rc" -ne 0 ]; then
+            # The COMMAND and the SENTENCE travel separately: the contract says
+            # remedy is runnable verbatim or null, so the prose the human path
+            # prints becomes remedy_hint here, never the remedy itself.
             exakit_db_error_remedy "$(cat "$_sql_err" 2>/dev/null)" "$_sql_text" > "$_sql_remf"
+            _sql_cmd="$(exakit_db_error_remedy_cmd "$(cat "$_sql_err" 2>/dev/null)")"
         fi
-        run_python - "$_sql_rc" "$_sql_rowsf" "$_sql_err" "$_sql_remf" <<'EXAKIT_SQL_JSON_PY'
+        run_python - "$_sql_rc" "$_sql_rowsf" "$_sql_err" "$_sql_remf" "$_sql_cmd" <<'EXAKIT_SQL_JSON_PY'
 import json, sys
 rc = int(sys.argv[1])
 def read(path):
@@ -1710,6 +1735,7 @@ def read(path):
     except OSError:
         return ""
 rows, err, remedy = read(sys.argv[2]), read(sys.argv[3]), read(sys.argv[4])
+remedy_cmd = sys.argv[5] if len(sys.argv) > 5 else ""
 if rc == 0:
     try:
         parsed = json.loads(rows) if rows.strip() else []
@@ -1730,7 +1756,9 @@ else:
         detail = next((l for l in lines if ("rror" in l or "failed" in l)
                        and not l.startswith("Hint:") and not l.startswith("Error in statement")),
                       lines[0] if lines else "query failed")
-    print(json.dumps({"ok": False, "error": detail, "remedy": remedy.strip() or None}))
+    print(json.dumps({"ok": False, "error": detail,
+                      "remedy": remedy_cmd.strip() or None,
+                      "remedy_hint": remedy.strip() or None}))
 EXAKIT_SQL_JSON_PY
         _sql_py_rc=$?
         rm -f "$_sql_err" "$_sql_rowsf" "$_sql_remf"

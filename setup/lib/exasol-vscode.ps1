@@ -91,7 +91,17 @@ function Invoke-ExasolVscodeCode {
     if ($script:ExasolVscodeExtDir) {
         $Arguments = @("--extensions-dir", $script:ExasolVscodeExtDir) + $Arguments
     }
-    return ($null | & $cli @Arguments 2>$null)
+    # VS Code's CLI writes to stderr on perfectly ordinary runs, and stderr
+    # from a native command is a terminating error under the global "Stop"
+    # preference - which would take out every caller that only wanted to ask
+    # whether an extension is installed.
+    $prevEap = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = "Continue"
+        return ($null | & $cli @Arguments 2>$null)
+    } catch {
+        return $null
+    } finally { $ErrorActionPreference = $prevEap }
 }
 
 # The version VS Code itself reports for the extension; $null when it is not

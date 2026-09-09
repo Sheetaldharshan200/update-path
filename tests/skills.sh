@@ -90,18 +90,33 @@ import sys
 lines = open(sys.argv[1], encoding="utf-8").read().splitlines()
 if not lines or lines[0] != "---":
     print("no frontmatter"); raise SystemExit
-problems = []
+front = []
 for line in lines[1:]:
     if line == "---":
         break
-    key, sep, value = line.partition(": ")
-    if not sep or not key or " " in key:
-        continue
-    value = value.strip()
-    if value[:1] in ("'", '"'):
-        continue
-    if ": " in value or value.endswith(":"):
-        problems.append(key)
+    front.append(line)
+# A REAL parser first, where one exists: "survives a real YAML parser" was a
+# hand-rolled ": "-in-plain-scalar heuristic, which catches the one bug that
+# shipped and nothing else a real loader would reject. The heuristic stays as
+# the floor for machines without PyYAML, so this check never silently skips.
+try:
+    import yaml
+    try:
+        doc = yaml.safe_load("\n".join(front))
+        problems = [] if isinstance(doc, dict) else ["frontmatter is not a mapping"]
+    except yaml.YAMLError as err:
+        problems = ["yaml: " + str(err).splitlines()[0]]
+except ImportError:
+    problems = []
+    for line in front:
+        key, sep, value = line.partition(": ")
+        if not sep or not key or " " in key:
+            continue
+        value = value.strip()
+        if value[:1] in ("'", '"'):
+            continue
+        if ": " in value or value.endswith(":"):
+            problems.append(key)
 print("clean" if not problems else "unparseable value for: " + ", ".join(problems))
 PYEOF
 )"

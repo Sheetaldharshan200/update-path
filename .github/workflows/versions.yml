@@ -88,7 +88,7 @@ jobs:
 
           expected = {"personal", "nano", "exapump", "mcp", "pyexasol", "skills",
                       "dash-server", "exasol-vscode", "json-tables",
-                      "exasol-scheduler"}
+                      "exasol-scheduler", "dbt-exasol"}
           components = doc.get("components") or {}
           if set(components) != expected:
               problems.append("components must be exactly %s, found %s"
@@ -313,6 +313,11 @@ jobs:
               check_pypi("mcp", components["mcp"], "exasol-mcp-server")
           if components.get("pyexasol"):
               check_pypi("pyexasol", components["pyexasol"], "pyexasol")
+          # dbt-exasol installs from PyPI too, and carries no `repo` on purpose:
+          # the generic upstream lookup prefers repo, and the GitHub tags are
+          # v-prefixed (v1.12.1) while the PyPI versions are not (1.12.1).
+          if components.get("dbt-exasol"):
+              check_pypi("dbt-exasol", components["dbt-exasol"], "dbt-exasol")
 
           # --- the marketplace add-ons (GitHub-release-installed) --------------
           # Each installs from its release tag, so the tag the installer

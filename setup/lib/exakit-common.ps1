@@ -496,6 +496,21 @@ function Write-ExakitError([string]$Msg) {
 # fault the engine text does not name: `SELECT TOP n` fails as "unexpected
 # UNSIGNED_INTEGER_" (TOP parses as an alias), so only the statement can tell
 # it from any other syntax error.
+# Get-ExakitDbErrorRemedyCommand - the RUNNABLE half of the remedy: one
+# command verbatim, or "". sql --json puts THIS at the remedy key (the
+# contract: run it verbatim, or null) and the sentence from
+# Get-ExakitDbErrorRemedy at remedy_hint. Twin of exakit_db_error_remedy_cmd.
+function Get-ExakitDbErrorRemedyCommand {
+    param([string]$Text)
+    if (-not $Text) { return "" }
+    if ($Text -match 'onnection refused' -or $Text -match 'Errno 61' -or
+        $Text -match 'Errno 111' -or $Text -match '(?i)could not connect' -or
+        $Text -match '(?i)failed to connect to' -or $Text -match '(?i)actively refused' -or
+        $Text -match 'os error 10061') { return "exakit start" }
+    if ($Text -match '(?i)tls handshake' -or $Text -match 'TLS error') { return "exakit status" }
+    return ""
+}
+
 function Get-ExakitDbErrorRemedy {
     param([string]$Text, [string]$Statement = "")
     $lines = @()
@@ -1542,6 +1557,30 @@ function Get-ExakitFailureReason {
     return $reason
 }
 
+# Get-ExakitReasonSummary - one informative line out of a multi-line error.
+#
+# The note file's line 1 is the reason and every reader takes it, so a reason
+# that spans lines has to be collapsed. It used to be collapsed by keeping
+# line 1, and line 1 of a Python traceback is "Traceback (most recent call
+# last):" - pure boilerplate. A real crash was therefore recorded, in the log
+# AND in last_failure where it persists across every later status --json, as a
+# sentence naming nothing. The cause could not be recovered from the kit's own
+# log at all; it had to be reproduced by hand.
+#
+# A header line ends in a colon and the message follows it, so in that shape
+# the LAST line is the informative one. Anything else keeps line 1, which is
+# where PowerShell and shell errors put their message.
+function Get-ExakitReasonSummary {
+    param([AllowEmptyString()][string]$Reason)
+    if (-not $Reason) { return "" }
+    $lines = @(($Reason -split "`r?`n") | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+    if ($lines.Count -eq 0) { return "" }
+    if ($lines.Count -eq 1) { return $lines[0] }
+    $summary = $lines[0]
+    if ($lines[0].EndsWith(":")) { $summary = $lines[-1] }
+    return "$summary (see the log for the full text)"
+}
+
 # Write-ExakitFailureNote / Read-ExakitFailureNote - the reason an install died,
 # on disk, for the NEXT process to find. Twin of exakit_note_failure and the
 # .last-failure reader in setup/exakit.
@@ -1677,7 +1716,13 @@ function Register-ExakitSoftFailure {
     if (Get-Command Write-ExakitFailureNote -ErrorAction SilentlyContinue) {
         $note = "$Label did not finish"
         if ($Reason) { $note = "$note - $Reason" }
-        Write-ExakitFailureNote "$note. Retry with: $Repair"
+        # The trailing period is dropped when the summary already ends in one
+        # (or in a colon): "Traceback (most recent call last):." was a real
+        # thing this printed.
+        $noteSummary = Get-ExakitReasonSummary $note
+        $sep = "."
+        if ($noteSummary -match "[.:!?]$") { $sep = "" }
+        Write-ExakitFailureNote "$noteSummary$sep Retry with: $Repair"
     }
 }
 
@@ -1719,7 +1764,12 @@ function Invoke-ExakitSoftStep {
         $reason = Get-ExakitFailureReason
         if (-not $reason) { $reason = ("" + $_) }
         Register-ExakitSoftFailure -Component $Component -Repair $Repair -Reason $reason -Label $Label
-        Write-ExakitLog "WARN" "$Component did not finish: $_"
+        # THE WHOLE TEXT to the log, one line per line: the log is the place a
+        # multi-line traceback belongs, and keeping only its first line is what
+        # made this class of failure undiagnosable.
+        foreach ($rline in @(("" + $reason) -split "`r?`n")) {
+            if ("$rline".Trim()) { Write-ExakitLog "WARN" "$Component did not finish: $($rline.TrimEnd())" }
+        }
         Warn2 "$Component did not finish - carrying on so the rest of the install completes"
         return $false
     }
@@ -3369,13 +3419,43 @@ function Get-ExakitFile {
     param([Parameter(Mandatory)][string]$Url, [Parameter(Mandatory)][string]$Dest)
     New-Item -ItemType Directory -Force -Path (Split-Path $Dest -Parent) | Out-Null
     Write-ExakitLog "GET" "$Url -> $Dest"
+    # TLS 1.2 explicitly. Windows PowerShell 5.1 runs on .NET Framework, whose
+    # ServicePointManager default predates it on some machines, and GitHub
+    # refuses anything older. Invoke-WebRequest happened to negotiate this
+    # correctly here; WebClient goes through ServicePointManager, so the
+    # protocol has to be named. Additive, and wrapped because the enum value is
+    # absent on very old frameworks.
+    try {
+        [System.Net.ServicePointManager]::SecurityProtocol =
+            [System.Net.ServicePointManager]::SecurityProtocol -bor [System.Net.SecurityProtocolType]::Tls12
+    } catch { }
     # Retry transient failures, mirroring the bash side's curl --retry 3
     # --connect-timeout policy: one network blip must not abort the install.
     $attempt = 0
     while ($true) {
         $attempt++
         try {
-            Invoke-WebRequest -Uri $Url -OutFile $Dest -UseBasicParsing -TimeoutSec 120
+            # WebClient, not Invoke-WebRequest. On Windows PowerShell 5.1 IWR
+            # buffers the whole response through the pipeline before writing it,
+            # and a 20 MB release asset that curl pulls in 7 seconds on the same
+            # machine, at the same moment, exhausted the 120-second timeout and
+            # left no partial file. ($ProgressPreference is already silenced in
+            # install.ps1 and at the top of this file, so the well-known
+            # progress-bar pathology is not what this is.) WebClient streams
+            # straight to disk and is present on both 5.1 and 7.
+            #
+            # Proxy and TLS still have to be honoured: DefaultWebProxy is what
+            # Initialize-ExakitWebProxy sets, and 5.1 defaults to a protocol set
+            # that predates TLS 1.2, which GitHub requires.
+            $wc = New-Object System.Net.WebClient
+            try {
+                $wc.Proxy = [System.Net.WebRequest]::DefaultWebProxy
+                if ($wc.Proxy) { $wc.Proxy.Credentials = [System.Net.CredentialCache]::DefaultCredentials }
+                $wc.Headers.Add("User-Agent", "exakit")
+                $wc.DownloadFile($Url, $Dest)
+            } finally {
+                $wc.Dispose()
+            }
             break
         } catch {
             Remove-Item -Force $Dest -ErrorAction SilentlyContinue
@@ -4231,6 +4311,19 @@ function Get-ExakitMarketplaceAddons {
             UrlFn       = "Get-DashServerUrl"
             EnvVar      = "EXAKIT_DASH_SERVER_VERSION"
             FallbackVar = "DashServerVersionFallback"
+        },
+        [pscustomobject]@{
+            Id          = "dbt-exasol"
+            Label       = "dbt-exasol (dbt models on Exasol)"
+            InstallFn   = "Install-DbtExasol"
+            ValidateFn  = "Test-DbtExasol"
+            UpdateFn    = "Update-DbtExasol"
+            VersionFn   = "Get-DbtExasolInstalledVersion"
+            UninstallFn = "Uninstall-DbtExasol"
+            SummaryFn   = "Get-DbtExasolSummary"
+            SystemPresentFn = "Test-DbtExasolSystemPresent"
+            EnvVar      = "EXAKIT_DBT_EXASOL_VERSION"
+            FallbackVar = "DbtExasolVersionFallback"
         },
         [pscustomobject]@{
             Id          = "exasol-scheduler"
@@ -5776,7 +5869,12 @@ function Get-ExakitProbedVersion {
 
 function Get-ExakitStartupDir {
     if ($env:EXAKIT_STARTUP_DIR) { return $env:EXAKIT_STARTUP_DIR }
-    return (Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs\Startup")
+    # Guarded like every other env-based Join-Path: under the global Stop
+    # preference a null APPDATA (stripped service environments) throws mid
+    # `exakit autostart` instead of answering.
+    $base = $env:APPDATA
+    if (-not $base) { $base = Join-Path (Get-ExakitAgentHome) "AppData\Roaming" }
+    return (Join-Path $base "Microsoft\Windows\Start Menu\Programs\Startup")
 }
 
 function Get-ExakitUpdateTargets {

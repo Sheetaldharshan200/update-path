@@ -71,7 +71,7 @@ exakit data-load
 
 The installer does this too. To run it again: `exakit mcp-setup`. Details in the [QUICKSTART](../QUICKSTART.md).
 
-Restart your AI client, then continue with the [first workflow](../demo/first-revenue-analysis.md).
+Restart your AI client, then continue with the [example questions to ask](../data/example-questions.md).
 
 ## Keeping it current
 

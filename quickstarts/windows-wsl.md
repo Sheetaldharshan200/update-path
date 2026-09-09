@@ -84,7 +84,7 @@ Windows apps can reach the database directly at `127.0.0.1:8563`. If you configu
 
   A single string (`"command": "wsl uvx ..."`) is not a program name Windows can spawn, and the kit's own `uvx` may live under `~/.exasol-starter-kit/bin` instead — `command -v uvx` inside the distro is the authority.
 
-Then continue with the [first workflow](../demo/first-revenue-analysis.md).
+Then continue with the [example questions to ask](../data/example-questions.md).
 
 ## Keeping it current
 

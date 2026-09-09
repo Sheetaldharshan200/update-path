@@ -97,9 +97,9 @@ try {
     # too, because the read-only database user it connects as is provisioned
     # through exapump. Understating it is how a reader ends up hunting for a
     # server that was never built.
-    $exapumpSupported = ($env:PROCESSOR_ARCHITECTURE -eq "AMD64")
+    $exapumpSupported = ((Get-ExakitHostArch) -eq "amd64")
     if (-not $exapumpSupported) {
-        Warn2 "exapump publishes Windows builds for x86_64 only (detected: $($env:PROCESSOR_ARCHITECTURE))."
+        Warn2 "exapump publishes Windows builds for x86_64 only (this machine's hardware is $(Get-ExakitHostArch))."
         Info "Skipping exapump, the sample data and the whole AI bridge (MCP server and clients) - the read-only database user the bridge connects as is provisioned through exapump, so the bridge cannot be built without it."
         Info "The database container itself is fully supported. Details: quickstarts/windows-docker.md"
     }

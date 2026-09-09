@@ -59,6 +59,16 @@ ssh -N -L 5100:127.0.0.1:5100 you@server     # dash-server, then open http://127
 
 Clipboard and browser conveniences degrade silently on a headless box (the kit prints what it would have copied); everything else works unchanged.
 
+## Connect your AI assistant
+
+The installer already offered to connect every AI client it detected. To run
+that step again — after installing a new client, or if you skipped it — use
+`exakit mcp-setup`; it writes the read-only database connection into each
+client's own config. Then ask your first question: the
+[example questions](../data/example-questions.md) are written against the
+bundled sample data, and the full ask → inspect → run → validate loop is in the
+[QUICKSTART](../QUICKSTART.md).
+
 ## Everyday commands
 
 ```bash

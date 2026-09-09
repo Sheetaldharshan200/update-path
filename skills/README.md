@@ -44,7 +44,7 @@ user's request actually needs, not a manual for the whole kit.
 
 **The marketplace** — opt-in add-ons
 
-`exasol-marketplace` itself installs with the kit; the other four skills below
+`exasol-marketplace` itself installs with the kit; the other five skills below
 are **installed with their add-on**, not with the kit: each declares
 `addon: <id>` in its frontmatter, and the marketplace places it as part of
 installing that add-on and removes it again when the add-on goes.
@@ -54,6 +54,7 @@ tool that is not on the machine is worse than not shipping the skill at all.
 | Skill | Use it when… |
 |---|---|
 | [`exasol-marketplace`](exasol-marketplace/SKILL.md) | Choosing, installing, updating or removing add-ons; explaining why one is not offered at all. |
+| [`dbt-exasol`](dbt-exasol/SKILL.md) | Building SQL models with dbt against the local database; the generated profile, why `~/.dbt` is never touched, and why the command is `dbt-exasol` and not `dbt`. |
 | [`dash-server`](dash-server/SKILL.md) | Building live dashboards the agent drives over an MCP control plane while the user opens a browser URL. |
 | [`json-tables`](json-tables/SKILL.md) | Loading JSON into the database (exapump takes CSV and Parquet only); the prebuilt engine that means no Rust toolchain. |
 | [`exasol-scheduler`](exasol-scheduler/SKILL.md) | Scheduling SQL jobs in SCHED.SCHED_TASKS; the scheduler_svc trust boundary, task chains, and why missed runs are never replayed. |

@@ -8,7 +8,8 @@
 # exasol-scheduler install shipped broken on Windows while CI stayed green:
 # three call sites named functions defined nowhere in the repo.
 #
-# This suite parses every shipped .ps1 into its AST and checks each static
+# This suite parses every .ps1 that SHIPS TO USERS (setup/** plus the
+# top-level installers) into its AST and checks each static
 # Verb-Noun invocation against the set of functions defined anywhere in the
 # repo plus the commands resolvable in this pwsh. Windows-only cmdlets that a
 # Linux/macOS pwsh cannot see are allowlisted by name — the point is catching
@@ -59,6 +60,12 @@ if ($IsWindows -or $env:OS -eq "Windows_NT") {
 
 $files = @(Get-ChildItem (Join-Path $Root "setup") -Recurse -Filter *.ps1)
 $files += Get-ChildItem $Root -Filter *.ps1
+# tests/*.ps1 are deliberately NOT swept: they call harness-provided and
+# mocked functions that resolve only at run time, and the Windows CI runner
+# EXECUTES them, so an undefined call there fails loudly on its own. Sweeping
+# them here would also make this guard hostage to Get-Command walking the
+# host PATH for test-only names (seen: a pathologically deep PATH entry
+# aborting the whole sweep).
 
 $defined = @()
 $parseFailures = 0
@@ -87,12 +94,31 @@ foreach ($f in $files) {
         if ($name -notmatch '^[A-Z][A-Za-z0-9]*-[A-Z]') { continue }  # externals: python, uv, taskkill.exe
         if ($defined -contains $name) { continue }
         if ($windowsOnly -contains $name) { continue }
-        if (Get-Command $name -ErrorAction SilentlyContinue) { continue }
+        $resolves = $false
+        try { $resolves = [bool](Get-Command $name -ErrorAction SilentlyContinue) } catch { }
+        if ($resolves) { continue }
         $rel = $f.FullName.Substring($Root.Length + 1)
         Write-Output "UNDEFINED $rel`:$($call.Extent.StartLineNumber): $name"
         $undefined++
     }
 }
+# THE BLIND SPOT THE COMMANDAST WALK CANNOT SEE: the add-on registry
+# dispatches through string fields (& $addon.LatestFn, & $addon.SystemPresentFn
+# ...), and a dynamic invocation has no literal command name, so the loop above
+# skips it - which is exactly where the WIN-01 bug class lives. Every *Fn
+# string in the registry must name a function defined somewhere in the sweep.
+$registryText = Get-Content (Join-Path $Root "setup/lib/exakit-common.ps1") -Raw
+$registryFns = [regex]::Matches($registryText, '(?m)^\s*[A-Za-z]*Fn\s*=\s*"([A-Za-z][A-Za-z0-9-]*)"') |
+    ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique
+$registryChecked = 0
+foreach ($fn in $registryFns) {
+    $registryChecked++
+    if ($defined -notcontains $fn) {
+        Write-Output "UNDEFINED registry hook: $fn (a *Fn field in Get-ExakitMarketplaceAddons names no defined function)"
+        $undefined++
+    }
+}
+Write-Output "registry_fns_checked=$registryChecked"
 Write-Output "summary files=$($files.Count) defined=$($defined.Count) parse_failures=$parseFailures undefined=$undefined"
 PSEOF
 

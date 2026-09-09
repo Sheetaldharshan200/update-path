@@ -22,9 +22,20 @@ function Get-PyexasolVenvPython {
 function Get-PyexasolInstalledVersion {
     $python = Get-PyexasolVenvPython
     if (-not (Test-Path $python)) { return $null }
-    $version = & $python -c "import pyexasol; print(pyexasol.__version__)" 2>$null
-    if ($LASTEXITCODE -ne 0) { return $null }
-    return ($version | Out-String).Trim()
+    # A venv whose pyexasol is broken prints a traceback to stderr, and under
+    # $ErrorActionPreference = "Stop" that stderr terminates the run before
+    # $LASTEXITCODE can be read - so `exakit version` would die reporting a
+    # version rather than answer "not installed". Same defence as
+    # Invoke-ExakitLogged.
+    $prevEap = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = "Continue"
+        $version = & $python -c "import pyexasol; print(pyexasol.__version__)" 2>$null
+        if ($LASTEXITCODE -ne 0) { return $null }
+        return ($version | Out-String).Trim()
+    } catch {
+        return $null
+    } finally { $ErrorActionPreference = $prevEap }
 }
 
 # Write-PyexasolNotInstalled <reason> - report a soft failure and return $false.

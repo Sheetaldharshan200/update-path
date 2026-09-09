@@ -55,7 +55,7 @@ The installer does this too. To run it again: `exakit mcp-setup`. Details in the
 
 After setup, restart the AI client and look for an MCP server named `exasol`.
 
-Then continue with the [first workflow](../demo/first-revenue-analysis.md).
+Then continue with the [example questions to ask](../data/example-questions.md).
 
 ## Keeping it current
 

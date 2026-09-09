@@ -327,6 +327,10 @@ jobs:
               ],
               # Marketplace add-ons keep their constants in their own module
               # pair, not in the shared libraries.
+              "dbt-exasol": [
+                  ("setup/lib/dbt-exasol.sh", "bash", "EXAKIT_DBT_EXASOL_VERSION_FALLBACK"),
+                  ("setup/lib/dbt-exasol.ps1", "pwsh", "DbtExasolVersionFallback"),
+              ],
               "exasol-scheduler": [
                   ("setup/lib/exasol-scheduler.sh", "bash", "EXAKIT_EXASOL_SCHEDULER_VERSION_FALLBACK"),
                   ("setup/lib/exasol-scheduler.ps1", "pwsh", "ExasolSchedulerVersionFallback"),

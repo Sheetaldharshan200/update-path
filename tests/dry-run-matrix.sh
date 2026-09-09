@@ -420,7 +420,7 @@ fi
 echo "Windows parity guards:"
 if command -v pwsh >/dev/null 2>&1; then
     ps_parse="$(pwsh -NoProfile -Command '
-      $files = @("setup/lib/exakit-common.ps1","setup/lib/nano.ps1","setup/lib/mcp.ps1","setup/lib/dash-server.ps1","setup/lib/exasol-vscode.ps1","setup/lib/json-tables.ps1","setup/setup-windows-docker.ps1","setup/exakit.ps1")
+      $files = @("setup/lib/exakit-common.ps1","setup/lib/nano.ps1","setup/lib/mcp.ps1","setup/lib/dash-server.ps1","setup/lib/dbt-exasol.ps1","setup/lib/exasol-vscode.ps1","setup/lib/json-tables.ps1","setup/setup-windows-docker.ps1","setup/exakit.ps1")
       foreach ($f in $files) {
         $errors = $null
         $null = [System.Management.Automation.PSParser]::Tokenize((Get-Content -Raw $f), [ref]$errors)
@@ -573,6 +573,11 @@ if grep -q 'exakit_marketplace_addons()' "$ROOT/setup/lib/common.sh" && \
    grep -q 'function Update-JsonTables' "$ROOT/setup/lib/json-tables.ps1" && \
    grep -q 'function Install-JsonTables' "$ROOT/setup/lib/json-tables.ps1" && \
    grep -q '"json-tables"' "$ROOT/setup/lib/exakit-common.ps1" && \
+   grep -q 'dbt_exasol_update' "$ROOT/setup/lib/dbt-exasol.sh" && \
+   grep -q 'dbt_exasol_install' "$ROOT/setup/lib/dbt-exasol.sh" && \
+   grep -q 'function Update-DbtExasol' "$ROOT/setup/lib/dbt-exasol.ps1" && \
+   grep -q 'function Install-DbtExasol' "$ROOT/setup/lib/dbt-exasol.ps1" && \
+   grep -q '"dbt-exasol"' "$ROOT/setup/lib/exakit-common.ps1" && \
    grep -q '"marketplace"  { Invoke-CmdMarketplace' "$ROOT/setup/exakit.ps1"; then
     check "marketplace(twins)" "yes" "yes"
 else
