@@ -62,9 +62,10 @@ personal_check_requirements() {
 
     # A knob that does nothing must say so, not be silently ignored: the README
     # and the preflight offer EXAKIT_DB_PORT for port conflicts, but only the
-    # container deployments honour it - the macOS deployment always binds 8563.
-    if [ -n "${EXAKIT_DB_PORT:-}" ] && [ "${EXAKIT_DB_PORT}" != "$EXAKIT_PERSONAL_PORT" ]; then
-        warn "EXAKIT_DB_PORT is ignored on macOS: the Exasol Personal deployment always uses port $EXAKIT_PERSONAL_PORT."
+    # container deployments honour it - the launcher picks the port for a
+    # personal deployment and the kit reads it back with personal_db_port.
+    if [ -n "${EXAKIT_DB_PORT:-}" ] && [ "${EXAKIT_DB_PORT}" != "$(personal_db_port)" ]; then
+        warn "EXAKIT_DB_PORT does not choose the port on macOS: the launcher selects it for the deployment and the kit uses whatever it selected (currently $(personal_db_port))."
     fi
 
     # Bare minimum: run, but say what to expect.
@@ -309,6 +310,32 @@ personal_cli() {
 # forever on exactly the wedged launcher the module ships a reaper for.
 EXAKIT_PERSONAL_PROBE_TIMEOUT="${EXAKIT_PERSONAL_PROBE_TIMEOUT:-10}"
 
+# personal_db_port — the port THIS deployment is on, which is not necessarily
+# EXAKIT_PERSONAL_PORT.
+#
+# Exasol Personal 2.3 selects and persists a concrete database port during
+# initialization, keeps it stable across restarts and lets it be changed while
+# the deployment is stopped. Every probe that asked the constant instead was
+# wrong on a deployment that chose another port: status read a silent 8563 and
+# reported the database stopped while it was running, and the conflict arm
+# could fire on an unrelated listener.
+#
+# The launcher's own deployment.json is the answer; the constant is the answer
+# only until one exists. No Python: this is on the status path, which must work
+# on a machine whose interpreter is not up yet.
+personal_db_port() {
+    _pdp_file="$EXAKIT_PERSONAL_DEPLOY_DIR/deployment.json"
+    _pdp=""
+    if [ -f "$_pdp_file" ]; then
+        _pdp="$(tr -d '\012\015' < "$_pdp_file" 2>/dev/null | \
+            sed -n 's/.*"dbPort"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p')"
+    fi
+    case "$_pdp" in
+        ''|*[!0-9]*) _pdp="$EXAKIT_PERSONAL_PORT" ;;
+    esac
+    printf '%s' "$_pdp"
+}
+
 personal_deployment_exists() {
     [ -d "$EXAKIT_PERSONAL_DEPLOY_DIR" ] && \
         exakit_run_bounded "$EXAKIT_PERSONAL_PROBE_TIMEOUT" "$(personal_cli)" info >/dev/null 2>&1
@@ -319,7 +346,7 @@ personal_deployment_exists() {
 # before the SQL listener exists, so require both signals before reusing an
 # existing database.
 personal_deployment_running() {
-    port_in_use "$EXAKIT_PERSONAL_PORT" && personal_db_answers
+    port_in_use "$(personal_db_port)" && personal_db_answers
 }
 
 # personal_db_answers — is the thing on the SQL port actually Exasol? A real
@@ -347,7 +374,7 @@ personal_port_holder_hint() {
 # personal_db_port_pids — PIDs currently LISTENing on the deployment port.
 personal_db_port_pids() {
     command -v lsof >/dev/null 2>&1 || return 0
-    lsof -nP -iTCP:"$EXAKIT_PERSONAL_PORT" -sTCP:LISTEN -t 2>/dev/null | sort -u
+    lsof -nP -iTCP:"$(personal_db_port)" -sTCP:LISTEN -t 2>/dev/null | sort -u
 }
 
 # personal_is_orphan_daemon PID — true only if PID is an Exasol Personal runner
@@ -369,12 +396,13 @@ personal_is_orphan_daemon() {
 # genuinely foreign process on the port is reported and left untouched.
 # Returns 0 if the port ends up free (or was never held), 1 otherwise.
 personal_reap_orphan_daemon() {
+    _rod_port="$(personal_db_port)"
     # Judge the port by whether a process is actually LISTENing on it, not by a
     # bare TCP connect: after a teardown, client sockets linger in
     # CLOSE_WAIT/TIME_WAIT and would make a connect test wrongly report "in use".
     if ! command -v lsof >/dev/null 2>&1; then
-        if port_in_use "$EXAKIT_PERSONAL_PORT"; then
-            warn "Port $EXAKIT_PERSONAL_PORT is in use but 'lsof' is unavailable to identify the process; cannot auto-clean a leftover Exasol daemon."
+        if port_in_use "$_rod_port"; then
+            warn "Port $_rod_port is in use but 'lsof' is unavailable to identify the process; cannot auto-clean a leftover Exasol daemon."
             return 1
         fi
         return 0
@@ -386,12 +414,12 @@ personal_reap_orphan_daemon() {
     _reaped=""
     for _pid in $_listeners; do
         if personal_is_orphan_daemon "$_pid"; then
-            info "Reaping orphaned Exasol runner daemon (pid $_pid) still holding port $EXAKIT_PERSONAL_PORT"
+            info "Reaping orphaned Exasol runner daemon (pid $_pid) still holding port $_rod_port"
             pkill -P "$_pid" 2>/dev/null || true
             kill "$_pid" 2>/dev/null || true
             _reaped="$_reaped $_pid"
         else
-            warn "Port $EXAKIT_PERSONAL_PORT is held by a non-Exasol process (pid $_pid: $(ps -p "$_pid" -o command= 2>/dev/null | cut -c1-80)); leaving it untouched."
+            warn "Port $_rod_port is held by a non-Exasol process (pid $_pid: $(ps -p "$_pid" -o command= 2>/dev/null | cut -c1-80)); leaving it untouched."
         fi
     done
 
@@ -418,10 +446,10 @@ personal_reap_orphan_daemon() {
     done
 
     if [ -n "$(personal_db_port_pids)" ]; then
-        warn "Port $EXAKIT_PERSONAL_PORT still has a listening process after reaping the Exasol daemon."
+        warn "Port $_rod_port still has a listening process after reaping the Exasol daemon."
         return 1
     fi
-    ok "Freed port $EXAKIT_PERSONAL_PORT (removed a leftover Exasol runner daemon)"
+    ok "Freed port $_rod_port (removed a leftover Exasol runner daemon)"
     return 0
 }
 
@@ -620,14 +648,14 @@ personal_deploy_local() {
     # (reuse), which is the safe, idempotent choice for automation. Set
     # EXAKIT_REUSE_DB=0 to force a fresh deployment, =1 to reuse without asking.
     if personal_deployment_running; then
-        info "An Exasol database is already running on port $EXAKIT_PERSONAL_PORT."
+        info "An Exasol database is already running on port $(personal_db_port)."
         if confirm_env EXAKIT_REUSE_DB "Use it instead of deploying a new one?" y; then
             ok "Reusing the existing Exasol deployment"
             # personal_deployment_running just answered a real SELECT.
             personal_record_manifest "healthy"
             return 0
         fi
-        die "Declined to reuse the running database. Stop it first ('exakit stop', or 'exasol stop'), then re-run to deploy a fresh one — port $EXAKIT_PERSONAL_PORT stays in use while it is running."
+        die "Declined to reuse the running database. Stop it first ('exakit stop', or 'exasol stop'), then re-run to deploy a fresh one — port $(personal_db_port) stays in use while it is running."
     fi
 
     # A deployment exists but is not running — cleanly stopped, or a crashed
@@ -646,7 +674,9 @@ personal_deploy_local() {
     if personal_deployment_exists; then
         info "An Exasol deployment was found, not running."
         if confirm_env EXAKIT_REUSE_DB "Start the existing database and keep its data?" y; then
-            if personal_launcher_supports start && run_logged "$(personal_cli)" start; then
+            personal_note_guest_rebuild
+            if personal_launcher_supports start && \
+               run_logged "$(personal_cli)" start $(personal_auto_approve_flag start); then
                 ok "Reusing the existing Exasol deployment (started)"
                 personal_wait_ready
                 personal_record_manifest "healthy"
@@ -658,7 +688,7 @@ personal_deploy_local() {
             # Reap it and try once more — the reaper used to run only AFTER
             # this branch had already destroyed the data it would have saved.
             if personal_reap_orphan_daemon 2>/dev/null && \
-               run_logged "$(personal_cli)" start; then
+               run_logged "$(personal_cli)" start $(personal_auto_approve_flag start); then
                 ok "Reusing the existing Exasol deployment (started after clearing an orphaned runner)"
                 personal_wait_ready
                 personal_record_manifest "healthy"
@@ -688,9 +718,9 @@ personal_deploy_local() {
     # reap it and continue. Only a genuinely foreign process (another database,
     # a stale container), which the reaper leaves untouched, is a hard stop.
     # EXAKIT_DB_PORT does not apply to the macOS path, so name the real port.
-    if port_in_use "$EXAKIT_PERSONAL_PORT"; then
+    if port_in_use "$(personal_db_port)"; then
         personal_reap_orphan_daemon || \
-            die "Port $EXAKIT_PERSONAL_PORT is in use by a process that is not a reachable Exasol Personal deployment. Stop that application and re-run (EXAKIT_DB_PORT does not apply to the macOS deployment)."
+            die "Port $(personal_db_port) is in use by a process that is not a reachable Exasol Personal deployment. Stop that application and re-run (EXAKIT_DB_PORT does not choose the port of a personal deployment)."
     fi
 
     # Two points, not three. Deploying and then checking health are one fact to
@@ -735,7 +765,10 @@ personal_deploy_local() {
 
     EXAKIT_DEPLOY_LIVE=0
     ui_progress_begin "$_deploy_state" "$_deploy_t0" && EXAKIT_DEPLOY_LIVE=1
-    "$(personal_cli)" install local 2>&1 | \
+    # --auto-approve: 2.3 fails a non-interactive host preparation rather than
+    # proceeding without approval, and this pipeline is the definition of one.
+    # Omitted on launchers that do not take it — see personal_auto_approve_flag.
+    "$(personal_cli)" install local $(personal_auto_approve_flag install) 2>&1 | \
         _personal_deploy_collect "$_deploy_state" "$_deploy_tail" "$_deploy_notice"
     _deploy_rc=${PIPESTATUS[0]}
     ui_progress_end
@@ -759,7 +792,7 @@ personal_deploy_local() {
     # personal_record_manifest uses when deployment.json cannot be read; the
     # real DSN is not parsed out of it until a few lines later, and this is the
     # same address either way on the macOS deployment.
-    ok "Exasol Personal deployed and answering on 127.0.0.1:${EXAKIT_PERSONAL_PORT} ($(( $(date +%s 2>/dev/null || echo 0) - _deploy_t0 ))s)"
+    ok "Exasol Personal deployed and answering on 127.0.0.1:$(personal_db_port) ($(( $(date +%s 2>/dev/null || echo 0) - _deploy_t0 ))s)"
     _personal_deploy_print_notice "$_deploy_notice"
     rm -rf "$_deploy_tmp"
 
@@ -777,14 +810,26 @@ personal_wait_ready() {
     # end); it is never the tighter of the two.
     # Animate it: the step that just stopped showing the launcher's chatter
     # must not then end on a still screen.
-    ui_spin_begin "Waiting for the database to answer"
+    # A guest rebuild is not a slow start, it is a different operation with a
+    # different duration — and the ordinary budget turned a successful upgrade
+    # into a reported crash. An explicitly set EXAKIT_PERSONAL_READY_TIMEOUT
+    # still wins: a number the user chose is never overridden by a guess.
     _pwr_budget="${EXAKIT_PERSONAL_READY_TIMEOUT:-150}"
+    _pwr_what="Waiting for the database to answer"
+    _pwr_raise=EXAKIT_PERSONAL_READY_TIMEOUT
+    if [ -z "${EXAKIT_PERSONAL_READY_TIMEOUT:-}" ] && personal_guest_rebuild_expected; then
+        personal_note_guest_rebuild
+        _pwr_budget="${EXAKIT_PERSONAL_REBUILD_TIMEOUT:-900}"
+        _pwr_what="Rebuilding the VM guest and waiting for the database"
+        _pwr_raise=EXAKIT_PERSONAL_REBUILD_TIMEOUT
+    fi
+    ui_spin_begin "$_pwr_what"
     _pwr_t0="$(date +%s 2>/dev/null || echo 0)"
     _pwr_elapsed=0
     _pwr_maxtries=$(( _pwr_budget / 5 + 1 ))
     _tries=0
     while [ "$_pwr_elapsed" -lt "$_pwr_budget" ] && [ "$_tries" -lt "$_pwr_maxtries" ]; do
-        if port_in_use "$EXAKIT_PERSONAL_PORT" && \
+        if port_in_use "$(personal_db_port)" && \
            exakit_run_bounded "$EXAKIT_PERSONAL_PROBE_TIMEOUT" "$(personal_cli)" info >/dev/null 2>&1; then
             ui_spin_end
             ok "Deployment is reachable"
@@ -801,7 +846,7 @@ personal_wait_ready() {
     [ "$_pwr_spent" -gt 0 ] || _pwr_spent=$(( _tries * 5 ))
     # Not "run the probe that just failed": name the two commands that actually
     # diagnose and recover a deploy that answers nothing.
-    die "The deployment did not answer within ${_pwr_spent} seconds (the ceiling is ${_pwr_budget}s; raise it with EXAKIT_PERSONAL_READY_TIMEOUT). Read the state with 'exakit status', then 'exakit start' to retry - a deployment stuck in 'interrupted' is repaired with 'exakit repair-runtime' (destructive, it asks first)."
+    die "The deployment did not answer within ${_pwr_spent} seconds (the ceiling is ${_pwr_budget}s; raise it with ${_pwr_raise}). Read the state with 'exakit status', then 'exakit start' to retry - a deployment stuck in 'interrupted' is repaired with 'exakit repair-runtime' (destructive, it asks first)."
 }
 
 # personal_record_manifest [status] — write the connection details this kit
@@ -891,6 +936,58 @@ personal_launcher_supports() {
         | personal_help_names_token "$1"
 }
 
+# personal_auto_approve_flag <subcommand> — "--auto-approve" when this launcher
+# takes it on <subcommand>, nothing when it does not.
+#
+# WHY THIS IS NOT personal_launcher_supports: that probe reads the TOP-LEVEL
+# help, where a subcommand's own flags never appear, so it would answer "no"
+# for every launcher including the ones that need this most.
+#
+# It needs to exist because Exasol Personal 2.3 made a non-interactive run of
+# local runtime host preparation FAIL rather than proceed without approval —
+# and the kit's install consumes the launcher's output through a pipeline, so
+# it is exactly the caller that cannot answer a prompt. The consent is real and
+# already given: the user ran the installer, and the deploy path asks its own
+# questions (EXAKIT_REUSE_DB, EXAKIT_REPLACE_DB) before it gets here. A launcher
+# that does not know the flag is never handed it — an unknown flag is a hard
+# failure, and 2.2 deployments are still supported.
+#
+# Deliberately uncached, like personal_launcher_supports: every call site is a
+# command substitution, so a cache set here would be written in a subshell and
+# thrown away. One bounded launcher probe per start or deploy is the real cost.
+personal_auto_approve_flag() {
+    if exakit_run_bounded "$EXAKIT_PERSONAL_PROBE_TIMEOUT" \
+            "$(personal_cli)" "$1" --help 2>&1 \
+            | personal_help_names_token "--auto-approve"; then
+        printf '%s' "--auto-approve"
+    fi
+    return 0
+}
+
+# personal_guest_rebuild_expected — true when the deployment on disk was created
+# by a different launcher than the one now installed.
+#
+# Exasol Personal 2.3 runs the VM guest that belongs to the launcher's runner,
+# so a deployment made by an earlier launcher rebuilds its guest on the next
+# start. The data survives; the start does not fit the ordinary budget, and a
+# successful upgrade that overran it read to the user as a crash.
+personal_guest_rebuild_expected() {
+    _pgr_dep="$(personal_deployed_version 2>/dev/null || true)"
+    [ -n "$_pgr_dep" ] || return 1
+    [ -n "${EXAKIT_PERSONAL_VERSION:-}" ] || return 1
+    [ "$_pgr_dep" != "$EXAKIT_PERSONAL_VERSION" ]
+}
+
+# personal_note_guest_rebuild — say it once, before the start that does it.
+# Silence through a five-minute start is the failure mode being fixed here, so
+# the notice goes ahead of the command rather than in the timeout message.
+personal_note_guest_rebuild() {
+    personal_guest_rebuild_expected || return 0
+    [ "${_EXAKIT_PERSONAL_REBUILD_SAID:-0}" = 1 ] && return 0
+    _EXAKIT_PERSONAL_REBUILD_SAID=1
+    info "This deployment was created by an earlier launcher, so the first start rebuilds its VM guest — slower than usual, once. Your data is kept."
+}
+
 # personal_deployment_wedged — has the launcher marked this deployment as
 # INTERRUPTED? That is a third state, and collapsing it into "stopped" is what
 # made a crashed database look like a merely idle one.
@@ -949,7 +1046,7 @@ personal_status() {
         # port answers, ask the database itself (a real SELECT through the kit's
         # profile); a port that is busy but does not answer as Exasol is a
         # conflict, its own state with its own remedy.
-        if port_in_use "$EXAKIT_PERSONAL_PORT"; then
+        if port_in_use "$(personal_db_port)"; then
             if personal_db_answers; then
                 echo "running"
             else
@@ -969,7 +1066,8 @@ personal_status() {
 
 personal_start() {
     if personal_launcher_supports start; then
-        if ! run_logged "$(personal_cli)" start; then
+        personal_note_guest_rebuild
+        if ! run_logged "$(personal_cli)" start $(personal_auto_approve_flag start); then
             # Say what to do, not just that it failed. A start that fails on a
             # wedged deployment fails identically every time it is retried, and
             # "Failed to start the deployment" plus a log path sent readers back
@@ -978,7 +1076,7 @@ personal_start() {
                 die "The database is interrupted and cannot be started — the launcher has to rebuild it. Repair it with: $(personal_repair_command) (this rebuilds the database from empty; its data is not recoverable)."
             fi
             if [ "$(personal_status 2>/dev/null)" = "conflict" ]; then
-                die "Port $EXAKIT_PERSONAL_PORT is held by another process$(personal_port_holder_hint), so the database cannot start. Stop that process, then: exakit start"
+                die "Port $(personal_db_port) is held by another process$(personal_port_holder_hint), so the database cannot start. Stop that process, then: exakit start"
             fi
             die "Failed to start the database. Check the log above, then retry with 'exakit start'; if it fails the same way, repair with: $(personal_repair_command)"
         fi
@@ -1028,7 +1126,7 @@ personal_teardown() {
     # when no deployment was found above, the orphan can outlive the deployment
     # dir) so a future deploy and MCP clients get a clean port.
     personal_reap_orphan_daemon || \
-        warn "Could not fully free port $EXAKIT_PERSONAL_PORT; if a later deploy fails to bind it, stop the leftover process holding that port and retry."
+        warn "Could not fully free port $(personal_db_port); if a later deploy fails to bind it, stop the leftover process holding that port and retry."
     manifest_set runtime.status "removed"
 }
 

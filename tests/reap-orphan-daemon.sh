@@ -69,6 +69,12 @@ alive() { kill -0 "$1" 2>/dev/null && echo yes || echo no; }
 cat > "$TMP/run.sh" <<HARNESS
 info(){ :; }; warn(){ :; }; ok(){ :; }
 port_in_use(){ [ "\${FORCE_PORT_IN_USE:-0}" = 1 ] && return 0; (exec 3<>"/dev/tcp/127.0.0.1/\$1") 2>/dev/null && { exec 3>&- 3<&-; return 0; }; return 1; }
+# HERMETIC, like the fixtures in agent-operability.sh: the reaper now asks the
+# deployment which port it is on, so a real deployment in this developer's HOME
+# would answer for the ephemeral port this suite actually started a daemon on.
+# An empty deployment directory makes personal_db_port fall back to the port
+# set below - which is the whole point of the override.
+EXAKIT_PERSONAL_DEPLOY_DIR="$TMP/no-deployment"
 source "$ROOT/setup/lib/runtime-personal.sh"
 EXAKIT_PERSONAL_PORT="\$1"
 personal_reap_orphan_daemon

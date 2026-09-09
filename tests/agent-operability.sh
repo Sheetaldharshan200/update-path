@@ -1066,5 +1066,80 @@ has "and the sentence lives in remedy_hint" '"remedy_hint":' "$_r3_out"
 has "the shared-engine warning excludes rootless podman" '_exakit_nano_rootless_podman 2>/dev/null && return 1' \
     "$(cat "$ROOT/setup/lib/common.sh")"
 
+echo
+echo "personal 2.3 readiness (P0):"
+# The launcher's 2.3 breaking change: a non-interactive host preparation now
+# FAILS rather than proceeding without approval, and the kit's deploy is a
+# pipeline - the definition of non-interactive. Every launcher call that can
+# trigger preparation carries the flag, and it is resolved per SUBCOMMAND
+# because a subcommand's flags never appear in the top-level help the older
+# capability probe reads.
+has "the deploy approves host preparation" \
+    'install local $(personal_auto_approve_flag install)' "$RP_SH"
+has "...and so does the reuse start" \
+    'run_logged "$(personal_cli)" start $(personal_auto_approve_flag start)' "$RP_SH"
+has "...and the start command itself" \
+    'if ! run_logged "$(personal_cli)" start $(personal_auto_approve_flag start); then' "$RP_SH"
+# A launcher that does not take the flag must never be handed it: 2.2 is still
+# a supported deployment and an unknown flag is a hard failure, not a warning.
+# Behavioural, against a stub whose install advertises the flag and whose start
+# does not - the text of the probe proves nothing about what it answers.
+_aa="$WORK/autoapprove"; mkdir -p "$_aa/bin"
+cat > "$_aa/bin/exasol" <<'STUB'
+#!/bin/sh
+case "$1 $2" in
+  "install --help") printf 'Flags:\n  -a, --auto-approve   Approve host preparation\n' ;;
+  "start --help")   printf 'Flags:\n      --help    help\n' ;;
+  *)                printf 'Commands:\n  install\n  start\n' ;;
+esac
+STUB
+chmod +x "$_aa/bin/exasol"
+_aa_probe() {
+    bash -c '
+        . "$0/setup/lib/common.sh" 2>/dev/null
+        . "$0/setup/lib/detect.sh" 2>/dev/null
+        . "$0/setup/lib/runtime-personal.sh"
+        EXAKIT_PERSONAL_BIN="$1"
+        personal_auto_approve_flag "$2"' "$ROOT" "$_aa/bin/exasol" "$1" 2>/dev/null
+}
+check "a launcher that takes the flag gets it"      "--auto-approve" "$(_aa_probe install)"
+check "a launcher that does not is left alone"      "" "$(_aa_probe start)"
+
+# 2.3 selects and persists a concrete database port. Asking the constant made
+# status wrong on any deployment that chose another one, so every liveness read
+# goes through personal_db_port, which prefers the launcher's deployment.json.
+has "liveness reads the deployment's own port" \
+    'port_in_use "$(personal_db_port)" && personal_db_answers' "$RP_SH"
+has "...status too" 'if port_in_use "$(personal_db_port)"; then' "$RP_SH"
+has "...and the readiness wait" 'if port_in_use "$(personal_db_port)" && \' "$RP_SH"
+has "the port comes from the launcher's deployment.json" '"dbPort"' "$RP_SH"
+_p0="$WORK/p0"; mkdir -p "$_p0/deploy"
+printf '{"connection": {"host": "127.0.0.1", "dbPort": 8571, "username": "sys"}}\n' > "$_p0/deploy/deployment.json"
+_p0_probe() {
+    EXAKIT_PERSONAL_DEPLOY_DIR="$1" bash -c '
+        . "$0/setup/lib/common.sh" 2>/dev/null
+        . "$0/setup/lib/detect.sh" 2>/dev/null
+        . "$0/setup/lib/runtime-personal.sh"
+        personal_db_port' "$ROOT" 2>/dev/null
+}
+check "a configured port is read back" 8571 "$(_p0_probe "$_p0/deploy")"
+check "no deployment falls back to the default" 8563 "$(_p0_probe "$_p0/absent")"
+
+# The one-time VM guest rebuild after a launcher change does not fit the
+# ordinary readiness budget, and overrunning it reported a successful upgrade
+# as a crash. A number the user chose still wins over the kit's guess.
+has "a guest rebuild gets its own budget" 'EXAKIT_PERSONAL_REBUILD_TIMEOUT' "$RP_SH"
+has "...only when the user set no ceiling of their own" \
+    '[ -z "${EXAKIT_PERSONAL_READY_TIMEOUT:-}" ] && personal_guest_rebuild_expected' "$RP_SH"
+has "...and the timeout names the variable that raises it" 'raise it with ${_pwr_raise}' "$RP_SH"
+has "the rebuild is announced before the start, not after the wait" \
+    'personal_note_guest_rebuild' "$RP_SH"
+# An update prompt that covers a several-minute start has to say so, and only
+# for the launcher versions that actually behave that way.
+has "the update explains the guest rebuild" 'rebuilds the deployment'"'"'s VM guest' \
+    "$(cat "$ROOT/setup/lib/common.sh")"
+has "...gated on 2.3 or newer" '_rue_guest_rebuild_from=2.2.99999' \
+    "$(cat "$ROOT/setup/lib/common.sh")"
+
 echo "passed: $PASS, failed: $FAIL"
 [ "$FAIL" -eq 0 ]
