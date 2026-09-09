@@ -1141,5 +1141,52 @@ has "the update explains the guest rebuild" 'rebuilds the deployment'"'"'s VM gu
 has "...gated on 2.3 or newer" '_rue_guest_rebuild_from=2.2.99999' \
     "$(cat "$ROOT/setup/lib/common.sh")"
 
+echo
+echo "personal beyond macos (P2):"
+# The module's macOS assumptions are out: the requirements gate admits Linux
+# (requiring Podman, which the launcher does not install there), refuses WSL by
+# name, and the asset map speaks the release's exact spelling - a lowercased
+# guess is a 404 at download time.
+_p2() { # _p2 <os> <arch> -> asset name under stubbed detection
+    bash -c '
+        . "$0/setup/lib/detect.sh" 2>/dev/null
+        detect_os() { echo "'"$1"'"; }
+        detect_arch() { echo "'"$2"'"; }
+        eval "$(sed -n "/^personal_asset_name()/,/^}/p" "$0/setup/lib/runtime-personal.sh")"
+        personal_asset_name' "$ROOT" 2>/dev/null
+}
+check "asset(macos/arm64)"  "exasol-personal_macOS_arm64.tar.gz"  "$(_p2 macos arm64)"
+check "asset(macos/x86_64)" "exasol-personal_macOS_x86_64.tar.gz" "$(_p2 macos x86_64)"
+check "asset(linux/arm64)"  "exasol-personal_Linux_arm64.tar.gz"  "$(_p2 linux arm64)"
+check "asset(linux/x86_64)" "exasol-personal_Linux_x86_64.tar.gz" "$(_p2 linux x86_64)"
+# The gate, behaviourally: what it says when it refuses is the user's whole
+# experience of the refusal, so the checks pin the die() reason - not the text
+# of the case arm.
+_p2gate() { # _p2gate <os> <with-podman:0|1> -> last die/ok marker
+    _pg_bin="$WORK/p2-bin-$1-$2"; mkdir -p "$_pg_bin"
+    [ "$2" = 1 ] && { printf '#!/bin/sh\nexit 0\n' > "$_pg_bin/podman"; chmod +x "$_pg_bin/podman"; }
+    PATH="$_pg_bin:/usr/bin:/bin" bash -c '
+        die() { echo "DIED: $*"; exit 1; }
+        error() { :; }; info() { :; }; warn() { :; }; ok() { echo "OK: $*"; }
+        confirm_env() { return 0; }
+        . "$0/setup/lib/detect.sh" 2>/dev/null
+        detect_os() { echo "'"$1"'"; }
+        detect_arch() { echo arm64; }
+        detect_ram_gb() { echo 16; }
+        detect_free_disk_gb() { echo 100; }
+        EXAKIT_BIN_DIR="$1"
+        EXAKIT_PERSONAL_DEPLOY_DIR="$1/no-deployment"
+        eval "$(sed -n "/^EXAKIT_PERSONAL_PORT=/,/^}/p" "$0/setup/lib/runtime-personal.sh")"
+        unset EXAKIT_DB_PORT
+        personal_check_requirements 2>/dev/null' "$ROOT" "$_pg_bin" 2>/dev/null | tail -1
+}
+check "gate(linux, no podman) refuses podman by name" \
+    "DIED: Podman is required for the Exasol Personal runtime on Linux." "$(_p2gate linux 0)"
+check "gate(linux, podman) passes" \
+    "OK: Compatibility check passed (linux arm64, 16 GB RAM, 100 GB free)" "$(_p2gate linux 1)"
+check "gate(wsl) refuses by name" "DIED: Incompatible platform: wsl." "$(_p2gate wsl 1)"
+check "gate(macos) unchanged" \
+    "OK: Compatibility check passed (macos arm64, 16 GB RAM, 100 GB free)" "$(_p2gate macos 0)"
+
 echo "passed: $PASS, failed: $FAIL"
 [ "$FAIL" -eq 0 ]
