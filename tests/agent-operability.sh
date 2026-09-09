@@ -901,10 +901,15 @@ printf '{\n  "runtime": {\n    "type": "nano"\n  }\n}\n' > "$_jc/manifest.json"
 # from it at load time, so leaving it at the default finds the developer's
 # real exapump and runs a real query.
 # The stripped PATH must starve the test of EXAPUMP, not of Python: hand the
-# real uv through so manifest reads keep working on a Mac whose system
-# python3 is below the kit's floor. (On CI the system python suffices and
-# the variable is simply empty.)
-_jc_nx="$(EXAKIT_HOME="$_jc" EXAKIT_BIN_DIR="$_jc/bin" EXAKIT_UV_BIN="$(command -v uv 2>/dev/null || true)" PATH="/usr/bin:/bin" bash "$ROOT/setup/exakit" sql --json 'SELECT 1' 2>/dev/null)"
+# real uv through, and the suite's own python3 via a tools dir on the PATH.
+# "On CI the system python suffices" was true only of the ubuntu runner - the
+# macOS runner's /usr/bin/python3 is 3.9, below the kit's floor, and with no
+# uv there every --json emission died empty the first time this suite ever
+# ran on that runner.
+_jc_tools="$_jc/tools"; mkdir -p "$_jc_tools"
+_jc_py="$(command -v python3 2>/dev/null || true)"
+[ -n "$_jc_py" ] && ln -sf "$_jc_py" "$_jc_tools/python3"
+_jc_nx="$(EXAKIT_HOME="$_jc" EXAKIT_BIN_DIR="$_jc/bin" EXAKIT_UV_BIN="$(command -v uv 2>/dev/null || true)" PATH="$_jc_tools:/usr/bin:/bin" bash "$ROOT/setup/exakit" sql --json 'SELECT 1' 2>/dev/null)"
 has "a missing exapump is a real error, not bash noise" '"error": "exapump (the SQL client) is not installed"' "$_jc_nx"
 has "...with a runnable remedy" '"remedy": "exakit update"' "$_jc_nx"
 
@@ -917,7 +922,7 @@ has "...with a runnable remedy" '"remedy": "exakit update"' "$_jc_nx"
 # assertions below flipped on ambient host state — red locally, green in CI
 # only because CI runners lack the binaries. uv is handed through so manifest
 # reads still work where the system python is below the kit's floor.
-_jc_ver="$(EXAKIT_HOME="$_jc" EXAKIT_BIN_DIR="$_jc/bin" EXAKIT_UV_BIN="$(command -v uv 2>/dev/null || true)" PATH="/usr/bin:/bin" bash "$ROOT/setup/exakit" version --json 2>/dev/null)"
+_jc_ver="$(EXAKIT_HOME="$_jc" EXAKIT_BIN_DIR="$_jc/bin" EXAKIT_UV_BIN="$(command -v uv 2>/dev/null || true)" PATH="$_jc_tools:/usr/bin:/bin" bash "$ROOT/setup/exakit" version --json 2>/dev/null)"
 check "no component status is a shell command" "0" \
     "$(printf '%s' "$_jc_ver" | python3 -c "
 import json,sys
@@ -1056,7 +1061,11 @@ _r3="$WORK/r3"; mkdir -p "$_r3/bin"
 printf '#!/bin/sh\necho "Error: Connection refused (Errno 61)" >&2\nexit 1\n' > "$_r3/bin/exapump"
 chmod +x "$_r3/bin/exapump"
 printf '{\n  "runtime": {\n    "type": "nano"\n  },\n  "components": {\n    "exapump": {\n      "profile": "starter-kit"\n    }\n  }\n}\n' > "$_r3/manifest.json"
-_r3_out="$(EXAKIT_HOME="$_r3" EXAKIT_BIN_DIR="$_r3/bin" EXAKIT_UV_BIN="$(command -v uv 2>/dev/null || true)" PATH="/usr/bin:/bin" bash "$ROOT/setup/exakit" sql --json 'SELECT 1' 2>/dev/null)"
+# The same interpreter hand-through as the _jc fixtures, for the same macOS
+# runner reason - the stub exapump on this PATH is the thing under test.
+_r3_tools="$_r3/tools"; mkdir -p "$_r3_tools"
+[ -n "$_jc_py" ] && ln -sf "$_jc_py" "$_r3_tools/python3"
+_r3_out="$(EXAKIT_HOME="$_r3" EXAKIT_BIN_DIR="$_r3/bin" EXAKIT_UV_BIN="$(command -v uv 2>/dev/null || true)" PATH="$_r3_tools:$_r3/bin:/usr/bin:/bin" bash "$ROOT/setup/exakit" sql --json 'SELECT 1' 2>/dev/null)"
 check "sql --json remedy is the runnable command" "exakit start" "$(printf '%s' "$_r3_out" | python3 -c "
 import json,sys
 print(json.load(sys.stdin).get('remedy'))" 2>/dev/null)"
