@@ -180,9 +180,20 @@ _pfr() { # _pfr <with-podman:0|1> -> the engine line of the preflight
 }
 check "preflight(personal) asks about podman" "1" "$(_pfr 1)"
 check "preflight(personal, no podman) fails on podman by name" "1" "$(_pfr 0)"
-grep -q 'not available on Windows yet' "$ROOT/install.ps1" && \
-    check "install.ps1 refuses personal-on-windows by name (for now)" present present || \
-    check "install.ps1 refuses personal-on-windows by name (for now)" present MISSING
+grep -q '"personal" { $RuntimeChoice = "personal" }' "$ROOT/install.ps1" && \
+    check "install.ps1 routes personal-on-windows" present present || \
+    check "install.ps1 routes personal-on-windows" present MISSING
+grep -q 'Exasol Personal (local deployment via Podman)' "$ROOT/install.ps1" && \
+    check "install.ps1 names the personal plan" present present || \
+    check "install.ps1 names the personal plan" present MISSING
+# The Windows setup asks the record first, the knob second - repair must never
+# rebuild the OTHER runtime beside the broken one it was asked to repair.
+grep -q '$SetupRuntime = Get-ExakitManifestValue "runtime.type"' "$ROOT/setup/setup-windows-docker.ps1" && \
+    check "setup-windows: the record outranks the knob" present present || \
+    check "setup-windows: the record outranks the knob" present MISSING
+grep -q 'EXAKIT_SETUP_RUNTIME="$(manifest_get runtime.type' "$ROOT/setup/setup-wsl.sh" && \
+    check "setup-wsl: the record outranks the knob" present present || \
+    check "setup-wsl: the record outranks the knob" present MISSING
 
 echo "mcp credential fallback:"
 _mcp_test_dir="$(mktemp -d)"

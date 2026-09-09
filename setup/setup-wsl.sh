@@ -34,7 +34,21 @@ done
 . "$LIB_DIR/detect.sh"
 # The runtime module is chosen, not assumed - and only the chosen one loads,
 # so the truncated-download check moves with the choice.
-EXAKIT_SETUP_RUNTIME="$(exakit_runtime_choice)"
+#
+# AN INSTALLED KIT'S RECORD OUTRANKS THE KNOB. repair-runtime and a resumed
+# install re-run this script over an existing manifest, and the knob is a
+# fresh-install choice: honouring it here would rebuild the OTHER runtime
+# beside the broken one it was asked to repair. Switching runtimes is an
+# uninstall away, never a re-run away.
+EXAKIT_SETUP_RUNTIME="$(manifest_get runtime.type 2>/dev/null || true)"
+if [ -n "$EXAKIT_SETUP_RUNTIME" ]; then
+    if [ -n "${EXAKIT_RUNTIME:-}" ] && [ "$EXAKIT_RUNTIME" != "$EXAKIT_SETUP_RUNTIME" ]; then
+        printf '  ! This machine already runs the %s runtime; EXAKIT_RUNTIME=%s only applies to a fresh install (exakit uninstall first to switch).
+' "$EXAKIT_SETUP_RUNTIME" "$EXAKIT_RUNTIME" >&2
+    fi
+else
+    EXAKIT_SETUP_RUNTIME="$(exakit_runtime_choice)"
+fi
 case "$EXAKIT_SETUP_RUNTIME" in
     personal) _runtime_lib="runtime-personal.sh" ;;
     *)        _runtime_lib="runtime-nano.sh" ;;

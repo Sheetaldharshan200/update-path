@@ -1,7 +1,15 @@
 # setup-windows-docker.ps1 - Exasol Personal Local Starter Kit, Windows path.
 #
-# Installs and connects: Exasol Nano (container via Docker Desktop), exapump,
-# the Exasol MCP server, and pyexasol. Prints connection details when done.
+# Installs and connects a database runtime, exapump, the Exasol MCP server, and
+# pyexasol. Prints connection details when done. Which runtime is
+# Get-ExakitRuntimeChoice's answer (EXAKIT_RUNTIME, or the Windows default):
+#   nano      Exasol Nano container via Docker Desktop (default)
+#   personal  the Exasol Personal launcher (host Podman; the launcher installs
+#             Podman itself through winget when it is missing)
+# An installed kit's recorded runtime outranks the knob - repair and resume
+# re-run this script, and rebuilding the OTHER runtime beside a broken one is
+# not a repair. The two runtimes differ only in the requirements gate and the
+# first two steps; everything from exapump on is runtime-blind and shared.
 #
 # Usually launched by install.ps1, but runs standalone from a checkout too:
 #   powershell -ExecutionPolicy Bypass -File setup\setup-windows-docker.ps1
@@ -16,6 +24,7 @@ $KitRoot = Split-Path -Parent $ScriptDir
 
 . (Join-Path $LibDir "exakit-common.ps1")
 . (Join-Path $LibDir "nano.ps1")
+. (Join-Path $LibDir "runtime-personal.ps1")
 . (Join-Path $LibDir "exapump.ps1")
 . (Join-Path $LibDir "mcp.ps1")
 . (Join-Path $LibDir "pyexasol.ps1")
@@ -65,8 +74,23 @@ try {
     # One setup run at a time; the lock's pid is how `exakit status` tells a live
     # install from one that crashed. Twin of exakit_enable_failure_handling.
     Enter-ExakitInstallLock
+    # The runtime is chosen, not assumed - and an installed kit's record
+    # outranks the knob (see the header). Twin of the same block in
+    # setup-wsl.sh.
+    $SetupRuntime = Get-ExakitManifestValue "runtime.type"
+    if ($SetupRuntime) {
+        if ($env:EXAKIT_RUNTIME -and $env:EXAKIT_RUNTIME -ne $SetupRuntime) {
+            Warn2 "This machine already runs the $SetupRuntime runtime; EXAKIT_RUNTIME=$($env:EXAKIT_RUNTIME) only applies to a fresh install (exakit uninstall first to switch)."
+        }
+    } else {
+        $SetupRuntime = Get-ExakitRuntimeChoice
+    }
+
     # --- step 1: requirements ------------------------------------------------
-    Test-NanoRequirements
+    switch ($SetupRuntime) {
+        "personal" { Test-PersonalRequirements }
+        default    { Test-NanoRequirements }
+    }
 
     # --- step 2: Nano container -----------------------------------------------
     # Its own step, matching the macOS shape and heading. What it fetches is the
@@ -74,16 +98,41 @@ try {
     # name the image - the two platforms install different things through the
     # same step. Twin of the same split in setup-wsl.sh.
     if (Begin-ExakitStep "launcher" "Step 1/6  Exasol launcher") {
-        Install-NanoImage
+        switch ($SetupRuntime) {
+            "personal" { Install-PersonalLauncher }
+            default    { Install-NanoImage }
+        }
         Set-ExakitStepDone "launcher"
     }
 
     if (Begin-ExakitStep "runtime" "Step 2/6  Local database deployment") {
-        Install-Nano
+        switch ($SetupRuntime) {
+            "personal" { Install-PersonalDeployment }
+            default    { Install-Nano }
+        }
         Set-ExakitStepDone "runtime"
-    } elseif ((Get-NanoStatus) -ne "running") {
-        Info "Runtime marked done but not running - starting it"
-        Install-Nano
+    } else {
+        switch ($SetupRuntime) {
+            "personal" {
+                # The resume arms every personal setup carries: redeploy what is
+                # gone, start what is merely stopped - every later step talks
+                # SQL to the database. Twin of setup-macos.sh / setup-wsl.sh.
+                if (-not (Test-PersonalDeploymentExists)) {
+                    Info "Deployment marked done but not reachable - redeploying"
+                    Install-PersonalDeployment
+                } elseif (-not (Test-PersonalDeploymentRunning)) {
+                    Info "Database is deployed but not running - starting it"
+                    Start-Personal
+                    Wait-PersonalReady
+                }
+            }
+            default {
+                if ((Get-NanoStatus) -ne "running") {
+                    Info "Runtime marked done but not running - starting it"
+                    Install-Nano
+                }
+            }
+        }
     }
 
     # exapump publishes Windows binaries for x86_64 only. On other

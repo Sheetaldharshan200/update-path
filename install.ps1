@@ -122,12 +122,11 @@ if ($env:OS -notlike "*Windows*") {
 # migration. Validated before anything is downloaded, and an explicit request
 # for the unavailable runtime fails loudly rather than quietly installing the
 # other one. Twin of the EXAKIT_RUNTIME gate in install.sh.
+$RuntimeChoice = "nano"
 if ($env:EXAKIT_RUNTIME) {
     switch ($env:EXAKIT_RUNTIME) {
         "nano" { }
-        "personal" {
-            throw "EXAKIT_RUNTIME=personal is not available on Windows yet - the migration to the Exasol Personal runtime is in progress. Unset EXAKIT_RUNTIME to install Exasol Nano."
-        }
+        "personal" { $RuntimeChoice = "personal" }
         default {
             throw "EXAKIT_RUNTIME='$env:EXAKIT_RUNTIME' is not a runtime this kit knows. Valid values: personal, nano - or unset it for the platform default."
         }
@@ -268,14 +267,28 @@ function Get-ExakitRequirementChecks {
             -Text "CPU architecture: $env:PROCESSOR_ARCHITECTURE - the database installs and runs, but exapump, the sample data and the AI bridge are skipped (exapump ships Windows builds for x86_64 only)"
     }
 
-    $dockerEvidence = Get-ExakitDockerEvidence
-    if ($dockerEvidence) {
-        $checks += New-ExakitCheckResult -State "ok" -Text "Container runtime: Docker Desktop found ($dockerEvidence)"
+    if ($RuntimeChoice -eq "personal") {
+        # The personal runtime asks a different question: no Docker Desktop
+        # involved, and a missing Podman is not a failure - the Exasol launcher
+        # offers to install it itself (winget, possibly an administrator
+        # prompt). Failing the gate for it would demand a manual install the
+        # launcher makes unnecessary.
+        if (Get-Command podman -ErrorAction SilentlyContinue) {
+            $checks += New-ExakitCheckResult -State "ok" -Text "Podman: available (the Exasol Personal runtime deploys through it)"
+        } else {
+            $checks += New-ExakitCheckResult -State "note" `
+                -Text "Podman not found - the Exasol launcher will offer to install it (Windows Package Manager; may ask for administrator approval)"
+        }
     } else {
-        # Word for word what Assert-NanoEngine says for the same machine.
-        $checks += New-ExakitCheckResult -State "bad" `
-            -Text "No container runtime found. Install Docker Desktop (https://docs.docker.com/desktop/), then re-run." `
-            -Reason "No container runtime found. Install Docker Desktop (https://docs.docker.com/desktop/), then re-run."
+        $dockerEvidence = Get-ExakitDockerEvidence
+        if ($dockerEvidence) {
+            $checks += New-ExakitCheckResult -State "ok" -Text "Container runtime: Docker Desktop found ($dockerEvidence)"
+        } else {
+            # Word for word what Assert-NanoEngine says for the same machine.
+            $checks += New-ExakitCheckResult -State "bad" `
+                -Text "No container runtime found. Install Docker Desktop (https://docs.docker.com/desktop/), then re-run." `
+                -Reason "No container runtime found. Install Docker Desktop (https://docs.docker.com/desktop/), then re-run."
+        }
     }
 
     $ramGb = Get-ExakitTotalRamGb
@@ -530,9 +543,11 @@ if (Test-Path $uiLib) {
     try {
         $uiText = [System.IO.File]::ReadAllText($uiLib, [System.Text.Encoding]::UTF8)
         . ([scriptblock]::Create($uiText))
+        $databasePlan = "Exasol Nano (container via Docker Desktop)"
+        if ($RuntimeChoice -eq "personal") { $databasePlan = "Exasol Personal (local deployment via Podman)" }
         Write-ExakitInstallPlan `
             -Platform "windows ($env:PROCESSOR_ARCHITECTURE, $ramText)" `
-            -Database "Exasol Nano (container via Docker Desktop)" `
+            -Database $databasePlan `
             -KitDir $KitDir -StateDir $ExakitHome
         $uiLoaded = $true
     } catch { $uiLoaded = $false }

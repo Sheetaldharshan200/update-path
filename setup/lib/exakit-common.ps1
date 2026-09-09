@@ -4228,11 +4228,27 @@ function Install-ExakitSkills {
 # halves: it starts an existing container, creates a missing one, and waits
 # for ready); a missing one is created only when the caller allows it, and
 # otherwise refused with the exact command that fixes it.
-# Twin of exakit_ensure_runtime_running in common.sh (the personal runtime is
-# macOS-only, so this side only knows Nano).
+# Twin of exakit_ensure_runtime_running in common.sh.
 function Confirm-ExakitRuntimeRunning {
     param([switch]$Deploy)
-    if ((Get-ExakitManifestValue "runtime.type") -ne "nano") { return }
+    $runtimeType = Get-ExakitManifestValue "runtime.type"
+    if ($runtimeType -eq "personal") {
+        if (-not (Get-Command Get-PersonalStatus -ErrorAction SilentlyContinue)) { return }
+        if (Test-PersonalDeploymentRunning) { return }
+        if (Test-PersonalDeploymentExists) {
+            Info "Self-heal: the database is deployed but not running - starting it"
+            Start-Personal
+            Wait-PersonalReady
+            return
+        }
+        if ($Deploy) {
+            Info "Self-heal: no database deployment found - deploying one"
+            Install-PersonalDeployment
+            return
+        }
+        Fail "No database found. Start one with: exakit start (or re-run the installer)"
+    }
+    if ($runtimeType -ne "nano") { return }
     if (-not (Get-Command Get-NanoStatus -ErrorAction SilentlyContinue)) { return }
     if ((Get-NanoStatus) -eq "running") { return }
     $exists = $false
@@ -5726,6 +5742,13 @@ function Get-ExakitComponentFallback {
         "mcp" { return $script:McpVersionFallback }
         "pyexasol" { return $script:PyexasolVersionFallback }
         "nano" { return $script:NanoTagFallback }
+        "personal" {
+            # Guarded like the add-on constants: the module defines it, and this
+            # file loads first.
+            $pvar = Get-Variable -Scope Script -Name "PersonalVersionFallback" -ErrorAction SilentlyContinue
+            if ($pvar) { return $pvar.Value }
+            return ""
+        }
         # The skill set has no constant either: the kit copy on disk says which
         # set it carries.
         "skills" { return (Get-ExakitSkillsLocalVersion) }
@@ -5921,21 +5944,31 @@ function Get-ExakitRuntimeChoice {
 
 function Register-ExakitAutostart {
     param([Parameter(Mandatory)][string]$Id)
+    $command = $null
     if ($Id -eq "database") {
-        # The container's own restart policy is what survives a reboot.
-        if ((Get-RuntimeType) -eq "nano") {
-            if (Set-NanoRestartPolicy -Policy "always") {
-                Ok "database: the container restarts with Docker"
-                return $true
+        switch (Get-RuntimeType) {
+            "nano" {
+                # The container's own restart policy is what survives a reboot.
+                if (Set-NanoRestartPolicy -Policy "always") {
+                    Ok "database: the container restarts with Docker"
+                    return $true
+                }
+                return $false
             }
-            return $false
+            "personal" {
+                # No daemon honours a restart policy here: the launcher starts
+                # the deployment, so the Startup entry runs it - the same shape
+                # the sh side registers through the platform supervisor.
+                $command = '"' + (Get-PersonalCli) + '" start'
+            }
+            default { return $false }
         }
-        return $false
+    } else {
+        $addon = Get-ExakitMarketplaceAddon $Id
+        if (-not ($addon -and $addon.PSObject.Properties["AutostartFn"] -and
+                  (Get-Command $addon.AutostartFn -ErrorAction SilentlyContinue))) { return $false }
+        $command = & $addon.AutostartFn
     }
-    $addon = Get-ExakitMarketplaceAddon $Id
-    if (-not ($addon -and $addon.PSObject.Properties["AutostartFn"] -and
-              (Get-Command $addon.AutostartFn -ErrorAction SilentlyContinue))) { return $false }
-    $command = & $addon.AutostartFn
     if (-not $command) { return $false }
     $dir = Get-ExakitStartupDir
     if (-not (Test-Path $dir)) {

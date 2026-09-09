@@ -69,7 +69,7 @@ Flags do not travel through a pipe, so choices are env vars. They work on all pl
 | `EXAKIT_DRY_RUN=1` | Download the kit for inspection, installs nothing |
 | `EXAKIT_LOCAL_KIT=/path/to/checkout` | Install from a local checkout instead of downloading. On WSL this is the only supported way to install from a Windows-side clone: pass the `/mnt/c/...` path |
 | `EXAKIT_DB_PORT=8564` | Alternate DB port (Linux and Windows container path only). Set it once, for the install: the kit records it and every later `exakit start` reuses it |
-| `EXAKIT_RUNTIME=personal\|nano` | Which database runtime a **fresh** install deploys. Unset (the default), each platform keeps its usual runtime: Exasol Personal on macOS, the Exasol Nano container on Linux, WSL and Windows. `personal` on native Linux deploys Exasol Personal instead (Podman required — the gate checks and names it). A combination that does not exist on the platform is refused up front by name, never silently rerouted; an installed kit's runtime is never changed by this variable |
+| `EXAKIT_RUNTIME=personal\|nano` | Which database runtime a **fresh** install deploys. Unset (the default), each platform keeps its usual runtime: Exasol Personal on macOS, the Exasol Nano container on Linux, WSL and Windows. `personal` on native Linux deploys Exasol Personal instead (Podman required — the gate checks and names it); on Windows x86_64 it deploys Exasol Personal through host Podman (the launcher installs Podman itself when missing — winget, possibly an administrator prompt). A combination that does not exist on the platform is refused up front by name, never silently rerouted; an installed kit's runtime is never changed by this variable |
 
 Version and update behaviour (all optional, sensible defaults):
 
