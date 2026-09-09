@@ -122,15 +122,33 @@ if ($env:OS -notlike "*Windows*") {
 # migration. Validated before anything is downloaded, and an explicit request
 # for the unavailable runtime fails loudly rather than quietly installing the
 # other one. Twin of the EXAKIT_RUNTIME gate in install.sh.
-$RuntimeChoice = "nano"
+# THE DEFAULT IS EXASOL PERSONAL. A machine it does not support (Windows arm64
+# hardware - the launcher publishes no arm64 local deployment) exits gracefully
+# below, naming what Personal does support; it is never rerouted silently onto
+# the container. EXAKIT_RUNTIME=nano stays the explicit escape hatch. The
+# HARDWARE is asked the way Get-ExakitHostArch asks it - inlined, since no kit
+# library is loaded yet - because PROCESSOR_ARCHITECTURE reports the emulated
+# x64 shell on ARM devices.
+$HostIsAmd64 = $true
+try {
+    $cpu = (Get-CimInstance -ClassName Win32_Processor -ErrorAction Stop | Select-Object -First 1).Architecture
+    if ($cpu -eq 12 -or $cpu -eq 5) { $HostIsAmd64 = $false }
+} catch {
+    $p = if ($env:PROCESSOR_ARCHITEW6432) { $env:PROCESSOR_ARCHITEW6432 } else { $env:PROCESSOR_ARCHITECTURE }
+    if ($p -match 'ARM') { $HostIsAmd64 = $false }
+}
+$RuntimeChoice = "personal"
 if ($env:EXAKIT_RUNTIME) {
     switch ($env:EXAKIT_RUNTIME) {
-        "nano" { }
+        "nano" { $RuntimeChoice = "nano" }
         "personal" { $RuntimeChoice = "personal" }
         default {
             throw "EXAKIT_RUNTIME='$env:EXAKIT_RUNTIME' is not a runtime this kit knows. Valid values: personal, nano - or unset it for the platform default."
         }
     }
+}
+if ($RuntimeChoice -eq "personal" -and -not $HostIsAmd64) {
+    throw "Exasol Personal supports macOS, native Linux and Windows x86_64 - it does not support Windows arm64. Nothing was installed. (To run the container runtime instead, set EXAKIT_RUNTIME=nano.)"
 }
 
 # GROUP POLICY OUTRANKS -ExecutionPolicy Bypass, by design: on a machine where

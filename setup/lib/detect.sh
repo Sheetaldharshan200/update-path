@@ -479,7 +479,15 @@ preflight_report() {
     fi
 
     # container runtime (only the Nano platforms need one)
-    if [ "$_os" != "macos" ] && [ "${EXAKIT_RUNTIME:-}" = "personal" ]; then
+    # The preflight runs with only this file loaded, so the default is resolved
+    # inline: Exasol Personal unless EXAKIT_RUNTIME=nano says otherwise. Twin
+    # of exakit_runtime_choice. On WSL the answer is the same graceful refusal
+    # the installer gives, said here where it costs nothing.
+    _pf_runtime="${EXAKIT_RUNTIME:-personal}"
+    if [ "$_os" = "wsl" ] && [ "$_pf_runtime" = "personal" ]; then
+        _pf_bad "Exasol Personal supports macOS, native Linux and Windows x86_64 - it does not support WSL (to run the container runtime inside this distro, set EXAKIT_RUNTIME=nano)"
+    fi
+    if [ "$_os" != "macos" ] && [ "$_pf_runtime" = "personal" ] && [ "$_os" != "wsl" ]; then
         # The personal runtime asks a narrower question than the container one:
         # Podman specifically, because the launcher will not use Docker. The
         # full engine triage below is the container runtime's story - running

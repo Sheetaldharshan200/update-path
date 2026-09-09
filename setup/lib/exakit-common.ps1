@@ -5960,7 +5960,13 @@ function Get-RuntimeType { return (Get-ExakitManifestValue "runtime.type") }
 # Twin of exakit_runtime_choice in setup/lib/common.sh.
 function Get-ExakitRuntimeChoice {
     $choice = $env:EXAKIT_RUNTIME
-    if ([string]::IsNullOrEmpty($choice)) { return "nano" }
+    if ([string]::IsNullOrEmpty($choice)) {
+        # THE DEFAULT IS EXASOL PERSONAL, everywhere. A machine it does not
+        # support (Windows arm64) is refused gracefully by the requirements
+        # gate, naming what Personal does support - never rerouted silently.
+        # EXAKIT_RUNTIME=nano stays the explicit escape hatch.
+        return "personal"
+    }
     if ($choice -eq "nano" -or $choice -eq "personal") { return $choice }
     Fail "EXAKIT_RUNTIME='$choice' is not a runtime this kit knows. Valid values: personal, nano - or unset it for the platform default."
 }

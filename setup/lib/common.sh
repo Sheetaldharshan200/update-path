@@ -72,7 +72,11 @@ EXAKIT_PYEXASOL_VERSION="${EXAKIT_PYEXASOL_VERSION:-}"
 # possible (offline install, API rate limit, private mirror). Successful latest
 # resolutions are recorded in the manifest so later updates compare against the
 # version that was actually installed.
-EXAKIT_PERSONAL_VERSION_FALLBACK="${EXAKIT_PERSONAL_VERSION_FALLBACK:-2.2.0}"
+# 2.3.0-rc2 DELIBERATELY, and only until 2.3.0 final publishes: the flipped
+# Linux and Windows defaults need a launcher that HAS local deployments there,
+# which no 2.2 release does. Moving to final is this constant plus
+# components.personal.version in versions.json, together in one commit.
+EXAKIT_PERSONAL_VERSION_FALLBACK="${EXAKIT_PERSONAL_VERSION_FALLBACK:-2.3.0-rc2}"
 EXAKIT_NANO_TAG_FALLBACK="${EXAKIT_NANO_TAG_FALLBACK:-2026.2.0-nano.3}"
 EXAKIT_EXAPUMP_VERSION_FALLBACK="${EXAKIT_EXAPUMP_VERSION_FALLBACK:-0.12.0}"
 EXAKIT_MCP_VERSION_FALLBACK="${EXAKIT_MCP_VERSION_FALLBACK:-2.2.0}"
@@ -2384,10 +2388,12 @@ exakit_runtime_choice() {
         "") ;;
         *) die "EXAKIT_RUNTIME='${EXAKIT_RUNTIME}' is not a runtime this kit knows. Valid values: personal, nano - or unset it for the platform default." ;;
     esac
-    case "$(detect_os)" in
-        macos) printf '%s' "personal" ;;
-        *)     printf '%s' "nano" ;;
-    esac
+    # THE DEFAULT IS EXASOL PERSONAL, everywhere. A platform Personal does not
+    # support is a graceful refusal naming what it does support - never a
+    # silent reroute onto the container runtime. EXAKIT_RUNTIME=nano stays the
+    # explicit escape hatch for machines that need the container (WSL, Windows
+    # arm64, an existing Nano install being repaired).
+    printf '%s' "personal"
 }
 
 # exakit_runtime_is_running — one question, no side effects: is the installed
