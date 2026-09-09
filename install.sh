@@ -165,14 +165,14 @@ main() {
             else
                 platform="linux"
             fi
-            [ -n "$runtime_choice" ] || runtime_choice="nano"
+            # The default is Exasol Personal, everywhere. A platform it does
+            # not support exits gracefully naming what it does support - never
+            # a silent reroute onto the container runtime; EXAKIT_RUNTIME=nano
+            # stays the explicit escape hatch for the container.
+            [ -n "$runtime_choice" ] || runtime_choice="personal"
             if [ "$runtime_choice" = "personal" ]; then
-                # Available on native Linux (Podman required - the setup gate
-                # checks and names it). NOT on WSL: Personal has no WSL story,
-                # and inside a distro the honest runtime is the container this
-                # kit already ships there.
                 if [ "$platform" = "wsl" ]; then
-                    fail "EXAKIT_RUNTIME=personal does not target WSL - inside a distro use the container runtime. Unset EXAKIT_RUNTIME to install Exasol Nano."
+                    fail "Exasol Personal supports macOS, native Linux and Windows x86_64 - it does not support WSL. Nothing was installed. (To run the container runtime inside this distro instead, set EXAKIT_RUNTIME=nano.)"
                 fi
                 target="Exasol Personal (local deployment via Podman)"
             else

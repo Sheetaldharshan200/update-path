@@ -20,7 +20,11 @@
 #     the flag is probed per subcommand exactly as the sh side does
 
 $script:PersonalRepo            = "exasol/exasol-personal"
-$script:PersonalVersionFallback = "2.2.0"
+# 2.3.0-rc2 deliberately, until 2.3.0 final publishes - the flipped Windows
+# default needs a launcher with Windows local deployments, which no 2.2 release
+# has. Twin of EXAKIT_PERSONAL_VERSION_FALLBACK in common.sh; both move to
+# final together with components.personal.version.
+$script:PersonalVersionFallback = "2.3.0-rc2"
 $script:PersonalPort            = 8563
 $script:PersonalProbeTimeout    = if ($env:EXAKIT_PERSONAL_PROBE_TIMEOUT) { [int]$env:EXAKIT_PERSONAL_PROBE_TIMEOUT } else { 10 }
 $script:PersonalMinRamGb        = if ($env:EXAKIT_PERSONAL_MIN_RAM_GB)  { [int]$env:EXAKIT_PERSONAL_MIN_RAM_GB }  else { 8 }
@@ -230,7 +234,7 @@ function Wait-PersonalReady {
 function Test-PersonalRequirements {
     $arch = Get-ExakitHostArch
     if ($arch -ne "amd64") {
-        Fail "This machine is not compatible: Exasol Personal has no Windows local deployment for the '$arch' CPU architecture. On Windows arm64 use the container runtime instead - unset EXAKIT_RUNTIME and re-run."
+        Fail "Exasol Personal supports macOS, native Linux and Windows x86_64 - it does not support Windows '$arch'. Nothing was installed. (To run the container runtime instead, set EXAKIT_RUNTIME=nano and re-run.)"
     }
     $ramGb = 0
     try {

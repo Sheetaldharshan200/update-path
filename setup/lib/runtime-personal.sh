@@ -45,15 +45,15 @@ personal_check_requirements() {
             ;;
         wsl)
             # Personal's Windows path is host Podman inside a Podman machine,
-            # not WSL - and inside a distro the honest answer today is the
-            # container runtime this kit already ships there.
-            error "This machine is not compatible: the Exasol Personal local deployment does not target WSL."
-            info "Inside WSL use the container runtime (Exasol Nano) - unset EXAKIT_RUNTIME and re-run."
+            # not WSL. Said as the support matrix, then a graceful exit - never
+            # a silent reroute onto the container runtime.
+            error "Exasol Personal supports macOS, native Linux and Windows x86_64 - it does not support WSL."
+            info "Nothing was installed. To run the container runtime inside this distro instead, set EXAKIT_RUNTIME=nano and re-run."
             die "Incompatible platform: wsl."
             ;;
         *)
-            error "This machine is not compatible: the Exasol Personal local deployment supports macOS and Linux in this kit."
-            info "On Windows use install.ps1."
+            error "Exasol Personal supports macOS, native Linux and Windows x86_64 - it does not support $_pcr_os."
+            info "Nothing was installed. On Windows use install.ps1."
             die "Incompatible platform: $_pcr_os."
             ;;
     esac

@@ -1,6 +1,14 @@
 # Quickstart: WSL
 
-Gets you from Windows to a local Exasol database with an AI assistant connected, using **WSL (Windows Subsystem for Linux)**. Prefer staying in PowerShell? Use the [Windows Docker quickstart](windows-docker.md) instead.
+Gets you from Windows to a local Exasol database with an AI assistant connected, using **WSL (Windows Subsystem for Linux)**.
+
+**Exasol Personal does not support WSL** — it supports macOS, native Linux and Windows x86_64. A plain install inside a distro therefore exits gracefully saying exactly that. On this platform the kit's database is the **Exasol Nano container**, chosen explicitly:
+
+```bash
+export EXAKIT_RUNTIME=nano
+```
+
+Set it in the same shell before the preflight and the install below (both commands honour it). Prefer staying in PowerShell? The [Windows quickstart](windows-docker.md) runs Exasol Personal natively — no WSL involved.
 
 ## What you need
 
@@ -15,15 +23,15 @@ Gets you from Windows to a local Exasol database with an AI assistant connected,
 Check from a WSL terminal (installs nothing):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/krishna-exasol/update-path/main/install.sh | EXAKIT_PREFLIGHT=1 sh
+curl -fsSL https://raw.githubusercontent.com/krishna-exasol/update-path/main/install.sh | EXAKIT_RUNTIME=nano EXAKIT_PREFLIGHT=1 sh
 ```
 
-Every ✗ line tells you what to fix. The usual one is Docker Desktop not running or WSL integration not enabled.
+Every ✗ line tells you what to fix. The usual one is Docker Desktop not running or WSL integration not enabled. (Without `EXAKIT_RUNTIME=nano` the first line is the Exasol Personal support matrix — that is the graceful refusal, not a broken machine.)
 
 ## Install (inside the WSL terminal)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/krishna-exasol/update-path/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/krishna-exasol/update-path/main/install.sh | EXAKIT_RUNTIME=nano sh
 ```
 
 What happens, in order:

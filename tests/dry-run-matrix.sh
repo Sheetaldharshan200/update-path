@@ -131,8 +131,9 @@ EOF
         '"${_rc_val:+EXAKIT_RUNTIME=$_rc_val}"' exakit_runtime_choice' "$ROOT" 2>/dev/null
 }
 check "choice(macos, unset)"   "personal" "$(_rc macos "")"
-check "choice(linux, unset)"   "nano"     "$(_rc linux "")"
-check "choice(wsl, unset)"     "nano"     "$(_rc wsl "")"
+check "choice(linux, unset)"   "personal" "$(_rc linux "")"
+check "choice(wsl, unset)"     "personal" "$(_rc wsl "")"
+check "choice(explicit nano is the only road to the container)" "nano" "$(_rc linux nano)"
 check "choice(explicit nano)"  "nano"     "$(EXAKIT_RUNTIME= _rc macos nano)"
 check "choice(unknown value dies)" "died" "$(_rc linux docker)"
 # install.sh refuses the combinations that do not exist yet, by name - never
@@ -143,9 +144,17 @@ grep -q "is not a runtime this kit knows" "$ROOT/install.sh" && \
 grep -q 'not available on macOS' "$ROOT/install.sh" && \
     check "install.sh refuses nano-on-macos by name" present present || \
     check "install.sh refuses nano-on-macos by name" present MISSING
-grep -q 'does not target WSL' "$ROOT/install.sh" && \
-    check "install.sh refuses personal-on-WSL by name" present present || \
-    check "install.sh refuses personal-on-WSL by name" present MISSING
+# The refusal is graceful and names the matrix, never a silent reroute: no code
+# path may assign the container runtime when the user asked for nothing.
+grep -qE 'runtime_choice="nano"' "$ROOT/install.sh" && \
+    check "no code path defaults to the container" absent PRESENT || \
+    check "no code path defaults to the container" absent absent
+grep -q 'it does not support WSL' "$ROOT/install.sh" && \
+    check "install.sh exits gracefully on WSL, naming the support matrix" present present || \
+    check "install.sh exits gracefully on WSL, naming the support matrix" present MISSING
+grep -q 'it does not support Windows arm64' "$ROOT/install.ps1" && \
+    check "install.ps1 exits gracefully on arm64, naming the support matrix" present present || \
+    check "install.ps1 exits gracefully on arm64, naming the support matrix" present MISSING
 grep -q 'Exasol Personal (local deployment via Podman)' "$ROOT/install.sh" && \
     check "install.sh routes personal-on-linux and names the plan" present present || \
     check "install.sh routes personal-on-linux and names the plan" present MISSING
@@ -162,8 +171,8 @@ _swr() { EXAKIT_RUNTIME="$1" bash -c '
         personal) echo "runtime-personal.sh" ;;
         *)        echo "runtime-nano.sh" ;;
     esac' "$ROOT" 2>/dev/null; }
-check "module(linux, unset)"    "runtime-nano.sh"     "$(EXAKIT_RUNTIME= _swr "")"
-check "module(linux, personal)" "runtime-personal.sh" "$(_swr personal)"
+check "module(linux, unset)"    "runtime-personal.sh" "$(EXAKIT_RUNTIME= _swr "")"
+check "module(linux, nano)"     "runtime-nano.sh"     "$(_swr nano)"
 # The preflight answers the question the chosen runtime actually asks: under
 # the knob it checks Podman by name and never runs the Docker triage, whose
 # remedies would send a Podman-only machine to install Docker.

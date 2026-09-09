@@ -80,11 +80,15 @@ You already use AI. The hard part is trusting it with your data. This kit gives 
 
 ### Will it run on my machine?
 
+The database everywhere is **Exasol Personal** — the same launcher-managed local deployment on every platform.
+
 | Your machine | Minimum Requirements | That's all |
 |---|---|---|
-| **macOS** | 8 GB+ RAM, 20 GB free disk | Runs in a lightweight managed VM — no Docker to install |
-| **Linux / WSL** | Docker or Podman (running), 4 GB+ RAM, ~10 GB free disk where the engine keeps its data (plus ~3 GB at your home) | Container runtime required |
-| **Windows** | Docker Desktop (running), 4 GB+ RAM, ~10 GB free disk where Docker keeps its data (plus ~3 GB on the system drive) | Native Windows uses the PowerShell installer |
+| **macOS** | 8 GB+ RAM, 20 GB free disk | Runs in a lightweight managed VM — nothing to install first |
+| **Linux** | Podman (rootless is fine), 8 GB+ RAM, 20 GB free disk | `sudo apt-get install -y podman` / `sudo dnf install -y podman` if missing — the installer names it |
+| **Windows x86_64** | 8 GB+ RAM, 20 GB free disk | Runs through host Podman; the launcher offers to install Podman itself (may ask for administrator approval) |
+
+Exasol Personal does not support **WSL** or **Windows arm64** — the installer says so and exits without changing anything. Inside a WSL distro the container runtime is still available explicitly: `EXAKIT_RUNTIME=nano`.
 
 **No Python install needed** on any platform: the kit uses a system Python 3.11+ when it finds one, and otherwise installs a managed Python for its own use.
 
@@ -221,10 +225,9 @@ https://github.com/user-attachments/assets/77916db0-d273-4720-8d59-1aedac95d5e8
 | What&nbsp;makes&nbsp;this&nbsp;"for&nbsp;Agentic&nbsp;AI"? | An MCP server ships in the box with a dedicated read-only login, so Claude, Cursor, and other MCP clients can query your data directly, with every SQL statement inspectable before it runs. |
 | What&nbsp;sample&nbsp;data&nbsp;is&nbsp;included? | Three bundled datasets: TPC-H retail, smart-meter energy, daily weather, each in its own schema. See the [data dictionary](data/data-dictionary.md). |
 | Can&nbsp;I&nbsp;load&nbsp;my&nbsp;own&nbsp;data? | Yes. `exakit data-load` has a local CSV or Parquet option, and `exapump upload` works from the terminal. |
-| Docker&nbsp;installed&nbsp;but&nbsp;not&nbsp;running? | Start Docker Desktop, run the install command again. |
-| Docker Desktop runs on Windows<br>but WSL can't see it? | Docker Desktop → Settings → Resources → **WSL integration** → enable your distro → Apply & restart (the installer detects and flags this too). |
+| Do&nbsp;I&nbsp;need&nbsp;Docker? | No. The database is an Exasol Personal deployment on every platform. Linux needs Podman (the preflight names the install command); on Windows the launcher installs Podman itself when it is missing. |
 | `exakit` not recognized after<br>a Windows install? | Re-run the install command. It adds `~\.local\bin` to your user PATH and repairs the command automatically. |
-| Port&nbsp;8563&nbsp;already&nbsp;taken? | Linux, WSL and Windows: `EXAKIT_DB_PORT=8564` before the install command. macOS deploys on 8563 itself — an existing Exasol there is adopted, anything else must be stopped first. |
+| Port&nbsp;8563&nbsp;already&nbsp;taken? | The launcher selects and remembers the deployment's port itself, and the kit reads back whatever it selected — an existing Exasol on the port is adopted, anything else is reported with the process named. |
 | Behind&nbsp;a&nbsp;corporate&nbsp;proxy? | `export HTTPS_PROXY=...` and re-run. |
 | Where's&nbsp;the&nbsp;deep-dive&nbsp;for&nbsp;my&nbsp;OS? | [macOS](quickstarts/macos.md) · [Linux](quickstarts/linux.md) · [WSL](quickstarts/windows-wsl.md) · [Windows + Docker](quickstarts/windows-docker.md) |
 | Installing&nbsp;over&nbsp;a&nbsp;database<br>I&nbsp;already&nbsp;have? | An existing database is adopted, never replaced. Running or stopped, it is reused with its data intact. Only a database that cannot start at all is replaced, and the installer warns you first. |
