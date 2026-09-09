@@ -555,6 +555,7 @@ jobs:
           if command -v pwsh >/dev/null 2>&1; then
             pwsh -NoProfile -File tests/noninteractive-answers.ps1
             pwsh -NoProfile -File tests/uninstall-ps.ps1
+            pwsh -NoProfile -File tests/runtime-personal-ps.ps1
           else
             echo "pwsh not installed on this runner - PowerShell suites skipped"
           fi

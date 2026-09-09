@@ -1,0 +1,516 @@
+# runtime-personal.ps1 - Exasol Personal local runtime module (Windows).
+#
+# Twin of setup/lib/runtime-personal.sh, at the eleven-function contract the
+# rest of the kit actually calls - not a line-for-line port of its 1,200 lines.
+# Dot-sourced by exakit-common.ps1 consumers after that file has loaded; every
+# helper this module leans on (Info/Ok/Warn2/Fail, the manifest, credentials,
+# bounded probes, downloads) lives there.
+#
+# Launcher facts, from the same release this module downloads:
+#   - the Windows asset is exasol-personal_Windows_x86_64.zip + checksums;
+#     there is NO Windows arm64 local deployment
+#   - the database runs through HOST Podman inside Podman's default machine;
+#     a missing Podman is offered for install by the launcher itself (winget,
+#     possibly with an administrator prompt) - the kit never installs it
+#   - that default machine is shared host-wide: the launcher never reconfigures
+#     an existing one and leaves it running after stop and destroy, so this
+#     module owns the DEPLOYMENT and nothing else
+#   - deployment state: ~\.exasol\personal\deployments\default
+#   - from 2.3, non-interactive host preparation FAILS without --auto-approve;
+#     the flag is probed per subcommand exactly as the sh side does
+
+$script:PersonalRepo            = "exasol/exasol-personal"
+$script:PersonalVersionFallback = "2.2.0"
+$script:PersonalPort            = 8563
+$script:PersonalProbeTimeout    = if ($env:EXAKIT_PERSONAL_PROBE_TIMEOUT) { [int]$env:EXAKIT_PERSONAL_PROBE_TIMEOUT } else { 10 }
+$script:PersonalMinRamGb        = if ($env:EXAKIT_PERSONAL_MIN_RAM_GB)  { [int]$env:EXAKIT_PERSONAL_MIN_RAM_GB }  else { 8 }
+$script:PersonalMinDiskGb       = if ($env:EXAKIT_PERSONAL_MIN_DISK_GB) { [int]$env:EXAKIT_PERSONAL_MIN_DISK_GB } else { 20 }
+$script:PersonalBinPath         = Join-Path $script:BinDir "exasol.exe"
+$script:PersonalDeployDir       = if ($env:EXAKIT_PERSONAL_DEPLOY_DIR) { $env:EXAKIT_PERSONAL_DEPLOY_DIR } else { Join-Path $HOME ".exasol\personal\deployments\default" }
+$script:PersonalRebuildNoted    = $false
+
+# Get-PersonalTargetVersion - the launcher version this kit installs or updates
+# to: the env override, the advertised manifest, the fallback - the same
+# resolution order the sh side gets from exakit_resolve_install_versions.
+function Get-PersonalTargetVersion {
+    if ($env:EXAKIT_PERSONAL_VERSION) { return $env:EXAKIT_PERSONAL_VERSION }
+    $advertised = Get-ExakitComponentAvailable "personal"
+    if ($advertised) { return $advertised }
+    return $script:PersonalVersionFallback
+}
+
+# Get-PersonalCli - the kit-managed launcher when it exists, a launcher on PATH
+# otherwise, and the kit-managed path as the answer either way when neither
+# runs (so error messages name where it WOULD be). Twin of personal_cli.
+function Get-PersonalCli {
+    if (Test-Path $script:PersonalBinPath) { return $script:PersonalBinPath }
+    $onPath = Get-Command exasol -ErrorAction SilentlyContinue
+    if ($onPath) { return $onPath.Source }
+    return $script:PersonalBinPath
+}
+
+# Get-PersonalDbPort - the port THIS deployment is on, which is not necessarily
+# $script:PersonalPort: from 2.3 the launcher selects and persists a concrete
+# port. deployment.json is the answer; the constant only until one exists.
+# Twin of personal_db_port, regex and all - no JSON parser on the status path.
+function Get-PersonalDbPort {
+    $file = Join-Path $script:PersonalDeployDir "deployment.json"
+    if (Test-Path $file) {
+        try {
+            $raw = [System.IO.File]::ReadAllText($file)
+            if ($raw -match '"dbPort"\s*:\s*(\d+)') { return [int]$Matches[1] }
+        } catch { }
+    }
+    return $script:PersonalPort
+}
+
+# Get-PersonalDeployedVersion - the launcher version that created the deployment
+# on disk; $null when there is no deployment or its state cannot say. Read from
+# STATE, never by executing a launcher - the decision this feeds is made before
+# any binary is installed. Twin of personal_deployed_version.
+function Get-PersonalDeployedVersion {
+    if (-not (Test-Path $script:PersonalDeployDir)) { return $null }
+    $bare = Join-Path $script:PersonalDeployDir ".exasolLauncher.version"
+    $raw = ""
+    if (Test-Path $bare) {
+        try { $raw = ([System.IO.File]::ReadAllText($bare)).Trim() } catch { }
+    }
+    if (-not $raw) {
+        $state = Join-Path $script:PersonalDeployDir ".exasolLauncherState.json"
+        if (Test-Path $state) {
+            try {
+                $text = [System.IO.File]::ReadAllText($state)
+                if ($text -match '"deploymentVersion"\s*:\s*"([^"]*)"') { $raw = $Matches[1] }
+            } catch { }
+        }
+    }
+    $raw = $raw -replace '^v', ''
+    # Only answer with something that looks like a version: garbage must read as
+    # "unknown" and let the install proceed, never as a version that blocks it.
+    if ($raw -notmatch '^[0-9][0-9A-Za-z.+_-]*$') { return $null }
+    return $raw
+}
+
+# Test-PersonalLauncherSupports <token> - does the launcher's TOP-LEVEL help
+# name this subcommand? Line-anchored like personal_help_names_token: a help row
+# reading "stop   Stop a running local deployment" must not satisfy "local".
+function Test-PersonalLauncherSupports {
+    param([Parameter(Mandatory)][string]$Token)
+    $help = Invoke-ExakitBounded -FilePath (Get-PersonalCli) -Arguments @("--help") -TimeoutSeconds $script:PersonalProbeTimeout
+    if (-not $help) { return $false }
+    $anchored = '(?m)^\s*(-[-a-zA-Z0-9]+,\s*)?' + [regex]::Escape($Token) + '(\s|,|$)'
+    return [bool]($help -match $anchored)
+}
+
+# Get-PersonalAutoApproveFlag <subcommand> - "--auto-approve" when this launcher
+# takes it there, $null when it does not. Probed on the SUBCOMMAND's help: a
+# subcommand's flags never appear at the top level, so the probe above would
+# answer "no" for every launcher including the 2.3 ones that need this most.
+# A launcher that does not know the flag is never handed it - an unknown flag
+# is a hard failure and 2.2 deployments stay supported. Twin of
+# personal_auto_approve_flag.
+function Get-PersonalAutoApproveFlag {
+    param([Parameter(Mandatory)][string]$Subcommand)
+    $help = Invoke-ExakitBounded -FilePath (Get-PersonalCli) -Arguments @($Subcommand, "--help") -TimeoutSeconds $script:PersonalProbeTimeout
+    if (-not $help) { return $null }
+    if ($help -match '(?m)^\s*(-[-a-zA-Z0-9]+,\s*)?--auto-approve(\s|,|$)') { return "--auto-approve" }
+    return $null
+}
+
+function Test-PersonalDeploymentExists {
+    if (-not (Test-Path $script:PersonalDeployDir)) { return $false }
+    $answer = Invoke-ExakitBounded -FilePath (Get-PersonalCli) -Arguments @("info") -TimeoutSeconds $script:PersonalProbeTimeout
+    return ($null -ne $answer)
+}
+
+# Test-PersonalDbAnswers - is the thing on the SQL port actually Exasol? The
+# launcher's own view; a port that is merely open is never the answer (see
+# Get-PersonalStatus for why).
+function Test-PersonalDbAnswers {
+    $answer = Invoke-ExakitBounded -FilePath (Get-PersonalCli) -Arguments @("info") -TimeoutSeconds $script:PersonalProbeTimeout
+    return ($null -ne $answer)
+}
+
+function Test-PersonalDeploymentRunning {
+    if (-not (Test-ExakitPortInUse (Get-PersonalDbPort))) { return $false }
+    return (Test-PersonalDbAnswers)
+}
+
+# Test-PersonalDeploymentWedged - a SIGKILLed runner leaves the launcher's
+# workflow state "interrupted", after which start is refused until the launcher
+# rebuilds the deployment. Read from the state file, the same key the sh probe
+# reads. From 2.3 the launcher stops producing this state; installed 2.2
+# deployments still do, so the probe stays.
+function Test-PersonalDeploymentWedged {
+    $state = Join-Path $script:PersonalDeployDir ".exasolLauncherState.json"
+    if (-not (Test-Path $state)) { return $false }
+    try {
+        $doc = [System.IO.File]::ReadAllText($state) | ConvertFrom-Json
+        $workflow = $doc.currentWorkflowState
+        if ($workflow -and $workflow.PSObject.Properties["interrupted"] -and $workflow.interrupted) { return $true }
+    } catch { }
+    return $false
+}
+
+# Get-PersonalStatus - the kit's documented status vocabulary, one word.
+# A BUSY port is not a running database: with the database stopped and another
+# program listening on the port, "running" here sent `exakit start` to say
+# "already running" and exit 0 - a loop with no exit. When the port answers,
+# ask the launcher; busy-but-not-Exasol is "conflict", its own state with its
+# own remedy. Twin of personal_status.
+function Get-PersonalStatus {
+    $cliOnPath = Get-Command exasol -ErrorAction SilentlyContinue
+    if (-not (Test-Path $script:PersonalBinPath) -and -not $cliOnPath) { return "not installed" }
+    if (Test-PersonalDeploymentExists) {
+        if (Test-ExakitPortInUse (Get-PersonalDbPort)) {
+            if (Test-PersonalDbAnswers) { return "running" }
+            return "conflict"
+        }
+        if (Test-PersonalDeploymentWedged) { return "interrupted" }
+        return "stopped"
+    }
+    return "not deployed"
+}
+
+# Test-PersonalGuestRebuildExpected / Show-PersonalGuestRebuildNote - from 2.3 a
+# deployment runs the VM guest belonging to its launcher's runner, so the first
+# start after the launcher changes rebuilds that guest: data kept, far longer
+# than the ordinary readiness budget. Said BEFORE the start - silence through a
+# long start is the failure mode - and once per run.
+function Test-PersonalGuestRebuildExpected {
+    $deployed = Get-PersonalDeployedVersion
+    if (-not $deployed) { return $false }
+    $target = Get-PersonalTargetVersion
+    if (-not $target) { return $false }
+    return ($deployed -ne $target)
+}
+
+function Show-PersonalGuestRebuildNote {
+    if (-not (Test-PersonalGuestRebuildExpected)) { return }
+    if ($script:PersonalRebuildNoted) { return }
+    $script:PersonalRebuildNoted = $true
+    Info "This deployment was created by an earlier launcher, so the first start rebuilds its VM guest - slower than usual, once. Your data is kept."
+}
+
+# Wait-PersonalReady - a WALL-CLOCK ceiling on the launcher answering, with the
+# guest rebuild given its own budget: the ordinary one turned a successful
+# upgrade into a reported crash. An explicitly set EXAKIT_PERSONAL_READY_TIMEOUT
+# still wins - a number the user chose is never overridden by a guess. Twin of
+# personal_wait_ready.
+function Wait-PersonalReady {
+    Info "Checking deployment health"
+    $budget = 150
+    $raise = "EXAKIT_PERSONAL_READY_TIMEOUT"
+    if ($env:EXAKIT_PERSONAL_READY_TIMEOUT) {
+        $budget = [int]$env:EXAKIT_PERSONAL_READY_TIMEOUT
+    } elseif (Test-PersonalGuestRebuildExpected) {
+        Show-PersonalGuestRebuildNote
+        $budget = 900
+        if ($env:EXAKIT_PERSONAL_REBUILD_TIMEOUT) { $budget = [int]$env:EXAKIT_PERSONAL_REBUILD_TIMEOUT }
+        $raise = "EXAKIT_PERSONAL_REBUILD_TIMEOUT"
+    }
+    $t0 = [DateTime]::UtcNow
+    while (([DateTime]::UtcNow - $t0).TotalSeconds -lt $budget) {
+        if ((Test-ExakitPortInUse (Get-PersonalDbPort)) -and (Test-PersonalDbAnswers)) {
+            Ok "Deployment is reachable"
+            return
+        }
+        Start-Sleep -Seconds 5
+    }
+    $spent = [int]([DateTime]::UtcNow - $t0).TotalSeconds
+    Fail "The deployment did not answer within ${spent} seconds (the ceiling is ${budget}s; raise it with ${raise}). Read the state with 'exakit status', then 'exakit start' to retry - a deployment stuck in 'interrupted' is repaired with 'exakit repair-runtime' (destructive, it asks first)."
+}
+
+# Test-PersonalRequirements - the compatibility gate. Windows arm64 is refused
+# by NAME: the launcher publishes no Windows arm64 local deployment, and this is
+# the one machine class where the old container runtime is the only local
+# database - the refusal says which knob keeps it. The hardware is asked, not
+# PROCESSOR_ARCHITECTURE, which reports the emulated x64 shell on ARM devices.
+# Twin of personal_check_requirements.
+function Test-PersonalRequirements {
+    $arch = Get-ExakitHostArch
+    if ($arch -ne "amd64") {
+        Fail "This machine is not compatible: Exasol Personal has no Windows local deployment for the '$arch' CPU architecture. On Windows arm64 use the container runtime instead - unset EXAKIT_RUNTIME and re-run."
+    }
+    $ramGb = 0
+    try {
+        $ramGb = [int][math]::Round((Get-CimInstance Win32_ComputerSystem -ErrorAction Stop).TotalPhysicalMemory / 1GB)
+    } catch { }
+    if ($env:EXAKIT_FORCE -ne "1") {
+        if ($ramGb -gt 0 -and $ramGb -lt $script:PersonalMinRamGb) {
+            Fail "This machine is not compatible: Exasol Personal needs at least $($script:PersonalMinRamGb) GB RAM and this machine has ${ramGb} GB. Nothing was installed (or force at your own risk with EXAKIT_FORCE=1)."
+        }
+        $freeGb = 0
+        try {
+            $drive = (Get-Item $HOME).PSDrive
+            if ($drive -and $drive.Free) { $freeGb = [int][math]::Round($drive.Free / 1GB) }
+        } catch { }
+        if ($freeGb -gt 0 -and $freeGb -lt $script:PersonalMinDiskGb) {
+            Fail "This machine is not compatible right now: the database needs at least $($script:PersonalMinDiskGb) GB free disk and the home drive has ${freeGb} GB. Free up space and re-run (or force at your own risk with EXAKIT_FORCE=1)."
+        }
+    }
+    if (-not (Get-Command podman -ErrorAction SilentlyContinue)) {
+        # Informational, not a refusal: on Windows - unlike Linux - the launcher
+        # offers to install Podman itself through winget, and that install may
+        # show an administrator prompt. Said here so the prompt has a name when
+        # it appears mid-deploy.
+        Info "Podman is not installed yet - the Exasol launcher will offer to install it (Windows Package Manager; may ask for administrator approval)."
+    }
+    Ok "Compatibility check passed (windows $arch, ${ramGb} GB RAM)"
+}
+
+# Install-PersonalLauncher - download the launcher release, verify it against
+# the release's checksums file, and place exasol.exe under the kit's bin dir. A
+# launcher already on PATH that knows the 'local' preset is kept as it always
+# was. Twin of personal_install_launcher.
+function Install-PersonalLauncher {
+    if ($env:EXAKIT_FORCE_COMPONENT_INSTALL -ne "1") {
+        $existing = Get-Command exasol -ErrorAction SilentlyContinue
+        if ($existing) {
+            $help = Invoke-ExakitBounded -FilePath $existing.Source -Arguments @("install", "--help") -TimeoutSeconds $script:PersonalProbeTimeout
+            if ($help -and ($help -match '(?m)^\s*(-[-a-zA-Z0-9]+,\s*)?local(\s|,|$)')) {
+                Ok "Exasol launcher already installed: $($existing.Source)"
+                return
+            }
+            Warn2 "The installed Exasol launcher ($($existing.Source)) does not support the 'local' preset (too old)."
+            Info "Installing launcher v$(Get-PersonalTargetVersion) to $(Get-ExakitTilde $script:PersonalBinPath) - your existing launcher is left untouched"
+        }
+    }
+
+    $version = Get-PersonalTargetVersion
+    $asset = "exasol-personal_Windows_x86_64.zip"
+    $base = "https://github.com/$($script:PersonalRepo)/releases/download/v$version"
+    $tmpDir = Join-Path ([System.IO.Path]::GetTempPath()) "exakit-personal-$([guid]::NewGuid().ToString('N'))"
+    New-Item -ItemType Directory -Force -Path $tmpDir | Out-Null
+
+    try {
+        $script:ExakitActiveLabel = "Downloading Exasol launcher v$version"
+        Info "Downloading Exasol launcher v$version ($asset)"
+        Get-ExakitFile -Url "$base/$asset" -Dest (Join-Path $tmpDir $asset)
+        Get-ExakitFile -Url "$base/exasol-personal_${version}_checksums.txt" -Dest (Join-Path $tmpDir "checksums.txt")
+
+        # The checksums file is "HASH  filename" lines; the asset's own line is
+        # the verdict. A checksums file that does not name the asset is treated
+        # exactly like a mismatch - never as permission to skip verification.
+        $expected = $null
+        foreach ($line in (Get-Content (Join-Path $tmpDir "checksums.txt"))) {
+            if ($line -match ('^([0-9a-fA-F]{64})\s+\*?' + [regex]::Escape($asset) + '\s*$')) {
+                $expected = $Matches[1].ToLowerInvariant()
+                break
+            }
+        }
+        if (-not $expected) {
+            Fail "The release's checksums file does not name $asset; refusing to install an unverified launcher."
+        }
+        Test-ExakitSha256 -Path (Join-Path $tmpDir $asset) -Expected $expected
+
+        $script:ExakitActiveLabel = "Installing launcher to $(Get-ExakitTilde $script:PersonalBinPath)"
+        Info "Installing launcher to $(Get-ExakitTilde $script:PersonalBinPath)"
+        Expand-Archive -Path (Join-Path $tmpDir $asset) -DestinationPath $tmpDir -Force
+        $extracted = Get-ChildItem -Path $tmpDir -Filter "exasol.exe" -Recurse | Select-Object -First 1
+        if (-not $extracted) {
+            Fail "The launcher archive did not contain exasol.exe - the download looks wrong. Re-run the installer."
+        }
+        New-Item -ItemType Directory -Force -Path $script:BinDir | Out-Null
+        Move-Item -Force $extracted.FullName $script:PersonalBinPath
+        OkStep "Exasol launcher v$version installed to $(Get-ExakitTilde $script:PersonalBinPath)"
+    } finally {
+        Remove-Item -Recurse -Force $tmpDir -ErrorAction SilentlyContinue
+    }
+}
+
+# Set-PersonalManifest [status] - the connection details this kit hands to every
+# client, plus the runtime state. The deployment directory has everything a
+# client needs: deployment.json (host, dbPort, username) and secrets.json
+# (dbPassword). The keys are the contract every add-on reads - identical to the
+# sh side's personal_record_manifest, and to Set-NanoManifest's shape.
+function Set-PersonalManifest {
+    param([string]$Status = "")
+    Set-ExakitManifestValue "runtime.type" "personal"
+    $deployed = Get-PersonalDeployedVersion
+    if (-not $deployed) { $deployed = Get-PersonalTargetVersion }
+    Set-ExakitManifestValue "runtime.version" $deployed
+    Set-ExakitManifestValue "runtime.launcher" (Get-PersonalCli)
+    Set-ExakitManifestValue "runtime.deployment_dir" $script:PersonalDeployDir
+
+    $dsn = "127.0.0.1:$(Get-PersonalDbPort)"
+    $dbUser = "sys"
+    $depFile = Join-Path $script:PersonalDeployDir "deployment.json"
+    if (Test-Path $depFile) {
+        try {
+            $dep = [System.IO.File]::ReadAllText($depFile) | ConvertFrom-Json
+            if ($dep.connection) {
+                $depHost = $dep.connection.host
+                if (-not $depHost) { $depHost = "127.0.0.1" }
+                $depPort = $dep.connection.dbPort
+                if (-not $depPort) { $depPort = Get-PersonalDbPort }
+                $dsn = "${depHost}:${depPort}"
+                if ($dep.connection.username) { $dbUser = $dep.connection.username }
+            }
+        } catch { }
+    }
+    Set-ExakitManifestValue "runtime.dsn" $dsn
+    Set-ExakitManifestValue "runtime.user" $dbUser
+
+    $password = ""
+    $secFile = Join-Path $script:PersonalDeployDir "secrets.json"
+    if (Test-Path $secFile) {
+        try {
+            $sec = [System.IO.File]::ReadAllText($secFile) | ConvertFrom-Json
+            if ($sec.dbPassword) { $password = $sec.dbPassword }
+        } catch { }
+    }
+    if ($password) {
+        Set-ExakitCredential "personal_sys_password" $password
+        Set-ExakitManifestValue "runtime.password_file" (Join-Path $script:CredsDir "personal_sys_password")
+    } else {
+        Warn2 "Could not read the database password from the Exasol Personal secrets - the exapump profile and AI client configs will ask for it or need manual completion."
+    }
+    Set-ExakitManifestValue "runtime.tls" "self-signed"
+    # Never assert health without either having just seen it or probing for it.
+    if (-not $Status) { $Status = Get-PersonalStatus }
+    Set-ExakitManifestValue "runtime.status" $Status
+}
+
+# Install-PersonalDeployment - run the local deployment, the long step. The
+# consent ladder is the sh side's, question for question: a RUNNING database is
+# offered for reuse (EXAKIT_REUSE_DB, default yes - the idempotent answer for
+# automation); a stopped one is started and reused; only the explicit
+# EXAKIT_REPLACE_DB consent ever reaches destroy - a failed start is not a
+# licence to delete, and the reap-and-retry that saves the common case lives on
+# the sh side's macOS daemon, which Windows does not have. Twin of
+# personal_deploy_local.
+function Install-PersonalDeployment {
+    if (Test-PersonalDeploymentRunning) {
+        Info "An Exasol database is already running on port $(Get-PersonalDbPort)."
+        if (Confirm-ExakitEnvPrompt "EXAKIT_REUSE_DB" "Use it instead of deploying a new one?" $true) {
+            Ok "Reusing the existing Exasol deployment"
+            Set-PersonalManifest "healthy"
+            return
+        }
+        Fail "Declined to reuse the running database. Stop it first ('exakit stop', or 'exasol stop'), then re-run to deploy a fresh one - port $(Get-PersonalDbPort) stays in use while it is running."
+    }
+
+    if (Test-PersonalDeploymentExists) {
+        Info "An Exasol deployment was found, not running."
+        if (Confirm-ExakitEnvPrompt "EXAKIT_REUSE_DB" "Start the existing database and keep its data?" $true) {
+            Show-PersonalGuestRebuildNote
+            $startArgs = @("start")
+            $flag = Get-PersonalAutoApproveFlag "start"
+            if ($flag) { $startArgs += $flag }
+            if ((Test-PersonalLauncherSupports "start") -and ((Invoke-ExakitLogged (Get-PersonalCli) @startArgs) -eq 0)) {
+                Ok "Reusing the existing Exasol deployment (started)"
+                Wait-PersonalReady
+                Set-PersonalManifest "healthy"
+                return
+            }
+            Warn2 "The existing deployment could not be started."
+        }
+        # NO PATH DESTROYS WITHOUT THIS CONSENT - not even a failed start. A
+        # deployment that will not start today may hold months of data and be
+        # one diagnosis away from starting tomorrow; deleting it is the user's
+        # call, made with the consequence in front of them.
+        if (-not (Confirm-ExakitEnvPrompt "EXAKIT_REPLACE_DB" "DELETE the stopped deployment and its data, and deploy a fresh one? This cannot be undone." $false)) {
+            Fail "Nothing was deleted. Start it yourself with 'exakit start', diagnose with 'exakit status', repair with 'exakit repair-runtime' - or re-run with EXAKIT_REPLACE_DB=1 to replace it, deleting its data."
+        }
+        Info "Replacing the existing deployment - its previous data is not recoverable."
+        # --auto-approve: destroy has its own [y/N] prompt, which a piped or
+        # scripted install cannot answer; the consent came from the explicit
+        # replace question (or EXAKIT_REPLACE_DB=1) just above.
+        if ((Invoke-ExakitLogged (Get-PersonalCli) destroy --remove --auto-approve) -ne 0) {
+            Warn2 "Could not fully remove the old deployment; the launcher will deploy over it."
+        }
+    }
+
+    if (Test-ExakitPortInUse (Get-PersonalDbPort)) {
+        Fail "Port $(Get-PersonalDbPort) is in use by a process that is not a reachable Exasol Personal deployment. Stop that application and re-run (EXAKIT_DB_PORT does not choose the port of a personal deployment)."
+    }
+
+    Info "Exasol Personal is free to use and ships under Exasol's own licence terms, not the kit's MIT licence. The launcher shows them below."
+    Info "Deploying Exasol Personal locally - the database runs through Podman's default machine, which the launcher prepares (and installs Podman if needed; that may ask for administrator approval)"
+
+    $installArgs = @("install", "local")
+    $flag = Get-PersonalAutoApproveFlag "install"
+    if ($flag) { $installArgs += $flag }
+    $script:ExakitActiveLabel = "Deploying Exasol Personal locally"
+    if ((Invoke-ExakitLogged (Get-PersonalCli) @installArgs) -ne 0) {
+        Fail "Local deployment failed. Re-running the installer retries it safely."
+    }
+
+    Wait-PersonalReady
+    Ok "Exasol Personal deployed and answering on 127.0.0.1:$(Get-PersonalDbPort)"
+    Set-PersonalManifest "healthy"
+}
+
+# Start-Personal / Stop-Personal - launcher start/stop with the same say-what-
+# to-do-next failure messages as the sh twins. Stop leaves Podman's machine
+# alone by design: it is shared host-wide and not this kit's to manage.
+function Start-Personal {
+    if (-not (Test-PersonalLauncherSupports "start")) {
+        Info "This launcher version has no explicit start command."
+        Info "Check the database with: $(Get-PersonalCli) info"
+        return
+    }
+    Show-PersonalGuestRebuildNote
+    $startArgs = @("start")
+    $flag = Get-PersonalAutoApproveFlag "start"
+    if ($flag) { $startArgs += $flag }
+    if ((Invoke-ExakitLogged (Get-PersonalCli) @startArgs) -ne 0) {
+        if (Test-PersonalDeploymentWedged) {
+            Fail "The database is interrupted and cannot be started - the launcher has to rebuild it. Repair it with: exakit repair-runtime (this rebuilds the database from empty; its data is not recoverable)."
+        }
+        if ((Get-PersonalStatus) -eq "conflict") {
+            Fail "Port $(Get-PersonalDbPort) is held by another process, so the database cannot start. Stop that process, then: exakit start"
+        }
+        Fail "Failed to start the database. Check the log, then retry with 'exakit start'; if it fails the same way, repair with: exakit repair-runtime"
+    }
+    Ok "Database started"
+}
+
+function Stop-Personal {
+    if (-not (Test-PersonalLauncherSupports "stop")) {
+        Info "This launcher version has no explicit stop command."
+        return
+    }
+    if ((Invoke-ExakitLogged (Get-PersonalCli) stop) -ne 0) {
+        Fail "Failed to stop the database."
+    }
+    Set-ExakitManifestValue "runtime.status" "stopped"
+    Ok "Database stopped"
+}
+
+# Remove-Personal - destroy the deployment and its data. The Podman machine is
+# deliberately untouched: it is shared host-wide, the launcher never
+# reconfigures an existing one, and it stays running after destroy - this
+# module owns the deployment, nothing else. Twin of personal_teardown.
+function Remove-Personal {
+    if (Test-PersonalDeploymentExists) {
+        Warn2 "An Exasol Personal deployment keeps the database software and your data together - removing it deletes every table you loaded."
+        # --auto-approve: the launcher's destroy prompts for confirmation by
+        # itself; the caller (uninstall) has already asked its own question.
+        if ((Invoke-ExakitLogged (Get-PersonalCli) destroy --remove --auto-approve) -ne 0) {
+            Warn2 "Destroy reported errors (see log)"
+        }
+    }
+    Set-ExakitManifestValue "runtime.status" "removed"
+}
+
+# Update-Personal - bring the kit-managed launcher to the advertised version and
+# leave the record telling the truth about the deployment's state afterwards.
+# The update prompt upstream of this call explains the one-time guest rebuild;
+# the note here fires again right before the start that performs it.
+function Update-Personal {
+    param([string]$Advertised = "")
+    if (-not $Advertised) { $Advertised = Get-PersonalTargetVersion }
+    $env:EXAKIT_PERSONAL_VERSION = $Advertised
+    $env:EXAKIT_FORCE_COMPONENT_INSTALL = "1"
+    try {
+        Install-PersonalLauncher
+    } finally {
+        Remove-Item Env:EXAKIT_FORCE_COMPONENT_INSTALL -ErrorAction SilentlyContinue
+    }
+    # The launcher moved; the deployment did not. Status is PROBED, never
+    # assumed healthy - updating a stopped database used to record it healthy
+    # on the sh side, and anything reading the manifest was then simply wrong.
+    Set-PersonalManifest
+}
