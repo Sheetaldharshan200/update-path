@@ -1876,6 +1876,19 @@ function Invoke-ExakitBounded {
     # its own command line: wsl.exe does not accept a quoted "--" as its
     # separator and ran the whole probe as a Linux command named "--".
     if ($ArgumentString) { $info.Arguments = $ArgumentString }
+    # A batch file is not an executable: CreateProcess with lpApplicationName
+    # pointing at a .cmd/.bat fails outright, so a launcher that is really a
+    # shim (Get-Command resolving exasol.cmd, npm-style wrappers) made every
+    # bounded probe answer null - read as "unsupported" by capability checks
+    # that then withheld flags the launcher needed. cmd.exe is the documented
+    # way to run one; /d skips AutoRun so a user's registry hook cannot inject
+    # output into a probe whose stdout IS the answer.
+    if ($FilePath -match '\.(cmd|bat)$') {
+        $comspec = $env:ComSpec
+        if (-not $comspec) { $comspec = "cmd.exe" }
+        $info.FileName = $comspec
+        $info.Arguments = '/d /c ""' + $FilePath + '" ' + $info.Arguments + '"'
+    }
     $info.RedirectStandardOutput = $true
     $info.RedirectStandardError = $true
     $info.UseShellExecute = $false
