@@ -1190,6 +1190,49 @@ _gr_probe() { # _gr_probe <recorded-guest_rebuilt_for> -> yes|no
 check "a 2.2 deployment under a 2.3 launcher owes a rebuild" "yes" "$(_gr_probe "")"
 check "...and stops owing it once a start has completed" "no" "$(_gr_probe "2.3.0-rc2")"
 
+# THE LAUNCHER OWNS THE LIFECYCLE. 2.3's `stop` leaves the deployment's own
+# runner alive and still answering SQL on the port, so a port-only probe called
+# a stopped database "running" - and `exakit start` then answered "already
+# running" and did nothing, leaving no way to restart it at all. The launcher's
+# own status is the tiebreaker, and the runner it left behind is reaped before
+# the next start rather than diagnosed after it.
+_ls="$WORK/lstate"; mkdir -p "$_ls/dep" "$_ls/bin"
+printf '{}' > "$_ls/dep/deployment.json"
+_ls_stub() { # _ls_stub <status-word> [--text-only]
+    if [ "${2:-}" = "--text-only" ]; then
+        printf '#!/bin/sh\n[ "$1" = status ] && [ "$2" = --json ] && exit 1\n[ "$1" = status ] && printf "  Status: %s\\n"\nexit 0\n' "$1" > "$_ls/bin/exasol"
+    else
+        printf '#!/bin/sh\n[ "$1" = status ] && printf "{\\"status\\": \\"%s\\"}\\n"\nexit 0\n' "$1" > "$_ls/bin/exasol"
+    fi
+    chmod +x "$_ls/bin/exasol"
+}
+_ls_probe() { # _ls_probe <fn> -> the function's answer with the stub launcher
+    EXAKIT_HOME="$_ls" EXAKIT_PERSONAL_DEPLOY_DIR="$_ls/dep" bash -c '
+        . "$0/setup/lib/common.sh" 2>/dev/null
+        . "$0/setup/lib/detect.sh" 2>/dev/null
+        . "$0/setup/lib/runtime-personal.sh"
+        EXAKIT_PERSONAL_BIN="'"$_ls/bin/exasol"'"
+        # The deployment exists, the port answers, SQL answers - the exact
+        # shape a stopped 2.3 deployment presents while its runner lingers.
+        personal_deployment_exists() { return 0; }
+        port_in_use() { return 0; }
+        personal_db_answers() { return 0; }
+        '"$1" "$ROOT" 2>/dev/null
+}
+_ls_stub stopped
+check "the launcher's own word is read from its json" "stopped" "$(_ls_probe personal_launcher_state)"
+check "a stopped deployment whose runner still answers reads as stopped" "stopped" "$(_ls_probe personal_status)"
+_ls_stub stopped --text-only
+check "...and a launcher without --json is still understood" "stopped" "$(_ls_probe personal_launcher_state)"
+_ls_stub database_ready
+check "a launcher that says ready, with SQL answering, is running" "running" "$(_ls_probe personal_status)"
+# The runner the 2.3 launcher leaves behind must be recognised as OURS, or the
+# reaper calls the kit's own process foreign and refuses to clear the port.
+has "the reaper knows the 2.3 runner" '*exasol-local-runner*)   return 0 ;;' "$RP_SH"
+has "...and still knows the 2.2 one" '*mac-runner*__daemon__*) return 0 ;;' "$RP_SH"
+has "a stopped deployment holding its port is cleared before the start" \
+    'Clearing a leftover Exasol runner still holding port' "$RP_SH"
+
 # An update prompt that covers a several-minute start has to say so, and only
 # for the launcher versions that actually behave that way.
 has "the update explains the guest rebuild" 'rebuilds the deployment'"'"'s VM guest' \
