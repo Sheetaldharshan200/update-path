@@ -148,6 +148,19 @@ function Test-PersonalDbAnswers {
     return ($null -ne $answer)
 }
 
+# Get-PersonalLauncherState - the LAUNCHER'S OWN WORD for this deployment
+# ("stopped", "database_ready", ...), empty when it cannot say. The port is not
+# the owner: a stopped deployment can leave its runner alive and still
+# answering, and calling that "running" makes `exakit start` refuse to start a
+# database the user cannot otherwise recover. Twin of personal_launcher_state.
+function Get-PersonalLauncherState {
+    $out = Invoke-ExakitBounded -FilePath (Get-PersonalCli) -Arguments @("status", "--json") -TimeoutSeconds $script:PersonalProbeTimeout
+    if ($out -and $out -match '"status"\s*:\s*"([^"]*)"') { return $Matches[1].ToLowerInvariant() }
+    $out = Invoke-ExakitBounded -FilePath (Get-PersonalCli) -Arguments @("status") -TimeoutSeconds $script:PersonalProbeTimeout
+    if ($out -and $out -match '(?m)^\s*Status:\s*([A-Za-z_]+)') { return $Matches[1].ToLowerInvariant() }
+    return ""
+}
+
 function Test-PersonalDeploymentRunning {
     if (-not (Test-ExakitPortInUse (Get-PersonalDbPort))) { return $false }
     return (Test-PersonalDbAnswers)
@@ -180,6 +193,10 @@ function Get-PersonalStatus {
     if (-not (Test-Path $script:PersonalBinPath) -and -not $cliOnPath) { return "not installed" }
     if (Test-PersonalDeploymentExists) {
         if (Test-ExakitPortInUse (Get-PersonalDbPort)) {
+            # The launcher owns the lifecycle, so its word outranks the port:
+            # a stopped deployment whose runner is still up is stopped, not
+            # running, or it could never be started again.
+            if ((Get-PersonalLauncherState) -eq "stopped") { return "stopped" }
             if (Test-PersonalDbAnswers) { return "running" }
             return "conflict"
         }

@@ -416,6 +416,28 @@ personal_db_answers() {
     exakit_run_bounded "$EXAKIT_PERSONAL_PROBE_TIMEOUT" "$(personal_cli)" info >/dev/null 2>&1
 }
 
+# personal_launcher_state — the LAUNCHER'S OWN WORD for this deployment, from
+# `exasol status --json` ("stopped", "running", ...), empty when it cannot say.
+#
+# It exists because the port is not the owner. After `exasol stop` on 2.3 the
+# deployment is stopped and its runner process can still be alive and still
+# forwarding to a VM that still answers SQL - so a port probe reports a
+# database the launcher has already let go of, `exakit start` says "already
+# running", and the user cannot restart at all.
+#
+# --json since 2.3; the plain output is parsed as the fallback so a 2.2
+# launcher still answers. Bounded like every other probe, and the launcher's
+# own five-second ceiling keeps it honest on an unresponsive deployment.
+personal_launcher_state() {
+    _pls_out="$(exakit_run_bounded "$EXAKIT_PERSONAL_PROBE_TIMEOUT" "$(personal_cli)" status --json 2>/dev/null || true)"
+    _pls="$(printf '%s' "$_pls_out" | sed -n 's/.*"status"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"
+    if [ -z "$_pls" ]; then
+        _pls_out="$(exakit_run_bounded "$EXAKIT_PERSONAL_PROBE_TIMEOUT" "$(personal_cli)" status 2>/dev/null || true)"
+        _pls="$(printf '%s' "$_pls_out" | sed -n 's/^[[:space:]]*Status:[[:space:]]*\([A-Za-z]*\).*/\1/p' | head -1)"
+    fi
+    printf '%s' "$_pls" | tr '[:upper:]' '[:lower:]'
+}
+
 # personal_port_holder_hint — " (pid N, name)" for the process on the port, or
 # nothing when lsof cannot say. Suffix for a conflict message.
 personal_port_holder_hint() {
@@ -431,12 +453,20 @@ personal_db_port_pids() {
     lsof -nP -iTCP:"$(personal_db_port)" -sTCP:LISTEN -t 2>/dev/null | sort -u
 }
 
-# personal_is_orphan_daemon PID — true only if PID is an Exasol Personal runner
-# daemon (the "mac-runner ... __daemon__" forwarder). Scopes cleanup so we never
-# kill an unrelated application that happens to hold the port.
+# personal_is_orphan_daemon PID — true only if PID is an Exasol Personal local
+# runner. Scopes cleanup so we never kill an unrelated application that happens
+# to hold the port.
+#
+# TWO SHAPES, because the launcher renamed its runner: 2.2 ran
+# "mac-runner ... __daemon__", and 2.3 runs
+# .../exasol-local-runner/<os>/<arch>/<hash>/unpack/launcher. Matching only the
+# 2.2 spelling meant that on 2.3 the kit called its OWN leftover runner a
+# foreign process, refused to touch it, and left the port held by something it
+# had itself started - with the deploy path's hard stop as the only outcome.
 personal_is_orphan_daemon() {
     case "$(ps -p "$1" -o command= 2>/dev/null || true)" in
         *mac-runner*__daemon__*) return 0 ;;
+        *exasol-local-runner*)   return 0 ;;
         *) return 1 ;;
     esac
 }
@@ -1131,7 +1161,16 @@ personal_status() {
         # profile); a port that is busy but does not answer as Exasol is a
         # conflict, its own state with its own remedy.
         if port_in_use "$(personal_db_port)"; then
-            if personal_db_answers; then
+            # THE LAUNCHER OWNS THE LIFECYCLE, so its word outranks the port.
+            # A stopped 2.3 deployment can leave its runner alive and still
+            # answering SQL; calling that "running" made `exakit start` reply
+            # "already running" and do nothing, so a stopped database could
+            # never be restarted. Reported as stopped - which is what its owner
+            # says - and the start path clears the leftover runner first.
+            _ps_state="$(personal_launcher_state 2>/dev/null || true)"
+            if [ "$_ps_state" = "stopped" ]; then
+                echo "stopped"
+            elif personal_db_answers; then
                 echo "running"
             else
                 echo "conflict"
@@ -1151,6 +1190,17 @@ personal_status() {
 personal_start() {
     if personal_launcher_supports start; then
         personal_note_guest_rebuild
+        # A STOPPED DEPLOYMENT CAN STILL BE HOLDING ITS OWN PORT. The 2.3
+        # launcher leaves its runner alive after `stop`, and the next `start`
+        # then cannot bind - so the port is cleared BEFORE the attempt rather
+        # than diagnosed after it. Scoped by personal_is_orphan_daemon: only
+        # this kit's own runner is ever reaped, and a genuinely foreign
+        # listener is left alone and reported by the failure path below.
+        if [ "$(personal_launcher_state 2>/dev/null || true)" = "stopped" ] && \
+           port_in_use "$(personal_db_port)"; then
+            info "Clearing a leftover Exasol runner still holding port $(personal_db_port)"
+            personal_reap_orphan_daemon >/dev/null 2>&1 || true
+        fi
         if ! run_logged "$(personal_cli)" start $(personal_auto_approve_flag start); then
             # Say what to do, not just that it failed. A start that fails on a
             # wedged deployment fails identically every time it is retried, and
