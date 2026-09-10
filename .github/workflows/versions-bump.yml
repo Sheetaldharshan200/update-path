@@ -307,6 +307,7 @@ jobs:
           COUPLED = {
               "personal": [
                   ("setup/lib/common.sh", "bash", "EXAKIT_PERSONAL_VERSION_FALLBACK"),
+                  ("setup/lib/runtime-personal.ps1", "pwsh", "PersonalVersionFallback"),
               ],
               "nano": [
                   ("setup/lib/common.sh", "bash", "EXAKIT_NANO_TAG_FALLBACK"),
