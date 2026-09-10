@@ -251,14 +251,27 @@ has  "and points at the state and log commands" "exakit logs dash-server" "$_lau
 # upstream too, on the one path the kit does not control, while the module
 # asserts loopback everywhere else. Both are setdefaults, so an exported value
 # still wins.
+#
+# The bind now names the RESOLVED port rather than a baked number. That check
+# used to read 'DASH_SERVER_PORT:=5177' - it asserted the generation port was
+# written into the file, which is exactly the copy that later drifted from the
+# kit's record (probe on one port, bind on another). The invariant it was
+# really after - the pre-flight and the bind agree - is what the variable
+# guarantees; which port that resolves to is proven behaviourally further down.
 ( EXAKIT_DASH_SERVER_PORT=5177 dash_server_write_launcher >/dev/null 2>&1 )
 _launcher_5177="$(cat "$_launcher" 2>/dev/null)"
-has  "the launcher passes the recorded port to the server" 'DASH_SERVER_PORT:=5177' "$_launcher_5177"
+has  "the launcher passes the RESOLVED port to the server" 'DASH_SERVER_PORT:=$_ds_port' "$_launcher_5177"
 has  "...and pins the bind host to loopback"               'DASH_SERVER_HOST:=127.0.0.1' "$_launcher_5177"
 has  "...exported, or the child never sees them"           'export DASH_SERVER_HOST DASH_SERVER_PORT' "$_launcher_5177"
-# The twin: Windows had the identical hole.
-has  "the PowerShell launcher does the same" 'if not defined DASH_SERVER_PORT set' \
-    "$(cat "$ROOT/setup/lib/dash-server.ps1")"
+# The twin: Windows had the identical hole, and the identical drift.
+_ds_ps="$(cat "$ROOT/setup/lib/dash-server.ps1")"
+has  "the PowerShell launcher does the same" 'if not defined DASH_SERVER_PORT set' "$_ds_ps"
+has  "...binding the RESOLVED port, not a baked one" 'DASH_SERVER_PORT=%EXAKIT_DS_PORT%' "$_ds_ps"
+has  "...resolved from the kit's record at run time" 'EXAKIT_DS_MANIFEST' "$_ds_ps"
+has  "...with the plain default as the last resort" 'if not defined EXAKIT_DS_PORT set' "$_ds_ps"
+# Scoped to the GENERATED launcher's probe, not the file: the module itself
+# resolves the port and probes it, and those uses are correct.
+has  "...probing that same resolved port" 'http://127.0.0.1:%EXAKIT_DS_PORT%/mcp' "$_ds_ps"
 has  "...host too"                           'if not defined DASH_SERVER_HOST set' \
     "$(cat "$ROOT/setup/lib/dash-server.ps1")"
 ( dash_server_write_launcher >/dev/null 2>&1 )   # back to the recorded port
@@ -2037,38 +2050,60 @@ has "the shell half says the same words" \
 has "the code CLI cannot reach the console on Windows" \
     '$null | & $cli @Arguments' "$(cat "$ROOT/setup/lib/exasol-vscode.ps1")"
 
-echo "the dash-server launcher takes its port from the caller:"
-# BAKED-IN PORTS DRIFT. The generated launcher used to hard-code the port it
-# was written with, while the kit records its own choice separately - so a
-# launcher written when the port was 5102 kept checking 5102 while the kit
-# passed --port 5100 and waited on it. The launcher answered "already running:
-# 5102", the kit answered "did not answer on 5100", and `exakit status` called
-# a live add-on stopped. Generated once here, then run with an explicit --port
-# to prove the argument wins over the baked default.
-_dsp="$WORK/dsport"; mkdir -p "$_dsp/bin" "$_dsp/venv"
-_dsp_out="$( (
-    EXAKIT_BIN_DIR="$_dsp/bin"
-    EXAKIT_DASH_SERVER_BIN="$_dsp/bin/dash-server"
-    EXAKIT_DASH_SERVER_VENV="$_dsp/venv"
-    EXAKIT_DASH_SERVER_HOME="$_dsp"
-    EXAKIT_DASH_SERVER_PORT=5102
-    _EXAKIT_DS_PORT_EXPLICIT=1
-    _EXAKIT_DS_PORT_RESOLVED=1
-    dash_server_write_launcher >/dev/null 2>&1
-    # The venv python does not exist in this sandbox, so the launcher reaches
-    # its exec and fails - AFTER the port logic under test has spoken. Only the
-    # port each message names is asserted.
-    # The default appears twice on purpose - the initial value and the
-    # not-a-number fallback - so this asserts "at least once", not a count.
-    printf 'baked=%s ' "$([ "$(grep -c '_ds_port="5102"' "$_dsp/bin/dash-server")" -ge 1 ] && echo yes || echo no)"
-    printf 'reads-argv=%s' "$(grep -c 'for _ds_arg in "$@"' "$_dsp/bin/dash-server")"
-) )"
-check "the port is a variable, not a constant, in the generated launcher" \
-    "baked=yes reads-argv=1" "$_dsp_out"
-# ...and no PROBE in the launcher still names a literal port: those are the
-# lines that drifted, and a literal in any of them brings the bug back.
-check "no literal port survives in its probes" "0" \
-    "$(grep -cE 'iTCP:[0-9]|127\.0\.0\.1:[0-9]+/mcp' "$_dsp/bin/dash-server" 2>/dev/null | head -1)"
+echo "the dash-server launcher never carries an authoritative port:"
+# BAKED-IN PORTS DRIFT, and this one did. The generated launcher used to hold
+# the port it was written with - in its pre-flight probe AND in the bind
+# variable it exports - while the kit records its own choice separately. A
+# launcher written when the port was 5102 kept probing and binding 5102 while
+# the kit passed --port 5100 and waited on it: the launcher answered "already
+# running: 5102", the kit answered "did not answer on 5100", and
+# `exakit status` called a live add-on stopped.
+#
+# The launcher now resolves the port exactly as the kit does - argv, then the
+# kit's record, then the plain default - and holds no copy of its own. These
+# checks generate one with 5102 as its GENERATION port and then prove every
+# resolution step ignores that number.
+_dsp="$WORK/dsport"; mkdir -p "$_dsp/bin" "$_dsp/venv" "$_dsp/home"
+( EXAKIT_BIN_DIR="$_dsp/bin"
+  EXAKIT_DASH_SERVER_BIN="$_dsp/bin/dash-server"
+  EXAKIT_DASH_SERVER_VENV="$_dsp/venv"
+  EXAKIT_DASH_SERVER_HOME="$_dsp"
+  EXAKIT_DASH_SERVER_PORT=5102
+  _EXAKIT_DS_PORT_EXPLICIT=1
+  _EXAKIT_DS_PORT_RESOLVED=1
+  dash_server_write_launcher >/dev/null 2>&1 ) || true
+check "the launcher was generated" "yes" \
+    "$([ -x "$_dsp/bin/dash-server" ] && echo yes || echo no)"
+# No literal port survives in the probe or the bind - those are the two lines
+# that drifted, and a number in either brings the bug back.
+check "no literal port in its probes or its bind" "0" \
+    "$(grep -cE 'iTCP:[0-9]|127\.0\.0\.1:[0-9]+/mcp|DASH_SERVER_PORT:=[0-9]' "$_dsp/bin/dash-server" 2>/dev/null | head -1)"
+# Which port it RESOLVES, observed rather than read: stubbed lsof/ps report a
+# foreign holder for whatever port is probed, so the launcher names that port in
+# its refusal. Hermetic - no port is bound and nothing is started.
+mkdir -p "$_dsp/probe"
+printf '#!/bin/sh\nprintf "4242\\n"\n' > "$_dsp/probe/lsof"
+printf '#!/bin/sh\nprintf "/usr/bin/some-unrelated-app\\n"\n' > "$_dsp/probe/ps"
+chmod +x "$_dsp/probe/lsof" "$_dsp/probe/ps"
+_dsp_port_of() { # _dsp_port_of <manifest-port|-> [args...] -> the port it named
+    if [ "$1" = "-" ]; then rm -f "$_dsp/home/manifest.json"
+    else printf '{\n  "components": {\n    "dash_server": {\n      "port": %s\n    }\n  }\n}\n' "$1" > "$_dsp/home/manifest.json"
+    fi
+    shift
+    PATH="$_dsp/probe:$PATH" EXAKIT_HOME="$_dsp/home" sh "$_dsp/bin/dash-server" "$@" 2>&1 |
+        sed -n 's/^Port \([0-9]*\) is held.*/\1/p' | head -1
+}
+check "a bare run obeys the kit's record, not the generation port" "5100" "$(_dsp_port_of 5100)"
+check "...even when the record moved somewhere else entirely" "5311" "$(_dsp_port_of 5311)"
+check "--port on the command line outranks the record" "5199" "$(_dsp_port_of 5100 --host 127.0.0.1 --port 5199)"
+check "--port=N is understood too" "5177" "$(_dsp_port_of 5100 --port=5177)"
+check "with no record at all it falls back to the plain default" "5100" "$(_dsp_port_of -)"
+# The other half of the record's honesty: a successful start writes back the
+# port that actually bound, so status and the launcher's fallback cannot be
+# reading an intention that never happened.
+has "a successful start records the port it bound" \
+    'manifest_set components.dash_server.port "$EXAKIT_DASH_SERVER_PORT" 2>/dev/null' \
+    "$(cat "$ROOT/setup/lib/dash-server.sh")"
 
 echo "passed: $PASS, failed: $FAIL"
 [ "$FAIL" -eq 0 ]
