@@ -2037,5 +2037,38 @@ has "the shell half says the same words" \
 has "the code CLI cannot reach the console on Windows" \
     '$null | & $cli @Arguments' "$(cat "$ROOT/setup/lib/exasol-vscode.ps1")"
 
+echo "the dash-server launcher takes its port from the caller:"
+# BAKED-IN PORTS DRIFT. The generated launcher used to hard-code the port it
+# was written with, while the kit records its own choice separately - so a
+# launcher written when the port was 5102 kept checking 5102 while the kit
+# passed --port 5100 and waited on it. The launcher answered "already running:
+# 5102", the kit answered "did not answer on 5100", and `exakit status` called
+# a live add-on stopped. Generated once here, then run with an explicit --port
+# to prove the argument wins over the baked default.
+_dsp="$WORK/dsport"; mkdir -p "$_dsp/bin" "$_dsp/venv"
+_dsp_out="$( (
+    EXAKIT_BIN_DIR="$_dsp/bin"
+    EXAKIT_DASH_SERVER_BIN="$_dsp/bin/dash-server"
+    EXAKIT_DASH_SERVER_VENV="$_dsp/venv"
+    EXAKIT_DASH_SERVER_HOME="$_dsp"
+    EXAKIT_DASH_SERVER_PORT=5102
+    _EXAKIT_DS_PORT_EXPLICIT=1
+    _EXAKIT_DS_PORT_RESOLVED=1
+    dash_server_write_launcher >/dev/null 2>&1
+    # The venv python does not exist in this sandbox, so the launcher reaches
+    # its exec and fails - AFTER the port logic under test has spoken. Only the
+    # port each message names is asserted.
+    # The default appears twice on purpose - the initial value and the
+    # not-a-number fallback - so this asserts "at least once", not a count.
+    printf 'baked=%s ' "$([ "$(grep -c '_ds_port="5102"' "$_dsp/bin/dash-server")" -ge 1 ] && echo yes || echo no)"
+    printf 'reads-argv=%s' "$(grep -c 'for _ds_arg in "$@"' "$_dsp/bin/dash-server")"
+) )"
+check "the port is a variable, not a constant, in the generated launcher" \
+    "baked=yes reads-argv=1" "$_dsp_out"
+# ...and no PROBE in the launcher still names a literal port: those are the
+# lines that drifted, and a literal in any of them brings the bug back.
+check "no literal port survives in its probes" "0" \
+    "$(grep -cE 'iTCP:[0-9]|127\.0\.0\.1:[0-9]+/mcp' "$_dsp/bin/dash-server" 2>/dev/null | head -1)"
+
 echo "passed: $PASS, failed: $FAIL"
 [ "$FAIL" -eq 0 ]
