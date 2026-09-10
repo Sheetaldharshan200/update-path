@@ -2646,5 +2646,127 @@ if command -v pwsh >/dev/null 2>&1; then
 fi
 
 echo
+echo "the manifest and the fallback constants say the same version:"
+# THE LAST TIER OF RESOLUTION MUST NOT DISAGREE WITH THE FIRST. A *_FALLBACK
+# constant is what a machine with no network, no cache and no kit copy
+# installs; versions.json is what everyone else installs. When they drift, an
+# offline install is silently a DIFFERENT install - and a hand-edit of one
+# without the other is exactly how that happens (it did: the runtime defaults
+# moved to Exasol Personal while components.personal.version still named a
+# launcher with no Linux or Windows deployment).
+#
+# The contract already exists as the COUPLED table in
+# .github/workflows/versions-bump.yml, which the bump automation writes
+# through. Nothing VALIDATED it, so this reads that same table - the single
+# declared source of truth - and checks every constant it names. A table this
+# cannot parse is a failure, not a skip.
+# The reader is a FILE, not a heredoc inside $(...): bash 3.2 mis-parses a
+# heredoc in a command substitution when the body carries the shell's own
+# metacharacters, and this one is full of regexes. Written out, then run.
+_vc_py="$(mktemp "${TMPDIR:-/tmp}/exakit-coupled.XXXXXX")"
+cat > "$_vc_py" <<'EXAKIT_COUPLED_PY'
+SIGIL = chr(36)   # the PowerShell variable sigil, spelled so no shell reading
+                  # this file mistakes it for one of its own
+import ast, json, os, re, sys
+
+root = sys.argv[1]
+workflow = os.path.join(root, ".github", "workflows", "versions-bump.yml")
+try:
+    text = open(workflow, encoding="utf-8").read()
+except OSError as err:
+    print("unreadable %s: %s" % (workflow, err)); raise SystemExit(0)
+
+start = text.find("COUPLED = {")
+if start < 0:
+    print("no COUPLED table in versions-bump.yml"); raise SystemExit(0)
+brace = text.index("{", start)
+depth, end = 0, None
+for i in range(brace, len(text)):
+    if text[i] == "{":
+        depth += 1
+    elif text[i] == "}":
+        depth -= 1
+        if depth == 0:
+            end = i + 1
+            break
+if end is None:
+    print("COUPLED table is unterminated"); raise SystemExit(0)
+# The block is indented inside the YAML run: strip the common indent so it
+# parses as the literal it is.
+literal = "\n".join(line.strip() for line in text[brace:end].splitlines())
+try:
+    coupled = ast.literal_eval(literal)
+except Exception as err:
+    print("COUPLED table does not parse: %s" % err); raise SystemExit(0)
+
+doc = json.load(open(os.path.join(root, "versions.json"), encoding="utf-8"))
+components = doc.get("components") or {}
+# The declared default, in each language's shape. The PowerShell constants
+# come in two: a plain assignment, and the env-override form
+#   $script:X = if ($env:Y) { $env:Y } else { "value" }
+# so the pwsh reader takes the LAST quoted string on the assignment line -
+# the literal default in both shapes.
+patterns = {
+    # NAME="${NAME:-value}"
+    "bash": lambda name: re.compile(r'%s="\$\{%s:-([^}]*)\}"' % (re.escape(name), re.escape(name))),
+    # NAME = "value"
+    "python": lambda name: re.compile(r'^%s\s*=\s*"([^"]*)"' % re.escape(name), re.M),
+}
+
+def read_pwsh(body, name):
+    marker = "script:" + name
+    for raw in body.splitlines():
+        line = raw.strip()
+        if not line.startswith(SIGIL + marker):
+            continue
+        rest = line[len(SIGIL + marker):].lstrip()
+        if not rest.startswith("="):
+            continue
+        quoted = re.findall(r'"([^"]*)"', rest)
+        return quoted[-1] if quoted else None
+    return None
+problems = []
+checked = 0
+for component, entries in sorted(coupled.items()):
+    block = components.get(component)
+    if block is None:
+        problems.append("%s: named in COUPLED but absent from versions.json" % component)
+        continue
+    want = block.get("version")
+    for path, kind, name in entries:
+        full = os.path.join(root, path)
+        try:
+            body = open(full, encoding="utf-8").read()
+        except OSError:
+            problems.append("%s: %s is unreadable" % (component, path))
+            continue
+        if kind == "pwsh":
+            found = read_pwsh(body, name)
+        else:
+            match = patterns[kind](name).search(body)
+            found = match.group(1) if match else None
+        if found is None:
+            problems.append("%s: %s not found in %s" % (component, name, path))
+            continue
+        checked += 1
+        if found != want:
+            problems.append("%s: versions.json says %s, %s says %s (%s)"
+                            % (component, want, name, found, path))
+print("checked=%d" % checked)
+for problem in problems:
+    print("  " + problem)
+EXAKIT_COUPLED_PY
+_vc_out="$(python3 "$_vc_py" "$ROOT")"
+rm -f "$_vc_py"
+_vc_bad="$(printf '%s' "$_vc_out" | grep -v '^checked=' | grep -c '[^[:space:]]' || true)"
+check "every coupled fallback constant matches versions.json" "0" "$_vc_bad"
+[ "$_vc_bad" = "0" ] || printf '%s\n' "$_vc_out"
+# The table has to actually cover something, or a parse that silently returned
+# an empty dict would pass this suite while checking nothing.
+_vc_n="$(printf '%s' "$_vc_out" | sed -n 's/^checked=//p')"
+check "the coupled table covers the constants it declares" "yes" \
+    "$([ "${_vc_n:-0}" -ge 8 ] && echo yes || echo "only ${_vc_n:-0}")"
+
+echo
 echo "passed: $PASS, failed: $FAIL"
 [ "$FAIL" -eq 0 ]
