@@ -993,8 +993,20 @@ has "...and names the deliberate write path" "exakit sql --write" \
 # option guard instead of being a phantom.
 _su="$WORK/say08"; mkdir -p "$_su"
 printf '{\n  "runtime": {\n    "type": "personal"\n  }\n}\n' > "$_su/manifest.json"
-_su_out="$(EXAKIT_HOME="$_su" bash "$ROOT/setup/exakit" update runtime --plan 2>&1)"
+# EXAKIT_BIN_DIR sandboxed too, and not only for tidiness: this fixture runs
+# the REAL update path, and that path deletes $EXAKIT_PERSONAL_BIN before
+# installing. Unscrubbed it inherits the developer's ~/.local/bin and takes
+# their launcher with it - which is exactly what happened, downgrading a
+# working machine mid-test-run.
+_su_out="$(EXAKIT_HOME="$_su" EXAKIT_BIN_DIR="$_su/bin" bash "$ROOT/setup/exakit" update runtime --plan 2>&1)"
 lacks "update runtime --plan is not refused" "Unknown option" "$_su_out"
+# ...and --plan DESCRIBES. It used to describe only across a major gap and
+# install across every other one, so the flag that promises to touch nothing
+# replaced the launcher binary without asking.
+lacks "update runtime --plan installs nothing" "Installing launcher" "$_su_out"
+has "...and says how to apply it instead" "Apply it with: exakit update runtime" "$_su_out"
+check "...leaving no launcher behind" "absent" \
+    "$([ -e "$_su/bin/exasol" ] && echo PRESENT || echo absent)"
 # AGK-02: a DEAD installer answers with installing:false, the step it died at,
 # and remedies.install naming the re-run - the exact shape AGENTS.md promises.
 printf '{\n  "runtime": {\n    "type": "nano"\n  },\n  "install": {\n    "current_step": "mcp"\n  }\n}\n' > "$_su/manifest.json"
@@ -1143,6 +1155,41 @@ has "...only when the user set no ceiling of their own" \
 has "...and the timeout names the variable that raises it" 'raise it with ${_pwr_raise}' "$RP_SH"
 has "the rebuild is announced before the start, not after the wait" \
     'personal_note_guest_rebuild' "$RP_SH"
+
+# A COMPLETED UPDATE MUST STOP ADVERTISING ITSELF. runtime.version is the
+# component versions.json names - the LAUNCHER - so it is read from the binary;
+# the deployment keeps the version that created it and gets its own key. With
+# the two conflated, `exakit update` swapped the launcher, recorded the
+# deployment's unchanged number, and offered the same update forever (stopping
+# the database each time it was accepted).
+has "the launcher binary is asked for its own version" 'personal_launcher_version()' "$RP_SH"
+has "...and that is what runtime.version records" \
+    'manifest_set runtime.version "${_prm_ver:-${_prm_dep:-$EXAKIT_PERSONAL_VERSION}}"' "$RP_SH"
+has "...with the deployment's version beside it, not in its place" \
+    'manifest_set runtime.deployment_version' "$RP_SH"
+# ...and the rebuild notice retires itself, or it promises on every start a
+# wait that is already behind the user.
+has "a completed start records the launcher it completed under" \
+    'manifest_set runtime.guest_rebuilt_for' "$RP_SH"
+has "...and the notice checks that record" \
+    'runtime.guest_rebuilt_for 2>/dev/null' "$RP_SH"
+_gr="$WORK/guest"; mkdir -p "$_gr/dep" "$_gr/bin"
+printf '2.2.0' > "$_gr/dep/.exasolLauncher.version"
+printf '#!/bin/sh\n[ "$1" = version ] && echo 2.3.0-rc2\nexit 0\n' > "$_gr/bin/exasol"
+chmod +x "$_gr/bin/exasol"
+_gr_probe() { # _gr_probe <recorded-guest_rebuilt_for> -> yes|no
+    printf '{"runtime":{"type":"personal","guest_rebuilt_for":"%s"}}\n' "$1" > "$_gr/manifest.json"
+    EXAKIT_HOME="$_gr" EXAKIT_PERSONAL_DEPLOY_DIR="$_gr/dep" EXAKIT_PERSONAL_BIN="$_gr/bin/exasol" \
+        bash -c '
+            . "$0/setup/lib/common.sh" 2>/dev/null
+            . "$0/setup/lib/detect.sh" 2>/dev/null
+            . "$0/setup/lib/runtime-personal.sh"
+            EXAKIT_PERSONAL_BIN="'"$_gr/bin/exasol"'"
+            personal_guest_rebuild_expected && echo yes || echo no' "$ROOT" 2>/dev/null
+}
+check "a 2.2 deployment under a 2.3 launcher owes a rebuild" "yes" "$(_gr_probe "")"
+check "...and stops owing it once a start has completed" "no" "$(_gr_probe "2.3.0-rc2")"
+
 # An update prompt that covers a several-minute start has to say so, and only
 # for the launcher versions that actually behave that way.
 has "the update explains the guest rebuild" 'rebuilds the deployment'"'"'s VM guest' \
