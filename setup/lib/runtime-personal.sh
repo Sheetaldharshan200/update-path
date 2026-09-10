@@ -166,6 +166,28 @@ personal_deployed_version() {
     esac
 }
 
+# personal_launcher_version — the version of the launcher BINARY on this
+# machine, asked of the binary itself ("exasol version" prints it bare).
+#
+# The deployment's version and the launcher's version are two different facts,
+# and conflating them is what made a completed update advertise itself
+# forever: `exakit update` swapped the launcher, personal_record_manifest then
+# recorded the DEPLOYMENT's number (unchanged - a deployment keeps the version
+# that created it until it is rebuilt), and every later `exakit version` saw
+# the same gap and offered the same update again.
+#
+# Bounded like every other launcher probe, and empty when the launcher cannot
+# answer - a caller that cannot learn this falls back to what it knew.
+personal_launcher_version() {
+    _plv="$(exakit_run_bounded "$EXAKIT_PERSONAL_PROBE_TIMEOUT" "$(personal_cli)" version 2>/dev/null | head -1 | tr -d '[:space:]')"
+    _plv="${_plv#v}"
+    case "$_plv" in
+        ""|*[!0-9A-Za-z.+_-]*) return 1 ;;
+        [0-9]*) printf '%s\n' "$_plv" ;;
+        *) return 1 ;;
+    esac
+}
+
 # personal_deployment_outranks <deployed> <advertised> — true ONLY when the
 # deployed version is demonstrably higher, comparing dotted numeric components
 # left to right and treating a missing component as 0 (so 2.1 > 2). Anything it
@@ -865,6 +887,11 @@ personal_wait_ready() {
            exakit_run_bounded "$EXAKIT_PERSONAL_PROBE_TIMEOUT" "$(personal_cli)" info >/dev/null 2>&1; then
             ui_spin_end
             ok "Deployment is reachable"
+            # The database answered under this launcher, so whatever rebuild
+            # that first start owed is paid. Recorded so the notice does not
+            # announce it again for the same launcher.
+            _pwr_lv="$(personal_launcher_version 2>/dev/null || true)"
+            [ -n "$_pwr_lv" ] && manifest_set runtime.guest_rebuilt_for "$_pwr_lv" 2>/dev/null
             return 0
         fi
         sleep 5
@@ -899,8 +926,22 @@ personal_record_manifest() {
     # existing deployment used to record the advertised number over it, after
     # which every version answer, update check and outranks-guard reasoned
     # from a launcher version the deployment never had.
-    _prm_ver="$(personal_deployed_version 2>/dev/null || true)"
-    manifest_set runtime.version "${_prm_ver:-$EXAKIT_PERSONAL_VERSION}"
+    # runtime.version is the COMPONENT the kit installs and compares against
+    # versions.json, and that component is the LAUNCHER: personal_install_launcher
+    # downloads it, its checksum is the one verified, and components.personal
+    # names its release. So the binary is asked first. The deployment's own
+    # version - a different fact, and the one that decides whether a guest
+    # rebuild is still ahead - is recorded beside it rather than in its place.
+    #
+    # Still never the advertised number while anything on disk can answer: that
+    # was the original bug here, and recording an aspiration over an adopted
+    # deployment is exactly what the order below refuses to do.
+    _prm_dep="$(personal_deployed_version 2>/dev/null || true)"
+    _prm_ver="$(personal_launcher_version 2>/dev/null || true)"
+    manifest_set runtime.version "${_prm_ver:-${_prm_dep:-$EXAKIT_PERSONAL_VERSION}}"
+    if [ -n "$_prm_dep" ]; then
+        manifest_set runtime.deployment_version "$_prm_dep"
+    fi
     manifest_set runtime.launcher "$(personal_cli)"
     manifest_set runtime.deployment_dir "$EXAKIT_PERSONAL_DEPLOY_DIR"
 
@@ -1006,8 +1047,19 @@ personal_auto_approve_flag() {
 personal_guest_rebuild_expected() {
     _pgr_dep="$(personal_deployed_version 2>/dev/null || true)"
     [ -n "$_pgr_dep" ] || return 1
-    [ -n "${EXAKIT_PERSONAL_VERSION:-}" ] || return 1
-    [ "$_pgr_dep" != "$EXAKIT_PERSONAL_VERSION" ]
+    # The launcher that is actually installed, not the one the kit advertises:
+    # before an update those differ, and announcing a rebuild for a launcher
+    # this machine does not have yet is a promise about the wrong event.
+    _pgr_launcher="$(personal_launcher_version 2>/dev/null || true)"
+    [ -n "$_pgr_launcher" ] || _pgr_launcher="${EXAKIT_PERSONAL_VERSION:-}"
+    [ -n "$_pgr_launcher" ] || return 1
+    [ "$_pgr_dep" != "$_pgr_launcher" ] || return 1
+    # ONCE, not forever. A deployment keeps the version that created it, so
+    # "deployment older than launcher" stays true after the rebuild has already
+    # happened - and the notice would then repeat on every start, promising a
+    # wait that is behind the user, not ahead. The completed start records the
+    # launcher it completed under; this is how the notice retires itself.
+    [ "$(manifest_get runtime.guest_rebuilt_for 2>/dev/null || true)" != "$_pgr_launcher" ]
 }
 
 # personal_note_guest_rebuild — say it once, before the start that does it.
@@ -1279,6 +1331,30 @@ personal_update() {
                 ;;
         esac
     fi
+
+    # --plan AND --backup STOP HERE. Their handling used to live only inside
+    # the major-upgrade branch above, so on every other gap they fell through
+    # to the installer below: `exakit update runtime --plan` - a command whose
+    # whole promise is that it only describes - deleted the launcher binary and
+    # installed another one, with none of the confirmation the ordinary path
+    # asks for. A flag that reads as "tell me" must never write.
+    case "$_mode" in
+        plan)
+            info "Exasol Personal launcher ${_current:-unknown} -> $_latest."
+            info "The launcher binary is replaced; the deployment and its data are not touched."
+            info "The first start after it rebuilds the deployment's VM guest - several minutes, once."
+            info "Apply it with: exakit update runtime"
+            return 0
+            ;;
+        backup)
+            # The backup flow exists for a data MIGRATION, which a launcher swap
+            # is not. Saying "done" here would hand back a backup that was never
+            # taken, so it says what this update actually is instead.
+            info "Exasol Personal ${_current:-unknown} -> $_latest replaces the launcher binary only - it neither deletes nor migrates database content, so there is nothing to back up first."
+            info "Apply it with: exakit update runtime"
+            return 0
+            ;;
+    esac
 
     info "Updating Exasol Personal launcher ${_current:-unknown} -> $_latest"
     EXAKIT_PERSONAL_VERSION="$_latest"

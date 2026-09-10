@@ -2358,12 +2358,17 @@ exakit_installed_nano_tag() {
 
 # exakit_installed_personal_version — the RECORD, deliberately.
 #
-# `exasol version` reports the launcher, and the launcher is a different axis from the
-# runtime: personal_update --apply installs a new launcher but leaves runtime.version
-# alone until the data migration is finished (it records runtime.launcher_version and
-# says so). Substituting the launcher version here made `exakit version` call a half-done
-# major upgrade "current" and hid the outstanding migration, while personal_update kept
-# offering it — the two commands disagreeing about one install.
+# Not a live `exasol version` here: a half-done MAJOR upgrade installs the new
+# launcher and still owes a data migration, and reading the binary would call
+# that "current" while personal_update kept offering it — the two commands
+# disagreeing about one install. The record is what both of them read, and it
+# carries the outstanding work in runtime.migration_pending beside it.
+#
+# What the record MEANS is the launcher, because that is what components.personal
+# names and what an update installs; personal_record_manifest asks the binary
+# once, when it writes. The deployment's own version rides beside it in
+# runtime.deployment_version, because a deployment keeps the version that
+# created it and the two answer different questions.
 exakit_installed_personal_version() {
     manifest_get runtime.version 2>/dev/null
 }

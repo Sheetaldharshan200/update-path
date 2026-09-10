@@ -68,6 +68,19 @@ function Get-PersonalDbPort {
     return $script:PersonalPort
 }
 
+# Get-PersonalLauncherVersion - the version of the launcher BINARY on this
+# machine, asked of the binary itself ("exasol version" prints it bare). The
+# deployment's version and the launcher's are two different facts; conflating
+# them made a completed update advertise itself forever. Twin of
+# personal_launcher_version.
+function Get-PersonalLauncherVersion {
+    $out = Invoke-ExakitBounded -FilePath (Get-PersonalCli) -Arguments @("version") -TimeoutSeconds $script:PersonalProbeTimeout
+    if (-not $out) { return $null }
+    $raw = ($out -split "`n")[0].Trim() -replace '^v', ''
+    if ($raw -notmatch '^[0-9][0-9A-Za-z.+_-]*$') { return $null }
+    return $raw
+}
+
 # Get-PersonalDeployedVersion - the launcher version that created the deployment
 # on disk; $null when there is no deployment or its state cannot say. Read from
 # STATE, never by executing a launcher - the decision this feeds is made before
@@ -184,9 +197,17 @@ function Get-PersonalStatus {
 function Test-PersonalGuestRebuildExpected {
     $deployed = Get-PersonalDeployedVersion
     if (-not $deployed) { return $false }
-    $target = Get-PersonalTargetVersion
-    if (-not $target) { return $false }
-    return ($deployed -ne $target)
+    # The launcher actually installed, not the one the kit advertises: before an
+    # update those differ, and announcing a rebuild for a launcher this machine
+    # does not have yet is a promise about the wrong event.
+    $launcher = Get-PersonalLauncherVersion
+    if (-not $launcher) { $launcher = Get-PersonalTargetVersion }
+    if (-not $launcher) { return $false }
+    if ($deployed -eq $launcher) { return $false }
+    # ONCE, not forever: a deployment keeps the version that created it, so this
+    # comparison stays true after the rebuild has already happened. The
+    # completed start records the launcher it completed under.
+    return ((Get-ExakitManifestValue "runtime.guest_rebuilt_for") -ne $launcher)
 }
 
 function Show-PersonalGuestRebuildNote {
@@ -217,6 +238,10 @@ function Wait-PersonalReady {
     while (([DateTime]::UtcNow - $t0).TotalSeconds -lt $budget) {
         if ((Test-ExakitPortInUse (Get-PersonalDbPort)) -and (Test-PersonalDbAnswers)) {
             Ok "Deployment is reachable"
+            # The database answered under this launcher, so whatever rebuild that
+            # first start owed is paid - recorded so the notice retires itself.
+            $done = Get-PersonalLauncherVersion
+            if ($done) { Set-ExakitManifestValue "runtime.guest_rebuilt_for" $done }
             return
         }
         Start-Sleep -Seconds 5
@@ -331,9 +356,18 @@ function Install-PersonalLauncher {
 function Set-PersonalManifest {
     param([string]$Status = "")
     Set-ExakitManifestValue "runtime.type" "personal"
+    # runtime.version is the COMPONENT the kit installs and compares against
+    # versions.json, and that component is the LAUNCHER. The deployment's own
+    # version - which decides whether a guest rebuild is still ahead - is
+    # recorded beside it, never in its place. The advertised number is the last
+    # resort, only when nothing on disk can answer.
     $deployed = Get-PersonalDeployedVersion
-    if (-not $deployed) { $deployed = Get-PersonalTargetVersion }
-    Set-ExakitManifestValue "runtime.version" $deployed
+    $launcher = Get-PersonalLauncherVersion
+    $recorded = $launcher
+    if (-not $recorded) { $recorded = $deployed }
+    if (-not $recorded) { $recorded = Get-PersonalTargetVersion }
+    Set-ExakitManifestValue "runtime.version" $recorded
+    if ($deployed) { Set-ExakitManifestValue "runtime.deployment_version" $deployed }
     Set-ExakitManifestValue "runtime.launcher" (Get-PersonalCli)
     Set-ExakitManifestValue "runtime.deployment_dir" $script:PersonalDeployDir
 
