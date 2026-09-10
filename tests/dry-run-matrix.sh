@@ -155,6 +155,20 @@ grep -q 'it does not support WSL' "$ROOT/install.sh" && \
 grep -q 'it does not support Windows arm64' "$ROOT/install.ps1" && \
     check "install.ps1 exits gracefully on arm64, naming the support matrix" present present || \
     check "install.ps1 exits gracefully on arm64, naming the support matrix" present MISSING
+# THE WINDOWS INSTALLER MUST NOT CLOSE THE USER'S TERMINAL. Its documented entry
+# point is `irm ... | iex`, which runs the body in the CALLER'S session - so a
+# top-level `exit` terminates the PowerShell host, window and all. That took the
+# preflight report off the screen before it could be read, and took every
+# failure message with it (the trap printed the cause, then exit closed the
+# window over it). Every stop is now a return, with exit reserved for a real
+# file invocation, and $LASTEXITCODE still carries the code.
+_pse="$(grep -cE '^\s*(exit [0-9$]|exit \()' "$ROOT/install.ps1" || true)"
+check "install.ps1 has no unguarded top-level exit" "0" "$_pse"
+grep -q 'ExakitRanAsFile = \[bool\]$PSCommandPath' "$ROOT/install.ps1" && \
+    check "...it knows whether it was run as a file" present present || \
+    check "...it knows whether it was run as a file" present MISSING
+check "...and every stop still reports a code" "3" \
+    "$(grep -c 'global:LASTEXITCODE' "$ROOT/install.ps1")"
 grep -q 'Exasol Personal (local deployment via Podman)' "$ROOT/install.sh" && \
     check "install.sh routes personal-on-linux and names the plan" present present || \
     check "install.sh routes personal-on-linux and names the plan" present MISSING

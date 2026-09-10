@@ -41,6 +41,18 @@
 #                               notice that other exakit commands can show
 
 $ErrorActionPreference = "Stop"
+# EXIT WOULD CLOSE THE USER'S TERMINAL. The documented way to run this file is
+#   irm https://.../install.ps1 | iex
+# and `iex` runs it IN THE CALLER'S SESSION - so a top-level `exit` terminates
+# the PowerShell host, window and all. That took the preflight report off the
+# screen before it could be read, and took every failure message with it: the
+# trap prints the cause and then `exit 1` closed the window on top of it.
+#
+# So the installer stops by RETURNING, and reserves `exit` for the one context
+# where it means what it says: a real file invocation (powershell -File ...),
+# where $PSCommandPath is set. $LASTEXITCODE still carries the code either way,
+# so `irm ... | iex; $LASTEXITCODE` scripts the same as before.
+$ExakitRanAsFile = [bool]$PSCommandPath
 # Silence the progress stream: it hides the noisy download/extract progress
 # banners, and on Windows PowerShell 5.1 it makes Invoke-WebRequest below far
 # faster (a visible progress bar throttles it by an order of magnitude).
@@ -83,7 +95,9 @@ trap {
         Set-Content -Path (Join-Path $failHome ".last-failure") `
             -Value @($_.Exception.Message, $stamp) -Encoding UTF8 -ErrorAction SilentlyContinue
     } catch { }
-    exit 1
+    $global:LASTEXITCODE = 1
+    if ($ExakitRanAsFile) { exit 1 }
+    return
 }
 
 # Twin of Get-ExakitHomeBase in exakit-common.ps1: exakit resolves its home
@@ -399,7 +413,10 @@ if ($env:EXAKIT_PREFLIGHT -eq "1") {
     # The exit code is the number of failures, exactly as install.sh's
     # preflight_report returns it, so a script can branch on it - and zero when
     # the only findings were notes, because a note is not a failure.
-    exit (Write-ExakitRequirementReport -Checks $RequirementChecks)
+    $preflightFailures = Write-ExakitRequirementReport -Checks $RequirementChecks
+    $global:LASTEXITCODE = $preflightFailures
+    if ($ExakitRanAsFile) { exit $preflightFailures }
+    return
 }
 
 foreach ($check in $RequirementChecks) {
@@ -602,4 +619,8 @@ $setupExitCode = $LASTEXITCODE
 # Docker Desktop and re-run."). install.sh never had this problem: it execs its
 # setup script, so on macOS/Linux/WSL the real message IS the last line. This
 # is that same contract on Windows.
-if ($setupExitCode -ne 0) { exit $setupExitCode }
+if ($setupExitCode -ne 0) {
+    $global:LASTEXITCODE = $setupExitCode
+    if ($ExakitRanAsFile) { exit $setupExitCode }
+    return
+}
