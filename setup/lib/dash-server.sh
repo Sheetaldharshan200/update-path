@@ -433,27 +433,44 @@ dash_server_write_launcher() {
 # database bootstrapped as a connection profile (DASH_SERVER_EXASOL_*). Any of
 # these variables you export yourself take precedence. Re-running
 # `exakit update dash-server` regenerates this wrapper.
+# THE PORT COMES FROM THE CALLER, not from this file. It used to be baked in
+# at generation time, and the kit records its own choice separately - so the
+# two drifted: a launcher written when the port was 5102 kept checking 5102
+# while the kit passed --port 5100 and then waited on it. The launcher said
+# "already running: 5102", the kit reported "did not answer on 5100", and
+# `exakit status` called a live add-on stopped. The baked value is now only the
+# default for a hand-run with no arguments.
+_ds_port="@PORT@"
+_ds_seen=""
+for _ds_arg in "$@"; do
+    if [ "$_ds_seen" = "port" ]; then _ds_port="$_ds_arg"; _ds_seen=""; continue; fi
+    case "$_ds_arg" in
+        --port) _ds_seen="port" ;;
+        --port=*) _ds_port="${_ds_arg#--port=}" ;;
+    esac
+done
+case "$_ds_port" in ''|*[!0-9]*) _ds_port="@PORT@" ;; esac
 # Already up? dash-server's consumption coordinator is single-process, so a
 # second copy dies on a RuntimeError traceback that reads like a crash. It is
 # not one - the first copy (often started at login by the boot entry) is
 # serving. Say that plainly and stop.
 _ds_holder=""
 if command -v lsof >/dev/null 2>&1; then
-    for _ds_pid in $(lsof -nP -iTCP:@PORT@ -sTCP:LISTEN -t 2>/dev/null | sort -u); do
+    for _ds_pid in $(lsof -nP -iTCP:"$_ds_port" -sTCP:LISTEN -t 2>/dev/null | sort -u); do
         case "$(ps -o command= -p "$_ds_pid" 2>/dev/null)" in
             *"@VENVDIR@"*) _ds_holder="ours" ;;
             *) [ -n "$_ds_holder" ] || _ds_holder="pid $_ds_pid ($(ps -o comm= -p "$_ds_pid" 2>/dev/null | sed 's|.*/||'))" ;;
         esac
     done
 elif command -v curl >/dev/null 2>&1; then
-    curl -s -o /dev/null --max-time 2 "http://127.0.0.1:@PORT@/mcp" 2>/dev/null && _ds_holder="ours"
+    curl -s -o /dev/null --max-time 2 "http://127.0.0.1:$_ds_port/mcp" 2>/dev/null && _ds_holder="ours"
 fi
 if [ "$_ds_holder" = "ours" ]; then
-    printf 'dash-server is already running: http://127.0.0.1:@PORT@ (MCP: /mcp)\n'
+    printf 'dash-server is already running: http://127.0.0.1:%s (MCP: /mcp)\n' "$_ds_port"
     printf 'State: exakit status   Logs: exakit logs dash-server -f   Stop: exakit stop\n'
     exit 0
 elif [ -n "$_ds_holder" ]; then
-    printf 'Port @PORT@ is held by another process (%s), so dash-server cannot start.\n' "$_ds_holder"
+    printf 'Port %s is held by another process (%s), so dash-server cannot start.\n' "$_ds_port" "$_ds_holder"
     printf 'Move it: EXAKIT_DASH_SERVER_PORT=<port> exakit update\n'
     exit 1
 fi
