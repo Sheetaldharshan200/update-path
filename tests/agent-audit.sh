@@ -64,7 +64,7 @@ has "the twin narrows it too" 'Get-McpClientStates' "$(sed -n '/EXAKIT_MCP_CLIEN
 has "AGENTS.md defines all" "every client detected on this machine" "$(cat "$ROOT/AGENTS.md")"
 
 echo "2. the exakit command exists before step 1, and status says installing:"
-for _f in setup/setup-macos.sh setup/setup-wsl.sh; do
+for _f in setup/setup-macos.sh setup/setup-linux.sh; do
     _early="$(grep -n 'exakit_install_helper_early\|begin_step launcher' "$ROOT/$_f" | head -2 | cut -d: -f2 | tr '\n' ' ')"
     has "$_f installs the helper before the launcher step" "exakit_install_helper_early" "$(printf '%s' "$_early" | awk '{print $1}')"
 done
@@ -357,7 +357,7 @@ has "the log is created 0600 before launchctl load" 'chmod 600 "$EXAKIT_LOG_DIR/
 echo "R4-6. the installer records where the bootstrap time went:"
 has "install.sh stamps its start" 'EXAKIT_INSTALL_T0="$(date +%s)"' "$(cat "$ROOT/install.sh")"
 has "setup logs the elapsed bootstrap" 'after the installer began' "$(cat "$ROOT/setup/setup-macos.sh")"
-has "...on the WSL path too" 'after the installer began' "$(cat "$ROOT/setup/setup-wsl.sh")"
+has "...on the WSL path too" 'after the installer began' "$(cat "$ROOT/setup/setup-linux.sh")"
 
 # --- Round 5 (agent-operability audit, round 2 of the 0.2.4 series) ---------
 #

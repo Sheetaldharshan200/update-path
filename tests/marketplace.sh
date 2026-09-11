@@ -1235,7 +1235,7 @@ _as_sweep="$( (
     # "some" not a count: how many services this sandbox happens to expose is
     # not the point — that entries existed and none survived is.
     [ "$(ls "$EXAKIT_LAUNCHAGENT_DIR" | wc -l | tr -d ' ')" -gt 0 ] && printf 'before=some ' || printf 'before=none '
-    nano_teardown() { :; }; personal_teardown() { :; }; exakit_mcp_operation() { :; }
+    personal_teardown() { :; }; exakit_mcp_operation() { :; }
     exakit_uninstall_run 0 >/dev/null 2>&1
     printf 'after=%s' "$(ls "$EXAKIT_LAUNCHAGENT_DIR" 2>/dev/null | wc -l | tr -d ' ')"
 ) )"
@@ -1267,7 +1267,7 @@ check "Linux x86_64 asks for the linux-x86_64 engine" "exasol-json-tables-ingest
 check "Linux arm64 asks for the linux-aarch64 engine" "exasol-json-tables-ingest-linux-aarch64" \
     "$( ( detect_os() { printf 'linux\n'; }; detect_arch() { printf 'arm64\n'; }; json_tables_engine_asset ) )"
 # WSL IS Linux and runs the linux engine. detect_os reports it as a platform of
-# its own because the INSTALLER needs that distinction (Docker Desktop, /mnt
+# its own because the INSTALLER needs that distinction (WSL is refused, /mnt
 # paths) — but an artifact lookup does not, and one that fails to fold it back
 # into linux hides the add-on from every WSL machine, with a "no prebuilt engine
 # for this platform" reason that is not true.

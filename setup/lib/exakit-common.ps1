@@ -120,8 +120,8 @@ function Get-ExakitProfileHome {
 #
 # PowerShell's $HOME comes from the account's home-directory attribute, which on
 # a domain-joined machine is routinely a mapped drive (H:\) or a UNC share
-# (\\server\share\user). Neither can host this kit: Docker Desktop cannot
-# bind-mount a network path into the Nano container, and the free-space probe
+# (\\server\share\user). Neither can host this kit: the container engine
+# cannot bind-mount a network path, and the free-space probe
 # answers -1 for anything that is not a local X: drive - so the install failed
 # before it had done anything, on a machine where nothing was actually wrong.
 # $env:USERPROFILE is the local profile on this machine and is what every other
@@ -177,7 +177,7 @@ $script:InstallLockPath = if ($env:EXAKIT_INSTALL_LOCK) { $env:EXAKIT_INSTALL_LO
 # file and the very first thing an install does is start its log.
 $script:ExakitHomeNotice = ""
 if (-not $env:EXAKIT_HOME -and -not (Test-ExakitLocalPath $script:ExakitHome)) {
-    $script:ExakitHomeNotice = "Your Windows home ($script:ExakitHomeBase) is not on a local drive. Docker cannot bind-mount a network or redirected home, so the database cannot be deployed there. Set EXAKIT_HOME to a folder on a local drive (for example C:\exasol-starter-kit) and run the installer again."
+    $script:ExakitHomeNotice = "Your Windows home ($script:ExakitHomeBase) is not on a local drive. A network or redirected home cannot be bind-mounted, so the database cannot be deployed there. Set EXAKIT_HOME to a folder on a local drive (for example C:\exasol-starter-kit) and run the installer again."
 }
 $script:ManagedPythonVersion = if ($env:EXAKIT_MANAGED_PYTHON_VERSION) { $env:EXAKIT_MANAGED_PYTHON_VERSION } else { "3.12" }
 $script:McpReadonlyUser    = if ($env:EXAKIT_MCP_READONLY_USER) { $env:EXAKIT_MCP_READONLY_USER } else { "mcp_readonly" }
@@ -189,14 +189,11 @@ $script:McpReadonlySchemas = if ($env:EXAKIT_MCP_READONLY_SCHEMAS) { $env:EXAKIT
 # manifest (default) - take the version set the maintainers tested together,
 #                      from versions.json (see below).
 # latest             - resolve each Component independently from its upstream
-#                      (GitHub releases, PyPI, Docker Hub).
+#                      (GitHub releases, PyPI).
 # anything else      - install the *Fallback versions below, no network at all.
 $script:VersionPolicy = if ($env:EXAKIT_VERSION_POLICY) { $env:EXAKIT_VERSION_POLICY } else { "manifest" }
-$script:NanoImage       = "exasol/nano"
-$script:NanoTagFallback = if ($env:EXAKIT_NANO_TAG_FALLBACK) { $env:EXAKIT_NANO_TAG_FALLBACK } else { "2026.2.0-nano.3" }
 $script:ExapumpVersionFallback = if ($env:EXAKIT_EXAPUMP_VERSION_FALLBACK) { $env:EXAKIT_EXAPUMP_VERSION_FALLBACK } else { "0.12.0" }
 $script:McpVersionFallback = if ($env:EXAKIT_MCP_VERSION_FALLBACK) { $env:EXAKIT_MCP_VERSION_FALLBACK } else { "2.2.0" }
-$script:NanoTag         = if ($env:EXAKIT_NANO_TAG) { $env:EXAKIT_NANO_TAG } else { "" }
 $script:ExapumpVersion  = if ($env:EXAKIT_EXAPUMP_VERSION) { $env:EXAKIT_EXAPUMP_VERSION } else { "" }
 $script:ExapumpRepo     = "exasol-labs/exapump"
 $script:McpPackage      = if ($env:EXAKIT_MCP_PACKAGE) { $env:EXAKIT_MCP_PACKAGE } else { "exasol-mcp-server" }
@@ -484,9 +481,9 @@ function Write-ExakitError([string]$Msg) {
 # FETCH_", "object X not found"); each match here appends the one line that names
 # the fix. Callers pass whatever output they captured; unknown text is silent.
 #
-# This side had NO translator at all until now - the Windows and Nano paths got
-# the raw engine text and nothing else, so "every error message names its remedy"
-# was a macOS-only promise.
+# This side had NO translator at all until now - the Windows path got the raw
+# engine text and nothing else, so "every error message names its remedy" was a
+# macOS-only promise.
 # twin: exakit_explain_db_error in setup/lib/common.sh. Keep the cases and the
 # wording in step.
 # Get-ExakitDbErrorRemedy <text> - the remedy lines for a raw database error, as
@@ -906,9 +903,9 @@ function Fail([string]$Msg) {
 # 'Stop' (set globally by every entry point), surface as an uncaught
 # terminating exception instead of just a non-zero exit code - this is a
 # real, well-documented PowerShell quirk (worse on Windows PowerShell 5.1
-# than on 7+) and is exactly what happened when Docker Desktop wasn't
-# running: the friendly "Docker is installed but not running" message never
-# ran because the underlying `docker info` call threw past it. Every caller
+# than on 7+) and is exactly what happened when the container engine wasn't
+# running: the friendly "Podman is installed but not running" message never
+# ran because the underlying engine probe threw past it. Every caller
 # of this function already checks the *returned exit code* and calls Fail()
 # itself with a proper message, so any exception here is converted to a
 # synthetic non-zero code instead of being allowed to escape - Fail() still
@@ -923,7 +920,7 @@ function Invoke-ExakitLogged {
     $spinLabel = if ($script:ExakitActiveLabel) { $script:ExakitActiveLabel } else { "working" }
     Start-ExakitSpinner $spinLabel
     try {
-        # Native tools such as uvx and Docker can write progress/status to
+        # Native tools such as uvx and the launcher can write progress/status to
         # stderr while still succeeding. With ErrorActionPreference = Stop,
         # Windows PowerShell can turn that stderr into a terminating error
         # before we can inspect the real process exit code.
@@ -932,7 +929,7 @@ function Invoke-ExakitLogged {
             # Stringify each line here rather than `*>>`: PowerShell 5.1's
             # redirection appends native stderr as UTF-16 error-record dumps
             # (wrapped, with CategoryInfo trailers) inside a UTF-8 log, so a
-            # Docker "ports are not available" landed as "p o r t s   a r e"
+            # a "ports are not available" line landed as "p o r t s   a r e"
             # and no grep for the remedy could find it.
             & $Cmd @CmdArgs 2>&1 | ForEach-Object {
                 if ($_ -is [System.Management.Automation.ErrorRecord]) { "$($_.Exception.Message)" } else { "$_" }
@@ -1319,26 +1316,6 @@ function Get-ExakitManifestValue {
     $doc = Read-ExakitManifest
     if ($null -eq $doc) { return $null }
     return (Get-ManifestValue -Manifest $doc -Path $Path)
-}
-
-# Sync-ExakitRuntimeDefaultsFromManifest - the port and image the INSTALL
-# recorded win over the built-in defaults when the environment names neither.
-# EXAKIT_DB_PORT and EXAKIT_NANO_TAG were read from the environment only, so
-# `exakit start` after an install on 8564 recreated the container on 8563 -
-# straight into the conflict the port had been chosen to avoid - and a start
-# that had to create the container pulled "docker.io/exasol/nano:" with no tag.
-# Twin of nano_adopt_recorded_settings in runtime-nano.sh.
-function Sync-ExakitRuntimeDefaultsFromManifest {
-    try {
-        if (-not $env:EXAKIT_DB_PORT) {
-            $dsn = "$(Get-ExakitManifestValue 'runtime.dsn')"
-            if ($dsn -match ':(\d+)\s*$') { $script:DbPort = $Matches[1] }
-        }
-        if (-not $script:NanoTag) {
-            $image = "$(Get-ExakitManifestValue 'runtime.image')"
-            if ($image -match ':([^:/]+)\s*$') { $script:NanoTag = $Matches[1] }
-        }
-    } catch { }
 }
 
 # ConvertFrom-ExakitJsonRows <text> - exapump's `--format json` rows, one row
@@ -1847,11 +1824,11 @@ function Write-ExakitSoftFailures {
 # Invoke-ExakitBounded - run an external command and give up on it after
 # -TimeoutSeconds, returning $null if it had to be cut off.
 #
-# The twin of the bash exakit_run_bounded, and needed for the same reason: `docker
-# info` and `docker container inspect` do not return while Docker Desktop is still
-# starting, so an unbounded probe leaves `exakit version` printing nothing at all
-# for as long as the engine takes. Reading a version is never worth that wait - the
-# callers fall back to the recorded value, exactly as they do for a stopped engine.
+# The twin of the bash exakit_run_bounded, and needed for the same reason: a
+# launcher wedged on a deployment it cannot open does not return, so an unbounded
+# probe leaves `exakit version` printing nothing at all for as long as it hangs.
+# Reading a version is never worth that wait - the callers fall back to the
+# recorded value, exactly as they do for a stopped deployment.
 #
 # Uses Process directly rather than Start-Job: a job pays PowerShell startup per
 # call, and WaitForExit(ms) is the one primitive that is honest about giving up.
@@ -2353,7 +2330,7 @@ function Get-ExakitLatestPypiVersion {
     } catch { return "" }
 }
 
-# Return the docker image arch token for THIS machine: "amd64" or "arm64".
+# Return the build-architecture token for THIS machine: "amd64" or "arm64".
 # Prefer the true hardware arch (WMI) so an x64-emulated PowerShell on an ARM
 # device is not misread as amd64; fall back to the environment.
 function Get-ExakitHostArch {
@@ -2367,30 +2344,12 @@ function Get-ExakitHostArch {
     return "amd64"
 }
 
-function Get-ExakitLatestDockerTag {
-    try {
-        $doc = Invoke-RestMethod -Uri "https://hub.docker.com/v2/repositories/$($script:NanoImage)/tags?page_size=100&ordering=last_updated" -UseBasicParsing -TimeoutSec 12
-        # Keep the plain (multi-arch) tags plus this host's own arch, and drop
-        # the other architecture's suffixed tags - otherwise the sort lands on
-        # -arm64 (it sorts after -amd64) and an x86_64 host would pull an arm64
-        # image that only runs under slow emulation.
-        $arch = Get-ExakitHostArch
-        if ($arch -eq "arm64") { $wrong = @("amd64", "x86_64", "x86-64") } else { $wrong = @("arm64", "aarch64") }
-        $candidates = @($doc.results | ForEach-Object { $_.name } | Where-Object {
-            ($_ -match '^\d+(\.\d+)+[-._A-Za-z0-9]*$') -and ($_ -notmatch 'latest') -and
-            (-not (($_.ToLower() -split '[-._]') | Where-Object { $wrong -contains $_ }))
-        })
-        if ($candidates.Count -eq 0) { return "" }
-        return ($candidates | Sort-Object { [regex]::Replace($_, '\d+', { param($m) $m.Value.PadLeft(12, '0') }) } | Select-Object -Last 1)
-    } catch { return "" }
-}
-
 function Set-ExakitDesiredVersions {
     Set-ExakitManifestValue "version_policy" $script:VersionPolicy
     $source = $script:VersionsSourceUsed
     if (-not $source) { $source = "unknown" }
     Set-ExakitManifestValue "desired.versions_source" $source
-    Set-ExakitManifestValue "desired.runtime.nano" $script:NanoTag
+    Set-ExakitManifestValue "desired.runtime.personal" $env:EXAKIT_PERSONAL_VERSION
     Set-ExakitManifestValue "desired.exapump" $script:ExapumpVersion
     Set-ExakitManifestValue "desired.mcp" $script:McpVersion
     Set-ExakitManifestValue "desired.pyexasol" $script:PyexasolVersion
@@ -2404,9 +2363,13 @@ function Resolve-ExakitInstallVersions {
     if ($script:VersionPolicy -eq "latest") {
         # The escape hatch: newest of every Component, resolved upstream.
         $script:VersionsSourceUsed = "latest"
-        if (-not $script:NanoTag) {
-            $script:NanoTag = Get-ExakitLatestDockerTag
-            if (-not $script:NanoTag) { $script:NanoTag = $script:NanoTagFallback }
+        if (-not $env:EXAKIT_PERSONAL_VERSION) {
+            # Guarded like the fallback constant: the runtime module defines
+            # $script:PersonalRepo, and this file loads before it.
+            $repoVar = Get-Variable -Scope Script -Name "PersonalRepo" -ErrorAction SilentlyContinue
+            $personalRepo = if ($repoVar) { $repoVar.Value } else { "exasol/exasol-personal" }
+            $env:EXAKIT_PERSONAL_VERSION = Get-ExakitLatestGithubRelease $personalRepo
+            if (-not $env:EXAKIT_PERSONAL_VERSION) { $env:EXAKIT_PERSONAL_VERSION = Get-ExakitComponentFallback "personal" }
         }
         if (-not $script:ExapumpVersion) {
             $script:ExapumpVersion = Get-ExakitLatestGithubRelease $script:ExapumpRepo
@@ -2426,7 +2389,7 @@ function Resolve-ExakitInstallVersions {
     if ($script:VersionPolicy -ne "manifest") {
         # No network at all: the last-known-good constants only.
         $script:VersionsSourceUsed = "fallback"
-        if (-not $script:NanoTag) { $script:NanoTag = $script:NanoTagFallback }
+        if (-not $env:EXAKIT_PERSONAL_VERSION) { $env:EXAKIT_PERSONAL_VERSION = Get-ExakitComponentFallback "personal" }
         if (-not $script:ExapumpVersion) { $script:ExapumpVersion = $script:ExapumpVersionFallback }
         if (-not $script:McpVersion) { $script:McpVersion = $script:McpVersionFallback }
         if (-not $script:PyexasolVersion) { $script:PyexasolVersion = $script:PyexasolVersionFallback }
@@ -2440,9 +2403,9 @@ function Resolve-ExakitInstallVersions {
     Update-ExakitVersionsCache | Out-Null
     Resolve-ExakitVersionsDoc | Out-Null
     $script:VersionsSourceUsed = Get-ExakitVersionsSource
-    if (-not $script:NanoTag) {
-        $script:NanoTag = Get-ExakitVersionsValue -Path "components.nano.version"
-        if (-not $script:NanoTag) { $script:NanoTag = $script:NanoTagFallback }
+    if (-not $env:EXAKIT_PERSONAL_VERSION) {
+        $env:EXAKIT_PERSONAL_VERSION = Get-ExakitVersionsValue -Path "components.personal.version"
+        if (-not $env:EXAKIT_PERSONAL_VERSION) { $env:EXAKIT_PERSONAL_VERSION = Get-ExakitComponentFallback "personal" }
     }
     if (-not $script:ExapumpVersion) {
         $script:ExapumpVersion = Get-ExakitVersionsValue -Path "components.exapump.version"
@@ -2492,19 +2455,14 @@ function Resolve-ExakitInstallVersions {
 #
 # This lives HERE rather than in the CLI because the installer is what needs it,
 # and setup-windows.ps1 does not load setup\exakit.ps1. It therefore uses
-# only what the setup context has: the container's own restart policy from
-# runtime-nano.ps1. Per-service login entries are the CLI's business (`exakit autostart
-# on`), and an add-on installed later registers itself through the marketplace.
+# only what the setup context has. Per-service login entries are the CLI's
+# business (`exakit autostart on`), and an add-on installed later registers
+# itself through the marketplace.
 # Twin of exakit_autostart_default_on in common.sh.
 function Enable-ExakitAutostartDefault {
     $existing = Get-ExakitManifestValue "autostart.enabled"
     if ($existing -is [bool]) { return }        # the user has already answered
-    $any = $false
-    if ((Get-ExakitManifestValue "runtime.type") -eq "nano" -and
-        (Get-Command Set-NanoRestartPolicy -ErrorAction SilentlyContinue)) {
-        if (Set-NanoRestartPolicy -Policy "always") { $any = $true }
-    }
-    Set-ExakitManifestValue "autostart.enabled" $any
+    Set-ExakitManifestValue "autostart.enabled" $false
 }
 
 # Invoke-ExakitWithSpinner <label> <body> - run a slow phase behind the kit's
@@ -2603,7 +2561,8 @@ function Set-ExakitStepDone {
 #      "missing" is destructive; a wrong "unknown" just leaves today's behaviour
 #      in place. Anything not cheaply provable is "unknown".
 #   2. FILE TESTS ONLY. This runs once per step on every install, so no network,
-#      no PyPI, no GitHub and above all nothing that could wake or probe Docker.
+#      no PyPI, no GitHub and above all nothing that could wake or probe the
+#      container engine.
 #   3. "present" means what the NEXT step will actually resolve.
 #   4. EXISTING IS NOT ENOUGH - it must also be non-empty. A 0-byte file is
 #      exactly what an interrupted or out-of-space install leaves behind, and it
@@ -2626,8 +2585,7 @@ function Get-ExakitStepArtifactState {
         if ((Test-Path -LiteralPath $recorded -PathType Leaf) -and ((Get-Item -LiteralPath $recorded).Length -gt 0)) { return "present" }
         return "missing"
     }
-    # runtime (the Nano container), mcp, pyexasol - and "launcher", which is a
-    # macOS-only step with no Windows peer: nothing a file test can settle
+    # runtime, mcp, pyexasol - and "launcher": nothing a file test can settle
     # without risking a destructive false "missing". See rule 1 above.
     return "unknown"
 }
@@ -3228,9 +3186,9 @@ function Update-ExakitSelf {
     $stagedRoot = $staged.FullName
 
     # versions.json is on this list deliberately: without it the new kit copy has no
-    # offline version tier and cannot say what version it is. The eight paths before
-    # it are the ones v0.1.0 also validates - none may ever be renamed.
-    foreach ($required in @("setup/exakit", "setup/lib/common.sh", "setup/lib/runtime-nano.sh",
+    # offline version tier and cannot say what version it is. None of the paths on
+    # this list may ever be renamed, or an old kit refuses the upgrade.
+    foreach ($required in @("setup/exakit", "setup/lib/common.sh",
                             "setup/lib/runtime-personal.sh", "setup/lib/exapump.sh", "setup/lib/mcp.sh",
                             "setup/exakit.ps1", "setup/lib/exakit-common.ps1", "versions.json")) {
         if (-not (Test-Path (Join-Path $stagedRoot ($required -replace '/', '\')))) {
@@ -3556,7 +3514,7 @@ function Set-ExakitCredential {
     # the mount source as a folder. Move-Item -Force would then drop the .tmp
     # INSIDE it and report success, leaving a password nothing can read and a
     # directory that still poisons the next run. Refuse instead: the caller
-    # that owns the runtime repairs it (Repair-NanoCredentials).
+    # that owns the runtime repairs it.
     if (Test-Path $target -PathType Container) {
         Fail "The credential path $target is a directory, not a file. Delete it and re-run."
     }
@@ -4238,10 +4196,9 @@ function Install-ExakitSkills {
 # interactive confirmation, on both interactive and non-interactive runs.
 # Confirm-ExakitRuntimeRunning [-Deploy] - the kit's self-heal for "the
 # database is not answering", shared by every command about to speak SQL. A
-# container that is merely stopped is started (Install-Nano self-heals both
-# halves: it starts an existing container, creates a missing one, and waits
-# for ready); a missing one is created only when the caller allows it, and
-# otherwise refused with the exact command that fixes it.
+# deployment that is merely stopped is started; a missing one is deployed only
+# when the caller allows it, and otherwise refused with the exact command that
+# fixes it.
 # Twin of exakit_ensure_runtime_running in common.sh.
 function Confirm-ExakitRuntimeRunning {
     param([switch]$Deploy)
@@ -4262,24 +4219,6 @@ function Confirm-ExakitRuntimeRunning {
         }
         Fail "No database found. Start one with: exakit start (or re-run the installer)"
     }
-    if ($runtimeType -ne "nano") { return }
-    if (-not (Get-Command Get-NanoStatus -ErrorAction SilentlyContinue)) { return }
-    if ((Get-NanoStatus) -eq "running") { return }
-    $exists = $false
-    if (Get-Command Test-NanoContainerExists -ErrorAction SilentlyContinue) {
-        $exists = Test-NanoContainerExists
-    }
-    if ($exists) {
-        Info "Self-heal: the database container exists but is not running - starting it"
-        Install-Nano
-        return
-    }
-    if ($Deploy) {
-        Info "Self-heal: no database container found - creating one"
-        Install-Nano
-        return
-    }
-    Fail "No database found. Start one with: exakit start (or re-run the installer)"
 }
 
 # ---------------------------------------------------------------------------
@@ -5601,9 +5540,8 @@ function Get-ExakitComponentBlock {
     switch ($Component) {
         "exakit" { return "kit" }
         "kit2" { return "kit2" }
-        { $_ -in @("exapump", "mcp", "pyexasol", "nano", "personal", "skills") } { return "components.$Component" }
+        { $_ -in @("exapump", "mcp", "pyexasol", "personal", "skills") } { return "components.$Component" }
         "runtime" {
-            if ((Get-RuntimeType) -eq "nano") { return "components.nano" }
             if ((Get-RuntimeType) -eq "personal") { return "components.personal" }
             return $null
         }
@@ -5676,35 +5614,7 @@ function Get-ExakitComponentCurrent {
             # exakit_component_current.
             return (Get-ExakitManifestValue "components.skills.version")
         }
-        "nano" {
-            # The tag on the container beats the record: someone may have recreated
-            # it by hand, and an interrupted update can leave the record ahead of
-            # what is really running.
-            #
-            # Unlike exapump and pyexasol, a probe that cannot answer NEVER reports
-            # absence here. A closed Docker Desktop is an ordinary, temporary state,
-            # and flipping the runtime row to "inspect" every time would be noise.
-            # Whether the runtime exists at all is `exakit status`'s question, and it
-            # asks the engine directly.
-            $live = ""
-            try {
-                $engine = Get-NanoEngine
-                if ($engine -and $engine -ne "none") {
-                    Resolve-NanoNames
-                    $out = Invoke-ExakitBounded -FilePath $engine `
-                        -Arguments @("container", "inspect", "-f", "{{.Config.Image}}", $script:NanoContainer) `
-                        -TimeoutSeconds $(if ($env:EXAKIT_ENGINE_PROBE_TIMEOUT) { [int]$env:EXAKIT_ENGINE_PROBE_TIMEOUT } else { 8 })
-                    if ($out) { $out = ($out -split "`n" | Select-Object -First 1) }
-                    if ($out -and ("" + $out).Contains(":")) { $live = (("" + $out).Trim() -split ":")[-1] }
-                }
-            } catch { }
-            if ($live) { return $live }
-            $image = Get-ExakitManifestValue "runtime.image"
-            if ($image -and $image.Contains(":")) { return ($image -split ":")[-1] }
-            return ""
-        }
         "runtime" {
-            if ((Get-RuntimeType) -eq "nano") { return (Get-ExakitComponentCurrent "nano") }
             if ((Get-RuntimeType) -eq "personal") { return (Get-ExakitComponentCurrent "personal") }
             return ""
         }
@@ -5731,8 +5641,8 @@ function Get-ExakitComponentCurrent {
 }
 
 # Get-ExakitComponentEnvOverride - the version the user asked for by hand, if any.
-# Same precedence as the install path: an explicit EXAKIT_*_VERSION /
-# EXAKIT_NANO_TAG outranks the manifest and any upstream lookup, so
+# Same precedence as the install path: an explicit EXAKIT_*_VERSION outranks
+# the manifest and any upstream lookup, so
 # `$env:EXAKIT_EXAPUMP_VERSION="0.11.2"; exakit update exapump` installs exactly
 # that (still through the confirmation gate, and still verified - the digest chain
 # falls back to the release API when the version is not the advertised one).
@@ -5744,7 +5654,6 @@ function Get-ExakitComponentEnvOverride {
         "exapump" { return $env:EXAKIT_EXAPUMP_VERSION }
         "mcp" { return $env:EXAKIT_MCP_VERSION }
         "pyexasol" { return $env:EXAKIT_PYEXASOL_VERSION }
-        "nano" { return $env:EXAKIT_NANO_TAG }
         "personal" { return $env:EXAKIT_PERSONAL_VERSION }
         default {
             # Marketplace add-ons name their override in the registry.
@@ -5764,7 +5673,6 @@ function Get-ExakitComponentFallback {
         "exapump" { return $script:ExapumpVersionFallback }
         "mcp" { return $script:McpVersionFallback }
         "pyexasol" { return $script:PyexasolVersionFallback }
-        "nano" { return $script:NanoTagFallback }
         "personal" {
             # Guarded like the add-on constants: the module defines it, and this
             # file loads first.
@@ -5801,10 +5709,8 @@ function Get-ExakitComponentLatest {
         "exapump" { return (Get-ExakitLatestGithubRelease $script:ExapumpRepo) }
         "mcp" { return (Get-ExakitLatestPypiVersion $script:McpPackage) }
         "pyexasol" { return (Get-ExakitLatestPypiVersion $script:PyexasolPackage) }
-        "nano" { return (Get-ExakitLatestDockerTag) }
         "personal" { return (Get-ExakitLatestGithubRelease "exasol/exasol-personal") }
         "runtime" {
-            if ((Get-RuntimeType) -eq "nano") { return (Get-ExakitComponentLatest "nano") }
             if ((Get-RuntimeType) -eq "personal") { return (Get-ExakitComponentLatest "personal") }
             return ""
         }
@@ -5940,7 +5846,7 @@ function Get-ExakitUpdateTargets {
             return @($targets + (Get-ExakitMarketplaceInstalledAddons))
         }
         { $_ -in @("runtime", "database", "db") } { return @("runtime") }
-        { $_ -in @("nano", "personal", "exakit", "exapump", "mcp", "pyexasol", "skills", "kit2") } { return @($Target) }
+        { $_ -in @("personal", "exakit", "exapump", "mcp", "pyexasol", "skills", "kit2") } { return @($Target) }
         default {
             # Any registered marketplace add-on is a valid explicit target.
             if (Get-ExakitMarketplaceAddon $Target) { return @($Target) }
@@ -5951,24 +5857,33 @@ function Get-ExakitUpdateTargets {
 
 function Get-RuntimeType { return (Get-ExakitManifestValue "runtime.type") }
 
-# Get-ExakitRuntimeChoice - which runtime a FRESH install deploys on this
-# machine: EXAKIT_RUNTIME when the user set it, "nano" otherwise (the Windows
-# default, unchanged). A choice for installers, never a record - an installed
-# kit answers Get-RuntimeType from the manifest, and nothing here overrides it.
-# An unknown value is a hard stop: a typo silently falling back to the default
-# would deploy a database the user did not ask for.
-# Twin of exakit_runtime_choice in setup/lib/common.sh.
-function Get-ExakitRuntimeChoice {
-    $choice = $env:EXAKIT_RUNTIME
-    if ([string]::IsNullOrEmpty($choice)) {
-        # THE DEFAULT IS EXASOL PERSONAL, everywhere. A machine it does not
-        # support (Windows arm64) is refused gracefully by the requirements
-        # gate, naming what Personal does support - never rerouted silently.
-        # EXAKIT_RUNTIME=nano stays the explicit escape hatch.
-        return "personal"
-    }
-    if ($choice -eq "nano" -or $choice -eq "personal") { return $choice }
-    Fail "EXAKIT_RUNTIME='$choice' is not a runtime this kit knows. Valid values: personal, nano - or unset it for the platform default."
+# The recorded runtime types that belong to a kit OLDER than this one: a
+# database in a container, which this kit neither deploys nor drives.
+$script:LegacyRuntimeTypes = @("nano")
+
+# Test-ExakitLegacyRuntimeRecorded - true when this machine's installation was
+# made by an older kit whose database is a container.
+#
+# It lives HERE, not in legacy-crossing.ps1, because the CLI has to be able to
+# ask it: `exakit status` on such a machine would otherwise print
+# "nano - not installed", which reads as a broken install rather than one that
+# predates the removal of the container runtime. The crossing module reads the
+# same answer from the same place, so the installer and the CLI can never
+# disagree about what this machine is.
+# Twin of exakit_legacy_runtime_recorded in setup/lib/common.sh.
+function Test-ExakitLegacyRuntimeRecorded {
+    $type = Get-ExakitManifestValue "runtime.type"
+    if (-not $type) { return $false }
+    return ($script:LegacyRuntimeTypes -contains $type)
+}
+
+# The one sentence a legacy install needs, and the command that moves it
+# across. Silent on every other machine, so callers do not have to guard it.
+function Show-ExakitLegacyRuntimeNotice {
+    if (-not (Test-ExakitLegacyRuntimeRecorded)) { return }
+    Warn2 "This installation's database runs in a container, which this kit no longer manages."
+    Info "Re-run the installer to move across - it asks whether to bring your data with you, and deletes nothing either way:"
+    Info "  $(Get-ExakitInstallCommand)"
 }
 
 function Register-ExakitAutostart {
@@ -5976,14 +5891,6 @@ function Register-ExakitAutostart {
     $command = $null
     if ($Id -eq "database") {
         switch (Get-RuntimeType) {
-            "nano" {
-                # The container's own restart policy is what survives a reboot.
-                if (Set-NanoRestartPolicy -Policy "always") {
-                    Ok "database: the container restarts with Docker"
-                    return $true
-                }
-                return $false
-            }
             "personal" {
                 # No daemon honours a restart policy here: the launcher starts
                 # the deployment, so the Startup entry runs it - the same shape
@@ -6021,7 +5928,7 @@ function Register-ExakitAutostart {
 # lives in code rather than in the manifest.
 function Test-ExakitComponentHeavy {
     param([string]$Component)
-    return ($Component -in @("runtime", "nano", "personal"))
+    return ($Component -in @("runtime", "personal"))
 }
 
 # The severity, note and min_kit_version below describe the ADVERTISED set. Under

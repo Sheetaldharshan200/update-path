@@ -30,7 +30,7 @@ user's request actually needs, not a manual for the whole kit.
 
 | Skill | Use it when… |
 |---|---|
-| [`exasol-runtime`](exasol-runtime/SKILL.md) | Starting, stopping or diagnosing the local database; telling Exasol Personal (macOS, native) from Exasol Nano (container); autostart. |
+| [`exasol-runtime`](exasol-runtime/SKILL.md) | Starting, stopping or diagnosing the local Exasol Personal deployment; autostart. |
 | [`exasol-exapump`](exasol-exapump/SKILL.md) | Running SQL, opening a SQL shell, bulk-loading CSV/Parquet — and knowing that the `starter-kit` profile is the **admin**, unsandboxed connection. |
 | [`exasol-mcp`](exasol-mcp/SKILL.md) | Connecting AI clients over MCP, diagnosing `mcp-doctor`, repairing config drift, proving the read-only user really is read-only. |
 | [`exasol-pyexasol`](exasol-pyexasol/SKILL.md) | Querying the database from Python — the right interpreter, the TLS setting the self-signed certificate needs, reading credentials safely. |

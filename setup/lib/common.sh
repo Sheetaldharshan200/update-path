@@ -56,13 +56,12 @@ EXAKIT_MCP_READONLY_SCHEMAS="${EXAKIT_MCP_READONLY_SCHEMAS:-STARTER_KIT}"
 # manifest (default) — take the version set the maintainers tested together,
 #                      from versions.json (see below).
 # latest             — resolve each Component independently from its upstream
-#                      (GitHub releases, PyPI, Docker Hub). The escape hatch for
+#                      (GitHub releases, PyPI). The escape hatch for
 #                      anyone who wants the newest of everything.
 # anything else       — install the *_FALLBACK versions below and touch no
 #                      network at all.
 EXAKIT_VERSION_POLICY="${EXAKIT_VERSION_POLICY:-manifest}"
 EXAKIT_PERSONAL_VERSION="${EXAKIT_PERSONAL_VERSION:-}"
-EXAKIT_NANO_TAG="${EXAKIT_NANO_TAG:-}"
 EXAKIT_EXAPUMP_VERSION="${EXAKIT_EXAPUMP_VERSION:-}"
 EXAKIT_MCP_PACKAGE="${EXAKIT_MCP_PACKAGE:-exasol-mcp-server}"
 EXAKIT_MCP_VERSION="${EXAKIT_MCP_VERSION:-}"
@@ -77,7 +76,6 @@ EXAKIT_PYEXASOL_VERSION="${EXAKIT_PYEXASOL_VERSION:-}"
 # which no 2.2 release does. Moving to final is this constant plus
 # components.personal.version in versions.json, together in one commit.
 EXAKIT_PERSONAL_VERSION_FALLBACK="${EXAKIT_PERSONAL_VERSION_FALLBACK:-2.3.0-rc2}"
-EXAKIT_NANO_TAG_FALLBACK="${EXAKIT_NANO_TAG_FALLBACK:-2026.2.0-nano.3}"
 EXAKIT_EXAPUMP_VERSION_FALLBACK="${EXAKIT_EXAPUMP_VERSION_FALLBACK:-0.12.0}"
 EXAKIT_MCP_VERSION_FALLBACK="${EXAKIT_MCP_VERSION_FALLBACK:-2.2.0}"
 EXAKIT_PYEXASOL_VERSION_FALLBACK="${EXAKIT_PYEXASOL_VERSION_FALLBACK:-2.3.2}"
@@ -87,7 +85,6 @@ EXAKIT_PYEXASOL_VERSION_FALLBACK="${EXAKIT_PYEXASOL_VERSION_FALLBACK:-2.3.2}"
 
 EXAKIT_PERSONAL_REPO="exasol/exasol-personal"
 EXAKIT_EXAPUMP_REPO="exasol-labs/exapump"
-EXAKIT_NANO_IMAGE="exasol/nano"
 # Captured before the default lands: the manifest resolution below must never
 # outrank an answer the caller gave in the environment.
 _EXAKIT_KIT_REPO_FROM_ENV="${EXAKIT_KIT_REPO:-${EXAKIT_REPO:-}}"
@@ -186,7 +183,7 @@ EXAKIT_ABOUT_WIDTH="${EXAKIT_ABOUT_WIDTH:-44}"
 
 # Remember whether the environment named the port: an explicit value wins
 # everywhere, but the default must yield to the port the install RECORDED
-# (runtime.dsn) once there is one - see nano_adopt_recorded_settings.
+# (runtime.dsn) once there is one.
 EXAKIT_DB_PORT_EXPLICIT="${EXAKIT_DB_PORT:+1}"
 EXAKIT_DB_PORT="${EXAKIT_DB_PORT:-8563}"
 
@@ -2276,19 +2273,19 @@ PY
 # ---------------------------------------------------------------------------
 # The installed runtime version, read from the runtime itself with the record as
 # the fallback. Deliberately different from exapump and pyexasol in one way: a probe
-# that cannot answer NEVER reports absence here. A stopped container engine (or a
-# closed Docker Desktop) is an ordinary, temporary state, and flipping the runtime
-# row to "inspect" every time would be noise. Whether the runtime exists at all is
-# `exakit status`'s question, and it asks the engine directly.
+# that cannot answer NEVER reports absence here. A launcher that is busy or a
+# deployment that is stopped is an ordinary, temporary state, and flipping the
+# runtime row to "inspect" every time would be noise. Whether the runtime exists
+# at all is `exakit status`'s question, and it asks the launcher directly.
 
 # exakit_run_bounded <seconds> <command> [args...] — run a command and give up on
 # it after <seconds>, exiting 124 if it had to be cut off.
 #
-# `docker info` and `docker container inspect` do not return while Docker Desktop
-# is still starting, so an unbounded probe turns `exakit version` and
-# `exakit version` into commands that print nothing at all for as long as the
-# engine takes. Reading a version is never worth that wait: the probes fall back to
-# the recorded value, which is exactly what they do when the engine is stopped.
+# A launcher wedged on a deployment it cannot open does not return, so an
+# unbounded probe turns `exakit status` and `exakit version` into commands that
+# print nothing at all for as long as it hangs. Reading a version is never worth
+# that wait: the probes fall back to the recorded value, which is exactly what
+# they do when the deployment is stopped.
 #
 # timeout(1) is not on a stock macOS and gtimeout only arrives with coreutils, so
 # both are used when present and otherwise the command runs in the background and
@@ -2328,34 +2325,6 @@ exakit_run_bounded() {
     return 124
 }
 
-# exakit_installed_nano_tag — the tag on the container IS the installed version.
-# Needs runtime-nano.sh for the engine and container name.
-exakit_installed_nano_tag() {
-    _int_live=""
-    if command -v nano_engine >/dev/null 2>&1; then
-        # The container is not always called exasol-nano; nano_resolve_names reads the
-        # recorded name, and without it this probe silently failed on every install
-        # that used a custom one (PowerShell has always resolved it).
-        command -v nano_resolve_names >/dev/null 2>&1 && nano_resolve_names 2>/dev/null
-        _int_engine="$(nano_engine 2>/dev/null || true)"
-        if [ -n "$_int_engine" ] && [ "$_int_engine" != "none" ]; then
-            _int_image="$(exakit_run_bounded "${EXAKIT_ENGINE_PROBE_TIMEOUT:-8}" \
-                "$_int_engine" container inspect -f '{{.Config.Image}}' \
-                "${EXAKIT_NANO_CONTAINER:-exasol-nano}" 2>/dev/null | head -1)"
-            case "$_int_image" in
-                *:*) _int_live="${_int_image##*:}" ;;
-            esac
-        fi
-    fi
-    if [ -n "$_int_live" ]; then
-        printf '%s\n' "$_int_live"
-        return 0
-    fi
-    _int_recorded="$(manifest_get runtime.image 2>/dev/null || true)"
-    [ -n "$_int_recorded" ] || return 1
-    printf '%s\n' "${_int_recorded##*:}"
-}
-
 # exakit_installed_personal_version — the RECORD, deliberately.
 #
 # Not a live `exasol version` here: a half-done MAJOR upgrade installs the new
@@ -2377,28 +2346,37 @@ exakit_installation_runtime_type() {
     manifest_get runtime.type 2>/dev/null
 }
 
-# exakit_runtime_choice — which runtime a FRESH install deploys on this machine:
-# EXAKIT_RUNTIME when the user set it, the platform default otherwise. The
-# defaults reproduce what each platform has always done, so with the variable
-# unset this function changes nothing anywhere.
+# The recorded runtime types that belong to a kit OLDER than this one: a
+# database in a container, which this kit neither deploys nor drives.
+EXAKIT_LEGACY_RUNTIME_TYPES="${EXAKIT_LEGACY_RUNTIME_TYPES:-nano}"
+
+# exakit_legacy_runtime_recorded — 0 when this machine's installation was made
+# by an older kit whose database is a container.
 #
-# This is a CHOICE for installers, not a record: an installed kit's runtime is
-# exakit_installation_runtime_type (the manifest), and nothing here overrides
-# it. install.sh validates the value before the kit is even downloaded; this
-# validates again because setup scripts also run standalone from a checkout.
-# ⇄ twin: Get-ExakitRuntimeChoice in setup/lib/exakit-common.ps1.
-exakit_runtime_choice() {
-    case "${EXAKIT_RUNTIME:-}" in
-        personal|nano) printf '%s' "$EXAKIT_RUNTIME"; return 0 ;;
-        "") ;;
-        *) die "EXAKIT_RUNTIME='${EXAKIT_RUNTIME}' is not a runtime this kit knows. Valid values: personal, nano - or unset it for the platform default." ;;
-    esac
-    # THE DEFAULT IS EXASOL PERSONAL, everywhere. A platform Personal does not
-    # support is a graceful refusal naming what it does support - never a
-    # silent reroute onto the container runtime. EXAKIT_RUNTIME=nano stays the
-    # explicit escape hatch for machines that need the container (WSL, Windows
-    # arm64, an existing Nano install being repaired).
-    printf '%s' "personal"
+# It lives HERE, not in legacy-crossing.sh, because the CLI has to be able to
+# ask it: `exakit status` on such a machine would otherwise print "nano · not
+# installed", which reads as a broken install rather than one that predates the
+# removal of the container runtime. The crossing module reads the same answer
+# from the same place, so the installer and the CLI can never disagree about
+# what this machine is.
+exakit_legacy_runtime_recorded() {
+    _lrr_type="$(exakit_installation_runtime_type 2>/dev/null || true)"
+    [ -n "$_lrr_type" ] || return 1
+    for _lrr_known in $EXAKIT_LEGACY_RUNTIME_TYPES; do
+        [ "$_lrr_type" = "$_lrr_known" ] && return 0
+    done
+    return 1
+}
+
+# exakit_legacy_runtime_notice — the one sentence a legacy install needs, and
+# the command that moves it across. Silent on every other machine, so callers
+# do not have to guard it.
+exakit_legacy_runtime_notice() {
+    exakit_legacy_runtime_recorded || return 0
+    warn "This installation's database runs in a container, which this kit no longer manages."
+    info "Re-run the installer to move across — it asks whether to bring your data with you, and deletes nothing either way:"
+    info "  $(exakit_install_command)"
+    return 0
 }
 
 # exakit_runtime_is_running — one question, no side effects: is the installed
@@ -2408,10 +2386,6 @@ exakit_runtime_choice() {
 # never as whatever downstream step happened to fail first.
 exakit_runtime_is_running() {
     case "$(exakit_installation_runtime_type 2>/dev/null || true)" in
-        nano)
-            command -v nano_status >/dev/null 2>&1 || return 1
-            [ "$(nano_status 2>/dev/null)" = "running" ]
-            ;;
         personal)
             command -v personal_deployment_running >/dev/null 2>&1 || return 1
             personal_deployment_running 2>/dev/null
@@ -2473,7 +2447,6 @@ EXAKIT_LD_PY
 
 exakit_installation_runtime_version() {
     case "$(exakit_installation_runtime_type 2>/dev/null || true)" in
-        nano)     exakit_installed_nano_tag ;;
         personal) exakit_installed_personal_version ;;
         *) return 1 ;;
     esac
@@ -2483,7 +2456,6 @@ exakit_record_desired_versions() {
     manifest_set version_policy "$EXAKIT_VERSION_POLICY"
     manifest_set desired.versions_source "${EXAKIT_VERSIONS_SOURCE_USED:-unknown}"
     manifest_set desired.runtime.personal "$EXAKIT_PERSONAL_VERSION"
-    manifest_set desired.runtime.nano "$EXAKIT_NANO_TAG"
     manifest_set desired.exapump "$EXAKIT_EXAPUMP_VERSION"
     manifest_set desired.mcp "$EXAKIT_MCP_VERSION"
     manifest_set desired.pyexasol "$EXAKIT_PYEXASOL_VERSION"
@@ -2524,60 +2496,7 @@ exakit_latest_pypi_version() {
     printf '%s' "$_json" | sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1
 }
 
-# Normalise the host CPU to a docker image arch token: amd64 | arm64 | "".
-_exakit_docker_arch() {
-    case "$(uname -m)" in
-        arm64|aarch64) echo arm64 ;;
-        x86_64|amd64)  echo amd64 ;;
-        *) echo "" ;;
-    esac
-}
 
-exakit_latest_docker_tag() {
-    _image="$1"
-    # Pick the newest tag that fits THIS machine's architecture. Exasol Nano
-    # publishes arch-suffixed tags (…-arm64, …-amd64) next to the plain
-    # multi-arch tag; without filtering, the version sort lands on -arm64 (it
-    # sorts after -amd64), so an x86_64 host would pull an arm64 image and run
-    # it under slow emulation. Keep the plain (multi-arch) tags plus this
-    # host's own arch, and drop the other architecture's tags.
-    _dt_arch="$(_exakit_docker_arch)"
-    _json="$(curl -fsSL --retry 1 --connect-timeout "$EXAKIT_VERSION_LOOKUP_CONNECT_TIMEOUT" --max-time "$EXAKIT_VERSION_LOOKUP_MAX_TIME" \
-        "https://hub.docker.com/v2/repositories/${_image}/tags?page_size=100&ordering=last_updated" 2>/dev/null || true)"
-    [ -n "$_json" ] || return 1
-    if exakit_can_run_python; then
-        printf '%s' "$_json" | run_python -c '
-import json, re, sys
-doc = json.load(sys.stdin)
-arch = sys.argv[1] if len(sys.argv) > 1 else ""
-tags = [r.get("name","") for r in doc.get("results", [])]
-pattern = re.compile(r"^\d+(?:\.\d+)+(?:[-._A-Za-z0-9]+)?$")
-amd = {"amd64", "x86_64", "x86-64"}
-arm = {"arm64", "aarch64"}
-wrong = arm if arch in amd else (amd if arch in arm else set())
-def ok_arch(tag):
-    return not any(seg in wrong for seg in re.split(r"[-._]", tag.lower()))
-candidates = [t for t in tags if pattern.match(t) and "latest" not in t.lower() and ok_arch(t)]
-def key(tag):
-    parts = re.split(r"([0-9]+)", tag)
-    return [int(p) if p.isdigit() else p for p in parts]
-print(sorted(candidates, key=key)[-1] if candidates else "")
-' "$_dt_arch" 2>/dev/null
-        return $?
-    fi
-    # Shell fallback (no Python/uv): Docker Hub returns newest-first with
-    # ordering=last_updated. Drop the other architecture's suffixed tags, then
-    # take the newest of what remains.
-    _dt_reject=""
-    case "$_dt_arch" in
-        amd64) _dt_reject='[-._](arm64|aarch64)$' ;;
-        arm64) _dt_reject='[-._](amd64|x86_64|x86-64)$' ;;
-    esac
-    _dt_names="$(printf '%s' "$_json" | tr ',' '\n' | sed -n 's/.*"name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | \
-        grep -E '^[0-9]+(\.[0-9]+)+[-._A-Za-z0-9]*$' | grep -vi latest)"
-    [ -n "$_dt_reject" ] && _dt_names="$(printf '%s\n' "$_dt_names" | grep -viE "$_dt_reject")"
-    printf '%s\n' "$_dt_names" | head -1
-}
 
 # exakit_version_newer <a> <b> — true when <a> sorts after <b>.
 # The _vn_ prefix matters: bash 3.2 has no function-local variables here, and
@@ -2614,8 +2533,8 @@ exakit_major_version() {
 }
 
 # exakit_resolve_install_versions — decide which version of each Component this
-# install gets. An explicit env override (EXAKIT_*_VERSION / EXAKIT_NANO_TAG)
-# always wins; the policy decides where the rest comes from. Resolution never
+# install gets. An explicit env override (EXAKIT_*_VERSION) always wins; the
+# policy decides where the rest comes from. Resolution never
 # fails: each tier degrades into the next, and the recorded
 # desired.versions_source says which one answered.
 exakit_resolve_install_versions() {
@@ -2624,7 +2543,7 @@ exakit_resolve_install_versions() {
         manifest) _exakit_resolve_versions_manifest ;;
         *)        _exakit_resolve_versions_pinned ;;
     esac
-    export EXAKIT_PERSONAL_VERSION EXAKIT_NANO_TAG EXAKIT_EXAPUMP_VERSION EXAKIT_MCP_VERSION EXAKIT_PYEXASOL_VERSION
+    export EXAKIT_PERSONAL_VERSION EXAKIT_EXAPUMP_VERSION EXAKIT_MCP_VERSION EXAKIT_PYEXASOL_VERSION
     [ -f "$EXAKIT_MANIFEST" ] && exakit_record_desired_versions
     return 0
 }
@@ -2639,7 +2558,6 @@ _exakit_resolve_versions_manifest() {
     exakit_versions_resolve_doc >/dev/null 2>&1 || true
     EXAKIT_VERSIONS_SOURCE_USED="${_EXAKIT_VERSIONS_SOURCE:-fallback}"
     _exakit_resolve_one EXAKIT_PERSONAL_VERSION components.personal.version "$EXAKIT_PERSONAL_VERSION_FALLBACK"
-    _exakit_resolve_one EXAKIT_NANO_TAG components.nano.version "$EXAKIT_NANO_TAG_FALLBACK"
     _exakit_resolve_one EXAKIT_EXAPUMP_VERSION components.exapump.version "$EXAKIT_EXAPUMP_VERSION_FALLBACK"
     _exakit_resolve_one EXAKIT_MCP_VERSION components.mcp.version "$EXAKIT_MCP_VERSION_FALLBACK"
     _exakit_resolve_one EXAKIT_PYEXASOL_VERSION components.pyexasol.version "$EXAKIT_PYEXASOL_VERSION_FALLBACK"
@@ -2666,10 +2584,6 @@ _exakit_resolve_versions_latest() {
         EXAKIT_PERSONAL_VERSION="$(exakit_latest_github_release_version "$EXAKIT_PERSONAL_REPO" || true)"
         [ -n "$EXAKIT_PERSONAL_VERSION" ] || EXAKIT_PERSONAL_VERSION="$EXAKIT_PERSONAL_VERSION_FALLBACK"
     fi
-    if [ -z "$EXAKIT_NANO_TAG" ]; then
-        EXAKIT_NANO_TAG="$(exakit_latest_docker_tag "$EXAKIT_NANO_IMAGE" || true)"
-        [ -n "$EXAKIT_NANO_TAG" ] || EXAKIT_NANO_TAG="$EXAKIT_NANO_TAG_FALLBACK"
-    fi
     if [ -z "$EXAKIT_EXAPUMP_VERSION" ]; then
         EXAKIT_EXAPUMP_VERSION="$(exakit_latest_github_release_version "$EXAKIT_EXAPUMP_REPO" || true)"
         [ -n "$EXAKIT_EXAPUMP_VERSION" ] || EXAKIT_EXAPUMP_VERSION="$EXAKIT_EXAPUMP_VERSION_FALLBACK"
@@ -2688,7 +2602,6 @@ _exakit_resolve_versions_latest() {
 _exakit_resolve_versions_pinned() {
     EXAKIT_VERSIONS_SOURCE_USED="fallback"
     EXAKIT_PERSONAL_VERSION="${EXAKIT_PERSONAL_VERSION:-$EXAKIT_PERSONAL_VERSION_FALLBACK}"
-    EXAKIT_NANO_TAG="${EXAKIT_NANO_TAG:-$EXAKIT_NANO_TAG_FALLBACK}"
     EXAKIT_EXAPUMP_VERSION="${EXAKIT_EXAPUMP_VERSION:-$EXAKIT_EXAPUMP_VERSION_FALLBACK}"
     EXAKIT_MCP_VERSION="${EXAKIT_MCP_VERSION:-$EXAKIT_MCP_VERSION_FALLBACK}"
     EXAKIT_PYEXASOL_VERSION="${EXAKIT_PYEXASOL_VERSION:-$EXAKIT_PYEXASOL_VERSION_FALLBACK}"
@@ -2704,11 +2617,9 @@ exakit_component_latest() {
         exapump)  exakit_latest_github_release_version "$EXAKIT_EXAPUMP_REPO" ;;
         mcp)      exakit_latest_pypi_version "$EXAKIT_MCP_PACKAGE" ;;
         pyexasol) exakit_latest_pypi_version "${EXAKIT_PYEXASOL_PACKAGE:-pyexasol}" ;;
-        nano)     exakit_latest_docker_tag "$EXAKIT_NANO_IMAGE" ;;
         personal) exakit_latest_github_release_version "$EXAKIT_PERSONAL_REPO" ;;
         runtime)
             case "$(exakit_installation_runtime_type 2>/dev/null)" in
-                nano) exakit_component_latest nano ;;
                 personal) exakit_component_latest personal ;;
                 *) return 1 ;;
             esac
@@ -2747,10 +2658,9 @@ _exakit_component_block() {
     case "$1" in
         exakit) printf '%s\n' kit ;;
         kit2)   printf '%s\n' kit2 ;;
-        exapump|mcp|pyexasol|nano|personal|skills) printf 'components.%s\n' "$1" ;;
+        exapump|mcp|pyexasol|personal|skills) printf 'components.%s\n' "$1" ;;
         runtime)
             case "$(exakit_installation_runtime_type 2>/dev/null)" in
-                nano)     printf '%s\n' components.nano ;;
                 personal) printf '%s\n' components.personal ;;
                 *) return 1 ;;
             esac
@@ -2765,7 +2675,7 @@ _exakit_component_block() {
 
 # _exakit_component_env_override <component> — the version the user asked for by
 # hand, if any. Same precedence as the install path: an explicit
-# EXAKIT_*_VERSION / EXAKIT_NANO_TAG outranks the manifest and any upstream
+# EXAKIT_*_VERSION outranks the manifest and any upstream
 # lookup, so `EXAKIT_EXAPUMP_VERSION=0.11.2 exakit update exapump` installs
 # exactly that (still through the confirmation gate, and still verified — the
 # digest chain falls back to the release API when the version is not the
@@ -2775,11 +2685,9 @@ _exakit_component_env_override() {
         exapump)  printf '%s' "${EXAKIT_EXAPUMP_VERSION:-}" ;;
         mcp)      printf '%s' "${EXAKIT_MCP_VERSION:-}" ;;
         pyexasol) printf '%s' "${EXAKIT_PYEXASOL_VERSION:-}" ;;
-        nano)     printf '%s' "${EXAKIT_NANO_TAG:-}" ;;
         personal) printf '%s' "${EXAKIT_PERSONAL_VERSION:-}" ;;
         runtime)
             case "$(exakit_installation_runtime_type 2>/dev/null)" in
-                nano)     printf '%s' "${EXAKIT_NANO_TAG:-}" ;;
                 personal) printf '%s' "${EXAKIT_PERSONAL_VERSION:-}" ;;
             esac
             ;;
@@ -2870,11 +2778,9 @@ _exakit_component_fallback() {
         exapump)  printf '%s\n' "$EXAKIT_EXAPUMP_VERSION_FALLBACK" ;;
         mcp)      printf '%s\n' "$EXAKIT_MCP_VERSION_FALLBACK" ;;
         pyexasol) printf '%s\n' "$EXAKIT_PYEXASOL_VERSION_FALLBACK" ;;
-        nano)     printf '%s\n' "$EXAKIT_NANO_TAG_FALLBACK" ;;
         personal) printf '%s\n' "$EXAKIT_PERSONAL_VERSION_FALLBACK" ;;
         runtime)
             case "$(exakit_installation_runtime_type 2>/dev/null)" in
-                nano)     printf '%s\n' "$EXAKIT_NANO_TAG_FALLBACK" ;;
                 personal) printf '%s\n' "$EXAKIT_PERSONAL_VERSION_FALLBACK" ;;
                 *) return 1 ;;
             esac
@@ -2956,7 +2862,7 @@ exakit_component_supported() {
 # manifest: the runtime is heavy, everything else is seconds of work.
 exakit_component_is_heavy() {
     case "$1" in
-        runtime|nano|personal) return 0 ;;
+        runtime|personal) return 0 ;;
         *) return 1 ;;
     esac
 }
@@ -3114,14 +3020,8 @@ exakit_component_current() {
             printf '%s\n' "$_cur_skills"
             ;;
         kit2)     manifest_get kit2.version 2>/dev/null ;;
-        nano)
-            # Only the runtime this install actually uses. A Nano machine that
-            # happens to have the Personal launcher on PATH (or the other way
-            # round) must not report a version for a runtime it does not run.
-            [ "$(exakit_installation_runtime_type 2>/dev/null || true)" = "nano" ] || return 1
-            exakit_installed_nano_tag
-            ;;
         personal)
+            # Only the runtime this install actually uses.
             [ "$(exakit_installation_runtime_type 2>/dev/null || true)" = "personal" ] || return 1
             exakit_installed_personal_version
             ;;
@@ -4512,7 +4412,7 @@ exakit_update_targets() {
             fi
             ;;
         runtime|database|db) printf '%s\n' runtime ;;
-        nano|personal|exakit|exapump|mcp|pyexasol|skills|kit2) printf '%s\n' "$1" ;;
+        personal|exakit|exapump|mcp|pyexasol|skills|kit2) printf '%s\n' "$1" ;;
         *)
             # Any registered marketplace add-on is a valid explicit target.
             _exakit_addon_registered "$1" || return 1
@@ -4601,7 +4501,7 @@ exakit_print_versions_source_line() {
 # An env override outranks every source above, so say so rather than letting the
 # line above take credit for a version the user picked.
 _exakit_print_override_line() {
-    for _pol_component in exapump mcp pyexasol nano personal; do
+    for _pol_component in exapump mcp pyexasol personal; do
         if [ -n "$(_exakit_component_env_override "$_pol_component")" ]; then
             info "Some versions come from EXAKIT_* environment overrides and not from the manifest"
             return 0
@@ -5049,7 +4949,7 @@ exakit_print_version_table() {
             _status="inspect"
         elif [ "$_row_installed" = "not installed" ] && exakit_component_is_heavy "$_row_component"; then
             # A runtime that is not installed is not a runtime this machine wants:
-            # offering to deploy Exasol Personal onto a Nano install would be
+            # offering to deploy a second database onto an existing one would be
             # actively wrong. (A missing light component, by contrast, is exactly
             # the repair case below.)
             _status="inspect"
@@ -5291,15 +5191,8 @@ exakit_version_installed_cell() {
 # install put on the machine, or empty when it records none.
 exakit_version_recorded() {
     case "$1" in
-        nano|personal)
-            # runtime.image is a full reference (docker.io/exasol/nano:TAG) while
-            # the live probe reports the tag alone. Compare tag with tag, or every
-            # Nano install would claim a drift that is not there.
+        personal)
             _vr_val="$(manifest_get runtime.version 2>/dev/null || true)"
-            if [ -z "$_vr_val" ]; then
-                _vr_val="$(manifest_get runtime.image 2>/dev/null || true)"
-                case "$_vr_val" in *:*) _vr_val="${_vr_val##*:}" ;; esac
-            fi
             ;;
         mcp) _vr_val="$(manifest_get components.mcp_server.version 2>/dev/null || true)" ;;
         # The kit records no version for itself: exakit_component_current reads it
@@ -5374,10 +5267,9 @@ exakit_update_self() {
     }
     rm -f "$_tmp"
     # versions.json is on this list deliberately: without it the new kit copy has
-    # no offline version tier and cannot say what version it is. The eight paths
-    # before it are the ones v0.1.0 also validates — none of them may ever be
-    # renamed, or an old kit refuses the upgrade.
-    for _required in setup/exakit setup/lib/common.sh setup/lib/runtime-nano.sh setup/lib/runtime-personal.sh setup/lib/exapump.sh setup/lib/mcp.sh setup/exakit.ps1 setup/lib/exakit-common.ps1 versions.json; do
+    # no offline version tier and cannot say what version it is. None of the
+    # paths on this list may ever be renamed, or an old kit refuses the upgrade.
+    for _required in setup/exakit setup/lib/common.sh setup/lib/runtime-personal.sh setup/lib/exapump.sh setup/lib/mcp.sh setup/exakit.ps1 setup/lib/exakit-common.ps1 versions.json; do
         [ -f "$_stage/$_required" ] || {
             rm -rf "$_stage"
             die "Downloaded starter kit is incomplete (missing $_required); existing kit copy was left untouched."
@@ -5615,17 +5507,9 @@ exakit_update_component() {
         skills) exakit_update_skills ;;
         runtime)
             case "$(exakit_installation_runtime_type 2>/dev/null)" in
-                nano)
-                    [ "$#" -eq 0 ] || die "Personal upgrade options are not valid for the Nano runtime."
-                    nano_update
-                    ;;
                 personal) personal_update "$@" ;;
                 *) die "No runtime is recorded in the manifest." ;;
             esac
-            ;;
-        nano)
-            [ "$#" -eq 0 ] || die "Personal upgrade options are not valid for Nano."
-            nano_update
             ;;
         personal) personal_update "$@" ;;
         *)
@@ -5663,7 +5547,6 @@ exakit_update_component() {
 # ⇄ twins: Get-ExakitRuntimeStatus / Start-ExakitRuntime in setup/exakit.ps1.
 exakit_runtime_status() {
     case "$(exakit_installation_runtime_type 2>/dev/null || true)" in
-        nano)     command -v nano_status >/dev/null 2>&1 && nano_status 2>/dev/null ;;
         personal) command -v personal_status >/dev/null 2>&1 && personal_status 2>/dev/null ;;
     esac
     return 0
@@ -5671,7 +5554,6 @@ exakit_runtime_status() {
 
 exakit_runtime_start() {
     case "$(exakit_installation_runtime_type 2>/dev/null || true)" in
-        nano)     command -v nano_start >/dev/null 2>&1 && nano_start ;;
         personal) command -v personal_start >/dev/null 2>&1 && personal_start ;;
     esac
     return 0
@@ -5727,10 +5609,6 @@ exakit_runtime_update_preanswer() {
 exakit_runtime_update_explain() {
     warn "$1 $2 -> $3 needs the database stopped."
     case "$1" in
-        nano)
-            info "The database goes down while the container is recreated, then it is started again and checked — usually a minute or two, longer if the new image still has to be pulled."
-            info "Your data is kept: the same data volume is reused, and the previous image is put back if the new container does not come up."
-            ;;
         personal)
             info "The launcher is replaced; the database is checked afterwards and started again if it ends up down — usually under a minute."
             info "Your data is kept: this update neither deletes nor migrates the tables in your database."
@@ -5760,12 +5638,10 @@ exakit_runtime_update_explain() {
 # exakit_apply_runtime_update <component> — stop, update, start, report.
 #
 # The runtime updaters own the sequence itself and are called here exactly as
-# `exakit update runtime` calls them: nano_update pulls the new image, stops the
-# container, recreates it on the SAME data volume, waits for readiness and puts
-# the previous image back if it never becomes ready; personal_update replaces the
-# launcher and leaves the deployment's data alone. There is no separate copy of
-# that logic here, and no separate copy of the backup story either — see the
-# comment on exakit_offer_runtime_update.
+# `exakit update runtime` calls it: personal_update replaces the launcher and
+# leaves the deployment's data alone. There is no separate copy of that logic
+# here, and no separate copy of the backup story either — see the comment on
+# exakit_offer_runtime_update.
 #
 # What this adds is the one thing the prompt promises and the updaters do not
 # guarantee across runtimes: a database that was up before this command is up
@@ -5800,11 +5676,8 @@ exakit_apply_runtime_update() {
 # deferred (and then prints the exact command that applies it later).
 #
 # On backups: the kit has no data-export facility, and this path needs none.
-# Neither runtime update touches the database content — Nano recreates the
-# container over the persisted data volume and records a pre-update snapshot of
-# the runtime metadata under ~/.exasol-starter-kit/backups/nano-update/, with an
-# automatic restore of the previous image if the new one will not start; Personal
-# replaces the launcher binary and says so. The one runtime change that IS a data
+# The runtime update does not touch the database content — it replaces the
+# launcher binary and says so. The one runtime change that IS a data
 # migration is the Personal major upgrade, and that already has a real backup
 # (personal_upgrade_backup tars the whole deployment) inside its own three-step
 # flow — which is exactly why this function refuses to start it from a y/N.
@@ -6021,7 +5894,7 @@ _sas_launcher_on_path() {
 #      behaviour in place. Anything not cheaply provable is "unknown".
 #   2. FILE TESTS ONLY. This runs once per step on every install, so no network,
 #      no PyPI, no GitHub and above all nothing that could wake or probe a
-#      container engine (a starting Docker is why the kit's own probes are
+#      launcher (a launcher still opening a deployment is why the kit's own probes are
 #      bounded).
 #   3. "present" means what the NEXT step will actually resolve. The launcher
 #      case mirrors personal_cli(), which is what the deployment step calls.
@@ -8420,23 +8293,6 @@ exakit_ensure_runtime_running() {
             fi
             die "No database found. Start one with: exakit start (or re-run the installer)"
             ;;
-        nano)
-            command -v nano_status >/dev/null 2>&1 || return 0
-            [ "$(nano_status 2>/dev/null)" = "running" ] && return 0
-            # nano_install self-heals both halves: it starts an existing
-            # container and creates a missing one, then waits for ready.
-            if nano_container_exists 2>/dev/null; then
-                info "Self-heal: the database container exists but is not running — starting it"
-                nano_install
-                return 0
-            fi
-            if [ "$_err_deploy" = "deploy" ]; then
-                info "Self-heal: no database container found — creating one"
-                nano_install
-                return 0
-            fi
-            die "No database found. Start one with: exakit start (or re-run the installer)"
-            ;;
         *) return 0 ;;
     esac
 }
@@ -9712,7 +9568,7 @@ kit_shared_steps() {
             # `exakit help <topic>` resolves through exakit_repo_root, which
             # PREFERS this staged copy once kit/mcp exists. Omitting it did not
             # fall back to the checkout, it shadowed it: on every installed kit
-            # `exakit help mcp`, `exapump`, `personal`, `nano`, `pyexasol`,
+            # `exakit help mcp`, `exapump`, `personal`, `pyexasol`,
             # `exakit` and all three add-ons answered "No help entry for ...".
             #
             # It also took the marketplace descriptions with it, ALL THREE
@@ -10131,44 +9987,7 @@ _exakit_remove_installed_skills() {
     return 0
 }
 
-# _exakit_nano_target_names — "<container>|<volume>" for the Nano deployment
-# this install recorded, so a destructive prompt can NAME what it is about to
-# delete. The manifest first (the names this install actually used, which
-# EXAKIT_NANO_CONTAINER/VOLUME may have moved), then the defaults.
-_exakit_nano_target_names() {
-    _ntn_c="$(manifest_get runtime.container 2>/dev/null || true)"
-    _ntn_v="$(manifest_get runtime.volume 2>/dev/null || true)"
-    [ -n "$_ntn_c" ] || _ntn_c="${EXAKIT_NANO_CONTAINER:-exasol-nano}"
-    [ -n "$_ntn_v" ] || _ntn_v="${EXAKIT_NANO_VOLUME:-exasol-nano-data}"
-    printf '%s|%s' "$_ntn_c" "$_ntn_v"
-}
 
-# _exakit_shared_engine_db_warning — the shared-Docker-engine hazard, said
-# BEFORE consent is taken.
-#
-# It used to be printed from inside _exakit_uninstall_component, i.e. after the
-# user had already typed UNINSTALL — the one sentence that might have changed
-# their answer, delivered once the answer could no longer be changed. The
-# confirmation itself named neither the container nor the volume (those appeared
-# only in the post-removal record line), so there was no moment at which a WSL
-# user could have noticed they were about to delete a Windows install's
-# database. Returns non-zero when the hazard does not apply, so a caller can
-# use it as a test. ⇄ twin: Show-ExakitUninstallMenu in setup/exakit.ps1.
-_exakit_shared_engine_db_warning() {
-    [ "$(manifest_get runtime.type 2>/dev/null || true)" = "nano" ] || return 1
-    case "$(detect_os 2>/dev/null || true)" in
-        wsl|windows) ;;
-        *) return 1 ;;
-    esac
-    # Rootless Podman inside the distro is NOT the shared Docker Desktop
-    # engine: its containers are invisible to Windows, so warning a
-    # Podman-on-WSL user that removal deletes "the Windows database" would be
-    # false — and windows-wsl.md tells them so in as many words.
-    _exakit_nano_rootless_podman 2>/dev/null && return 1
-    _sedw_names="$(_exakit_nano_target_names)"
-    warn "Windows and WSL share one Docker engine. If this machine also has a Windows or WSL install of the kit, removing the container '${_sedw_names%|*}' and the volume '${_sedw_names#*|}' deletes that database too, and it cannot be recovered."
-    return 0
-}
 
 # _exakit_uninstall_component <key> <dry> — one selectable piece of the kit,
 # removed on its own. Each removal also clears its manifest record and step
@@ -10181,30 +10000,12 @@ _exakit_uninstall_component() {
     case "$_uc_key" in
         database)
             _uc_type="$(manifest_get runtime.type 2>/dev/null || true)"
-            # Windows and WSL share one Docker engine: the container and the
-            # data volume being removed here may be the database the OTHER
-            # side installed and still uses. Say so before it is gone — the
-            # other side's kit has no way to warn from here.
-            _uc_shared=""
-            case "$(detect_os)" in
-                # Same gate as _exakit_shared_engine_db_warning: rootless
-                # Podman is this distro's own engine, shared with nothing.
-                wsl|windows)
-                    _exakit_nano_rootless_podman 2>/dev/null || \
-                        _uc_shared=" (Windows and WSL share one Docker engine — if the other side installed this database, this removes it for both)"
-                    ;;
-            esac
             if [ "$_uc_dry" = "1" ]; then
-                info "  will remove: the local Exasol $_uc_type deployment and ALL its data$_uc_shared"
+                info "  will remove: the local Exasol $_uc_type deployment and ALL its data"
                 return 0
             fi
-            # NO warning here any more: by this line the user has typed
-            # UNINSTALL and the removal is under way. The hazard is stated
-            # before the gate instead (_exakit_shared_engine_db_warning, called
-            # from exakit_uninstall_menu and exakit_uninstall_run).
             info "Removing the local Exasol $_uc_type deployment and all data"
             case "$_uc_type" in
-                nano)     nano_teardown --data     || warn "Database removal reported errors" ;;
                 personal) personal_teardown --data || warn "Database removal reported errors" ;;
                 *)        warn "Unknown runtime type '$_uc_type'; skipping database removal" ;;
             esac
@@ -10297,14 +10098,6 @@ _exakit_uninstall_component() {
 exakit_log_targets() {
     _lt_setup="$(ls -t "$EXAKIT_LOG_DIR"/install-*.log 2>/dev/null | head -1)"
     [ -n "$_lt_setup" ] && printf 'setup|Installer and setup runs|file|%s\n' "$_lt_setup"
-
-    if [ "$(exakit_installation_runtime_type 2>/dev/null || true)" = "nano" ]; then
-        _lt_engine="$(detect_container_runtime 2>/dev/null || true)"
-        if [ -n "$_lt_engine" ] && [ "$_lt_engine" != "none" ]; then
-            printf 'database|Database container|cmd|%s logs %s\n' \
-                "$_lt_engine" "${EXAKIT_NANO_CONTAINER:-exasol-nano}"
-        fi
-    fi
 
     for _lt_id in $(exakit_marketplace_installed_addons 2>/dev/null); do
         _lt_fn="$(_exakit_addon_fn "$_lt_id" log_path)"
@@ -10492,7 +10285,6 @@ EXAKIT_LSH_EOF
 # Autostart uses the platform's own supervisor rather than anything invented:
 #   macOS  — a LaunchAgent per service in ~/Library/LaunchAgents (RunAtLoad).
 #   Linux  — a systemd --user unit when the session has one.
-#   Nano   — the container's own restart policy, which Docker honours on boot.
 # A registration is a file the user can read, and `exakit autostart off`
 # removes every one of them.
 
@@ -10514,7 +10306,6 @@ exakit_service_ids() {
 exakit_service_status() {
     if [ "$1" = "database" ]; then
         case "$(exakit_installation_runtime_type 2>/dev/null || true)" in
-            nano)     nano_status ;;
             personal) personal_status ;;
             *)        printf '%s\n' "unknown" ;;
         esac
@@ -10544,7 +10335,6 @@ exakit_service_start() {
 exakit_service_stop() {
     if [ "$1" = "database" ]; then
         case "$(exakit_installation_runtime_type 2>/dev/null || true)" in
-            nano)     nano_stop ;;
             personal) personal_stop ;;
         esac
         return $?
@@ -10555,7 +10345,7 @@ exakit_service_stop() {
 }
 
 # _exakit_service_autostart_command <id> — the command a boot entry runs, or
-# nothing when the service needs no entry (Nano rides Docker's restart policy).
+# nothing when the service needs no entry.
 _exakit_service_autostart_command() {
     if [ "$1" = "database" ]; then
         case "$(exakit_installation_runtime_type 2>/dev/null || true)" in
@@ -10563,7 +10353,6 @@ _exakit_service_autostart_command() {
                 _sac_cli="$(personal_cli 2>/dev/null || true)"
                 [ -n "$_sac_cli" ] && printf '%s start\n' "$_sac_cli"
                 ;;
-            nano) ;;   # the container restart policy covers it
         esac
         return 0
     fi
@@ -10579,26 +10368,9 @@ _exakit_autostart_label() { printf '%s.%s\n' "$EXAKIT_AUTOSTART_PREFIX" "$1"; }
 _exakit_autostart_register() {
     _ar_id="$1"
     _ar_cmd="$(_exakit_service_autostart_command "$_ar_id")"
-    if [ -z "$_ar_cmd" ]; then
-        # Nano: the container itself carries the policy — under DOCKER, whose
-        # daemon is up at boot to honour it. Rootless Podman has no daemon:
-        # its restart policy is a recorded no-op, and reporting it as
-        # autostart was a lie the machine only exposed after the next reboot.
-        # There, the start goes through a systemd user unit like any other
-        # service: fall through to the linux arm below with the start command.
-        if [ "$_ar_id" = "database" ] && \
-           [ "$(exakit_installation_runtime_type 2>/dev/null || true)" = "nano" ]; then
-            if _exakit_nano_rootless_podman; then
-                _ar_cmd="podman start ${EXAKIT_NANO_CONTAINER:-exasol-nano}"
-            else
-                _exakit_nano_restart_policy always && \
-                    ok "database: the container restarts with Docker"
-                return $?
-            fi
-        else
-            return 0
-        fi
-    fi
+    # Nothing to register is not a failure: a service with no boot command
+    # simply has no entry to write.
+    [ -n "$_ar_cmd" ] || return 0
     _ar_label="$(_exakit_autostart_label "$_ar_id")"
     case "$(detect_os)" in
         macos)
@@ -10720,53 +10492,16 @@ _exakit_autostart_unregister() {
     return 0
 }
 
-# _exakit_nano_rootless_podman — rootless Podman has no daemon at boot, so a
-# container restart policy is a recorded no-op there: only a systemd user
-# unit actually brings the database back after a reboot.
-_exakit_nano_rootless_podman() {
-    command -v detect_container_runtime >/dev/null 2>&1 || return 1
-    [ "$(detect_container_runtime 2>/dev/null)" = "podman" ] || return 1
-    [ "$(podman info --format '{{.Host.Security.Rootless}}' 2>/dev/null)" = "true" ]
-}
 
 # _exakit_autostart_registered <id> — is a boot entry in place?
 _exakit_autostart_registered() {
     _arg_label="$(_exakit_autostart_label "$1")"
     [ -f "$EXAKIT_LAUNCHAGENT_DIR/$_arg_label.plist" ] && return 0
     [ -f "$EXAKIT_SYSTEMD_USER_DIR/$_arg_label.service" ] && return 0
-    # Nano needs no file when the ENGINE honours the policy: only Docker's
-    # daemon is up at boot to do so. For rootless Podman the policy proves
-    # nothing — the unit file checked above is the only real registration —
-    # so status stops reporting "autostart: true" for a database nothing
-    # will restart.
-    if [ "$1" = "database" ] && \
-       [ "$(exakit_installation_runtime_type 2>/dev/null || true)" = "nano" ] && \
-       ! _exakit_nano_rootless_podman; then
-        _exakit_nano_restart_policy_is_set && return 0
-    fi
     return 1
 }
 
-# _exakit_nano_restart_policy <policy> — apply it to the existing container, no
-# recreation and no data risk.
-_exakit_nano_restart_policy() {
-    command -v detect_container_runtime >/dev/null 2>&1 || return 1
-    _nrp_engine="$(detect_container_runtime 2>/dev/null)"
-    [ -n "$_nrp_engine" ] && [ "$_nrp_engine" != "none" ] || return 1
-    "$_nrp_engine" update --restart="$1" "${EXAKIT_NANO_CONTAINER:-exasol-nano}" >/dev/null 2>&1
-}
 
-_exakit_nano_restart_policy_is_set() {
-    command -v detect_container_runtime >/dev/null 2>&1 || return 1
-    _nrs_engine="$(detect_container_runtime 2>/dev/null)"
-    [ -n "$_nrs_engine" ] && [ "$_nrs_engine" != "none" ] || return 1
-    _nrs_policy="$("$_nrs_engine" inspect -f '{{.HostConfig.RestartPolicy.Name}}' \
-        "${EXAKIT_NANO_CONTAINER:-exasol-nano}" 2>/dev/null)"
-    case "$_nrs_policy" in
-        ''|no) return 1 ;;
-        *) return 0 ;;
-    esac
-}
 
 # exakit_autostart_enable / _disable — every service at once. Best-effort: a
 # platform without a supervisor says so and the rest still applies.
@@ -10842,9 +10577,6 @@ exakit_autostart_disable() {
     for _ad_id in $(exakit_service_ids); do
         _exakit_autostart_unregister "$_ad_id"
     done
-    # The database container keeps running, it just no longer comes back on boot.
-    [ "$(exakit_installation_runtime_type 2>/dev/null || true)" = "nano" ] && \
-        _exakit_nano_restart_policy no >/dev/null 2>&1
     manifest_set autostart.enabled false
     ok "Automatic start after a restart is off."
     return 0
@@ -11030,12 +10762,9 @@ EXAKIT_UM_PANEL_EOF
     # word "database" cannot.
     case " $_um_picked " in
         *" database "*|*" everything "*)
-            if [ "$(manifest_get runtime.type 2>/dev/null || true)" = "nano" ]; then
-                _um_names="$(_exakit_nano_target_names)"
-                ui_panel_line ""
-                ui_panel_line "Database: Nano container '${_um_names%|*}', data volume '${_um_names#*|}'"
-                ui_panel_line "The volume IS the database - removing it cannot be undone."
-            fi
+            ui_panel_line ""
+            ui_panel_line "Database: the local Exasol Personal deployment"
+            ui_panel_line "The deployment IS the database - removing it cannot be undone."
             ;;
     esac
     ui_panel_end
@@ -11155,17 +10884,9 @@ exakit_uninstall_run() {
         # `--yes` there is no gate to read, so this line and the shared-engine
         # warning below it are the last chance to recognise the container as one
         # the other side of a Windows+WSL machine is also using.
-        if [ "$_type" = "nano" ] && command -v _exakit_nano_target_names >/dev/null 2>&1; then
-            _un_names="$(_exakit_nano_target_names)"
-            _step "local Exasol nano deployment and ALL its data: container '${_un_names%|*}', data volume '${_un_names#*|}'"
-        else
-            _step "local Exasol $_type deployment and ALL its data"
-        fi
-        command -v _exakit_shared_engine_db_warning >/dev/null 2>&1 && \
-            { _exakit_shared_engine_db_warning || true; }
+        _step "local Exasol $_type deployment and ALL its data"
         if [ "$_dry" != "1" ]; then
             case "$_type" in
-                nano)     nano_teardown --data     || warn "Database removal reported errors (continuing uninstall)" ;;
                 personal) personal_teardown --data || warn "Database removal reported errors (continuing uninstall)" ;;
                 *)        warn "Unknown runtime type '$_type'; skipping database removal" ;;
             esac
@@ -11176,7 +10897,6 @@ exakit_uninstall_run() {
         # refused to remove is found again by name, and nothing else on screen
         # ever says what it was called.
         case "$_type" in
-            nano)     _done "Database removed: Nano container ${EXAKIT_NANO_CONTAINER:-exasol-nano}, data volume ${EXAKIT_NANO_VOLUME:-exasol-nano-data}" ;;
             personal) _done "Database removed: the local Exasol Personal deployment and all its data" ;;
             *)        : ;;
         esac

@@ -30,7 +30,11 @@ $script:PersonalProbeTimeout    = if ($env:EXAKIT_PERSONAL_PROBE_TIMEOUT) { [int
 $script:PersonalMinRamGb        = if ($env:EXAKIT_PERSONAL_MIN_RAM_GB)  { [int]$env:EXAKIT_PERSONAL_MIN_RAM_GB }  else { 8 }
 $script:PersonalMinDiskGb       = if ($env:EXAKIT_PERSONAL_MIN_DISK_GB) { [int]$env:EXAKIT_PERSONAL_MIN_DISK_GB } else { 20 }
 $script:PersonalBinPath         = Join-Path $script:BinDir "exasol.exe"
-$script:PersonalDeployDir       = if ($env:EXAKIT_PERSONAL_DEPLOY_DIR) { $env:EXAKIT_PERSONAL_DEPLOY_DIR } else { Join-Path $HOME ".exasol\personal\deployments\default" }
+# Get-ExakitProfileHome, not $HOME: on a domain-joined machine PowerShell's
+# $HOME is the account's home-directory attribute (H:\, \\server\share\user),
+# and the deployment cannot live there. Twin of the same rule in
+# exakit-common.ps1, which is dot-sourced before this file.
+$script:PersonalDeployDir       = if ($env:EXAKIT_PERSONAL_DEPLOY_DIR) { $env:EXAKIT_PERSONAL_DEPLOY_DIR } else { Join-Path (Get-ExakitProfileHome) ".exasol\personal\deployments\default" }
 $script:PersonalRebuildNoted    = $false
 
 # Get-PersonalTargetVersion - the launcher version this kit installs or updates
@@ -276,7 +280,7 @@ function Wait-PersonalReady {
 function Test-PersonalRequirements {
     $arch = Get-ExakitHostArch
     if ($arch -ne "amd64") {
-        Fail "Exasol Personal supports macOS, native Linux and Windows x86_64 - it does not support Windows '$arch'. Nothing was installed. (To run the container runtime instead, set EXAKIT_RUNTIME=nano and re-run.)"
+        Fail "Exasol Personal supports macOS, native Linux and Windows x86_64 - it does not support Windows '$arch'. Nothing was installed. For the full kit on this machine, use a native Linux machine or VM."
     }
     $ramGb = 0
     try {
@@ -288,7 +292,7 @@ function Test-PersonalRequirements {
         }
         $freeGb = 0
         try {
-            $drive = (Get-Item $HOME).PSDrive
+            $drive = (Get-Item (Get-ExakitProfileHome)).PSDrive
             if ($drive -and $drive.Free) { $freeGb = [int][math]::Round($drive.Free / 1GB) }
         } catch { }
         if ($freeGb -gt 0 -and $freeGb -lt $script:PersonalMinDiskGb) {
@@ -367,7 +371,7 @@ function Install-PersonalLauncher {
 # client, plus the runtime state. The deployment directory has everything a
 # client needs: deployment.json (host, dbPort, username) and secrets.json
 # (dbPassword). The keys are the contract every add-on reads - identical to the
-# sh side's personal_record_manifest, and to Set-NanoManifest's shape.
+# sh side's personal_record_manifest.
 function Set-PersonalManifest {
     param([string]$Status = "")
     Set-ExakitManifestValue "runtime.type" "personal"
