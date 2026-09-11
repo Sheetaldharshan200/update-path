@@ -27,7 +27,7 @@ $LibDir = Join-Path $ScriptDir "lib"
 $KitRoot = Split-Path -Parent $ScriptDir
 
 . (Join-Path $LibDir "exakit-common.ps1")
-. (Join-Path $LibDir "nano.ps1")
+. (Join-Path $LibDir "runtime-nano.ps1")
 . (Join-Path $LibDir "runtime-personal.ps1")
 . (Join-Path $LibDir "exapump.ps1")
 . (Join-Path $LibDir "mcp.ps1")

@@ -1,4 +1,4 @@
-# nano.ps1 - Exasol Nano container runtime module (Windows / PowerShell path,
+# runtime-nano.ps1 - Exasol Nano container runtime module (Windows / PowerShell path,
 # Docker Desktop only).
 #
 # Dot-sourced by setup-windows.ps1 and setup/exakit.ps1 after

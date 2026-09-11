@@ -224,7 +224,7 @@ foreach ($gpoScope in @("MachinePolicy", "UserPolicy")) {
 # check must never be the thing that overrules it.
 
 # Get-ExakitDockerEvidence - is Docker Desktop on this machine at all? Cheap
-# evidence only, in the order Find-DockerCli (setup\lib\nano.ps1) looks: the
+# evidence only, in the order Find-DockerCli (setup\lib\runtime-nano.ps1) looks: the
 # PATH lookup, then the two locations Docker Desktop's own installer uses - the
 # machine-wide one and the per-user "install for me only" one. The path probes
 # matter because Docker Desktop adds its bin directory to the MACHINE PATH at
@@ -269,7 +269,7 @@ function Get-ExakitDockerEvidence {
 # cannot be read at all. -1 means "unknown", and unknown always passes.
 #
 # Free disk goes through DriveInfo rather than the Win32_LogicalDisk query
-# nano.ps1 uses: this runs before anything else does, and it must not turn a
+# runtime-nano.ps1 uses: this runs before anything else does, and it must not turn a
 # stopped WMI service on a locked-down machine into a failed install.
 function Get-ExakitTotalRamGb {
     try { return [math]::Floor((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1GB) } catch { return -1 }

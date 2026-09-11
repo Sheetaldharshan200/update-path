@@ -877,10 +877,10 @@ has "the delete prompt names the consequence first" \
     'DELETE the stopped deployment and its data' \
     "$(cat "$ROOT/setup/lib/runtime-personal.sh")"
 has "...and its twin"                 '$env:EXAKIT_REUSE_DB -eq "0" -and (Test-NanoContainerExists)' \
-    "$(cat "$ROOT/setup/lib/nano.ps1")"
+    "$(cat "$ROOT/setup/lib/runtime-nano.ps1")"
 # The data volume goes with the container, or the rebuild wraps the same
 # database the repair was called to destroy.
-has "nano drops the data volume as well" 'volume" "rm' "$(cat "$ROOT/setup/lib/nano.ps1")"
+has "nano drops the data volume as well" 'volume" "rm' "$(cat "$ROOT/setup/lib/runtime-nano.ps1")"
 has "...on the shell side too" 'volume rm "$EXAKIT_NANO_VOLUME"' "$(cat "$ROOT/setup/lib/runtime-nano.sh")"
 
 echo

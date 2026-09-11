@@ -81,7 +81,7 @@ if (Test-Path (Join-Path $scriptDir "lib\exakit-common.ps1")) {
 }
 
 . (Join-Path $libDir "exakit-common.ps1")
-. (Join-Path $libDir "nano.ps1")
+. (Join-Path $libDir "runtime-nano.ps1")
 . (Join-Path $libDir "runtime-personal.ps1")
 . (Join-Path $libDir "exapump.ps1")
 . (Join-Path $libDir "mcp.ps1")
