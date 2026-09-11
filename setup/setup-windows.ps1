@@ -1,4 +1,8 @@
-# setup-windows-docker.ps1 - Exasol Personal Local Starter Kit, Windows path.
+# setup-windows.ps1 - Exasol Personal Local Starter Kit, Windows path.
+#
+# (Named setup-windows-docker.ps1 until the runtime migration: the Windows
+# database is an Exasol Personal deployment now, and the file that installs it
+# should not be named after an engine it no longer reaches for.)
 #
 # Installs and connects a database runtime, exapump, the Exasol MCP server, and
 # pyexasol. Prints connection details when done. Which runtime is
@@ -12,7 +16,7 @@
 # first two steps; everything from exapump on is runtime-blind and shared.
 #
 # Usually launched by install.ps1, but runs standalone from a checkout too:
-#   powershell -ExecutionPolicy Bypass -File setup\setup-windows-docker.ps1
+#   powershell -ExecutionPolicy Bypass -File setup\setup-windows.ps1
 #
 # Safe to re-run: completed steps are skipped, failed steps are retried.
 
@@ -150,7 +154,7 @@ try {
     if (-not $exapumpSupported) {
         Warn2 "exapump publishes Windows builds for x86_64 only (this machine's hardware is $(Get-ExakitHostArch))."
         Info "Skipping exapump, the sample data and the whole AI bridge (MCP server and clients) - the read-only database user the bridge connects as is provisioned through exapump, so the bridge cannot be built without it."
-        Info "The database container itself is fully supported. Details: quickstarts/windows-docker.md"
+        Info "The database container itself is fully supported. Details: quickstarts/windows.md"
     }
 
     # --- step 3: exapump (data loading CLI) ------------------------------------

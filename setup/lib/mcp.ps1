@@ -2,7 +2,7 @@
 # database user provisioning, and client config generation (Windows /
 # PowerShell path).
 #
-# Dot-sourced by setup-windows-docker.ps1 and setup/exakit.ps1 after
+# Dot-sourced by setup-windows.ps1 and setup/exakit.ps1 after
 # exakit-common.ps1 and exapump.ps1. Mirrors setup/lib/mcp.sh plus the
 # MCP-specific functions from setup/lib/common.sh function-for-function.
 #

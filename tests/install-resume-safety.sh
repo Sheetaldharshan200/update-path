@@ -175,13 +175,13 @@ fi
 
 # --- the Windows installer -------------------------------------------------
 #
-# Everything below guards install.ps1 and setup/setup-windows-docker.ps1. They
+# Everything below guards install.ps1 and setup/setup-windows.ps1. They
 # belong with the resume-path checks above for the same reason: none of these
 # bugs shows up on the run that installs a kit for the first time. They show up
 # on the second run, on the machine that cannot run the kit at all, and on the
 # architecture nobody has on their desk.
 _IPS="$ROOT/install.ps1"
-_SWD="$ROOT/setup/setup-windows-docker.ps1"
+_SWD="$ROOT/setup/setup-windows.ps1"
 _NANO="$ROOT/setup/lib/nano.ps1"
 
 # Line number of the first line holding a fixed string, or "" when absent.
@@ -200,8 +200,14 @@ printf '\n== a failed Windows install ends with the reason, not with a number ==
 # printed one line earlier -- and then added a network hypothesis to a failure
 # that was, twice in the field, a stopped Docker Desktop.
 _handoff="$(sed -n '/& powershell -ExecutionPolicy Bypass -File/,$p' "$_IPS")"
-if printf '%s\n' "$_handoff" | grep -qF 'if ($setupExitCode -ne 0) { exit $setupExitCode }'; then
-    pass "install.ps1 exits with the setup script's own exit code"
+# The code is PASSED THROUGH, and the shape it is passed through in matters:
+# install.ps1 is documented as `irm ... | iex`, which runs it in the caller's
+# session, so a top-level `exit` closes the user's terminal - taking this very
+# message with it. The invariant is the code reaching $LASTEXITCODE, with exit
+# reserved for a real file invocation.
+if printf '%s\n' "$_handoff" | grep -qF 'global:LASTEXITCODE = $setupExitCode' && \
+   printf '%s\n' "$_handoff" | grep -qF 'if ($ExakitRanAsFile) { exit $setupExitCode }'; then
+    pass "install.ps1 passes the setup script's own exit code through, without closing the terminal"
 else
     fail "install.ps1 no longer passes the setup script's exit code through"
 fi
@@ -329,9 +335,14 @@ if [ -n "$_pf" ] && [ -n "$_dl" ] && [ "$_pf" -lt "$_dl" ]; then
 else
     fail "install.ps1 has no \$env:EXAKIT_PREFLIGHT check ahead of the download - the docs offer Windows a check-only run that does not exist"
 fi
-_has "$_IPS" 'exit (Write-ExakitRequirementReport' \
+# Stops at the report - by RETURNING, for the same reason as above: an `exit`
+# here closed the window over the very report the run exists to print.
+_has "$_IPS" '$preflightFailures = Write-ExakitRequirementReport' \
     "...and a preflight run stops at the report instead of installing" \
     "a preflight run on Windows no longer stops at the report"
+_has "$_IPS" 'if ($ExakitRanAsFile) { exit $preflightFailures }' \
+    "...leaving the session alive to read it" \
+    "the preflight can close the user's terminal again"
 
 printf '\n== a failed re-install never leaves the user without a kit ==\n'
 

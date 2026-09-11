@@ -92,7 +92,7 @@ Exasol Personal does not support **WSL** or **Windows arm64** — the installer 
 
 **No Python install needed** on any platform: the kit uses a system Python 3.11+ when it finds one, and otherwise installs a managed Python for its own use.
 
-Step-by-step guides: [QUICKSTART](QUICKSTART.md) · [macOS](quickstarts/macos.md) · [Linux](quickstarts/linux.md) · [WSL](quickstarts/windows-wsl.md) · [Windows + Docker](quickstarts/windows-docker.md)
+Step-by-step guides: [QUICKSTART](QUICKSTART.md) · [macOS](quickstarts/macos.md) · [Linux](quickstarts/linux.md) · [WSL](quickstarts/windows-wsl.md) · [Windows](quickstarts/windows.md)
 
 ### Installing: what to expect
 
@@ -225,11 +225,11 @@ https://github.com/user-attachments/assets/77916db0-d273-4720-8d59-1aedac95d5e8
 | What&nbsp;makes&nbsp;this&nbsp;"for&nbsp;Agentic&nbsp;AI"? | An MCP server ships in the box with a dedicated read-only login, so Claude, Cursor, and other MCP clients can query your data directly, with every SQL statement inspectable before it runs. |
 | What&nbsp;sample&nbsp;data&nbsp;is&nbsp;included? | Three bundled datasets: TPC-H retail, smart-meter energy, daily weather, each in its own schema. See the [data dictionary](data/data-dictionary.md). |
 | Can&nbsp;I&nbsp;load&nbsp;my&nbsp;own&nbsp;data? | Yes. `exakit data-load` has a local CSV or Parquet option, and `exapump upload` works from the terminal. |
-| Do&nbsp;I&nbsp;need&nbsp;Docker? | No. The database is an Exasol Personal deployment on every platform. Linux needs Podman (the preflight names the install command); on Windows the launcher installs Podman itself when it is missing. |
+| What&nbsp;do&nbsp;I&nbsp;need&nbsp;installed&nbsp;first? | Nothing on macOS or Windows — the Exasol launcher brings what it needs, and on Windows installs Podman itself if it is missing. Linux needs Podman, and the preflight names the exact install command. |
 | `exakit` not recognized after<br>a Windows install? | Re-run the install command. It adds `~\.local\bin` to your user PATH and repairs the command automatically. |
 | Port&nbsp;8563&nbsp;already&nbsp;taken? | The launcher selects and remembers the deployment's port itself, and the kit reads back whatever it selected — an existing Exasol on the port is adopted, anything else is reported with the process named. |
 | Behind&nbsp;a&nbsp;corporate&nbsp;proxy? | `export HTTPS_PROXY=...` and re-run. |
-| Where's&nbsp;the&nbsp;deep-dive&nbsp;for&nbsp;my&nbsp;OS? | [macOS](quickstarts/macos.md) · [Linux](quickstarts/linux.md) · [WSL](quickstarts/windows-wsl.md) · [Windows + Docker](quickstarts/windows-docker.md) |
+| Where's&nbsp;the&nbsp;deep-dive&nbsp;for&nbsp;my&nbsp;OS? | [macOS](quickstarts/macos.md) · [Linux](quickstarts/linux.md) · [WSL](quickstarts/windows-wsl.md) · [Windows](quickstarts/windows.md) |
 | Installing&nbsp;over&nbsp;a&nbsp;database<br>I&nbsp;already&nbsp;have? | An existing database is adopted, never replaced. Running or stopped, it is reused with its data intact. Only a database that cannot start at all is replaced, and the installer warns you first. |
 | How&nbsp;do&nbsp;updates&nbsp;work? | The maintainers publish one recommended set of versions. `exakit version` shows what is pending, `exakit update` applies it. See [Staying up to date](#staying-up-to-date). |
 | How&nbsp;do&nbsp;I&nbsp;remove&nbsp;everything? | `exakit uninstall` |

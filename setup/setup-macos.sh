@@ -91,7 +91,7 @@ else
         # surface minutes later as "Connection refused" in the MCP read-only
         # user creation — with the data-load offer silently trusting the
         # manifest in between. Mirrors the Nano paths, which restart a
-        # non-running container on re-run (setup-wsl.sh, setup-windows-docker.ps1).
+        # non-running container on re-run (setup-wsl.sh, setup-windows.ps1).
         info "Database is deployed but not running — starting it"
         personal_start
         personal_wait_ready

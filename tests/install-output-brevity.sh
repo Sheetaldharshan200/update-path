@@ -175,7 +175,7 @@ for _script in setup-macos.sh setup-wsl.sh; do
     lacks "$_script does not print the full panel" "
 connection_panel" "$(cat "$ROOT/setup/$_script")"
 done
-has "the Windows installer too" "Show-ExakitConnectionSummary" "$(cat "$ROOT/setup/setup-windows-docker.ps1")"
+has "the Windows installer too" "Show-ExakitConnectionSummary" "$(cat "$ROOT/setup/setup-windows.ps1")"
 
 printf '\n== skills: a count, not a roll call ==\n'
 

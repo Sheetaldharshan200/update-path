@@ -482,7 +482,7 @@ printf '\n== all three platforms install in the same six steps ==\n'
 
 MAC_SH="$(cat "$ROOT/setup/setup-macos.sh")"
 WSL_SH="$(cat "$ROOT/setup/setup-wsl.sh")"
-WIN_PS="$(cat "$ROOT/setup/setup-windows-docker.ps1")"
+WIN_PS="$(cat "$ROOT/setup/setup-windows.ps1")"
 
 # The container platforms used to fold "fetch the image" and "deploy the
 # database" into one step, so Step 1/5 covered an 18-second network download AND

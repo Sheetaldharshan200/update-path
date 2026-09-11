@@ -68,7 +68,7 @@ for _f in setup/setup-macos.sh setup/setup-wsl.sh; do
     _early="$(grep -n 'exakit_install_helper_early\|begin_step launcher' "$ROOT/$_f" | head -2 | cut -d: -f2 | tr '\n' ' ')"
     has "$_f installs the helper before the launcher step" "exakit_install_helper_early" "$(printf '%s' "$_early" | awk '{print $1}')"
 done
-has "the Windows installer writes the shim early too" 'Set-ExakitCmdShim -PsTarget $earlyPs1' "$(cat "$ROOT/setup/setup-windows-docker.ps1")"
+has "the Windows installer writes the shim early too" 'Set-ExakitCmdShim -PsTarget $earlyPs1' "$(cat "$ROOT/setup/setup-windows.ps1")"
 mkdir -p "$WORK/kitsrc"; printf '#!/bin/sh\necho stub\n' > "$WORK/kitsrc/exakit"
 ( exakit_install_helper_early "$WORK/kitsrc" >/dev/null 2>&1 )
 check "the helper is installed executable" "yes" "$( [ -x "$EXAKIT_BIN_DIR/exakit" ] && echo yes || echo no )"

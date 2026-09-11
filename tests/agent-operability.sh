@@ -817,7 +817,7 @@ has "the staging copies the help corpus" \
     "$(cat "$ROOT/setup/lib/common.sh")"
 has "...and the Windows twin does too" \
     'Copy-ExakitAsset -Source (Join-Path $KitRoot "setup\help")' \
-    "$(cat "$ROOT/setup/setup-windows-docker.ps1")"
+    "$(cat "$ROOT/setup/setup-windows.ps1")"
 
 # Functional, not just textual: a kit staged the way the installer stages one
 # must answer for every topic it ships.

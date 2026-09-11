@@ -72,7 +72,7 @@ exakit update      # bring the kit and its components up to date
 
 | Situation | What to know |
 |---|---|
-| No Podman | Install it with your package manager (`sudo apt-get install -y podman`, `sudo dnf install -y podman`) and re-run. Docker does not substitute — the launcher will not use it. |
+| No Podman | Install it with your package manager (`sudo apt-get install -y podman`, `sudo dnf install -y podman`) and re-run. Podman specifically: no other container engine substitutes, because the launcher only drives Podman. |
 | Rootless Podman | Fully supported and the usual case. Your user needs subordinate id ranges (`/etc/subuid`, `/etc/subgid` — most distros set these up when the user is created) and cgroups v2 (the default on every current distro). |
 | Autostart on a headless server | `exakit autostart` registers a systemd **user** unit that runs the launcher's start. A user unit only runs while you have a session, so the kit enables lingering for your user when it can (`loginctl enable-linger`); where that is refused, it says so and names the command an admin has to run. |
 | Upgrading the launcher | `exakit update` explains what a launcher update does before asking — including the one-time longer first start after it (the deployment rebuilds part of its runtime once; your data is kept). |

@@ -6,7 +6,7 @@
 # via `irm | iex` (as a fetched string, never read from disk with -File), and
 # a BOM that survives into that string as a literal U+FEFF character breaks
 # PowerShell's '#' comment-line detection - the parser then tries to execute
-# the comment text itself as commands. (setup\setup-windows-docker.ps1 and
+# the comment text itself as commands. (setup\setup-windows.ps1 and
 # setup\exakit.ps1 are the opposite case: always read from disk via -File,
 # where a BOM is the correct fix for a different, real encoding bug - do not
 # "fix" those to match this file.)
@@ -17,7 +17,7 @@
 #   2. downloads the starter kit to ~\.exasol-starter-kit\kit (so you can
 #      read every script before or after it runs)
 #   3. shows the installation plan
-#   4. hands off to setup\setup-windows-docker.ps1, which installs the
+#   4. hands off to setup\setup-windows.ps1, which installs the
 #      Exasol Nano database container, exapump (data loading CLI), and the
 #      MCP server - the same components the macOS/Linux/WSL path installs
 #
@@ -162,7 +162,7 @@ if ($env:EXAKIT_RUNTIME) {
     }
 }
 # AN INSTALLED KIT'S RECORD OUTRANKS BOTH the knob and the default, exactly as
-# setup-windows-docker.ps1 decides it. Without this the two disagreed about one
+# setup-windows.ps1 decides it. Without this the two disagreed about one
 # machine: this file announced the plan for its own default and ran that
 # runtime's requirements gate, while the setup script honoured the record and
 # installed the other one. Switching runtimes is an uninstall away, never a
@@ -620,20 +620,20 @@ if (-not $uiLoaded) {
 if ($env:EXAKIT_DRY_RUN -eq "1") {
     Write-Host "  * Dry run requested (EXAKIT_DRY_RUN=1) - nothing was installed." -ForegroundColor Blue
     Write-Host "    Inspect the scripts under $KitDir, then run:"
-    Write-Host "      powershell -File `"$KitDir\setup\setup-windows-docker.ps1`""
+    Write-Host "      powershell -File `"$KitDir\setup\setup-windows.ps1`""
     Write-Host ""
     return
 }
 
 # --- 4. hand off -----------------------------------------------------------------
 $InstallPhase = "setup"
-Write-Host "  * Starting setup: setup\setup-windows-docker.ps1" -ForegroundColor Blue
+Write-Host "  * Starting setup: setup\setup-windows.ps1" -ForegroundColor Blue
 Write-Host ""
 # We already showed the banner above; tell the setup script to skip its own so
 # the wordmark appears exactly once through the installer. A direct
-# `-File setup\setup-windows-docker.ps1` run (no installer) still shows it.
+# `-File setup\setup-windows.ps1` run (no installer) still shows it.
 $env:EXAKIT_BANNER_SHOWN = "1"
-& powershell -ExecutionPolicy Bypass -File (Join-Path $KitDir "setup\setup-windows-docker.ps1")
+& powershell -ExecutionPolicy Bypass -File (Join-Path $KitDir "setup\setup-windows.ps1")
 $setupExitCode = $LASTEXITCODE
 # Pass the code through; do NOT re-wrap it. Re-throwing it as "Setup failed
 # with exit code 1" made the trap above print that number as THE reason and

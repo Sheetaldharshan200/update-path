@@ -1,7 +1,7 @@
 # exapump.ps1 - exapump installation, connection, and guided data-loading
 # module (Windows / PowerShell path).
 #
-# Dot-sourced by setup-windows-docker.ps1 and setup/exakit.ps1 after
+# Dot-sourced by setup-windows.ps1 and setup/exakit.ps1 after
 # exakit-common.ps1. Mirrors setup/lib/exapump.sh function-for-function.
 #
 # exapump facts:
@@ -1063,7 +1063,7 @@ function Confirm-ExakitJsonTablesReady {
 
     # No dot-sourcing fallback here, unlike the shell: a dot-sourced module
     # inside a function loads into THAT function's scope and is gone on return.
-    # Both entry points (setup/exakit.ps1 and setup-windows-docker.ps1) source
+    # Both entry points (setup/exakit.ps1 and setup-windows.ps1) source
     # every add-on module at the top, so a missing one means an old kit copy.
     if (-not (Get-Command Install-JsonTables -ErrorAction SilentlyContinue)) {
         Warn2 "This kit copy does not carry the JSON engine - update the kit first: exakit update"
@@ -2492,7 +2492,7 @@ function Stop-ExakitDataTableRun {
 
 # Invoke-ExakitSampleDataLoad <kit_root> [-Force] - the TPC-H sample-data
 # entry point, kept for its long-standing callers (the installer offer,
-# `exakit data-load -Force`, and setup-windows-docker.ps1). TPC-H now lives in
+# `exakit data-load -Force`, and setup-windows.ps1). TPC-H now lives in
 # data\datasets\tpch like every other bundled dataset, so this simply
 # delegates to the generic directory pipeline.
 function Invoke-ExakitSampleDataLoad {
@@ -2506,7 +2506,7 @@ function Invoke-ExakitSampleDataLoad {
 # loading flow (which calls exit) is still contained by the caller... note:
 # unlike bash's subshell isolation, PowerShell's exit terminates the whole
 # process, so callers that must survive a failed load run this in a child
-# pwsh process instead (see setup-windows-docker.ps1).
+# pwsh process instead (see setup-windows.ps1).
 function Request-ExakitDataLoadOffer {
     param([Parameter(Mandatory)][string]$KitRoot)
     # One dataset's failure must not cost the others: a thrown load used to leave

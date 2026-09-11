@@ -47,7 +47,7 @@
 #   catalog [search]      browse/search every exakit, exapump & exasol command
 #   help                  this text
 #
-# Installed to %USERPROFILE%\.local\bin by setup-windows-docker.ps1; also
+# Installed to %USERPROFILE%\.local\bin by setup-windows.ps1; also
 # runs straight from a repo checkout (setup\exakit.ps1).
 
 param(
@@ -863,8 +863,8 @@ function Invoke-CmdRepairRuntime {
 
     $kit = Get-ExakitRepoRoot
     if (-not $kit) { Fail "Could not find the kit copy to re-run setup from. Re-run the installer instead." }
-    $setup = Join-Path $kit "setup\setup-windows-docker.ps1"
-    if (-not (Test-Path $setup)) { Fail "The kit copy at $kit has no setup\setup-windows-docker.ps1. Re-run the installer instead." }
+    $setup = Join-Path $kit "setup\setup-windows.ps1"
+    if (-not (Test-Path $setup)) { Fail "The kit copy at $kit has no setup\setup-windows.ps1. Re-run the installer instead." }
 
     # Narration never shares stdout with the JSON object.
     if ($Json) {
@@ -902,7 +902,7 @@ function Invoke-CmdRepairRuntime {
     # Drop the tick so the deployment step runs even on a runtime whose wedged
     # state the kit cannot yet recognise on its own.
     Remove-ExakitStepDone "runtime"
-    Info "Re-running setup\setup-windows-docker.ps1 to rebuild the database"
+    Info "Re-running setup\setup-windows.ps1 to rebuild the database"
     $env:EXAKIT_BANNER_SHOWN = "1"
     # The deployment step must NOT offer to reuse what is there: its reuse
     # question defaults to YES, so a repair the user had just confirmed as
