@@ -2346,6 +2346,39 @@ exakit_installation_runtime_type() {
     manifest_get runtime.type 2>/dev/null
 }
 
+# The recorded runtime types that belong to a kit OLDER than this one: a
+# database in a container, which this kit neither deploys nor drives.
+EXAKIT_LEGACY_RUNTIME_TYPES="${EXAKIT_LEGACY_RUNTIME_TYPES:-nano}"
+
+# exakit_legacy_runtime_recorded — 0 when this machine's installation was made
+# by an older kit whose database is a container.
+#
+# It lives HERE, not in legacy-crossing.sh, because the CLI has to be able to
+# ask it: `exakit status` on such a machine would otherwise print "nano · not
+# installed", which reads as a broken install rather than one that predates the
+# removal of the container runtime. The crossing module reads the same answer
+# from the same place, so the installer and the CLI can never disagree about
+# what this machine is.
+exakit_legacy_runtime_recorded() {
+    _lrr_type="$(exakit_installation_runtime_type 2>/dev/null || true)"
+    [ -n "$_lrr_type" ] || return 1
+    for _lrr_known in $EXAKIT_LEGACY_RUNTIME_TYPES; do
+        [ "$_lrr_type" = "$_lrr_known" ] && return 0
+    done
+    return 1
+}
+
+# exakit_legacy_runtime_notice — the one sentence a legacy install needs, and
+# the command that moves it across. Silent on every other machine, so callers
+# do not have to guard it.
+exakit_legacy_runtime_notice() {
+    exakit_legacy_runtime_recorded || return 0
+    warn "This installation's database runs in a container, which this kit no longer manages."
+    info "Re-run the installer to move across — it asks whether to bring your data with you, and deletes nothing either way:"
+    info "  $(exakit_install_command)"
+    return 0
+}
+
 # exakit_runtime_is_running — one question, no side effects: is the installed
 # database runtime up right now? The pure check that `exakit status` branches
 # its exit code on and `exakit mcp-doctor` consults BEFORE any operation that

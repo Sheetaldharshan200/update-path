@@ -470,6 +470,12 @@ jobs:
       # the port conflict, and what uninstall keeps.
       - run: bash tests/agent-audit.sh
       - run: bash tests/uninstall.sh
+      # An installation made by an older kit has a database this kit cannot
+      # drive, and the crossing is the only code that touches one. What it
+      # DECIDES and what it HANDS to the engine and to exapump are both
+      # exactly checkable, and the invariant worth a CI job is that it never
+      # deletes the old database on either answer.
+      - run: bash tests/legacy-crossing.sh
       - run: bash tests/skills.sh
       - run: bash tests/agent-operability.sh
       # The MCP subsystem's own tests were never wired in, so nothing in CI

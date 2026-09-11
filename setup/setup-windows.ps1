@@ -22,6 +22,8 @@ $KitRoot = Split-Path -Parent $ScriptDir
 
 . (Join-Path $LibDir "exakit-common.ps1")
 . (Join-Path $LibDir "runtime-personal.ps1")
+$legacyModule = Join-Path $LibDir "legacy-crossing.ps1"
+if (Test-Path $legacyModule) { . $legacyModule }
 . (Join-Path $LibDir "exapump.ps1")
 . (Join-Path $LibDir "mcp.ps1")
 . (Join-Path $LibDir "pyexasol.ps1")
@@ -71,6 +73,16 @@ try {
     # One setup run at a time; the lock's pid is how `exakit status` tells a live
     # install from one that crashed. Twin of exakit_enable_failure_handling.
     Enter-ExakitInstallLock
+
+    # --- step 0: an installation this kit cannot manage ----------------------
+    # An older kit could put the database in a container. This asks what to do
+    # with it, copies the data out while it is still readable, and stops it so
+    # the new deployment can have the port. A machine with no such installation
+    # - which is every fresh one - passes straight through.
+    if (Get-Command Invoke-LegacyCrossingBefore -ErrorAction SilentlyContinue) {
+        Invoke-LegacyCrossingBefore
+    }
+
     # --- step 1: requirements ------------------------------------------------
     Test-PersonalRequirements
 
@@ -323,6 +335,13 @@ try {
     # (Write-ExakitSoftFailures) are printed after the connection panel at the
     # very end of the run - not here, in the middle of the step output where
     # the connection details would push them off the screen.
+
+    # The other half of the crossing. Last, because it needs all three things
+    # the steps above provide: a database that is up, an exapump binary, and a
+    # profile pointing at the NEW database.
+    if (Get-Command Invoke-LegacyCrossingAfter -ErrorAction SilentlyContinue) {
+        Invoke-LegacyCrossingAfter
+    }
 
     Show-ExakitConnectionSummary
     # Only when the kit version moved during this run, and never able to fail it:

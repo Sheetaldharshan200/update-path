@@ -403,7 +403,14 @@ function Invoke-CmdStatus {
     $engine = Get-ExakitManifestValue "runtime.engine"
     $runtimeText = $(if ($type) { $type } else { "none" })
     if ($engine) { $runtimeText = "$runtimeText ($engine)" }
-    Write-StatusPanelRow "Runtime" "$runtimeText - $status"
+    # A runtime this kit does not have is not the same as a missing one, and
+    # "nano - not installed" reads like a broken install rather than an
+    # installation that predates the removal of the container runtime.
+    if (Test-ExakitLegacyRuntimeRecorded) {
+        Write-StatusPanelRow "Runtime" "$runtimeText - from an older kit, not managed here"
+    } else {
+        Write-StatusPanelRow "Runtime" "$runtimeText - $status"
+    }
     $dsn = Get-ExakitManifestValue "runtime.dsn"
     if (-not $dsn) { $dsn = "unknown" }
     if ($running) { $reach = "reachable" } else { $reach = "not reachable" }

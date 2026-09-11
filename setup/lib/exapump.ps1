@@ -12,7 +12,12 @@
 #   - CSV/Parquet load: exapump upload <file> --table <schema.table>
 
 $script:ExapumpProfile = if ($env:EXAKIT_EXAPUMP_PROFILE) { $env:EXAKIT_EXAPUMP_PROFILE } else { "starter-kit" }
-$script:ExapumpBinPath = Join-Path $script:BinDir "exapump.exe"
+# Overridable, and the ORDER in Get-ExapumpCli matters with it: an explicit
+# EXAKIT_EXAPUMP_BIN is the one the caller means, so it outranks whatever
+# `exapump` happens to be on PATH. Twin of the same rule in exapump.sh, where
+# an unconditional assignment let a sandboxed test reach the developer's real
+# binary and real database.
+$script:ExapumpBinPath = if ($env:EXAKIT_EXAPUMP_BIN) { $env:EXAKIT_EXAPUMP_BIN } else { Join-Path $script:BinDir "exapump.exe" }
 # %USERPROFILE%, not PowerShell's $HOME - exapump.exe resolves its profile from
 # the former and nothing passes --config or EXAPUMP_CONFIG, so on a domain
 # machine with a redirected home the kit wrote H:\.exapump\config.toml while the
@@ -177,6 +182,8 @@ function Get-ExapumpDigestFromApi {
 }
 
 function Get-ExapumpCli {
+    # An explicit override first: see the note on $script:ExapumpBinPath.
+    if ($env:EXAKIT_EXAPUMP_BIN) { return $env:EXAKIT_EXAPUMP_BIN }
     $cmd = Get-Command exapump -ErrorAction SilentlyContinue
     if ($cmd) { return $cmd.Source }
     return $script:ExapumpBinPath

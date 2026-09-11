@@ -13,7 +13,14 @@
 #   - CSV/Parquet load: exapump upload <file> --table <schema.table>
 
 EXAKIT_EXAPUMP_PROFILE="${EXAKIT_EXAPUMP_PROFILE:-starter-kit}"
-EXAKIT_EXAPUMP_BIN="$EXAKIT_BIN_DIR/exapump"
+# OVERRIDABLE, like every sibling variable here. It was assigned
+# unconditionally, so an EXAKIT_EXAPUMP_BIN set in the environment was
+# discarded the moment this file was sourced - and exapump_cli then fell
+# through to the `exapump` on PATH. A test that sandboxes EXAKIT_HOME and
+# EXAKIT_BIN_DIR but points EXAKIT_EXAPUMP_BIN at a stub therefore ran the
+# DEVELOPER'S REAL exapump against the DEVELOPER'S REAL database, and created
+# a schema in it. Same class of escape as the HOME/.exapump note below.
+EXAKIT_EXAPUMP_BIN="${EXAKIT_EXAPUMP_BIN:-$EXAKIT_BIN_DIR/exapump}"
 # ONE definition of where exapump keeps its profiles, and it is overridable.
 # The uninstall path used to spell it `rm -rf "$HOME/.exapump"` inline: a test
 # that sandboxes EXAKIT_HOME and EXAKIT_BIN_DIR (as every suite here does) but
@@ -334,9 +341,25 @@ exapump_create_profile() {
         _EXAKIT_PENDING_RUNTIME_PASSWORD="$_password"
     fi
 
+    exapump_write_profile "$EXAKIT_EXAPUMP_PROFILE" "$_host" "$_port" "$_user" "$_password" \
+        || die "Could not write the exapump profile"
+    manifest_set components.exapump.profile "$EXAKIT_EXAPUMP_PROFILE"
+    ok_step "Connection profile [$EXAKIT_EXAPUMP_PROFILE] written to $(ui_tilde "$EXAPUMP_CONFIG")"
+}
+
+# exapump_write_profile <profile> <host> <port> <user> <password> - one TOML
+# section in ~/.exapump/config.toml, replaced in place if it is already there.
+#
+# Split out of exapump_create_profile, which reads the manifest and can only
+# ever write the kit's own profile. The legacy crossing needs a SECOND profile,
+# pointing at the database an older kit deployed, and a password belongs in a
+# 0600 config file rather than in argv where `ps` can read it - so both callers
+# go through one writer instead of a second copy of this TOML surgery.
+exapump_write_profile() {
+    _ewp_profile="$1"; _ewp_host="$2"; _ewp_port="$3"; _ewp_user="$4"; _ewp_password="$5"
     require_python3
     mkdir -p "$(dirname "$EXAPUMP_CONFIG")"
-    run_python - "$EXAPUMP_CONFIG" "$EXAKIT_EXAPUMP_PROFILE" "$_host" "$_port" "$_user" "$_password" <<'PY' || die "Could not write the exapump profile"
+    run_python - "$EXAPUMP_CONFIG" "$_ewp_profile" "$_ewp_host" "$_ewp_port" "$_ewp_user" "$_ewp_password" <<'PY' || return 1
 import os, re, sys
 path, profile, host, port, user, password = sys.argv[1:7]
 try:
@@ -370,8 +393,6 @@ os.chmod(tmp, 0o600)
 os.replace(tmp, path)
 PY
     chmod 600 "$EXAPUMP_CONFIG"
-    manifest_set components.exapump.profile "$EXAKIT_EXAPUMP_PROFILE"
-    ok_step "Connection profile [$EXAKIT_EXAPUMP_PROFILE] written to $(ui_tilde "$EXAPUMP_CONFIG")"
 }
 
 # exapump_ddl_roundtrip — one DDL write-readback round through the profile.

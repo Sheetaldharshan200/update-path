@@ -88,6 +88,8 @@ The database everywhere is **Exasol Personal** — the same launcher-managed loc
 | **Linux** | Podman (rootless is fine), 8 GB+ RAM, 20 GB free disk | `sudo apt-get install -y podman` / `sudo dnf install -y podman` if missing — the installer names it |
 | **Windows x86_64** | 8 GB+ RAM, 20 GB free disk | Runs through host Podman; the launcher offers to install Podman itself (may ask for administrator approval) |
 
+Already have the kit with its database in a container? Re-run the install command — it asks whether to migrate your data or continue without it, and deletes nothing either way.
+
 Exasol Personal does not support **WSL** or **Windows arm64** — the installer says so and exits without changing anything. On WSL, run the installer on Windows itself or inside a native Linux machine; on Windows arm64, use a Linux VM.
 
 **No Python install needed** on any platform: the kit uses a system Python 3.11+ when it finds one, and otherwise installs a managed Python for its own use.

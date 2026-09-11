@@ -28,6 +28,7 @@ done
 . "$LIB_DIR/common.sh"
 . "$LIB_DIR/detect.sh"
 . "$LIB_DIR/runtime-personal.sh"
+if [ -f "$LIB_DIR/legacy-crossing.sh" ]; then . "$LIB_DIR/legacy-crossing.sh" || die "Could not load $LIB_DIR/legacy-crossing.sh (corrupted kit copy? re-download and re-run)"; fi
 # Optional modules: a missing file legitimately skips its step, but a file
 # that FAILS to load (e.g. CRLF-corrupted copy whose syntax breaks bash) must
 # fail loudly - otherwise the step silently reports "not part of this
@@ -60,6 +61,13 @@ exakit_note_kit_upgrade "$KIT_ROOT" || true
 _kit_version="$(exakit_kit_version_at "$KIT_ROOT" 2>/dev/null || true)"
 [ -n "$_kit_version" ] && manifest_set kit.version "$_kit_version"
 exakit_resolve_install_versions
+
+# --- step 0: an installation this kit cannot manage -------------------------
+# An older kit could put the database in a container. This asks what to do with
+# it, copies the data out while it is still readable, and stops it so the new
+# deployment can have the port. A machine with no such installation - which is
+# every fresh one - passes straight through.
+if command -v legacy_crossing_before >/dev/null 2>&1; then legacy_crossing_before; fi
 
 # --- step 1: requirements ---------------------------------------------------
 EXAKIT_CURRENT_STEP="requirements"
@@ -100,6 +108,11 @@ fi
 
 # --- steps 3-6: exapump, MCP server, pyexasol, exakit helper (shared) -------
 kit_shared_steps 3 6 "$SCRIPT_DIR" "$KIT_ROOT"
+
+# The other half of the crossing. Last, because it needs all three things the
+# steps above provide: a database that is up, an exapump binary, and a profile
+# pointing at the NEW database.
+if command -v legacy_crossing_after >/dev/null 2>&1; then legacy_crossing_after; fi
 
 exakit_finish
 connection_summary

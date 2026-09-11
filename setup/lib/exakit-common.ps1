@@ -5857,6 +5857,35 @@ function Get-ExakitUpdateTargets {
 
 function Get-RuntimeType { return (Get-ExakitManifestValue "runtime.type") }
 
+# The recorded runtime types that belong to a kit OLDER than this one: a
+# database in a container, which this kit neither deploys nor drives.
+$script:LegacyRuntimeTypes = @("nano")
+
+# Test-ExakitLegacyRuntimeRecorded - true when this machine's installation was
+# made by an older kit whose database is a container.
+#
+# It lives HERE, not in legacy-crossing.ps1, because the CLI has to be able to
+# ask it: `exakit status` on such a machine would otherwise print
+# "nano - not installed", which reads as a broken install rather than one that
+# predates the removal of the container runtime. The crossing module reads the
+# same answer from the same place, so the installer and the CLI can never
+# disagree about what this machine is.
+# Twin of exakit_legacy_runtime_recorded in setup/lib/common.sh.
+function Test-ExakitLegacyRuntimeRecorded {
+    $type = Get-ExakitManifestValue "runtime.type"
+    if (-not $type) { return $false }
+    return ($script:LegacyRuntimeTypes -contains $type)
+}
+
+# The one sentence a legacy install needs, and the command that moves it
+# across. Silent on every other machine, so callers do not have to guard it.
+function Show-ExakitLegacyRuntimeNotice {
+    if (-not (Test-ExakitLegacyRuntimeRecorded)) { return }
+    Warn2 "This installation's database runs in a container, which this kit no longer manages."
+    Info "Re-run the installer to move across - it asks whether to bring your data with you, and deletes nothing either way:"
+    Info "  $(Get-ExakitInstallCommand)"
+}
+
 function Register-ExakitAutostart {
     param([Parameter(Mandatory)][string]$Id)
     $command = $null

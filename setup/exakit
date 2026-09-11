@@ -523,7 +523,15 @@ EXAKIT_SJ_PY
     _cs_pad() { printf '%-17s %s' "$1" "$2"; }
 
     ui_panel_begin "Kit"
-    ui_panel_line "$(_cs_pad 'Runtime' "${_type:-none} · $_cs_db")"
+    # A runtime this kit does not have is not the same as a missing one, and
+    # "nano · not installed" reads like a broken install rather than an
+    # installation that predates the removal of the container runtime. Say
+    # which it is, here, where the reader is already looking.
+    if exakit_legacy_runtime_recorded 2>/dev/null; then
+        ui_panel_line "$(_cs_pad 'Runtime' "$_type · from an older kit, not managed here")"
+    else
+        ui_panel_line "$(_cs_pad 'Runtime' "${_type:-none} · $_cs_db")"
+    fi
     ui_panel_line "$(_cs_pad 'Database' "$(manifest_get runtime.dsn 2>/dev/null || printf 'unknown')$(
         if [ "$_cs_running" -eq 1 ]; then printf ' · reachable'
         elif [ "$_cs_db" = "conflict" ]; then printf ' · port held by another process (not Exasol) — stop it, then: exakit start'

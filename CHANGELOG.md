@@ -22,14 +22,55 @@ left to reroute to.
 - `exakit uninstall` removes the local deployment and its data, on both halves
   of the mirror. The Windows+WSL shared-engine hazard is gone with the engine
   that caused it.
-- **An installation that still records `runtime.type: nano` is no longer
-  managed by this kit.** Its `exakit` commands, updates and repairs have no
-  runtime module to call. Remove it with the container engine directly, then
-  install fresh.
+**An existing installation crosses over by re-running the installer, and it is
+asked what to do with its data.** A machine whose manifest records a container
+database — one made by this kit before the change, or by the upstream
+`exasol-labs/exasol-personal-local-starterkit` — is recognised before the
+install touches anything, and offered two answers:
+
+- **Migrate my data** — every non-system table is copied out of the old
+  database while it is still running, the new deployment is made, and the
+  tables are restored into it at the end of the run. Types are preserved: each
+  table is recreated from the source's own column types before its rows are
+  loaded, so nothing is inferred. One caveat is named on screen before the copy
+  starts: a text column that held an empty string arrives as NULL, because a
+  CSV field cannot tell the two apart.
+- **Skip and continue** — the new database is set up empty and the old one is
+  left alone, with its data.
+
+Both answers stop the old container, because it is holding the port the new
+deployment needs — and **neither deletes it**. The container and its data
+volume stay; the exact command that removes them is printed for whenever the
+user wants it. A table the fresh install has already created (the bundled
+sample data) is left alone rather than appended to, and named. `exakit status`
+on such a machine now says "from an older kit, not managed here" rather than
+"nano · not installed", which read like a broken install.
+
+**Asked once, and only where there is something to ask about.** This code runs
+on every install, so it is silent unless all three gates open: the record says
+this is a container install, the crossing has not already happened on this
+machine, and there is a readable database with tables in it. A container that
+is gone, a machine that already crossed, and a resumed attempt at the same
+install all print nothing at all — the reason goes to the install log, where
+someone asking "why was I not offered a migration?" can find it. The probe
+therefore runs before the banner, not after it, and the offer is made only once
+the tables have been counted.
+
+`EXAKIT_LEGACY_DATA=migrate|skip` pre-answers the question. An unattended run
+with no answer **skips**: copying a database is not something to start on
+someone's behalf while they are not there, and skipping destroys nothing.
+
 - **A kit installed before this change cannot self-update past it.** The
   payload validator in every older copy requires `setup/lib/runtime-nano.sh`,
   which no longer ships, so its `exakit update` refuses the new archive and
-  leaves the old kit untouched. Re-run the installer to move across.
+  leaves the old kit untouched. Re-running the installer is the crossing, and
+  it is what the notice above points at.
+- Fix: `EXAKIT_EXAPUMP_BIN` was assigned unconditionally in `exapump.sh`, so an
+  override set in the environment was discarded the moment the file was sourced
+  and `exapump_cli` fell through to whatever `exapump` was on PATH. A test that
+  sandboxed `EXAKIT_HOME` and `EXAKIT_BIN_DIR` but pointed that variable at a
+  stub therefore ran the real binary against the real database. Both halves now
+  honour it, and the PowerShell side lets it outrank PATH.
 
 
 ## 0.2.1
