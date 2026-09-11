@@ -143,6 +143,32 @@ main() {
     # falling back to a platform default would deploy a database the user did
     # not ask for, which is worse than any refusal.
     runtime_choice="${EXAKIT_RUNTIME:-}"
+    # AN INSTALLED KIT'S RECORD OUTRANKS BOTH the knob and the default, exactly
+    # as the setup scripts decide it. Without this the two disagreed about one
+    # machine: the installer announced the plan for its own default while the
+    # setup script honoured the record and installed the other runtime - and
+    # the requirements check ran the wrong runtime's gate on the way past.
+    # Switching runtimes is an uninstall away, never a re-run away.
+    #
+    # Read here with grep, not the kit's own helper: none of the libraries exist
+    # yet at this point, and nothing has been downloaded. Only the two runtime
+    # words are accepted, so an unrelated "type" key cannot answer this.
+    #
+    # grep -E, NOT sed: BRE alternation (\|) is a GNU extension that BSD sed -
+    # macOS, every BSD - does not support, so the sed spelling of this read
+    # silently answered nothing on exactly the platform this kit was born on.
+    _ir_manifest="${EXAKIT_HOME:-$HOME/.exasol-starter-kit}/manifest.json"
+    recorded_runtime=""
+    if [ -r "$_ir_manifest" ]; then
+        recorded_runtime="$(grep -Eo '"type"[[:space:]]*:[[:space:]]*"(nano|personal)"' "$_ir_manifest" 2>/dev/null \
+            | head -1 | grep -Eo '(nano|personal)' | head -1)"
+    fi
+    if [ -n "$recorded_runtime" ]; then
+        if [ -n "$runtime_choice" ] && [ "$runtime_choice" != "$recorded_runtime" ]; then
+            say "This machine already runs the $recorded_runtime runtime; EXAKIT_RUNTIME=$runtime_choice only applies to a fresh install (uninstall first to switch)."
+        fi
+        runtime_choice="$recorded_runtime"
+    fi
     case "$runtime_choice" in
         ""|personal|nano) : ;;
         *) fail "EXAKIT_RUNTIME='$runtime_choice' is not a runtime this kit knows. Valid values: personal (the Exasol Personal launcher), nano (the Exasol Nano container) - or unset it for the platform default." ;;

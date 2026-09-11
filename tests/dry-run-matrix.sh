@@ -217,6 +217,52 @@ grep -q '$SetupRuntime = Get-ExakitManifestValue "runtime.type"' "$ROOT/setup/se
 grep -q 'EXAKIT_SETUP_RUNTIME="$(manifest_get runtime.type' "$ROOT/setup/setup-wsl.sh" && \
     check "setup-wsl: the record outranks the knob" present present || \
     check "setup-wsl: the record outranks the knob" present MISSING
+# ...AND SO DO THE INSTALLERS. They used to resolve only the knob and the
+# default, while both setup scripts honoured the record - so on a machine with
+# an existing install the two disagreed about one fact: the installer announced
+# the plan for its own default and ran THAT runtime's requirements gate, while
+# the setup script installed the recorded one. Observed on a real Windows box
+# with a container install: the installer resolved personal (and asked about
+# Podman) while setup installed nano.
+grep -q 'recorded_runtime=' "$ROOT/install.sh" && \
+    check "install.sh reads the recorded runtime" present present || \
+    check "install.sh reads the recorded runtime" present MISSING
+grep -q 'RecordedRuntime' "$ROOT/install.ps1" && \
+    check "install.ps1 reads it too" present present || \
+    check "install.ps1 reads it too" present MISSING
+# Behavioural on the shell side, on the risky half: the READ. The precedence is
+# two lines of shell pinned above; what can actually go wrong is the parse, so
+# the expression is lifted OUT of install.sh - not re-typed here, or the test
+# would pass while the installer drifted - and run against fixtures.
+_ir="$(mktemp -d)"
+# The pattern is lifted from install.sh so the test cannot pass while the
+# installer drifts - and it is run through the same grep -E the installer uses.
+# The first spelling of this read used sed with \| alternation, which is a GNU
+# extension: on macOS it matched nothing, so the installer ignored the record
+# on the platform the kit was born on. That is what this extraction caught.
+_ir_expr="$(grep -o "grep -Eo '\"type\"[^']*'" "$ROOT/install.sh" | head -1 | sed "s/^grep -Eo '//; s/'$//")"
+check "the installer's manifest read was found in install.sh" "yes" \
+    "$([ -n "$_ir_expr" ] && echo yes || echo no)"
+_ir_read() {
+    printf '%s\n' "$1" > "$_ir/m.json"
+    grep -Eo "$_ir_expr" "$_ir/m.json" 2>/dev/null | head -1 | grep -Eo '(nano|personal)' | head -1
+}
+check "reads a recorded nano runtime"     "nano" \
+    "$(_ir_read '{"runtime": {"type": "nano", "dsn": "127.0.0.1:8563"}}')"
+check "reads a recorded personal runtime" "personal" \
+    "$(_ir_read '{"runtime": {"type": "personal"}}')"
+check "pretty-printed manifests too"      "personal" \
+    "$(_ir_read '{
+  "runtime": {
+    "type": "personal"
+  }
+}')"
+# Only the two runtime words may answer: an unrelated "type" key - an add-on
+# block, a future schema - must not be mistaken for the runtime.
+check "an unrelated type key answers nothing" "" \
+    "$(_ir_read '{"components": {"exapump": {"type": "binary"}}}')"
+check "no manifest content at all answers nothing" "" "$(_ir_read '{}')"
+rm -rf "$_ir"
 
 echo "mcp credential fallback:"
 _mcp_test_dir="$(mktemp -d)"

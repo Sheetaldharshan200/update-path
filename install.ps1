@@ -161,6 +161,30 @@ if ($env:EXAKIT_RUNTIME) {
         }
     }
 }
+# AN INSTALLED KIT'S RECORD OUTRANKS BOTH the knob and the default, exactly as
+# setup-windows-docker.ps1 decides it. Without this the two disagreed about one
+# machine: this file announced the plan for its own default and ran that
+# runtime's requirements gate, while the setup script honoured the record and
+# installed the other one. Switching runtimes is an uninstall away, never a
+# re-run away.
+#
+# Read with a regex, not the kit's own helper: no library is loaded here and
+# nothing has been downloaded yet. Only the two runtime words are accepted, so
+# an unrelated "type" key cannot answer this.
+$RecordedRuntime = ""
+try {
+    $manifestPath = Join-Path $ExakitHome "manifest.json"
+    if (Test-Path $manifestPath) {
+        $manifestText = [System.IO.File]::ReadAllText($manifestPath)
+        if ($manifestText -match '"type"\s*:\s*"(nano|personal)"') { $RecordedRuntime = $Matches[1] }
+    }
+} catch { }
+if ($RecordedRuntime) {
+    if ($env:EXAKIT_RUNTIME -and $env:EXAKIT_RUNTIME -ne $RecordedRuntime) {
+        Write-Host "  ! This machine already runs the $RecordedRuntime runtime; EXAKIT_RUNTIME=$($env:EXAKIT_RUNTIME) only applies to a fresh install (uninstall first to switch)." -ForegroundColor Yellow
+    }
+    $RuntimeChoice = $RecordedRuntime
+}
 if ($RuntimeChoice -eq "personal" -and -not $HostIsAmd64) {
     throw "Exasol Personal supports macOS, native Linux and Windows x86_64 - it does not support Windows arm64. Nothing was installed. (To run the container runtime instead, set EXAKIT_RUNTIME=nano.)"
 }
