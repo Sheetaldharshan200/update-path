@@ -295,13 +295,11 @@ function Test-PersonalRequirements {
             Fail "This machine is not compatible right now: the database needs at least $($script:PersonalMinDiskGb) GB free disk and the home drive has ${freeGb} GB. Free up space and re-run (or force at your own risk with EXAKIT_FORCE=1)."
         }
     }
-    if (-not (Get-Command podman -ErrorAction SilentlyContinue)) {
-        # Informational, not a refusal: on Windows - unlike Linux - the launcher
-        # offers to install Podman itself through winget, and that install may
-        # show an administrator prompt. Said here so the prompt has a name when
-        # it appears mid-deploy.
-        Info "Podman is not installed yet - the Exasol launcher will offer to install it (Windows Package Manager; may ask for administrator approval)."
-    }
+    # Nothing is said here about the container runtime the launcher brings with
+    # it. On Windows the launcher installs what it needs itself, and the deploy
+    # step names the one administrator prompt that can appear at the moment it
+    # can appear - which is where a reader can act on it. A line at the gate
+    # was an announcement about a step that had not started.
     Ok "Compatibility check passed (windows $arch, ${ramGb} GB RAM)"
 }
 

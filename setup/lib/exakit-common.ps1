@@ -1,7 +1,7 @@
 # exakit-common.ps1 - shared helpers for the Exasol Personal Local Starter Kit
 # (Windows / PowerShell path).
 #
-# Dot-sourced by setup-windows-docker.ps1 and setup/exakit.ps1. Not meant to
+# Dot-sourced by setup-windows.ps1 and setup/exakit.ps1. Not meant to
 # be executed directly. Targets Windows PowerShell 5.1 (built into every
 # Windows 10/11 machine) as well as PowerShell 7+ - no version-7-only syntax
 # (no ternary, no null-coalescing, no -AsHashtable on ConvertFrom-Json).
@@ -161,7 +161,7 @@ $script:BinDir       = if ($env:EXAKIT_BIN_DIR) { $env:EXAKIT_BIN_DIR } else { J
 # exakit_failure_note_file in common.sh, including the file name, so the two
 # platforms describe the same install the same way.
 $script:FailureNotePath = if ($env:EXAKIT_FAILURE_NOTE) { $env:EXAKIT_FAILURE_NOTE } else { Join-Path $script:ExakitHome ".last-failure" }
-# Fail() writes that note only while the INSTALLER runs (setup-windows-docker.ps1
+# Fail() writes that note only while the INSTALLER runs (setup-windows.ps1
 # turns this on) or from a soft step. An ordinary command's Fail() - `exakit
 # start` on a half-built kit, a typo - used to overwrite the reason the install
 # stopped, so status --json reported the wrong last_failure.
@@ -858,7 +858,7 @@ function Show-ExakitGuide {
 # the current subshell (kit_shared_steps runs risky steps in one so a
 # failure there cannot abort the whole install); PowerShell's `exit` has no
 # such boundary within a single process, so Fail() throws instead. Top-level
-# entry points (setup-windows-docker.ps1, exakit.ps1) catch it there and
+# entry points (setup-windows.ps1, exakit.ps1) catch it there and
 # exit 1; interactive offers catch it locally and continue with a warning,
 # matching bash's `|| true` pattern around exakit_maybe_offer_*.
 class ExakitFailException : System.Exception {
@@ -2466,7 +2466,7 @@ function Resolve-ExakitInstallVersions {
 #
 #   the CLI      setup\exakit.ps1 defines Get-ExakitComponentAvailable, which
 #                walks env override -> policy -> versions.json -> fallback.
-#   the SETUP    setup\setup-windows-docker.ps1 never loads the CLI. It
+#   the SETUP    setup\setup-windows.ps1 never loads the CLI. It
 #                sources this file, the component modules and the add-on
 #                modules, then ends on the closing marketplace offer.
 #
@@ -2491,7 +2491,7 @@ function Resolve-ExakitInstallVersions {
 # recorded as false, and it must survive every later run of the installer.
 #
 # This lives HERE rather than in the CLI because the installer is what needs it,
-# and setup-windows-docker.ps1 does not load setup\exakit.ps1. It therefore uses
+# and setup-windows.ps1 does not load setup\exakit.ps1. It therefore uses
 # only what the setup context has: the container's own restart policy from
 # nano.ps1. Per-service login entries are the CLI's business (`exakit autostart
 # on`), and an add-on installed later registers itself through the marketplace.
@@ -4445,7 +4445,7 @@ function Get-ExakitAboutCacheDir {
 # Get-ExakitAddonDocument <id> - the add-on's help document, read from disk.
 #
 # help.ps1, when loaded, knows the fetched cache copy and validates it, so
-# prefer it (-NoFetch keeps it off the network). But setup-windows-docker.ps1
+# prefer it (-NoFetch keeps it off the network). But setup-windows.ps1
 # does not source help.ps1 - and the closing offer runs from there - so the
 # shipped locations are resolved here as well.
 function Get-ExakitAddonDocument {
@@ -4782,7 +4782,7 @@ function Show-ExakitMarketplaceMenu {
         } else {
             # Get-ExakitComponentAvailable lives in the CLI (setup\exakit.ps1)
             # and NOWHERE else. The closing offer during a fresh install runs
-            # from setup-windows-docker.ps1, which never loads the CLI, so this
+            # from setup-windows.ps1, which never loads the CLI, so this
             # used to fall straight through to "unknown" for every row - the
             # version column was blank exactly where a first-time user reads it.
             # Get-ExakitAddonAdvertisedVersion answers in both contexts.
@@ -5521,7 +5521,7 @@ function Show-ExakitConnectionPanel {
 #
 #   the CLI      setup\exakit.ps1 - dot-sources this file, then the component
 #                and add-on modules, then dispatches a command.
-#   the INSTALL  setup\setup-windows-docker.ps1 - dot-sources this file and
+#   the INSTALL  setup\setup-windows.ps1 - dot-sources this file and
 #                the same modules, and NEVER loads the CLI.
 #
 # Anything defined in the CLI is therefore invisible during an install. That

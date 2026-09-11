@@ -211,7 +211,7 @@ grep -q 'Exasol Personal (local deployment via Podman)' "$ROOT/install.ps1" && \
     check "install.ps1 names the personal plan" present MISSING
 # The Windows setup asks the record first, the knob second - repair must never
 # rebuild the OTHER runtime beside the broken one it was asked to repair.
-grep -q '$SetupRuntime = Get-ExakitManifestValue "runtime.type"' "$ROOT/setup/setup-windows-docker.ps1" && \
+grep -q '$SetupRuntime = Get-ExakitManifestValue "runtime.type"' "$ROOT/setup/setup-windows.ps1" && \
     check "setup-windows: the record outranks the knob" present present || \
     check "setup-windows: the record outranks the knob" present MISSING
 grep -q 'EXAKIT_SETUP_RUNTIME="$(manifest_get runtime.type' "$ROOT/setup/setup-wsl.sh" && \
@@ -572,7 +572,7 @@ fi
 echo "Windows parity guards:"
 if command -v pwsh >/dev/null 2>&1; then
     ps_parse="$(pwsh -NoProfile -Command '
-      $files = @("setup/lib/exakit-common.ps1","setup/lib/nano.ps1","setup/lib/mcp.ps1","setup/lib/dash-server.ps1","setup/lib/dbt-exasol.ps1","setup/lib/exasol-vscode.ps1","setup/lib/json-tables.ps1","setup/setup-windows-docker.ps1","setup/exakit.ps1")
+      $files = @("setup/lib/exakit-common.ps1","setup/lib/nano.ps1","setup/lib/mcp.ps1","setup/lib/dash-server.ps1","setup/lib/dbt-exasol.ps1","setup/lib/exasol-vscode.ps1","setup/lib/json-tables.ps1","setup/setup-windows.ps1","setup/exakit.ps1")
       foreach ($f in $files) {
         $errors = $null
         $null = [System.Management.Automation.PSParser]::Tokenize((Get-Content -Raw $f), [ref]$errors)
@@ -622,7 +622,7 @@ else
     check "powershell(version_policy_fallback)" "skipped" "skipped"
 fi
 # The live-lookup helpers stay in the library: `latest` policy is still supported.
-if grep -q 'Resolve-ExakitInstallVersions' "$ROOT/setup/setup-windows-docker.ps1" && \
+if grep -q 'Resolve-ExakitInstallVersions' "$ROOT/setup/setup-windows.ps1" && \
    grep -q 'Get-ExakitLatestDockerTag' "$ROOT/setup/lib/exakit-common.ps1" && \
    grep -q 'Get-ExakitLatestGithubRelease' "$ROOT/setup/lib/exakit-common.ps1" && \
    grep -q 'Get-ExakitLatestPypiVersion' "$ROOT/setup/lib/exakit-common.ps1"; then
@@ -633,8 +633,8 @@ fi
 if grep -q 'Update-ExakitVersionsCache' "$ROOT/setup/lib/exakit-common.ps1" && \
    grep -q 'Get-ExakitVersionsValue' "$ROOT/setup/lib/exakit-common.ps1" && \
    grep -q 'Update-ExakitSelf' "$ROOT/setup/lib/exakit-common.ps1" && \
-   grep -q 'Set-ExakitCmdShim' "$ROOT/setup/setup-windows-docker.ps1" && \
-   grep -q 'Get-ExakitKitVersionAt' "$ROOT/setup/setup-windows-docker.ps1" && \
+   grep -q 'Set-ExakitCmdShim' "$ROOT/setup/setup-windows.ps1" && \
+   grep -q 'Get-ExakitKitVersionAt' "$ROOT/setup/setup-windows.ps1" && \
    grep -q 'Get-ExapumpExpectedSha256' "$ROOT/setup/lib/exapump.ps1"; then
     check "windows_install(manifest_wiring)" "yes" "yes"
 else
@@ -647,10 +647,10 @@ if grep -q 'exakit_soft_step exapump' "$ROOT/setup/lib/common.sh" && \
    grep -q 'exakit_soft_step mcp' "$ROOT/setup/lib/common.sh" && \
    grep -q 'exakit_soft_step pyexasol' "$ROOT/setup/lib/common.sh" && \
    grep -q 'exakit_print_soft_failures' "$ROOT/setup/lib/common.sh" && \
-   grep -q 'Invoke-ExakitSoftStep -Component "exapump"' "$ROOT/setup/setup-windows-docker.ps1" && \
-   grep -q 'Invoke-ExakitSoftStep -Component "mcp"' "$ROOT/setup/setup-windows-docker.ps1" && \
-   grep -q 'Invoke-ExakitSoftStep -Component "pyexasol"' "$ROOT/setup/setup-windows-docker.ps1" && \
-   grep -q 'Write-ExakitSoftFailures' "$ROOT/setup/setup-windows-docker.ps1"; then
+   grep -q 'Invoke-ExakitSoftStep -Component "exapump"' "$ROOT/setup/setup-windows.ps1" && \
+   grep -q 'Invoke-ExakitSoftStep -Component "mcp"' "$ROOT/setup/setup-windows.ps1" && \
+   grep -q 'Invoke-ExakitSoftStep -Component "pyexasol"' "$ROOT/setup/setup-windows.ps1" && \
+   grep -q 'Write-ExakitSoftFailures' "$ROOT/setup/setup-windows.ps1"; then
     check "install(components_soft_fail)" "yes" "yes"
 else
     check "install(components_soft_fail)" "yes" "no"
@@ -697,7 +697,7 @@ if grep -q 'personal_deployment_running' "$ROOT/setup/setup-macos.sh" && \
    grep -q 'personal_start' "$ROOT/setup/setup-macos.sh" && \
    grep -q 'personal_wait_ready' "$ROOT/setup/setup-macos.sh" && \
    grep -qE 'nano_status.*!=.*running' "$ROOT/setup/setup-wsl.sh" && \
-   grep -q 'Get-NanoStatus) -ne "running"' "$ROOT/setup/setup-windows-docker.ps1"; then
+   grep -q 'Get-NanoStatus) -ne "running"' "$ROOT/setup/setup-windows.ps1"; then
     check "install(rerun_starts_stopped_runtime)" "yes" "yes"
 else
     check "install(rerun_starts_stopped_runtime)" "yes" "no"
@@ -794,7 +794,7 @@ fi
 
 # The PowerShell shared layer must be SELF-SUFFICIENT for an install.
 #
-# setup/exakit.ps1 is the CLI. setup/setup-windows-docker.ps1 is the installer,
+# setup/exakit.ps1 is the CLI. setup/setup-windows.ps1 is the installer,
 # and it dot-sources setup/lib/exakit-common.ps1 plus the component and add-on
 # modules — never the CLI. So a function defined only in the CLI is invisible
 # during an install, and calling it there dies with CommandNotFoundException.
@@ -830,7 +830,7 @@ for m in modules:
     elsewhere |= defs(m)
 cli_only = cli_funcs - elsewhere
 
-loaded = [shared] + modules + [os.path.join(root, "setup", "setup-windows-docker.ps1")]
+loaded = [shared] + modules + [os.path.join(root, "setup", "setup-windows.ps1")]
 leaked = set()
 for path in loaded:
     if not os.path.exists(path):
@@ -940,7 +940,7 @@ fi
 # ran, and its core is shared (common.sh / exakit-common.ps1), not duplicated.
 if grep -q 'exakit_marketplace_offer' "$ROOT/setup/setup-macos.sh" && \
    grep -q 'exakit_marketplace_offer' "$ROOT/setup/setup-wsl.sh" && \
-   grep -q 'Request-ExakitMarketplaceOffer' "$ROOT/setup/setup-windows-docker.ps1" && \
+   grep -q 'Request-ExakitMarketplaceOffer' "$ROOT/setup/setup-windows.ps1" && \
    grep -q 'exakit_marketplace_offer()' "$ROOT/setup/lib/common.sh" && \
    grep -q 'function Request-ExakitMarketplaceOffer' "$ROOT/setup/lib/exakit-common.ps1"; then
     check "marketplace(closing_offer)" "yes" "yes"
@@ -953,7 +953,7 @@ fi
 # dash_server_install directly), and no shared step may install it.
 if ! grep -qE 'dash_server_install|exasol_vscode_install|json_tables_install' "$ROOT/setup/setup-macos.sh" && \
    ! grep -qE 'dash_server_install|exasol_vscode_install|json_tables_install' "$ROOT/setup/setup-wsl.sh" && \
-   ! grep -qE 'Install-DashServer|Install-ExasolVscode|Install-JsonTables' "$ROOT/setup/setup-windows-docker.ps1" && \
+   ! grep -qE 'Install-DashServer|Install-ExasolVscode|Install-JsonTables' "$ROOT/setup/setup-windows.ps1" && \
    ! grep -qE 'dash_server_install|exasol_vscode_install|json_tables_install' <(awk '/^kit_shared_steps\(\)/,/^}/' "$ROOT/setup/lib/common.sh"); then
     check "marketplace(not_in_install_flow)" "yes" "yes"
 else
@@ -1016,7 +1016,7 @@ if grep -q 'cmd_whats_new' "$ROOT/setup/exakit" && \
    grep -q 'Invoke-CmdWhatsNew' "$ROOT/setup/exakit.ps1" && \
    grep -q 'Get-ExakitWhatsNewFile' "$ROOT/setup/lib/exakit-common.ps1" && \
    grep -q 'Write-ExakitWhatsNew -Version $stagedVersion' "$ROOT/setup/lib/exakit-common.ps1" && \
-   grep -q 'whats-new.json' "$ROOT/setup/setup-windows-docker.ps1" && \
+   grep -q 'whats-new.json' "$ROOT/setup/setup-windows.ps1" && \
    [ -f "$ROOT/setup/whats-new.json" ]; then
     check "whats_new(both_sides)" "yes" "yes"
 else
@@ -1035,7 +1035,7 @@ if grep -q 'exakit_note_kit_upgrade() {' "$ROOT/setup/lib/common.sh" && \
    grep -q 'function Get-ExakitWhatsNewVersions {' "$ROOT/setup/lib/exakit-common.ps1" && \
    grep -q 'function Get-ExakitWhatsNewPoints {' "$ROOT/setup/lib/exakit-common.ps1" && \
    grep -q 'function Write-ExakitWhatsNewBox {' "$ROOT/setup/lib/exakit-common.ps1" && \
-   grep -q 'Set-ExakitKitUpgradeNote -KitRoot $KitRoot' "$ROOT/setup/setup-windows-docker.ps1"; then
+   grep -q 'Set-ExakitKitUpgradeNote -KitRoot $KitRoot' "$ROOT/setup/setup-windows.ps1"; then
     check "whats_new_box(both_sides)" "yes" "yes"
 else
     check "whats_new_box(both_sides)" "yes" "no"
@@ -1066,7 +1066,7 @@ check "whats_new_box(order_wsl)" "panel,box,next" \
     "$(wn_box_placement "$ROOT/setup/setup-wsl.sh" \
         'connection_summary' 'exakit_print_whats_new_box "$KIT_ROOT"')"
 check "whats_new_box(order_windows)" "panel,box,next" \
-    "$(wn_box_placement "$ROOT/setup/setup-windows-docker.ps1" \
+    "$(wn_box_placement "$ROOT/setup/setup-windows.ps1" \
         'Show-ExakitConnectionSummary' 'Write-ExakitWhatsNewBox -KitRoot')"
 # The short help is the only command list most people ever read: a bare `exakit`,
 # `exakit help` and any unknown command all print it, while the full reference is
@@ -1212,7 +1212,7 @@ fi
 # The behavioural halves live in tests/versions-manifest.sh.
 if grep -q 'cmp -s "$_script_dir/exakit" "$EXAKIT_BIN_DIR/exakit"' "$ROOT/setup/lib/common.sh" && \
    grep -q 'Test-ExakitCmdShimCurrent' "$ROOT/setup/lib/exakit-common.ps1" && \
-   grep -q 'Test-ExakitCmdShimCurrent' "$ROOT/setup/setup-windows-docker.ps1" && \
+   grep -q 'Test-ExakitCmdShimCurrent' "$ROOT/setup/setup-windows.ps1" && \
    grep -q 'Get-ExakitCmdShimContent' "$ROOT/setup/lib/exakit-common.ps1"; then
     check "rerun(refreshes_stale_command)" "yes" "yes"
 else

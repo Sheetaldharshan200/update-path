@@ -8,7 +8,7 @@ Gets you from Windows to a local Exasol database with an AI assistant connected,
 export EXAKIT_RUNTIME=nano
 ```
 
-Set it in the same shell before the preflight and the install below (both commands honour it). Prefer staying in PowerShell? The [Windows quickstart](windows-docker.md) runs Exasol Personal natively — no WSL involved.
+Set it in the same shell before the preflight and the install below (both commands honour it). Prefer staying in PowerShell? The [Windows quickstart](windows.md) runs Exasol Personal natively — no WSL involved.
 
 ## What you need
 
@@ -47,7 +47,7 @@ What happens, in order:
 
 Docker Desktop with WSL integration is **one engine**, reachable from both this distro and PowerShell. Both installs default to the same container, `exasol-nano`, on the same data volume, `exasol-nano-data` — so the two paths are not two databases, they are one:
 
-- Installing here **takes over the container a [Windows PowerShell install](windows-docker.md) created**, and that kit is left reporting on a database it no longer controls. A run that then fails can leave the shared container stopped, which looks from the Windows side like a database that lost its data.
+- Installing here **takes over the container a [Windows PowerShell install](windows.md) created**, and that kit is left reporting on a database it no longer controls. A run that then fails can leave the shared container stopped, which looks from the Windows side like a database that lost its data.
 - `exakit uninstall` on either side removes that shared container — and with it the database the other side was using.
 
 So pick one path per machine and stay on it. If you really need both, give one of them its own names **before** you install it:
