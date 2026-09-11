@@ -492,7 +492,7 @@ nano_pull_image() {
         return 0
     fi
     # SAID BEFORE THE SOFTWARE ARRIVES, and on this path it was said nowhere at
-    # all: grep for "licen" across this file and nano.ps1 used to return
+    # all: grep for "licen" across this file and runtime-nano.ps1 used to return
     # nothing. The kit is MIT; the database inside this image is not, and a
     # reader deciding whether they may use it at work was left to infer the
     # answer from the kit's own LICENSE file. The macOS path replays Exasol's
@@ -530,7 +530,7 @@ nano_install() {
     # The volume goes with the container: it holds /exa, so leaving it would
     # rebuild the container around the same database the repair was called to
     # replace. Order matters -- the engine refuses to remove a volume that a
-    # container still uses. ⇄ twin: Install-Nano in nano.ps1.
+    # container still uses. ⇄ twin: Install-Nano in runtime-nano.ps1.
     if [ "${EXAKIT_REUSE_DB:-1}" = "0" ] && nano_container_exists; then
         info "Replacing the existing Nano container and its data"
         run_logged "$_engine" rm -f "$EXAKIT_NANO_CONTAINER" || \
@@ -613,7 +613,7 @@ nano_install() {
                 # and WSL share localhost, so a Windows-side Exasol install or
                 # Docker Desktop container can hold this port while nothing in
                 # this distro shows up in lsof. Twin of the WSL guidance in
-                # Install-Nano (nano.ps1).
+                # Install-Nano (runtime-nano.ps1).
                 printf '    Nothing here holding it? Windows and WSL share localhost - check the WINDOWS side\n' >&2
                 printf '    of this machine (a Windows Exasol install, a Docker Desktop container, or "wslrelay"\n' >&2
                 printf '    still holding the port after an earlier WSL container). From PowerShell:\n' >&2
@@ -720,7 +720,7 @@ nano_install() {
             # therefore invisible on every terminal install, while the warning
             # about its missing password (never gated) printed: the reader got
             # the scary consequence without the sentence that explains it.
-            # ⇄ twin: Install-Nano in nano.ps1.
+            # ⇄ twin: Install-Nano in runtime-nano.ps1.
             info_step "Adopting the existing database volume $EXAKIT_NANO_VOLUME — this install did not create it, and its data and SYS password are kept as they are."
             if [ "$(detect_os)" = "wsl" ]; then
                 info_step "On a Windows+WSL machine this volume is usually a Windows install's database: Docker Desktop is one engine shared by both sides."

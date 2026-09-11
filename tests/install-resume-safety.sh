@@ -182,7 +182,7 @@ fi
 # architecture nobody has on their desk.
 _IPS="$ROOT/install.ps1"
 _SWD="$ROOT/setup/setup-windows.ps1"
-_NANO="$ROOT/setup/lib/nano.ps1"
+_NANO="$ROOT/setup/lib/runtime-nano.ps1"
 
 # Line number of the first line holding a fixed string, or "" when absent.
 _line_of() { grep -n -m1 -F "$2" "$1" | cut -d: -f1; }
@@ -291,7 +291,7 @@ done
 
 # The gate borrows its refusals word for word from the library that owns them,
 # so nobody meets two spellings of the same message. BOTH sides are checked:
-# rewording nano.ps1 alone is exactly how they would drift apart in silence.
+# rewording runtime-nano.ps1 alone is exactly how they would drift apart in silence.
 for _msg in \
     'No container runtime found. Install Docker Desktop (https://docs.docker.com/desktop/), then re-run.' \
     'This machine is not compatible: Exasol Nano needs at least' \
@@ -300,9 +300,9 @@ for _msg in \
     'Insufficient free disk space on '
 do
     if grep -qF "$_msg" "$_IPS" && grep -qF "$_msg" "$_NANO"; then
-        pass "the gate and nano.ps1 both say: $_msg"
+        pass "the gate and runtime-nano.ps1 both say: $_msg"
     else
-        fail "install.ps1 and setup/lib/nano.ps1 no longer share this refusal, so the same machine gets two spellings of it: $_msg"
+        fail "install.ps1 and setup/lib/runtime-nano.ps1 no longer share this refusal, so the same machine gets two spellings of it: $_msg"
     fi
 done
 

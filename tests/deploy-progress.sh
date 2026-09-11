@@ -317,7 +317,7 @@ check "a phase was actually measured" "yes" "$([ "$LONGEST" -gt 0 ] && echo yes 
 printf '\n== a failing deploy tells the truth, and never offers to delete a database ==\n'
 
 NANO_SH="$(cat "$ROOT/setup/lib/runtime-nano.sh")"
-NANO_PS1="$(cat "$ROOT/setup/lib/nano.ps1")"
+NANO_PS1="$(cat "$ROOT/setup/lib/runtime-nano.ps1")"
 DETECT_SH="$(cat "$ROOT/setup/lib/detect.sh")"
 
 # C1: the branch knew only that the CONTAINER was absent, and deployed over an
@@ -375,7 +375,7 @@ printf '\n== no function is defined twice ==\n'
 
 # A duplicated definition is invisible to every check the repo already runs: the
 # file parses, the encoding guard passes, and the LAST definition silently wins.
-# It happened for real - a patch to Install-Nano in nano.ps1 computed its end
+# It happened for real - a patch to Install-Nano in runtime-nano.ps1 computed its end
 # offset from an anchor that occurs twice, re-included the region instead of
 # replacing it, and left the PRE-FIX body as the effective one. Windows kept the
 # old behaviour while every test went green.
@@ -397,7 +397,7 @@ done
 
 printf '\n== a poisoned credential path is repaired, not just reported ==\n'
 
-NANO_PS1_R="$(cat "$ROOT/setup/lib/nano.ps1")"
+NANO_PS1_R="$(cat "$ROOT/setup/lib/runtime-nano.ps1")"
 COMMON_PS1_R="$(cat "$ROOT/setup/lib/exakit-common.ps1")"
 NANO_SH_R="$(cat "$ROOT/setup/lib/runtime-nano.sh")"
 
@@ -417,7 +417,7 @@ has   "a directory target is refused" 'if (Test-Path $target -PathType Container
 
 printf '\n== asking the engine a question cannot end the run ==\n'
 
-NANO_PS1_N="$(cat "$ROOT/setup/lib/nano.ps1")"
+NANO_PS1_N="$(cat "$ROOT/setup/lib/runtime-nano.ps1")"
 
 # $ErrorActionPreference is Stop module-wide, so a native command that writes to
 # stderr raises a TERMINATING error - and `2>$null` or `2>&1 | Out-Null` does not
@@ -455,7 +455,7 @@ printf '\n== installing the runtime also records it ==\n'
 ps_install_nano() {
     awk 'index($0, "function Install-Nano {") == 1 { inside = 1 }
          inside { print }
-         inside && /^\}/ { exit }' "$ROOT/setup/lib/nano.ps1"
+         inside && /^\}/ { exit }' "$ROOT/setup/lib/runtime-nano.ps1"
 }
 sh_nano_install() {
     awk 'index($0, "nano_install() {") == 1 { inside = 1 }
@@ -519,7 +519,7 @@ lacks "Windows has no stale total" "/5  " "$WIN_PS"
 # The pull is idempotent, because a step boundary is not a promise about
 # ordering: a re-run, an update or a repair calls the deploy directly.
 NANO_SH_6="$(cat "$ROOT/setup/lib/runtime-nano.sh")"
-NANO_PS_6="$(cat "$ROOT/setup/lib/nano.ps1")"
+NANO_PS_6="$(cat "$ROOT/setup/lib/runtime-nano.ps1")"
 has "the shell pull is a function"  "nano_pull_image() {"        "$NANO_SH_6"
 has "...and Windows too"            "function Install-NanoImage" "$NANO_PS_6"
 has "the shell deploy delegates"    "        nano_pull_image"    "$NANO_SH_6"
@@ -650,7 +650,7 @@ check "...and a caller that just watched it answer records healthy" "healthy" \
 # CPY-10. THE LICENCE, SAID BEFORE THE SOFTWARE ARRIVES.
 #
 # The container path mentioned no licence anywhere: `grep -i licen` over
-# runtime-nano.sh and nano.ps1 returned nothing, so a Linux, WSL or Windows
+# runtime-nano.sh and runtime-nano.ps1 returned nothing, so a Linux, WSL or Windows
 # user was never told the database ships under terms other than the kit's MIT.
 # On macOS the launcher's own notice IS replayed verbatim, but only after
 # `install local` has succeeded - i.e. once the deployment already exists.
@@ -672,7 +672,7 @@ check "container path: before the image pull" "before" \
 check "macOS path: before the deploy" "before" \
     "$(_lic_before setup/lib/runtime-personal.sh 'personal_deploy_local() {' 'Deploying Exasol Personal locally')"
 # The PowerShell twin is not run here; its ordering is read the same way.
-_ps_nano="$(awk '/^function Install-NanoImage/{f=1} f{print} f&&/^}$/{if(f)exit}' "$ROOT/setup/lib/nano.ps1")"
+_ps_nano="$(awk '/^function Install-NanoImage/{f=1} f{print} f&&/^}$/{if(f)exit}' "$ROOT/setup/lib/runtime-nano.ps1")"
 _ps_lic="$(printf '%s\n' "$_ps_nano" | grep -n "own licence terms" | head -1 | cut -d: -f1)"
 _ps_pull="$(printf '%s\n' "$_ps_nano" | grep -n 'Info "Pulling image' | head -1 | cut -d: -f1)"
 if [ -n "$_ps_lic" ] && [ -n "$_ps_pull" ] && [ "$_ps_lic" -lt "$_ps_pull" ]; then

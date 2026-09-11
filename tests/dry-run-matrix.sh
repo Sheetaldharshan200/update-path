@@ -572,7 +572,7 @@ fi
 echo "Windows parity guards:"
 if command -v pwsh >/dev/null 2>&1; then
     ps_parse="$(pwsh -NoProfile -Command '
-      $files = @("setup/lib/exakit-common.ps1","setup/lib/nano.ps1","setup/lib/mcp.ps1","setup/lib/dash-server.ps1","setup/lib/dbt-exasol.ps1","setup/lib/exasol-vscode.ps1","setup/lib/json-tables.ps1","setup/setup-windows.ps1","setup/exakit.ps1")
+      $files = @("setup/lib/exakit-common.ps1","setup/lib/runtime-nano.ps1","setup/lib/mcp.ps1","setup/lib/dash-server.ps1","setup/lib/dbt-exasol.ps1","setup/lib/exasol-vscode.ps1","setup/lib/json-tables.ps1","setup/setup-windows.ps1","setup/exakit.ps1")
       foreach ($f in $files) {
         $errors = $null
         $null = [System.Management.Automation.PSParser]::Tokenize((Get-Content -Raw $f), [ref]$errors)
@@ -921,7 +921,7 @@ if grep -q 'exakit_service_ids()' "$ROOT/setup/lib/common.sh" && \
    grep -q 'function Enable-ExakitAutostart' "$ROOT/setup/exakit.ps1" && \
    grep -q 'function Get-DashServerStatus' "$ROOT/setup/lib/dash-server.ps1" && \
    grep -q 'function Start-DashServer' "$ROOT/setup/lib/dash-server.ps1" && \
-   grep -q 'function Set-NanoRestartPolicy' "$ROOT/setup/lib/nano.ps1" && \
+   grep -q 'function Set-NanoRestartPolicy' "$ROOT/setup/lib/runtime-nano.ps1" && \
    grep -q '"autostart"    { Invoke-CmdAutostart' "$ROOT/setup/exakit.ps1"; then
     check "services(autostart_twins)" "yes" "yes"
 else
@@ -1180,7 +1180,7 @@ rm -rf "$_ij"
 if grep -q 'exakit_run_bounded' "$ROOT/setup/lib/common.sh" && \
    grep -q '_detect_engine_probe docker info' "$ROOT/setup/lib/detect.sh" && \
    grep -q 'Invoke-ExakitBounded' "$ROOT/setup/lib/exakit-common.ps1" && \
-   grep -q 'Invoke-ExakitBounded' "$ROOT/setup/lib/nano.ps1" && \
+   grep -q 'Invoke-ExakitBounded' "$ROOT/setup/lib/runtime-nano.ps1" && \
    ! grep -q 'Start-Process.*docker' "$ROOT/setup/exakit.ps1" && \
    grep -q '\$info\.Arguments = ' "$ROOT/setup/lib/exakit-common.ps1" && \
    ! grep -qE '\$info\.ArgumentList' "$ROOT/setup/lib/exakit-common.ps1"; then
@@ -1245,8 +1245,8 @@ else
 fi
 if grep -q 'nano_update_snapshot' "$ROOT/setup/lib/runtime-nano.sh" && \
    grep -q 'nano_restore_previous_container' "$ROOT/setup/lib/runtime-nano.sh" && \
-   grep -q 'New-NanoUpdateSnapshot' "$ROOT/setup/lib/nano.ps1" && \
-   grep -q 'Restore-PreviousNanoContainer' "$ROOT/setup/lib/nano.ps1"; then
+   grep -q 'New-NanoUpdateSnapshot' "$ROOT/setup/lib/runtime-nano.ps1" && \
+   grep -q 'Restore-PreviousNanoContainer' "$ROOT/setup/lib/runtime-nano.ps1"; then
     check "nano_update(recoverability)" "yes" "yes"
 else
     check "nano_update(recoverability)" "yes" "no"

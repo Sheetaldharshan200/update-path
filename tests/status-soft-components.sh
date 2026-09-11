@@ -490,7 +490,7 @@ fi
 # 16. Write-ExakitError exists, and is not gated.
 #
 #     It was named in the note on ExakitQuietDetail and called from six places
-#     (five in nano.ps1, one in mcp.ps1) while no function of that name existed
+#     (five in runtime-nano.ps1, one in mcp.ps1) while no function of that name existed
 #     anywhere in the tree - so every one of those calls was a
 #     CommandNotFoundException, on exactly the error paths they were written to
 #     improve. Counted rather than merely looked for: a guard that stops having

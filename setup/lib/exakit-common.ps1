@@ -2493,7 +2493,7 @@ function Resolve-ExakitInstallVersions {
 # This lives HERE rather than in the CLI because the installer is what needs it,
 # and setup-windows.ps1 does not load setup\exakit.ps1. It therefore uses
 # only what the setup context has: the container's own restart policy from
-# nano.ps1. Per-service login entries are the CLI's business (`exakit autostart
+# runtime-nano.ps1. Per-service login entries are the CLI's business (`exakit autostart
 # on`), and an add-on installed later registers itself through the marketplace.
 # Twin of exakit_autostart_default_on in common.sh.
 function Enable-ExakitAutostartDefault {
