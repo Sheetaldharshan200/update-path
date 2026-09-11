@@ -55,10 +55,6 @@ ok "Kit 1 installation detected (kit_level: 1)"
 # Health: the upgrade needs a reachable database.
 _type="$(manifest_get runtime.type 2>/dev/null)"
 case "$_type" in
-    nano)
-        . "$LIB_DIR/runtime-nano.sh"
-        [ "$(nano_status)" = "running" ] || die "The Nano container is not running. Start it first: exakit start"
-        ;;
     personal)
         . "$LIB_DIR/runtime-personal.sh"
         [ "$(personal_status)" = "running" ] || die "The Personal deployment is not reachable. Check: exasol info"

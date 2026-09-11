@@ -280,7 +280,7 @@
     },
     {
       "command": "update",
-      "options": "[all|runtime|exakit|exapump|mcp|pyexasol|skills|<add-on>|nano|personal]",
+      "options": "[all|runtime|exakit|exapump|mcp|pyexasol|skills|<add-on>|personal]",
       "summary": "Apply the updates that are waiting.",
       "description": "Applies the quick components (kit scripts, exapump, MCP server, pyexasol, the AI skills, installed add-ons) in seconds. A newer skill set published by the maintainers is fetched and installed here too, with no kit release needed. A database change stops the database, so it is only applied for an answer the run was actually given: on a terminal you are asked, and an unattended run defers it with the exact command. Your data is kept either way. An unknown option or target is refused (exit 2) and records nothing.",
       "environment": [
@@ -402,11 +402,11 @@
     },
     {
       "name": "EXAKIT_REUSE_DB",
-      "effect": "1 adopts an existing database (default), 0 destroys it and deploys fresh. Both runtimes: on the container path 0 removes the Nano container and its data volume, which is the database."
+      "effect": "1 adopts an existing database (default), 0 destroys it and deploys fresh - 0 removes the local deployment and all its data."
     },
     {
       "name": "EXAKIT_DB_PORT",
-      "effect": "Alternate database port (Linux and Windows container path only)."
+      "effect": "Alternate database port. The launcher selects and remembers the deployment's own port; exakit info shows the one in use."
     },
     {
       "name": "EXAKIT_VERSION_POLICY",
@@ -423,12 +423,12 @@
   ],
   "troubleshooting": [
     {
-      "symptom": "Docker is installed but not running",
-      "remedy": "Start Docker Desktop or run: podman machine start - then re-run the installer."
+      "symptom": "Podman is installed but not running",
+      "remedy": "Run: podman machine start - then re-run the installer."
     },
     {
       "symptom": "Port 8563 is already in use",
-      "remedy": "Stop the other app, or re-run with EXAKIT_DB_PORT=8564 (Linux and Windows)."
+      "remedy": "Stop the other app, or re-run with EXAKIT_DB_PORT=8564."
     },
     {
       "symptom": "Setup failed mid-way",
@@ -452,7 +452,6 @@
     "mcp",
     "pyexasol",
     "personal",
-    "nano",
     "dash-server",
     "json-tables",
     "exasol-vscode"

@@ -60,7 +60,7 @@ for needed in \
     install.ps1 \
     versions.json \
     setup/setup-macos.sh \
-    setup/setup-wsl.sh \
+    setup/setup-linux.sh \
     setup/lib/ui.sh \
     setup/lib/detect.sh \
     setup/lib/help.sh \

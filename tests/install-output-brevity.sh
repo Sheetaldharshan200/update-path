@@ -170,7 +170,7 @@ check "the install panel is shorter than the reference one" "yes" \
 
 printf '\n== the installers end with the short one ==\n'
 
-for _script in setup-macos.sh setup-wsl.sh; do
+for _script in setup-macos.sh setup-linux.sh; do
     has "$_script ends with the summary" "connection_summary" "$(cat "$ROOT/setup/$_script")"
     lacks "$_script does not print the full panel" "
 connection_panel" "$(cat "$ROOT/setup/$_script")"

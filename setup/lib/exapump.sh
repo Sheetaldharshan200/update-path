@@ -228,24 +228,22 @@ exapump_verify_runs() {
 # exapump_install_glibc_shim — the exapump release binary needs a newer glibc
 # than this system provides (all published Linux builds currently require
 # 2.38+, while e.g. Ubuntu 22.04 LTS and every other Jammy-era distro ship
-# 2.35). The Linux install path already requires a container runtime for the
-# database, so run the real binary inside a small newer-glibc container with
-# host networking instead of failing the install. The wrapper is transparent
+# 2.35). The Linux install path already requires Podman for the database, so
+# run the real binary inside a small newer-glibc container with host
+# networking instead of failing the install. The wrapper is transparent
 # to every caller: same path, same CLI, profiles and data files under $HOME
 # and /tmp remain visible.
-EXAKIT_EXAPUMP_SHIM_IMAGE="${EXAKIT_EXAPUMP_SHIM_IMAGE:-docker.io/library/ubuntu:24.04}"
+EXAKIT_EXAPUMP_SHIM_IMAGE="${EXAKIT_EXAPUMP_SHIM_IMAGE:-ubuntu:24.04}"
 exapump_install_glibc_shim() {
-    _shim_runtime="$(detect_container_runtime)"
-    # Rootless podman remaps ownership inside the container: without
-    # keep-id the user's own files (profile at ~/.exapump, mode 600) appear
-    # root-owned and unreadable to the -u uid. Docker has no such remap and
-    # no such flag.
-    _shim_userns=""
-    [ "$_shim_runtime" = "podman" ] && _shim_userns="--userns=keep-id"
+    _shim_runtime="$(detect_podman)"
+    # Rootless podman remaps ownership inside the container: without keep-id
+    # the user's own files (profile at ~/.exapump, mode 600) appear root-owned
+    # and unreadable to the -u uid.
+    _shim_userns="--userns=keep-id"
     _sys_glibc="$(ldd --version 2>/dev/null | head -1)"
     warn "The exapump release binary needs a newer glibc than this system provides (${_sys_glibc:-unknown glibc})."
     if [ "$_shim_runtime" = "none" ]; then
-        die "exapump cannot run on this system's glibc and no container runtime is available to shim it. Install Docker or Podman and re-run, or use a distro with glibc 2.38+ (e.g. Ubuntu 24.04)."
+        die "exapump cannot run on this system's glibc and Podman is not available to shim it. Install Podman and re-run, or use a distro with glibc 2.38+ (e.g. Ubuntu 24.04)."
     fi
     info "Self-repair: running exapump inside a $EXAKIT_EXAPUMP_SHIM_IMAGE container via $_shim_runtime"
 
@@ -380,7 +378,7 @@ PY
 # Returns 0 ONLY if a freshly created schema+table is durably persisted and
 # visible from SUBSEQUENT connections (each exapump invocation reconnects).
 #
-# This is the real readiness signal. Right after first boot the Nano database
+# This is the real readiness signal. Right after first boot the database
 # accepts a connection and answers SELECT 1 while still stabilizing, and in that
 # window it can ACKNOWLEDGE a DDL batch ("N statements executed, 0 failed")
 # without durably persisting it — so the schema-creation step "succeeds" but the
@@ -1719,7 +1717,7 @@ exakit_bundled_datasets() {
 # against a database with no schemas in it — and the run exited 0.
 #
 # A "yes" cannot go stale the same way: nothing in a kit run takes the database
-# down without going through personal_stop/nano_stop, and those call
+# down without going through personal_stop, and that calls
 # exakit_forget_db_reachable. A "no" can go stale on any run that starts or
 # deploys one, so it is re-probed. The cost is one refused local connection per
 # ask, and exakit_dataset_loaded is the only caller.

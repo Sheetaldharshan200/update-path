@@ -1,6 +1,6 @@
 # Quickstart: Linux
 
-Gets you from a Linux machine to a local Exasol database with an AI assistant connected. The database is an **Exasol Personal** local deployment, run by the Exasol launcher through Podman. On WSL, Exasol Personal is not supported — see the [WSL quickstart](windows-wsl.md) for the container runtime that works there.
+Gets you from a Linux machine to a local Exasol database with an AI assistant connected. The database is an **Exasol Personal** local deployment, run by the Exasol launcher through Podman. WSL is not supported: the installer says so and exits without changing anything — run it on Windows itself (see the [Windows quickstart](windows.md)) or inside a native Linux machine.
 
 ## What you need
 
@@ -77,5 +77,5 @@ exakit update      # bring the kit and its components up to date
 | Autostart on a headless server | `exakit autostart` registers a systemd **user** unit that runs the launcher's start. A user unit only runs while you have a session, so the kit enables lingering for your user when it can (`loginctl enable-linger`); where that is refused, it says so and names the command an admin has to run. |
 | Upgrading the launcher | `exakit update` explains what a launcher update does before asking — including the one-time longer first start after it (the deployment rebuilds part of its runtime once; your data is kept). |
 | Where did everything go? | The kit lives in `~/.exasol-starter-kit` (credentials under `credentials/`, logs under `logs/`); the database deployment lives under `~/.exasol/personal/` — **the deployment holds the database software and your data together**. |
-| I had the old container-based install | It keeps working: an installed kit's runtime is recorded, and every `exakit` command, update and repair follows that record. The Personal default only applies to fresh installs. A fresh container install remains available explicitly with `EXAKIT_RUNTIME=nano`. |
+| Which database is this? | Exasol Personal, deployed locally by the Exasol launcher through Podman. It is the only runtime the kit installs. |
 | Removing it | `exakit uninstall` — interactive, and it names what goes, including the deployment and its data. |

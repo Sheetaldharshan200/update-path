@@ -1,5 +1,37 @@
 # Changelog
 
+## Unreleased
+
+**Exasol Personal is the kit's only database runtime.** The container runtime
+(Exasol Nano) and every road to it are gone: `setup/lib/runtime-nano.sh`,
+`setup/lib/runtime-nano.ps1`, `setup/help/nano.json`, the `components.nano`
+block in versions.json, the `EXAKIT_RUNTIME` knob and the `EXAKIT_NANO_*`
+variables. The launcher now deploys the database on macOS, native Linux
+(through Podman, which the gate checks and names) and Windows x86_64 (host
+Podman, which the launcher installs itself when missing). The two platforms
+Exasol Personal does not support — **WSL** and **Windows arm64** — are refused
+before anything is downloaded, with the support matrix named and nothing
+changed on the machine; there is no silent reroute, because there is nowhere
+left to reroute to.
+
+- `setup/setup-wsl.sh` is now `setup/setup-linux.sh`, matching what it
+  installs. `quickstarts/windows-wsl.md` is removed and its readers are sent to
+  the Windows quickstart or to a native Linux machine.
+- Engine detection is `detect_podman`: no other container engine substitutes,
+  because the launcher only drives Podman.
+- `exakit uninstall` removes the local deployment and its data, on both halves
+  of the mirror. The Windows+WSL shared-engine hazard is gone with the engine
+  that caused it.
+- **An installation that still records `runtime.type: nano` is no longer
+  managed by this kit.** Its `exakit` commands, updates and repairs have no
+  runtime module to call. Remove it with the container engine directly, then
+  install fresh.
+- **A kit installed before this change cannot self-update past it.** The
+  payload validator in every older copy requires `setup/lib/runtime-nano.sh`,
+  which no longer ships, so its `exakit update` refuses the new archive and
+  leaves the old kit untouched. Re-run the installer to move across.
+
+
 ## 0.2.1
 
 The third agent-operability audit, end to end: 148 of its 149 findings, plus five defects found by running the kit on a real Windows machine. Eleven pull requests. Nothing here changes a command's name or its arguments, so an existing install updates in place.

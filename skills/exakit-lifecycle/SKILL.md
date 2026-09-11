@@ -49,7 +49,7 @@ exakit update --yes     # pre-answer the one question it can ask
 ```
 
 Targets are `all`, `runtime`, `exakit`, `exapump`, `mcp`, `pyexasol`, `skills`,
-any installed add-on id, and the runtime names `nano` / `personal`. An unknown
+any installed add-on id, and the runtime name `personal`. An unknown
 target is refused with exit 2 and changes nothing.
 
 The quick components apply in seconds. A **database** change is different: it

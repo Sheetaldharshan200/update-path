@@ -35,8 +35,8 @@ personal_check_requirements() {
             # The launcher's own requirement, checked here so the refusal comes
             # before anything is downloaded: Linux local deployments run on
             # Podman, and unlike on Windows the launcher does not offer to
-            # install it. Docker does not substitute - the launcher will not
-            # use it.
+            # install it. No other container engine substitutes - the
+            # launcher will not use one.
             if ! command -v podman >/dev/null 2>&1; then
                 error "This machine is not ready: the Exasol Personal local deployment on Linux needs Podman, and 'podman' is not on PATH."
                 info "Install it with your package manager (e.g. 'sudo apt-get install -y podman' or 'sudo dnf install -y podman'), then re-run."
@@ -45,10 +45,9 @@ personal_check_requirements() {
             ;;
         wsl)
             # Personal's Windows path is host Podman inside a Podman machine,
-            # not WSL. Said as the support matrix, then a graceful exit - never
-            # a silent reroute onto the container runtime.
+            # not WSL. Said as the support matrix, then a graceful exit.
             error "Exasol Personal supports macOS, native Linux and Windows x86_64 - it does not support WSL."
-            info "Nothing was installed. To run the container runtime inside this distro instead, set EXAKIT_RUNTIME=nano and re-run."
+            info "Nothing was installed. Run the installer on Windows itself (install.ps1) or inside a native Linux machine."
             die "Incompatible platform: wsl."
             ;;
         *)

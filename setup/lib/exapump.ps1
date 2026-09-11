@@ -201,7 +201,7 @@ function Install-Exapump {
             # Continue (not the global Stop) so a working binary that writes an
             # incidental line to stderr isn't turned into a terminating error on
             # Windows PowerShell 5.1 and needlessly reinstalled - the exit code
-            # is the real signal. Same fix as Get-NanoEngine / Invoke-ExakitLogged.
+            # is the real signal. Same fix as Invoke-ExakitLogged.
             $ErrorActionPreference = "Continue"
             & $existing --version *> $null
             $existingWorks = ($LASTEXITCODE -eq 0)
@@ -373,7 +373,7 @@ function Set-ExapumpTomlSection {
 # Returns $true ONLY if a freshly created schema+table is durably persisted and
 # visible from SUBSEQUENT connections (each exapump invocation reconnects).
 #
-# This is the real readiness signal. Right after first boot the Nano database
+# This is the real readiness signal. Right after first boot the database
 # accepts a connection and answers SELECT 1 while still stabilizing, and in that
 # window it can ACKNOWLEDGE a DDL batch ("N statements executed, 0 failed")
 # without durably persisting it - so the schema-creation step "succeeds" but the
@@ -684,7 +684,7 @@ function Invoke-ExapumpUpload {
 # refused by the server over this protocol ("only supported via JDBC or
 # EXAplus"). So the launches have to overlap instead.
 #
-# Verified against the nano container before building this: four concurrent
+# Verified against a local deployment before building this: four concurrent
 # exapump sessions all succeeded, 302ms against 723ms for the same four run
 # one after another.
 #
@@ -1757,8 +1757,8 @@ function Get-ExakitBundledDatasets {
 # still cached when the data step asked afterwards. Every dataset then fell
 # through to the manifest flag and printed "already loaded" against a database
 # with no schemas in it. A "yes" cannot go stale the same way - nothing in a kit
-# run takes the database down without going through Stop-ExakitNano /
-# Stop-ExasolPersonal, and those call Clear-ExakitDbReachable.
+# run takes the database down without going through Stop-Personal, and that
+# calls Clear-ExakitDbReachable.
 # twin: exakit_db_reachable in setup/lib/exapump.sh.
 $script:ExakitDbReachable = $null
 function Test-ExakitDbReachable {

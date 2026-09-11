@@ -9,11 +9,6 @@
       "version": "2.3.0-rc2",
       "severity": "normal"
     },
-    "nano": {
-      "version": "2026.2.0-nano.3",
-      "image": "exasol/nano",
-      "severity": "normal"
-    },
     "exapump": {
       "version": "0.12.0",
       "repo": "exasol-labs/exapump",
@@ -37,7 +32,7 @@
       "severity": "normal"
     },
     "skills": {
-      "version": "1.9.9",
+      "version": "1.10.0",
       "severity": "normal"
     },
     "dash-server": {

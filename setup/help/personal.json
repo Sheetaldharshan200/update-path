@@ -2,9 +2,9 @@
   "schema_version": 1,
   "id": "personal",
   "kind": "runtime",
-  "title": "Exasol Personal (macOS runtime)",
-  "tagline": "The local Exasol database, running natively on macOS.",
-  "role": "On macOS the kit deploys Exasol Personal natively through its own launcher - no container. On Linux, WSL and Windows the kit uses Exasol Nano instead.",
+  "title": "Exasol Personal (the kit's database runtime)",
+  "tagline": "The local Exasol database, run by its own launcher.",
+  "role": "The kit's only database runtime. The Exasol launcher deploys it locally on macOS, native Linux (through Podman) and Windows x86_64; WSL and Windows arm64 are not supported and the installer says so and exits.",
   "repo": "exasol/exasol-personal",
   "binary": "~/.local/bin/exasol",
   "deployment_dir": "~/.exasol/personal/deployments/default",
@@ -102,7 +102,6 @@
     }
   ],
   "see_also": [
-    "nano",
     "exakit start",
     "exakit status"
   ]

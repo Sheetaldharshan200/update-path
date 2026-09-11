@@ -95,7 +95,7 @@ Re-running the installer is safe. It skips what is done and repairs what is not.
 
 | Symptom | Fix |
 |---|---|
-| "Docker is installed but not running" | macOS/Windows: start Docker Desktop, or `podman machine start`. Linux: `sudo systemctl start docker` (and `systemctl is-enabled docker`, so it comes back after a reboot); with Podman there is no machine to start — check `grep $(id -un) /etc/subuid /etc/subgid` first. Then re-run |
+| "Podman is installed but not running" | macOS/Windows: `podman machine start`. Linux: there is no machine to start — check `grep $(id -un) /etc/subuid /etc/subgid` first. Then re-run |
 | "Port 8563 is already in use" | The launcher selects the deployment's port itself and the kit reads it back — an existing Exasol on the port is adopted; anything else is reported with the process named. Stop that app and re-run |
 | Setup failed mid-way | Re-run the same install command. It resumes from the failed step |
 | Assistant cannot see the database | `exakit status`, then restart the AI client |
