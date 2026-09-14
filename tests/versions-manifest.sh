@@ -227,8 +227,8 @@ schema_ahead="$( exakit_versions_validate "$FIX/schema2.json" >/dev/null 2>&1
 check "newer schema is reported as ahead" "yes" "$schema_ahead"
 
 echo "reader (Python and the awk fallback must agree):"
-for _path in kit.version components.personal.version components.nano.version \
-             components.nano.image components.exapump.version components.mcp.version \
+for _path in kit.version components.personal.version components.personal.severity \
+             components.exapump.version components.mcp.version \
              components.mcp.package components.pyexasol.version \
              components.dash-server.version components.dash-server.repo \
              components.dbt-exasol.version components.dbt-exasol.package \
@@ -339,34 +339,33 @@ echo "install-time resolution:"
 # Expectations are read from the manifest itself, so bumping a Component does not
 # mean editing this test.
 V_PERSONAL="$(exakit_versions_value components.personal.version "$REAL")"
-V_NANO="$(exakit_versions_value components.nano.version "$REAL")"
 V_EXAPUMP="$(exakit_versions_value components.exapump.version "$REAL")"
 V_MCP="$(exakit_versions_value components.mcp.version "$REAL")"
 V_PYEXASOL="$(exakit_versions_value components.pyexasol.version "$REAL")"
 
 # resolve_set <shell-statements> — resolve in a subshell (so nothing leaks into
-# the next case) and print "<source> <personal> <nano> <exapump> <mcp> <pyexasol>".
+# the next case) and print "<source> <personal> <exapump> <mcp> <pyexasol>".
 # The endpoint is non-HTTPS on purpose: it is refused outright, which keeps the
 # whole test offline while still exercising the fetch-then-fall-back path.
 resolve_set() (
     EXAKIT_VERSIONS_URL="http://offline.invalid/versions.json"
     EXAKIT_MANIFEST="$WORK/absent-manifest.json"
-    EXAKIT_PERSONAL_VERSION=""; EXAKIT_NANO_TAG=""; EXAKIT_EXAPUMP_VERSION=""
+    EXAKIT_PERSONAL_VERSION=""; EXAKIT_EXAPUMP_VERSION=""
     EXAKIT_MCP_VERSION=""; EXAKIT_PYEXASOL_VERSION=""
     _EXAKIT_VERSIONS_DOC=""; _EXAKIT_VERSIONS_SOURCE=""
     eval "${1:-}"
     exakit_resolve_install_versions >/dev/null 2>&1
-    printf '%s %s %s %s %s %s\n' "$EXAKIT_VERSIONS_SOURCE_USED" "$EXAKIT_PERSONAL_VERSION" \
-        "$EXAKIT_NANO_TAG" "$EXAKIT_EXAPUMP_VERSION" "$EXAKIT_MCP_VERSION" "$EXAKIT_PYEXASOL_VERSION"
+    printf '%s %s %s %s %s\n' "$EXAKIT_VERSIONS_SOURCE_USED" "$EXAKIT_PERSONAL_VERSION" \
+        "$EXAKIT_EXAPUMP_VERSION" "$EXAKIT_MCP_VERSION" "$EXAKIT_PYEXASOL_VERSION"
 )
 
 check "manifest policy (default) reads the kit copy" \
-    "baked $V_PERSONAL $V_NANO $V_EXAPUMP $V_MCP $V_PYEXASOL" "$(resolve_set)"
+    "baked $V_PERSONAL $V_EXAPUMP $V_MCP $V_PYEXASOL" "$(resolve_set)"
 check "an env override beats the manifest" \
-    "baked $V_PERSONAL $V_NANO 9.9.9 $V_MCP $V_PYEXASOL" \
+    "baked $V_PERSONAL 9.9.9 $V_MCP $V_PYEXASOL" \
     "$(resolve_set 'EXAKIT_EXAPUMP_VERSION=9.9.9')"
 check "no document at all -> the fallback constants" \
-    "fallback $EXAKIT_PERSONAL_VERSION_FALLBACK $EXAKIT_NANO_TAG_FALLBACK $EXAKIT_EXAPUMP_VERSION_FALLBACK $EXAKIT_MCP_VERSION_FALLBACK $EXAKIT_PYEXASOL_VERSION_FALLBACK" \
+    "fallback $EXAKIT_PERSONAL_VERSION_FALLBACK $EXAKIT_EXAPUMP_VERSION_FALLBACK $EXAKIT_MCP_VERSION_FALLBACK $EXAKIT_PYEXASOL_VERSION_FALLBACK" \
     "$(resolve_set 'exakit_repo_root() { return 1; }')"
 mkdir -p "$EXAKIT_HOME/cache"
 # The cached answer has to be one the baked copy cannot also be giving, so this is
@@ -377,15 +376,14 @@ V_CACHE_ONLY_EXAPUMP="99.0.0"
 fixture_doc "cache-only exapump" "$EXAKIT_VERSIONS_CACHE" \
     "components.exapump.version=$V_CACHE_ONLY_EXAPUMP"
 check "a cached document beats the kit copy" \
-    "cache $V_PERSONAL $V_NANO $V_CACHE_ONLY_EXAPUMP $V_MCP $V_PYEXASOL" "$(resolve_set)"
+    "cache $V_PERSONAL $V_CACHE_ONLY_EXAPUMP $V_MCP $V_PYEXASOL" "$(resolve_set)"
 check "pinned policy ignores the document entirely" \
-    "fallback $EXAKIT_PERSONAL_VERSION_FALLBACK $EXAKIT_NANO_TAG_FALLBACK $EXAKIT_EXAPUMP_VERSION_FALLBACK $EXAKIT_MCP_VERSION_FALLBACK $EXAKIT_PYEXASOL_VERSION_FALLBACK" \
+    "fallback $EXAKIT_PERSONAL_VERSION_FALLBACK $EXAKIT_EXAPUMP_VERSION_FALLBACK $EXAKIT_MCP_VERSION_FALLBACK $EXAKIT_PYEXASOL_VERSION_FALLBACK" \
     "$(resolve_set 'EXAKIT_VERSION_POLICY=pinned')"
 check "latest policy still asks upstream" \
-    "latest 7.7.7 8.8.8 7.7.7 6.6.6 6.6.6" \
+    "latest 7.7.7 7.7.7 6.6.6 6.6.6" \
     "$(resolve_set 'EXAKIT_VERSION_POLICY=latest
                     exakit_latest_github_release_version() { echo 7.7.7; }
-                    exakit_latest_docker_tag() { echo 8.8.8; }
                     exakit_latest_pypi_version() { echo 6.6.6; }')"
 rm -f "$EXAKIT_VERSIONS_CACHE"
 
@@ -393,7 +391,7 @@ recorded="$( EXAKIT_HOME="$WORK/record-home"
              EXAKIT_MANIFEST="$WORK/record-home/manifest.json"
              EXAKIT_VERSIONS_CACHE="$WORK/record-home/cache/versions.json"
              EXAKIT_VERSIONS_URL="http://offline.invalid/versions.json"
-             EXAKIT_PERSONAL_VERSION=""; EXAKIT_NANO_TAG=""; EXAKIT_EXAPUMP_VERSION=""
+             EXAKIT_PERSONAL_VERSION=""; EXAKIT_EXAPUMP_VERSION=""
              EXAKIT_MCP_VERSION=""; EXAKIT_PYEXASOL_VERSION=""
              _EXAKIT_VERSIONS_DOC=""; _EXAKIT_VERSIONS_SOURCE=""
              mkdir -p "$EXAKIT_HOME/kit/mcp"
@@ -528,7 +526,7 @@ check "a re-run leaves an up-to-date command alone" "left-alone" "$noop"
 echo "the version table:"
 # One fixture install, one advertised set, every interesting row at once:
 #   exakit    0.2.0            = 0.2.0             -> current (and NOT "inspect")
-#   nano      2026.2.0-nano.2 -> 2026.3.0-nano.1   -> heavy
+#   personal  2.2.0           -> 2.3.0             -> heavy
 #   exapump   0.13.0          -> 0.12.0            -> ahead, nothing offered
 #   mcp       1.10.1          -> 1.11.0 critical   -> severity + note
 #   pyexasol  not installed   -> 2.2.2             -> repair action
@@ -549,8 +547,8 @@ cat > "$UC/manifest.json" <<EOF
     "source": "example/starter-kit@main"
   },
   "runtime": {
-    "type": "nano",
-    "image": "docker.io/exasol/nano:2026.2.0-nano.2"
+    "type": "personal",
+    "version": "2.2.0"
   },
   "components": {
     "exapump": {
@@ -576,11 +574,6 @@ cat > "$UC/kit/versions.json" <<'EOF'
     "version": "0.2.0"
   },
   "components": {
-    "nano": {
-      "version": "2026.3.0-nano.1",
-      "image": "exasol/nano",
-      "severity": "normal"
-    },
     "exapump": {
       "version": "0.12.0",
       "severity": "recommended",
@@ -595,7 +588,8 @@ cat > "$UC/kit/versions.json" <<'EOF'
       "version": "2.2.2"
     },
     "personal": {
-      "version": "2.0.0-rc4"
+      "version": "2.3.0",
+      "severity": "normal"
     }
   }
 }
@@ -652,14 +646,14 @@ has "the kit row compares its own version" "exakit 0.2.0" "$(row "$uc_table" exa
 # and bash has no function-local variables here: a callee that reused the name
 # _current would silently overwrite the row's installed version.
 has "installed stays installed (exapump)" "exapump 0.13.0" "$(row "$uc_table" exapump)"
-has "installed stays installed (nano)" "nano 2026.2.0-nano.2" "$(row "$uc_table" nano)"
+has "installed stays installed (personal)" "personal 2.2.0" "$(row "$uc_table" personal)"
 has "installed stays installed (mcp)" "mcp 1.10.1" "$(row "$uc_table" mcp)"
 lacks "no row is stuck on inspect" "inspect" "$uc_table"
 # The advertised version IS the status: with no Tagged column, a row that is
 # behind has to name the number it is behind, or the screen says only that
 # something is wrong without saying what would fix it.
 check "a waiting update names the advertised version" \
-    "nano 2026.2.0-nano.2 2026.3.0-nano.1 available" "$(row "$uc_table" nano)"
+    "personal 2.2.0 2.3.0 available" "$(row "$uc_table" personal)"
 # The whole ahead row, squeezed: the status is exactly "none". Not "yours is
 # newer than tested", which apologised for the install and made the tested set
 # sound abandoned; not the tagged number either, which invites the reader to go
@@ -781,9 +775,9 @@ offer_run() ( # offer_run <answer> [statements]
 
 offer_yes="$(offer_run y)"
 has "a terminal is asked before anything is stopped" "Stop the database and update the runtime now?" "$offer_yes"
-has "the question names the outage" "goes down while the container is recreated" "$offer_yes"
-has "the question promises the restart" "started again and checked" "$offer_yes"
-has "the question says the data survives" "the same data volume is reused" "$offer_yes"
+has "the question names the outage" "needs the database stopped" "$offer_yes"
+has "the question promises the restart" "started again if it ends up down" "$offer_yes"
+has "the question says the data survives" "Your data is kept" "$offer_yes"
 has "yes applies the runtime in this run" "APPLIED runtime" "$offer_yes"
 has "and reports the result" "Runtime updated" "$offer_yes"
 
@@ -980,7 +974,7 @@ cat > "$LIVE/manifest.json" <<EOF
   "manifest_version": 1,
   "kit_level": 1,
   "kit": { "version": "0.2.0" },
-  "runtime": { "type": "nano", "version": "2.0.0-rc4", "image": "docker.io/exasol/nano:2026.2.0-nano.2" },
+  "runtime": { "type": "personal", "version": "2.0.0-rc4" },
   "components": {
     "exapump": { "version": "0.11.2", "path": "$LIVE/bin/exapump" },
     "mcp_server": { "version": "1.10.1" },
@@ -1047,31 +1041,18 @@ check "personal reports the recorded runtime, not the launcher" "2.0.0-rc4" \
         exakit_installation_runtime_type() { printf personal; }
         exakit_component_current personal 2>/dev/null )"
 
-# The container is not always called exasol-nano.
-check "nano resolves the recorded container name" "2026.9.9-nano.7" \
-    "$( EXAKIT_HOME="$LIVE"; EXAKIT_MANIFEST="$LIVE/manifest.json"
-        exakit_installation_runtime_type() { printf nano; }
-        nano_resolve_names() { EXAKIT_NANO_CONTAINER="custom-nano"; }
-        nano_engine() { printf "%s" "$LIVE/rt/fake-engine"; }
-        mkdir -p "$LIVE/rt"
-        # Answers only when asked about the resolved name, so a probe that ignored
-        # nano_resolve_names would get nothing and fall back to the record.
-        printf '#!/bin/sh\ncase " $* " in *" custom-nano "*) echo "docker.io/exasol/nano:2026.9.9-nano.7" ;; esac\n' \
-            > "$LIVE/rt/fake-engine"; chmod +x "$LIVE/rt/fake-engine"
-        exakit_component_current nano 2>/dev/null )"
-
 # The runtime is probed too, but with one deliberate difference: a probe that cannot
-# answer keeps the record instead of reporting absence. A stopped container engine
-# is an ordinary state; the runtime row must not flicker to "inspect" because Docker
-# Desktop is closed.
+# answer keeps the record instead of reporting absence. A stopped deployment is an
+# ordinary state; the runtime row must not flicker to "inspect" because the
+# launcher is not answering.
 mkdir -p "$LIVE/rt"
 printf '#!/bin/sh\necho 3.1.4\n' > "$LIVE/rt/exasol"
-printf '#!/bin/sh\necho "docker.io/exasol/nano:2026.9.9-nano.7"\n' > "$LIVE/rt/fake-engine"
-chmod +x "$LIVE/rt/exasol" "$LIVE/rt/fake-engine"
-# The fixture records type nano, so asking for `personal` must return nothing even
-# with a launcher sitting right there: a runtime this kit does not manage is not
-# installed. PATH is left alone on purpose — stripping it hides python3, and the kit
-# then reaches for uv, which is noise rather than a result.
+chmod +x "$LIVE/rt/exasol"
+# Asking for `personal` on an installation whose manifest records no runtime type
+# must return nothing even with a launcher sitting right there: a runtime this kit
+# does not manage is not installed. PATH is left alone on purpose — stripping it
+# hides python3, and the kit then reaches for uv, which is noise rather than a
+# result.
 runtime_read() (
     EXAKIT_HOME="$LIVE"
     EXAKIT_MANIFEST="$LIVE/manifest.json"
@@ -1084,11 +1065,8 @@ runtime_read() (
 # finished, so the record is the only honest answer here.
 check "personal reports the record, launcher present or not" "2.0.0-rc4" \
     "$(runtime_read personal 'exakit_installation_runtime_type() { printf personal; }')"
-check "personal is not installed on a Nano box" "not installed" "$(runtime_read personal)"
-check "nano: the container tag wins over the record" "2026.9.9-nano.7" \
-    "$(runtime_read nano 'nano_engine() { printf "%s" "$LIVE/rt/fake-engine"; }')"
-check "nano: an engine that will not answer keeps the record" "2026.2.0-nano.2" \
-    "$(runtime_read nano 'nano_engine() { printf none; }')"
+check "personal is not installed when nothing recorded it" "not installed" \
+    "$(runtime_read personal 'exakit_installation_runtime_type() { printf ""; }')"
 
 # The MCP server is never installed as such: uvx materialises it per launch, so what
 # exists is the spec pinned into each AI client config. The status operation is stubbed
@@ -1135,8 +1113,8 @@ cat > "$DIV/manifest.json" <<EOF
   "manifest_version": 1,
   "kit_level": 1,
   "runtime": {
-    "type": "nano",
-    "image": "docker.io/exasol/nano:2026.2.0-nano.2"
+    "type": "personal",
+    "version": "2.2.0"
   },
   "components": {
     "mcp_server": {
@@ -1221,8 +1199,8 @@ cat > "$XP/manifest.json" <<EOF
   "manifest_version": 1,
   "kit_level": 1,
   "runtime": {
-    "type": "nano",
-    "image": "docker.io/exasol/nano:2026.2.0-nano.2"
+    "type": "personal",
+    "version": "2.2.0"
   },
   "components": {
     "exapump": {
@@ -1314,7 +1292,7 @@ drift_manifest() {
   "manifest_version": 1,
   "kit_level": 1,
   "kit": { "version": "0.2.0" },
-  "runtime": { "type": "nano", "image": "docker.io/exasol/nano:2026.2.0-nano.2" },
+  "runtime": { "type": "personal", "version": "2.2.0" },
   "components": {
     "exapump": { "version": "$1", "path": "$DR/bin/exapump" },
     "mcp_server": { "package": "exasol-mcp-server", "version": "1.10.1" },
@@ -1345,29 +1323,6 @@ lacks "and the record is not printed beside it" "kit installed" "$drift_out"
 drift_manifest 0.13.0 2.9.9
 agree_out="$(version_out)"
 lacks "and says nothing extra when they agree" "kit installed" "$agree_out"
-# The Nano runtime records a full image reference (docker.io/exasol/nano:TAG) but
-# probes back a bare tag. The cell must be the tag: an image reference in a version
-# column is both unreadable and incomparable, and it would make every Nano install
-# claim a phantom update. The status is deliberately NOT pinned here — it is decided
-# by whatever the live versions.json advertises today.
-# The tag itself is NOT pinned here. This row's installed cell is resolved from
-# whatever the live versions.json advertises, so pinning a version made the
-# check fail the day that document moved on - it currently names nano.2 while
-# the manifest advertises nano.3, and whether it passed came down to whether the
-# run had a warm cache. What the comment above actually cares about is the
-# SHAPE: a bare tag, never an image reference.
-_vm_nano_row="$(row "$agree_out" nano)"
-# Decided in a variable, not inside "$(case ...)": bash 3.2 cannot parse a ")"
-# inside a double-quoted string inside a case arm inside a command substitution
-# ("no ($_vm_nano_row)"), and died here with a syntax error -- taking every
-# check after this line with it, on every macOS runner.
-case "$_vm_nano_row" in
-    *docker.io/*|*exasol/nano:*) _vm_nano_shape=no ;;
-    nano\ [0-9]*)                _vm_nano_shape=yes ;;
-    *)                           _vm_nano_shape="no ($_vm_nano_row)" ;;
-esac
-check "the runtime row is a bare tag, not an image reference" "yes" "$_vm_nano_shape"
-lacks "and no image reference reaches the table" "docker.io/exasol/nano" "$agree_out"
 
 echo "a component with no build for this machine is never offered:"
 # exapump publishes nothing for Windows on ARM, and nothing for a CPU outside
@@ -1422,19 +1377,18 @@ has "but its neighbours still are" "APPLIED mcp" "$ahead_skip"
 has "and the run itself succeeds" "rc=0" "$ahead_skip"
 
 # The table lists the runtime this machine actually runs, and only that one.
-# `exakit update-check personal` used to render a row for the other runtime on
-# request; the merged `exakit version` takes no target, and inventing a row for a
-# runtime nobody installed would offer to deploy Exasol Personal onto a Nano
-# machine — which is exactly the install the kit refuses to do.
+# `exakit update-check <runtime>` used to render a row on request; the merged
+# `exakit version` takes no target, and inventing a row for a runtime nobody
+# installed would offer to deploy a database onto a machine that never had one
+# — which is exactly the install the kit refuses to do.
 personal_row="$( EXAKIT_HOME="$UC"
     EXAKIT_MANIFEST="$UC/manifest.json"
     EXAKIT_VERSIONS_CACHE="$UC/cache/versions.json"
     EXAKIT_VERSIONS_URL="http://offline.invalid/versions.json"
     _EXAKIT_VERSIONS_DOC=""; _EXAKIT_VERSIONS_SOURCE=""
     exakit_print_version_table 2>&1 )"
-has "the installed runtime is the one listed" "nano 2026.2.0-nano.2" "$(row "$personal_row" nano)"
-lacks "the runtime this machine does not run gets no row" "personal " "$personal_row"
-lacks "and is never offered for installation" "exakit update personal" "$personal_row"
+has "the installed runtime is the one listed" "personal 2.2.0" "$(row "$personal_row" personal)"
+lacks "no second runtime row is invented" "runtime " "$personal_row"
 
 echo "the advertised version matches the policy in force:"
 pinned_row="$( EXAKIT_HOME="$UC"
@@ -1736,50 +1690,28 @@ wn_nofile="$( EXAKIT_HOME="$WORK/wn-home-nofile"
 check "a kit copy without the notes file prints nothing and succeeds" "rc=0" "$wn_nofile"
 
 echo "a hanging container engine cannot stall a version lookup:"
-# The failure this prevents: `docker info` and `docker container inspect` do not
-# return while Docker Desktop is starting, and an unbounded probe left
-# `exakit version` printing nothing for as long as that took.
+# The failure this prevents: an engine probe that does not return while the
+# engine is still starting left `exakit version` printing nothing for as long
+# as that took.
 mkdir -p "$WORK/hang-bin"
-# BOTH engines must hang. detect_container_runtime falls back to podman, so
-# masking only docker let a real, working podman on the host answer the probe --
-# and "podman" is then the CORRECT return, which this test scored as a failure.
-# That is why it passed locally and on macOS (neither engine present) and failed
-# intermittently on Linux CI, where podman is installed.
-for _hang_engine in docker podman; do
-    printf '#!/bin/sh\nsleep 300\n' > "$WORK/hang-bin/$_hang_engine"
-    chmod +x "$WORK/hang-bin/$_hang_engine"
-done
+printf '#!/bin/sh\nsleep 300\n' > "$WORK/hang-bin/podman"
+chmod +x "$WORK/hang-bin/podman"
 hang_start="$(date +%s)"
 hang="$( PATH="$WORK/hang-bin:$PATH"
     EXAKIT_ENGINE_PROBE_TIMEOUT=2
-    unset EXAKIT_NANO_ENGINE
     # detect.sh is where the engine detection lives, and this file does not source
     # it by default: without this the call is a silent "command not found", which
     # looks exactly like a pass.
     . "$ROOT/setup/lib/detect.sh"
-    if [ "$(detect_container_runtime)" = "none" ]; then printf 'gave-up'; else printf 'HUNG-OR-FOUND'; fi )"
+    if [ "$(detect_podman)" = "none" ]; then printf 'gave-up'; else printf 'HUNG-OR-FOUND'; fi )"
 hang_elapsed=$(( $(date +%s) - hang_start ))
-check "a docker that never answers is treated as no engine" "gave-up" "$hang"
+check "a podman that never answers is treated as no engine" "gave-up" "$hang"
 if [ "$hang_elapsed" -le 20 ]; then
     check "and it gives up promptly" "prompt" "prompt"
 else
     check "and it gives up promptly" "prompt" "took ${hang_elapsed}s"
 fi
-# The tag probe must still answer, from the record, while the engine hangs.
-HG="$WORK/hang-home"
-mkdir -p "$HG/kit/mcp"
-cp "$REAL" "$HG/kit/versions.json"
-printf '{"manifest_version":1,"runtime":{"type":"nano","image":"docker.io/exasol/nano:2026.1.0-nano.9"}}\n' \
-    > "$HG/manifest.json"
-hang_tag="$( EXAKIT_HOME="$HG"
-    EXAKIT_MANIFEST="$HG/manifest.json"
-    PATH="$WORK/hang-bin:$PATH"
-    EXAKIT_ENGINE_PROBE_TIMEOUT=2
-    nano_engine() { printf 'docker\n'; }
-    nano_resolve_names() { :; }
-    exakit_installed_nano_tag )"
-check "the recorded tag answers instead" "2026.1.0-nano.9" "$hang_tag"
-# The bounded runner's own contract, independent of docker.
+# The bounded runner's own contract, independent of the engine.
 bounded="$( if exakit_run_bounded 2 sleep 30 >/dev/null 2>&1; then printf 'NO-CUTOFF'; else printf "rc=$?"; fi
             printf ' '
             if exakit_run_bounded 5 printf 'ok' >/dev/null 2>&1; then printf 'fast-ok'; else printf 'FAST-FAILED'; fi )"
@@ -1818,9 +1750,9 @@ cp "$REAL" "$NT/kit/versions.json"
 # and a version set lowered by the maintainers (a withdrawn release, a test set)
 # would otherwise catch up with the fixture and quietly delete the premise.
 # The advertised values are unreachable for the mirror-image reason: 0.12.0 was the
-# next plausible exapump release, and 2026.3.0-nano.1 the next plausible nano tag, so
-# a weekly bump could walk into either and turn "the advertised set differs from the
-# shipped set" into a fiction that no assertion here would notice.
+# next plausible exapump release, so a weekly bump could walk into it and turn
+# "the advertised set differs from the shipped set" into a fiction that no
+# assertion here would notice.
 # The KIT'S OWN version, read from the shipped document rather than pinned.
 #
 # It was pinned at "0.2.0" in the manifest below, and the moment the kit reached
@@ -1829,17 +1761,17 @@ cp "$REAL" "$NT/kit/versions.json"
 # assertion here anchors on "...available for exapump". Five of them failed at
 # once, none of them naming the reason, and they stayed failing.
 #
-# The same rot the comment above guards against for exapump and nano; the kit's
-# own version was simply left out of that reasoning. Read dynamically it cannot
+# The same rot the comment above guards against for exapump; the kit's own
+# version was simply left out of that reasoning. Read dynamically it cannot
 # drift again: the kit is neither behind nor ahead of the document, so it is not
-# pending, and the premise -- that exapump, mcp and nano are the only things
-# behind -- is restored and stays true through any future bump.
+# pending, and the premise -- that exapump, mcp and the runtime are the only
+# things behind -- is restored and stays true through any future bump.
 NOTICE_KIT_VERSION="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["kit"]["version"])' "$REAL" 2>/dev/null || printf '0.0.0')"
 NOTICE_INSTALLED_EXAPUMP="0.0.1"
 NOTICE_INSTALLED_MCP="0.0.1"
 NOTICE_ADVERTISED_EXAPUMP="99.1.0"
 NOTICE_ADVERTISED_MCP="99.2.0"
-NOTICE_ADVERTISED_NANO="2099.1.0-nano.1"
+NOTICE_ADVERTISED_PERSONAL="99.3.0"
 printf '#!/bin/sh\necho "exapump %s"\n' "$NOTICE_INSTALLED_EXAPUMP" > "$NT/bin/exapump"
 chmod +x "$NT/bin/exapump"
 cat > "$NT/manifest.json" <<EOF
@@ -1850,8 +1782,8 @@ cat > "$NT/manifest.json" <<EOF
     "version": "$NOTICE_KIT_VERSION"
   },
   "runtime": {
-    "type": "nano",
-    "image": "docker.io/exasol/nano:2026.2.0-nano.2"
+    "type": "personal",
+    "version": "2.2.0"
   },
   "components": {
     "exapump": {
@@ -1873,8 +1805,8 @@ EOF
 fixture_doc "notice: an advertised set the install is behind" "$WORK/notice-versions.json" \
     "components.exapump.version=$NOTICE_ADVERTISED_EXAPUMP" \
     "components.exapump.severity=recommended" \
-    "components.nano.version=$NOTICE_ADVERTISED_NANO" \
-    "components.nano.severity=critical" \
+    "components.personal.version=$NOTICE_ADVERTISED_PERSONAL" \
+    "components.personal.severity=critical" \
     "components.mcp.version=$NOTICE_ADVERTISED_MCP" \
     "components.mcp.severity=normal"
 
@@ -1963,9 +1895,9 @@ has "a recommended light bump is announced as recommended" \
     "A recommended update is available for exapump" "$flagged"
 has "with the cheap command" "apply in seconds:  exakit update" "$flagged"
 has "a critical heavy bump is announced as critical" \
-    "A critical update is available for nano" "$flagged"
+    "A critical update is available for personal" "$flagged"
 has "as a database stop, not a one-liner" "requires stopping the database" "$flagged"
-lacks "and never told to just run update" "nano — apply in seconds" "$flagged"
+lacks "and never told to just run update" "personal — apply in seconds" "$flagged"
 # The kill switch is documented (help page, AGENTS.md), not printed: a footer
 # explaining how to turn the notice off was longer than the notice.
 lacks "the kill switch is not printed under the notice" "EXAKIT_NO_UPDATE_NOTICE" "$flagged"
@@ -2000,7 +1932,7 @@ lacks "or critical" "A critical" "$only_normal"
 # "none" and `exakit update` says "keeping yours", so announcing them made the
 # three commands disagree and pointed the user at a command that could do
 # nothing. exapump and mcp are advertised BELOW the recorded 0.0.1 install;
-# nano stays genuinely behind, to prove the skip is targeted and not a mute
+# the runtime stays genuinely behind, to prove the skip is targeted and not a mute
 # button. exapump is also flagged 'recommended', so if it were still counted the
 # light line would appear and borrow that word.
 fixture_doc "notice: an advertised set the install has overshot" "$WORK/notice-ahead.json" \
@@ -2008,21 +1940,21 @@ fixture_doc "notice: an advertised set the install has overshot" "$WORK/notice-a
     "components.exapump.severity=recommended" \
     "components.mcp.version=0.0.0" \
     "components.mcp.severity=normal" \
-    "components.nano.version=$NOTICE_ADVERTISED_NANO" \
-    "components.nano.severity=critical"
+    "components.personal.version=$NOTICE_ADVERTISED_PERSONAL" \
+    "components.personal.severity=critical"
 rm -f "$NT/cache/notice-state.json" "$NT/cache/notice-plan"
 ahead_notice="$(notice "$WORK/notice-ahead.json")"
 lacks "an install ahead of the tagged set is not announced" "exapump" "$ahead_notice"
 lacks "nor the other component that overshot" "mcp" "$ahead_notice"
 lacks "and no light line is printed at all" "apply in seconds" "$ahead_notice"
 has "while a component genuinely behind is still announced" \
-    "A critical update is available for nano" "$ahead_notice"
+    "A critical update is available for personal" "$ahead_notice"
 # The cached plan re-verification carried the same equality-only flaw, which is
 # why the phantom line reappeared on every command instead of clearing itself.
 ahead_cached="$(notice "$WORK/notice-ahead.json")"
 lacks "and a cached plan does not resurrect it" "exapump" "$ahead_cached"
 has "while the cached plan keeps the real one" \
-    "A critical update is available for nano" "$ahead_cached"
+    "A critical update is available for personal" "$ahead_cached"
 
 # The plan cache: printed every run, computed rarely. Counted by a probe stub that
 # appends a line each time it is asked, which is the only way to tell "said the same
@@ -2161,8 +2093,8 @@ cat > "$K2/manifest.json" <<'EOF'
     "version": "0.2.0"
   },
   "runtime": {
-    "type": "nano",
-    "image": "docker.io/exasol/nano:2026.2.0-nano.2"
+    "type": "personal",
+    "version": "2.2.0"
   },
   "components": {},
   "steps_completed": []
@@ -2221,7 +2153,7 @@ lacks "an unsatisfied min_kit_version keeps it hidden" "Kit 2 (" "$future_kit2"
 level2="$(kit2_table "$WORK/with-kit2.json" \
     'manifest_get() { case "$1" in kit_level) printf "2\n" ;;
                                    kit2.version) printf "0.1.0\n" ;;
-                                   runtime.type) printf "nano\n" ;;
+                                   runtime.type) printf "personal\n" ;;
                                    kit.version) printf "0.2.0\n" ;;
                                    *) return 1 ;; esac; }')"
 has "Kit 2 installed -> its own row" "kit2 0.1.0" "$(row "$level2" kit2)"
@@ -2229,7 +2161,7 @@ lacks "and no discovery line any more" "is available — add it with" "$level2"
 level2_behind="$(kit2_table "$WORK/with-kit2.json" \
     'manifest_get() { case "$1" in kit_level) printf "2\n" ;;
                                    kit2.version) printf "0.0.9\n" ;;
-                                   runtime.type) printf "nano\n" ;;
+                                   runtime.type) printf "personal\n" ;;
                                    kit.version) printf "0.2.0\n" ;;
                                    *) return 1 ;; esac; }')"
 has "an older bundle offers the update" "kit2 0.0.9 0.1.0 available" "$(row "$level2_behind" kit2)"
@@ -2281,7 +2213,7 @@ make_kit_tarball() {
     rm -rf "$_mk_src"
     MK_LAST_SRC="$_mk_src/repo-main"
     mkdir -p "$_mk_src/repo-main/setup/lib"
-    for _mk_file in setup/exakit setup/lib/common.sh setup/lib/runtime-nano.sh \
+    for _mk_file in setup/exakit setup/lib/common.sh \
                     setup/lib/runtime-personal.sh setup/lib/exapump.sh setup/lib/mcp.sh \
                     setup/exakit.ps1 setup/lib/exakit-common.ps1; do
         [ "$_mk_file" = "$_mk_omit" ] && continue
@@ -2439,7 +2371,7 @@ if command -v pwsh >/dev/null 2>&1; then
     has "powershell: kit row is comparable" "exakit 0.2.0 current" "$(row "$ps_table" exakit)"
     has "powershell: installed stays installed" "exapump 0.13.0" "$(row "$ps_table" exapump)"
     has "powershell: a waiting update names the version" \
-        "nano 2026.2.0-nano.2 2026.3.0-nano.1 available" "$(row "$ps_table" nano)"
+        "personal 2.2.0 2.3.0 available" "$(row "$ps_table" personal)"
     check "powershell: older advertised version" \
         "exapump 0.13.0 none" "$(row "$ps_table" exapump)"
     has "powershell: critical severity" "critical" "$ps_table"
@@ -2452,9 +2384,8 @@ if command -v pwsh >/dev/null 2>&1; then
         EXAKIT_VERSIONS_CACHE="$UC/cache/versions.json" \
         EXAKIT_VERSIONS_URL="http://offline.invalid/versions.json" \
         pwsh -NoProfile -File "$ROOT/setup/exakit.ps1" version 2>&1 | tr -d '\r')"
-    has "powershell: the installed runtime is the one listed" "nano 2026.2.0-nano.2" "$(row "$ps_personal" nano)"
-    lacks "powershell: the absent runtime gets no row" "personal " "$ps_personal"
-    lacks "powershell: and is never offered for installation" "exakit update personal" "$ps_personal"
+    has "powershell: the installed runtime is the one listed" "personal 2.2.0" "$(row "$ps_personal" personal)"
+    lacks "powershell: no second runtime row is invented" "runtime " "$ps_personal"
     # The inline runtime offer is mirrored code, and the half that decides whether a
     # database may be stopped is the half that must not drift. The decision
     # functions are called directly (running `update all` here would download a real
@@ -2475,21 +2406,21 @@ if command -v pwsh >/dev/null 2>&1; then
         $env:EXAKIT_CONFIRM_RUNTIME_UPDATE = ""
         $answer = (Get-ExakitRuntimeUpdatePreanswer)
         if ($answer) { $out += $answer } else { $out += "unanswered" }
-        $out += (Get-ExakitMajorVersion "2026.2.0-nano.2")
-        # This fixture records the Nano runtime, so the staged (Personal major)
-        # route must not claim it - same verdict the bash side reaches.
+        $out += (Get-ExakitMajorVersion "2026.2.0")
+        # A major change IS the staged (backup-gated) route - same verdict the
+        # bash side reaches.
         $out += (Test-ExakitRuntimeUpdateStaged -Installed "1.5.0" -Advertised "2.0.0")
         Write-Output ($out -join " ")
     ' | tail -1 | tr -d '\r')"
-    check "powershell(runtime_offer_decisions)" "yes yes no unanswered 2026 False" "$ps_offer"
+    check "powershell(runtime_offer_decisions)" "yes yes no unanswered 2026 True" "$ps_offer"
     ps_explain="$(VM_ROOT="$ROOT" pwsh -NoProfile -Command '
         . (Join-Path $env:VM_ROOT "setup/lib/exakit-common.ps1")
         . (Join-Path $env:VM_ROOT "setup/exakit.ps1") -Command "help" *> $null
-        Write-ExakitRuntimeUpdateExplanation -Actual "nano" -Installed "2026.2.0-nano.2" -Advertised "2026.3.0-nano.1"
+        Write-ExakitRuntimeUpdateExplanation -Actual "personal" -Installed "2.2.0" -Advertised "2.3.0"
     ' 2>&1 | tr -d '\r')"
-    has "powershell: the offer names the outage" "goes down while the container is recreated" "$ps_explain"
-    has "powershell: the offer promises the restart" "started again and checked" "$ps_explain"
-    has "powershell: the offer says the data survives" "the same data volume is reused" "$ps_explain"
+    has "powershell: the offer names the outage" "needs the database stopped" "$ps_explain"
+    has "powershell: the offer promises the restart" "started again if it ends up down" "$ps_explain"
+    has "powershell: the offer says the data survives" "Your data is kept" "$ps_explain"
     ps_pinned="$(EXAKIT_HOME="$UC" EXAKIT_BIN_DIR="$UC/bin" EXAKIT_VERSION_POLICY=pinned \
         pwsh -NoProfile -File "$ROOT/setup/exakit.ps1" version 2>&1 | tr -d '\r')"
     has "powershell: pinned policy uses the fallback" "built-in fallbacks" "$ps_pinned"
@@ -2568,7 +2499,7 @@ PSEOF
         esac
         ps_notice="$(printf '%s' "$ps_notice" | tr -d '\r\n\004\010' | sed 's/\^D//g')"
         has "powershell: recommended light bump" "A recommended update is available for exapump" "$ps_notice"
-        has "powershell: critical heavy bump" "A critical update is available for nano" "$ps_notice"
+        has "powershell: critical heavy bump" "A critical update is available for personal" "$ps_notice"
         has "powershell: the heavy line names the cost" "requires stopping the database" "$ps_notice"
         cp "$REAL" "$NT/kit/versions.json"
     else

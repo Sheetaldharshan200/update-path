@@ -13,7 +13,14 @@
 #   - CSV/Parquet load: exapump upload <file> --table <schema.table>
 
 EXAKIT_EXAPUMP_PROFILE="${EXAKIT_EXAPUMP_PROFILE:-starter-kit}"
-EXAKIT_EXAPUMP_BIN="$EXAKIT_BIN_DIR/exapump"
+# OVERRIDABLE, like every sibling variable here. It was assigned
+# unconditionally, so an EXAKIT_EXAPUMP_BIN set in the environment was
+# discarded the moment this file was sourced - and exapump_cli then fell
+# through to the `exapump` on PATH. A test that sandboxes EXAKIT_HOME and
+# EXAKIT_BIN_DIR but points EXAKIT_EXAPUMP_BIN at a stub therefore ran the
+# DEVELOPER'S REAL exapump against the DEVELOPER'S REAL database, and created
+# a schema in it. Same class of escape as the HOME/.exapump note below.
+EXAKIT_EXAPUMP_BIN="${EXAKIT_EXAPUMP_BIN:-$EXAKIT_BIN_DIR/exapump}"
 # ONE definition of where exapump keeps its profiles, and it is overridable.
 # The uninstall path used to spell it `rm -rf "$HOME/.exapump"` inline: a test
 # that sandboxes EXAKIT_HOME and EXAKIT_BIN_DIR (as every suite here does) but
@@ -228,24 +235,22 @@ exapump_verify_runs() {
 # exapump_install_glibc_shim — the exapump release binary needs a newer glibc
 # than this system provides (all published Linux builds currently require
 # 2.38+, while e.g. Ubuntu 22.04 LTS and every other Jammy-era distro ship
-# 2.35). The Linux install path already requires a container runtime for the
-# database, so run the real binary inside a small newer-glibc container with
-# host networking instead of failing the install. The wrapper is transparent
+# 2.35). The Linux install path already requires Podman for the database, so
+# run the real binary inside a small newer-glibc container with host
+# networking instead of failing the install. The wrapper is transparent
 # to every caller: same path, same CLI, profiles and data files under $HOME
 # and /tmp remain visible.
-EXAKIT_EXAPUMP_SHIM_IMAGE="${EXAKIT_EXAPUMP_SHIM_IMAGE:-docker.io/library/ubuntu:24.04}"
+EXAKIT_EXAPUMP_SHIM_IMAGE="${EXAKIT_EXAPUMP_SHIM_IMAGE:-ubuntu:24.04}"
 exapump_install_glibc_shim() {
-    _shim_runtime="$(detect_container_runtime)"
-    # Rootless podman remaps ownership inside the container: without
-    # keep-id the user's own files (profile at ~/.exapump, mode 600) appear
-    # root-owned and unreadable to the -u uid. Docker has no such remap and
-    # no such flag.
-    _shim_userns=""
-    [ "$_shim_runtime" = "podman" ] && _shim_userns="--userns=keep-id"
+    _shim_runtime="$(detect_podman)"
+    # Rootless podman remaps ownership inside the container: without keep-id
+    # the user's own files (profile at ~/.exapump, mode 600) appear root-owned
+    # and unreadable to the -u uid.
+    _shim_userns="--userns=keep-id"
     _sys_glibc="$(ldd --version 2>/dev/null | head -1)"
     warn "The exapump release binary needs a newer glibc than this system provides (${_sys_glibc:-unknown glibc})."
     if [ "$_shim_runtime" = "none" ]; then
-        die "exapump cannot run on this system's glibc and no container runtime is available to shim it. Install Docker or Podman and re-run, or use a distro with glibc 2.38+ (e.g. Ubuntu 24.04)."
+        die "exapump cannot run on this system's glibc and Podman is not available to shim it. Install Podman and re-run, or use a distro with glibc 2.38+ (e.g. Ubuntu 24.04)."
     fi
     info "Self-repair: running exapump inside a $EXAKIT_EXAPUMP_SHIM_IMAGE container via $_shim_runtime"
 
@@ -336,9 +341,25 @@ exapump_create_profile() {
         _EXAKIT_PENDING_RUNTIME_PASSWORD="$_password"
     fi
 
+    exapump_write_profile "$EXAKIT_EXAPUMP_PROFILE" "$_host" "$_port" "$_user" "$_password" \
+        || die "Could not write the exapump profile"
+    manifest_set components.exapump.profile "$EXAKIT_EXAPUMP_PROFILE"
+    ok_step "Connection profile [$EXAKIT_EXAPUMP_PROFILE] written to $(ui_tilde "$EXAPUMP_CONFIG")"
+}
+
+# exapump_write_profile <profile> <host> <port> <user> <password> - one TOML
+# section in ~/.exapump/config.toml, replaced in place if it is already there.
+#
+# Split out of exapump_create_profile, which reads the manifest and can only
+# ever write the kit's own profile. The legacy crossing needs a SECOND profile,
+# pointing at the database an older kit deployed, and a password belongs in a
+# 0600 config file rather than in argv where `ps` can read it - so both callers
+# go through one writer instead of a second copy of this TOML surgery.
+exapump_write_profile() {
+    _ewp_profile="$1"; _ewp_host="$2"; _ewp_port="$3"; _ewp_user="$4"; _ewp_password="$5"
     require_python3
     mkdir -p "$(dirname "$EXAPUMP_CONFIG")"
-    run_python - "$EXAPUMP_CONFIG" "$EXAKIT_EXAPUMP_PROFILE" "$_host" "$_port" "$_user" "$_password" <<'PY' || die "Could not write the exapump profile"
+    run_python - "$EXAPUMP_CONFIG" "$_ewp_profile" "$_ewp_host" "$_ewp_port" "$_ewp_user" "$_ewp_password" <<'PY' || return 1
 import os, re, sys
 path, profile, host, port, user, password = sys.argv[1:7]
 try:
@@ -372,15 +393,13 @@ os.chmod(tmp, 0o600)
 os.replace(tmp, path)
 PY
     chmod 600 "$EXAPUMP_CONFIG"
-    manifest_set components.exapump.profile "$EXAKIT_EXAPUMP_PROFILE"
-    ok_step "Connection profile [$EXAKIT_EXAPUMP_PROFILE] written to $(ui_tilde "$EXAPUMP_CONFIG")"
 }
 
 # exapump_ddl_roundtrip — one DDL write-readback round through the profile.
 # Returns 0 ONLY if a freshly created schema+table is durably persisted and
 # visible from SUBSEQUENT connections (each exapump invocation reconnects).
 #
-# This is the real readiness signal. Right after first boot the Nano database
+# This is the real readiness signal. Right after first boot the database
 # accepts a connection and answers SELECT 1 while still stabilizing, and in that
 # window it can ACKNOWLEDGE a DDL batch ("N statements executed, 0 failed")
 # without durably persisting it — so the schema-creation step "succeeds" but the
@@ -1719,7 +1738,7 @@ exakit_bundled_datasets() {
 # against a database with no schemas in it — and the run exited 0.
 #
 # A "yes" cannot go stale the same way: nothing in a kit run takes the database
-# down without going through personal_stop/nano_stop, and those call
+# down without going through personal_stop, and that calls
 # exakit_forget_db_reachable. A "no" can go stale on any run that starts or
 # deploys one, so it is re-probed. The cost is one refused local connection per
 # ask, and exakit_dataset_loaded is the only caller.

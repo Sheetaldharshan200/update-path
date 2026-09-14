@@ -81,7 +81,6 @@ if (Test-Path (Join-Path $scriptDir "lib\exakit-common.ps1")) {
 }
 
 . (Join-Path $libDir "exakit-common.ps1")
-. (Join-Path $libDir "runtime-nano.ps1")
 . (Join-Path $libDir "runtime-personal.ps1")
 . (Join-Path $libDir "exapump.ps1")
 . (Join-Path $libDir "mcp.ps1")
@@ -209,7 +208,7 @@ function Invoke-CmdStatus {
         # none of the arms downstream, so the screen fell through to "Start it:
         # exakit start" - a command that in this state can only fail. Twin of
         # the same case in cmd_status.
-        switch ($type) { "nano" { Get-NanoStatus } "personal" { Get-PersonalStatus } default { "not installed" } }
+        switch ($type) { "personal" { Get-PersonalStatus } default { "not installed" } }
     }
     $running = "$status".StartsWith("running")
     $steps = @(Get-ExakitManifestValue "steps_completed")
@@ -404,7 +403,14 @@ function Invoke-CmdStatus {
     $engine = Get-ExakitManifestValue "runtime.engine"
     $runtimeText = $(if ($type) { $type } else { "none" })
     if ($engine) { $runtimeText = "$runtimeText ($engine)" }
-    Write-StatusPanelRow "Runtime" "$runtimeText - $status"
+    # A runtime this kit does not have is not the same as a missing one, and
+    # "nano - not installed" reads like a broken install rather than an
+    # installation that predates the removal of the container runtime.
+    if (Test-ExakitLegacyRuntimeRecorded) {
+        Write-StatusPanelRow "Runtime" "$runtimeText - from an older kit, not managed here"
+    } else {
+        Write-StatusPanelRow "Runtime" "$runtimeText - $status"
+    }
     $dsn = Get-ExakitManifestValue "runtime.dsn"
     if (-not $dsn) { $dsn = "unknown" }
     if ($running) { $reach = "reachable" } else { $reach = "not reachable" }
@@ -608,8 +614,7 @@ function Invoke-CmdStatus {
 # Every service answers the same three questions - running, start, stop - and
 # add-ons opt in through the registry (StatusFn/StartFn/StopFn/AutostartFn), so
 # `exakit start|stop|status` and the boot entry pick a new one up with no
-# wiring here. Windows registers a Startup-folder entry; the Nano container
-# carries its own restart policy, which Docker honours on boot.
+# wiring here. Windows registers a Startup-folder entry per service.
 function Get-ExakitServiceIds {
     $ids = @()
     if (Get-ExakitManifestValue "runtime.type") { $ids += "database" }
@@ -625,7 +630,6 @@ function Get-ExakitServiceStatus {
     param([Parameter(Mandatory)][string]$Id)
     if ($Id -eq "database") {
         switch (Get-RuntimeType) {
-            "nano"     { return (Get-NanoStatus) }
             "personal" { return (Get-PersonalStatus) }
         }
         return "unknown"
@@ -662,7 +666,6 @@ function Stop-ExakitService {
     param([Parameter(Mandatory)][string]$Id)
     if ($Id -eq "database") {
         switch (Get-RuntimeType) {
-            "nano"     { Stop-Nano }
             "personal" { Stop-Personal }
         }
         return
@@ -675,9 +678,6 @@ function Stop-ExakitService {
 
 function Unregister-ExakitAutostart {
     param([Parameter(Mandatory)][string]$Id)
-    if ($Id -eq "database" -and (Get-RuntimeType) -eq "nano") {
-        [void](Set-NanoRestartPolicy -Policy "no")
-    }
     $entry = Get-ExakitAutostartEntryPath -Id $Id
     if (Test-Path $entry) {
         Remove-Item -Force -ErrorAction SilentlyContinue $entry
@@ -710,9 +710,6 @@ function Test-ExakitAutostartAll {
 function Test-ExakitAutostartRegistered {
     param([Parameter(Mandatory)][string]$Id)
     if (Test-Path (Get-ExakitAutostartEntryPath -Id $Id)) { return $true }
-    if ($Id -eq "database" -and (Get-RuntimeType) -eq "nano") {
-        return (Test-NanoRestartPolicySet)
-    }
     return $false
 }
 
@@ -803,9 +800,7 @@ function Invoke-CmdStart {
     # Everything the kit runs, database first: self-heal semantics for the
     # runtime (a stopped one is started, a missing one created - `exakit start`
     # promises a running database), then every add-on service.
-    if ((Get-RuntimeType) -eq "nano" -and (Get-NanoStatus) -eq "running") {
-        Ok "Database is already running"
-    } elseif ((Get-RuntimeType) -eq "personal" -and (Test-PersonalDeploymentRunning)) {
+    if ((Get-RuntimeType) -eq "personal" -and (Test-PersonalDeploymentRunning)) {
         Ok "Database is already running"
     } elseif ((Get-RuntimeType) -eq "personal" -and (Get-PersonalStatus) -eq "conflict") {
         # Port open is not database up: with another program on the port this
@@ -833,7 +828,7 @@ function Invoke-CmdStop {
         if ($id -eq "database") { continue }
         Stop-ExakitService -Id $id
     }
-    switch (Get-RuntimeType) { "nano" { Stop-Nano } "personal" { Stop-Personal } }
+    switch (Get-RuntimeType) { "personal" { Stop-Personal } }
 }
 
 # Invoke-CmdRepairRuntime [-Yes] - rebuild a database that cannot be started.
@@ -956,41 +951,6 @@ function Invoke-CmdRepairRuntime {
     exit $repairCode
 }
 
-# Get-ExakitNanoTargetNames - "<container>|<volume>" for the Nano deployment
-# this install recorded, so a destructive prompt can NAME what it is about to
-# delete. The manifest first (the names this install actually used, which
-# EXAKIT_NANO_CONTAINER/VOLUME may have moved), then the defaults. Twin of
-# _exakit_nano_target_names in setup/lib/common.sh.
-function Get-ExakitNanoTargetNames {
-    $c = "$(Get-ExakitManifestValue 'runtime.container')"
-    $v = "$(Get-ExakitManifestValue 'runtime.volume')"
-    if (-not $c) { $c = $env:EXAKIT_NANO_CONTAINER }
-    if (-not $c) { $c = "exasol-nano" }
-    if (-not $v) { $v = $env:EXAKIT_NANO_VOLUME }
-    if (-not $v) { $v = "exasol-nano-data" }
-    return "$c|$v"
-}
-
-# Show-ExakitSharedEngineDbWarning - the shared-Docker-engine hazard, said
-# BEFORE consent is taken.
-#
-# It used to be printed from inside Invoke-ExakitUninstallComponent, i.e. after
-# the user had already typed UNINSTALL - the one sentence that might have
-# changed their answer, delivered once the answer could no longer be changed.
-# The confirmation named neither the container nor the volume (those appeared
-# only in the record line after the removal), so there was no moment at which a
-# Windows user could have noticed they were about to delete the database a WSL
-# install on the same machine is still using. Returns $false when the hazard
-# does not apply, so a caller can use it as a test. Twin of
-# _exakit_shared_engine_db_warning in setup/lib/common.sh; there it also has to
-# ask which OS it is on, because that file runs on four of them.
-function Show-ExakitSharedEngineDbWarning {
-    if ((Get-RuntimeType) -ne "nano") { return $false }
-    $names = (Get-ExakitNanoTargetNames) -split '\|'
-    Warn2 ("Windows and WSL share one Docker engine. If this machine also has a Windows or WSL install of the kit, removing the container '" + $names[0] + "' and the volume '" + $names[1] + "' deletes that database too, and it cannot be recovered.")
-    return $true
-}
-
 # Get-ExakitExapumpProfileDirs - every directory an exapump profile store could
 # be sitting in on this machine, newest convention first.
 #
@@ -1084,41 +1044,18 @@ function Invoke-ExakitUninstallRun {
     }
     if ($addonsGone.Count -gt 0) { RecordRemoved "Add-ons removed: $($addonsGone -join ', ')" }
 
-    # 1) Database + all data (the Windows runtime is Nano).
+    # 1) Database + all data.
     $type = Get-RuntimeType
     if ($type) {
-        # NAMED BEFORE THE REMOVAL, not only in the record line after it: on
-        # -Yes there is no gate to read, so this line and the shared-engine
-        # warning under it are the last chance to recognise the container as
-        # one the other side of a Windows+WSL machine is also using.
-        $targetNames = $null
-        if ($type -eq "nano") { $targetNames = (Get-ExakitNanoTargetNames) -split '\|' }
         if ($DryRun) {
-            if ($targetNames) {
-                Info ("  will remove: local Exasol nano deployment and ALL its data: container '" + $targetNames[0] + "', data volume '" + $targetNames[1] + "'")
-            } else {
-                Info "  will remove: local Exasol $type deployment and ALL its data"
-            }
-            [void](Show-ExakitSharedEngineDbWarning)
+            Info "  will remove: local Exasol $type deployment and ALL its data"
         } else {
-            if ($targetNames) {
-                Info ("Removing the local Exasol nano deployment and all data: container '" + $targetNames[0] + "', data volume '" + $targetNames[1] + "'")
-            } else {
-                Info "Removing the local Exasol $type deployment and all data"
-            }
-            [void](Show-ExakitSharedEngineDbWarning)
+            Info "Removing the local Exasol $type deployment and all data"
             switch ($type) {
-                "nano" { try { Remove-Nano -Data } catch { Warn2 "Database removal reported errors (continuing uninstall)" } }
+                "personal" { try { Remove-Personal } catch { Warn2 "Database removal reported errors (continuing uninstall)" } }
                 default { Warn2 "Unknown runtime type '$type'; skipping database removal" }
             }
-        }
-        # BY NAME. "The database was removed" leaves the reader to guess which
-        # container and which volume that was, and those are exactly the two
-        # names they need if the engine kept one of them: a container the engine
-        # refused to remove is found again by name, and nothing else on screen
-        # ever says what it was called.
-        if ($type -eq "nano") {
-            RecordRemoved "Database removed: Nano container $script:NanoContainer, data volume $script:NanoVolume"
+            RecordRemoved "Database removed: the local Exasol Personal deployment and all its data"
         }
     }
 
@@ -1445,8 +1382,6 @@ function Show-ExakitUninstallMenu {
     Warn2 "This is IRREVERSIBLE. Removed data cannot be recovered."
     if ($picked -contains "database" -or $picked -contains "everything") {
         Warn2 "The database selection deletes ALL local database data."
-        # BEFORE the typed gate, never after it.
-        [void](Show-ExakitSharedEngineDbWarning)
     }
     if (-not [Environment]::UserInteractive -or [Console]::IsInputRedirected) {
         Fail "uninstall needs an interactive terminal to confirm; use -Yes for the scripted full uninstall."
@@ -1480,16 +1415,8 @@ function Invoke-ExakitUninstallComponent {
             # from Show-ExakitUninstallMenu), which is the only place saying it
             # can still change the answer. Twin of the same move in
             # _exakit_uninstall_component.
-            switch (Get-RuntimeType) {
-                "personal" {
-                    Info "Removing the local Exasol Personal deployment and all data"
-                    try { Remove-Personal } catch { Warn2 "Database removal reported errors" }
-                }
-                default {
-                    Info "Removing the local Exasol Nano deployment and all data"
-                    try { Remove-Nano -Data } catch { Warn2 "Database removal reported errors" }
-                }
-            }
+            Info "Removing the local Exasol Personal deployment and all data"
+            try { Remove-Personal } catch { Warn2 "Database removal reported errors" }
             Remove-ExakitStepDone "runtime"
         }
         "mcp_configs" {
@@ -1656,10 +1583,10 @@ function Invoke-CmdVersion {
         } elseif ($available -eq "unknown" -or $installed -eq "unknown") {
             $status = "unknown - check: exakit status"
         } elseif ($installed -eq "not installed" -and (Test-ExakitComponentHeavy $actual)) {
-            # A runtime that is not installed is not a runtime this machine wants:
-            # offering to deploy Exasol Personal onto a Nano install would be
-            # actively wrong. (A missing light component, by contrast, is exactly
-            # the repair case below.)
+            # A runtime that is not installed is not a runtime this machine
+            # wants: offering to deploy a database onto a machine that never
+            # had one is actively wrong. (A missing light component, by
+            # contrast, is exactly the repair case below.)
             $status = "not installed - re-run the installer"
         } elseif ($installed -ne "not installed" -and (Test-ExakitVersionNewer -Latest $installed -Current $available)) {
             # Installed is ahead of the published set. The kit never moves a
@@ -1944,11 +1871,11 @@ function Invoke-CmdMarketplace {
 
 
 # The upstream lookup helpers (Get-ExakitLatestGithubRelease,
-# Get-ExakitLatestPypiVersion, Get-ExakitLatestDockerTag) deliberately live ONLY
-# in setup/lib/exakit-common.ps1. This file used to redefine them, and because it
-# is dot-sourced afterwards its copies won - including a docker-tag lookup that
-# was not architecture-aware, so an x86_64 host could be told an arm64 tag was
-# the newest one. One definition, in the library, for both entry points.
+# Get-ExakitLatestPypiVersion) deliberately live ONLY in
+# setup/lib/exakit-common.ps1. This file used to redefine them, and because it
+# is dot-sourced afterwards its copies won - including one that was not
+# architecture-aware, so an x86_64 host could be told an arm64 build was the
+# newest one. One definition, in the library, for both entry points.
 
 
 function Get-ExakitComponentNote {
@@ -2047,7 +1974,7 @@ function Write-ExakitVersionsSourceLine {
 # An env override outranks every source above, so say so rather than letting the
 # line above take credit for a version the user picked.
 function Write-ExakitOverrideLine {
-    foreach ($component in @("exapump", "mcp", "pyexasol", "nano", "personal")) {
+    foreach ($component in @("exapump", "mcp", "pyexasol", "personal")) {
         if (Get-ExakitComponentEnvOverride $component) {
             Info "Some versions come from EXAKIT_* environment overrides and not from the manifest"
             return
@@ -2069,7 +1996,7 @@ function Write-ExakitOverrideLine {
 # branch calls and what the inline offer calls.
 
 # Invoke-ExakitRuntimeComponentUpdate - the runtime component updater itself, in
-# one place. Twin of the runtime/nano/personal arms of exakit_update_component in
+# one place. Twin of the runtime/personal arms of exakit_update_component in
 # setup/lib/common.sh.
 function Invoke-ExakitRuntimeComponentUpdate {
     param([Parameter(Mandatory)][string]$Component, [string]$Advertised)
@@ -2082,11 +2009,7 @@ function Invoke-ExakitRuntimeComponentUpdate {
     }
     switch ($Component) {
         "runtime" {
-            if ((Get-RuntimeType) -eq "nano" -and $Advertised) { Update-Nano -LatestTag $Advertised }
             if ((Get-RuntimeType) -eq "personal" -and $Advertised) { Update-Personal -Advertised $Advertised }
-        }
-        "nano" {
-            if ($Advertised) { Update-Nano -LatestTag $Advertised }
         }
         "personal" {
             if ($Advertised) { Update-Personal -Advertised $Advertised }
@@ -2101,7 +2024,6 @@ function Invoke-ExakitRuntimeComponentUpdate {
 # Twins of exakit_runtime_status / exakit_runtime_start in setup/lib/common.sh.
 function Get-ExakitRuntimeStatus {
     switch (Get-RuntimeType) {
-        "nano"     { try { return (Get-NanoStatus) } catch { return "" } }
         "personal" { try { return (Get-PersonalStatus) } catch { return "" } }
     }
     return ""
@@ -2109,16 +2031,13 @@ function Get-ExakitRuntimeStatus {
 
 function Start-ExakitRuntime {
     switch (Get-RuntimeType) {
-        "nano"     { Start-Nano }
         "personal" { Start-Personal }
     }
 }
 
 # Test-ExakitRuntimeUpdateStaged - true for an Exasol Personal MAJOR upgrade: a
 # data migration with its own backup-gated three-step flow (--plan, --backup,
-# --apply), which a single y/N is not informed consent for. Personal is macOS-only
-# in this kit, so on Windows this is false in practice; it stays here so both
-# sides of the mirror make the same decision from the same inputs.
+# --apply), which a single y/N is not informed consent for.
 # Twin of exakit_runtime_update_is_staged in setup/lib/common.sh.
 function Test-ExakitRuntimeUpdateStaged {
     param([string]$Installed, [string]$Advertised)
@@ -2129,8 +2048,8 @@ function Test-ExakitRuntimeUpdateStaged {
     return ($installedMajor -ne $advertisedMajor)
 }
 
-# Get-ExakitMajorVersion - "2.1.0" -> "2", "v2026.2.0-nano.2" -> "2026". Empty
-# when the string does not start with a number.
+# Get-ExakitMajorVersion - "2.1.0" -> "2", "v2026.2.0" -> "2026". Empty when
+# the string does not start with a number.
 # Twin of exakit_major_version in setup/lib/common.sh.
 function Get-ExakitMajorVersion {
     param([string]$Version)
@@ -2166,10 +2085,6 @@ function Write-ExakitRuntimeUpdateExplanation {
     param([string]$Actual, [string]$Installed, [string]$Advertised)
     Warn2 "$Actual $Installed -> $Advertised needs the database stopped."
     switch ($Actual) {
-        "nano" {
-            Info "The database goes down while the container is recreated, then it is started again and checked - usually a minute or two, longer if the new image still has to be pulled."
-            Info "Your data is kept: the same data volume is reused, and the previous image is put back if the new container does not come up."
-        }
         "personal" {
             Info "The launcher is replaced; the database is checked afterwards and started again if it ends up down - usually under a minute."
             Info "Your data is kept: this update neither deletes nor migrates the tables in your database."
@@ -2181,10 +2096,8 @@ function Write-ExakitRuntimeUpdateExplanation {
     }
 }
 
-# Invoke-ExakitRuntimeUpdateApply - stop, update, start, report. Update-Nano owns
-# the sequence itself (it pulls the new image, stops the container, recreates it
-# on the SAME data volume, waits for readiness and puts the previous image back if
-# it never becomes ready), and it is called here exactly as
+# Invoke-ExakitRuntimeUpdateApply - stop, update, start, report. Update-Personal
+# owns the sequence itself, and it is called here exactly as
 # `exakit update runtime` calls it. What this adds is the one thing the prompt
 # promises: a database that was up before this command is up after it.
 # Twin of exakit_apply_runtime_update in setup/lib/common.sh.
@@ -2217,13 +2130,11 @@ function Invoke-ExakitRuntimeUpdateApply {
 # it was applied, $false when it was deferred (and then prints the exact command
 # that applies it later).
 #
-# On backups: the kit has no data-export facility, and this path needs none.
-# Update-Nano recreates the container over the persisted data volume, records a
-# pre-update snapshot of the runtime metadata under
-# ~\.exasol-starter-kit\backups\nano-update\, and restores the previous image if
-# the new one will not start. The one runtime change that IS a data migration is
-# the Exasol Personal major upgrade, which already has a real backup inside its
-# own three-step flow - which is why this function refuses to start it from a y/N.
+# On backups: the kit has no data-export facility, and a minor launcher update
+# needs none - it replaces the launcher and leaves the deployment's data alone.
+# The one runtime change that IS a data migration is the Exasol Personal major
+# upgrade, which already has a real backup inside its own three-step flow -
+# which is why this function refuses to start it from a y/N.
 # Twin of exakit_offer_runtime_update in setup/lib/common.sh.
 function Invoke-ExakitRuntimeUpdateOffer {
     param(
@@ -2278,8 +2189,8 @@ function Invoke-CmdUpdate {
     if (-not $Target) { $Target = "all" }
     if ($AssumeYes) {
         # -Yes answers the only question this command asks: may it stop the
-        # database. Update-Nano reads the same variable, so an explicit
-        # `exakit update runtime -Yes` is unprompted for the same reason.
+        # database. The runtime updater reads the same variable, so an
+        # explicit `exakit update runtime -Yes` is unprompted for the same reason.
         $env:EXAKIT_CONFIRM_RUNTIME_UPDATE = "1"
     }
     # An explicit update applies what is advertised RIGHT NOW.
@@ -2365,7 +2276,6 @@ function Invoke-CmdUpdate {
                 Update-ExakitSelf -Advertised $available -Installed $current
             }
             "runtime" { Invoke-ExakitRuntimeComponentUpdate -Component "runtime" -Advertised $available }
-            "nano"    { Invoke-ExakitRuntimeComponentUpdate -Component "nano" -Advertised $available }
             "personal" { Invoke-ExakitRuntimeComponentUpdate -Component "personal" -Advertised $available }
             "skills" { Update-ExakitSkills -Advertised $available -Installed $current }
             "exapump" {
@@ -2473,14 +2383,6 @@ function Get-ExakitLogTargets {
         Sort-Object LastWriteTime -Descending | Select-Object -First 1
     if ($setup) {
         $targets += [pscustomobject]@{ Id = "setup"; Label = "Installer and setup runs"; Kind = "file"; Source = $setup.FullName }
-    }
-    if ((Get-RuntimeType) -eq "nano") {
-        $engine = Get-NanoEngine
-        if ($engine -and $engine -ne "none") {
-            Resolve-NanoNames
-            $targets += [pscustomobject]@{ Id = "database"; Label = "Database container"; Kind = "cmd"
-                Source = $engine; Container = $script:NanoContainer }
-        }
     }
     foreach ($addonId in (Get-ExakitMarketplaceInstalledAddons)) {
         $addon = Get-ExakitMarketplaceAddon $addonId
@@ -3049,14 +2951,7 @@ try {
     switch ($Command) {
         "preflight"    {
             Assert-ExakitKnownOptions -CommandName "preflight" -Allowed @() -Arguments $RestArgs
-            # A fresh machine is asked about the runtime the KNOB would install;
-            # an installed kit about the one it runs.
-            $preflightRuntime = Get-RuntimeType
-            if (-not $preflightRuntime) { $preflightRuntime = Get-ExakitRuntimeChoice }
-            switch ($preflightRuntime) {
-                "personal" { Test-PersonalRequirements }
-                default    { Test-NanoRequirements }
-            }
+            Test-PersonalRequirements
         }
         "status"       {
             $statusJson = ($RestArgs -contains "--json" -or $RestArgs -contains "-j")
@@ -3214,8 +3109,7 @@ try {
             }
             $doctorArgs = @($RestArgs | Where-Object { $_ -notin @("--json", "-j") })
             $doctorType = Get-RuntimeType
-            $doctorUp = (($doctorType -eq "nano" -and "$(Get-NanoStatus)".StartsWith("running")) -or
-                         ($doctorType -eq "personal" -and (Get-PersonalStatus) -eq "running"))
+            $doctorUp = ($doctorType -eq "personal" -and (Get-PersonalStatus) -eq "running")
             if (-not $doctorUp) {
                 if ($doctorJson) {
                     # The same three keys every --json state answer carries.

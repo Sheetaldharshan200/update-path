@@ -132,56 +132,9 @@ main() {
     # --- 2. detect -----------------------------------------------------------
     os="$(uname -s)"
     arch="$(uname -m)"
-    # EXAKIT_RUNTIME chooses which database runtime a FRESH install deploys:
-    # "personal" (the Exasol Personal launcher) or "nano" (the Exasol Nano
-    # container). Unset, each platform keeps the runtime it has always had, so
-    # this knob changes nothing until someone asks it to. It never rewires an
-    # existing install - the recorded runtime.type in the manifest stays what
-    # it is; this only routes the setup for a machine being installed now.
-    #
-    # Validated HERE, before anything is downloaded: a typo'd value silently
-    # falling back to a platform default would deploy a database the user did
-    # not ask for, which is worse than any refusal.
-    runtime_choice="${EXAKIT_RUNTIME:-}"
-    # AN INSTALLED KIT'S RECORD OUTRANKS BOTH the knob and the default, exactly
-    # as the setup scripts decide it. Without this the two disagreed about one
-    # machine: the installer announced the plan for its own default while the
-    # setup script honoured the record and installed the other runtime - and
-    # the requirements check ran the wrong runtime's gate on the way past.
-    # Switching runtimes is an uninstall away, never a re-run away.
-    #
-    # Read here with grep, not the kit's own helper: none of the libraries exist
-    # yet at this point, and nothing has been downloaded. Only the two runtime
-    # words are accepted, so an unrelated "type" key cannot answer this.
-    #
-    # grep -E, NOT sed: BRE alternation (\|) is a GNU extension that BSD sed -
-    # macOS, every BSD - does not support, so the sed spelling of this read
-    # silently answered nothing on exactly the platform this kit was born on.
-    _ir_manifest="${EXAKIT_HOME:-$HOME/.exasol-starter-kit}/manifest.json"
-    recorded_runtime=""
-    if [ -r "$_ir_manifest" ]; then
-        recorded_runtime="$(grep -Eo '"type"[[:space:]]*:[[:space:]]*"(nano|personal)"' "$_ir_manifest" 2>/dev/null \
-            | head -1 | grep -Eo '(nano|personal)' | head -1)"
-    fi
-    if [ -n "$recorded_runtime" ]; then
-        if [ -n "$runtime_choice" ] && [ "$runtime_choice" != "$recorded_runtime" ]; then
-            say "This machine already runs the $recorded_runtime runtime; EXAKIT_RUNTIME=$runtime_choice only applies to a fresh install (uninstall first to switch)."
-        fi
-        runtime_choice="$recorded_runtime"
-    fi
-    case "$runtime_choice" in
-        ""|personal|nano) : ;;
-        *) fail "EXAKIT_RUNTIME='$runtime_choice' is not a runtime this kit knows. Valid values: personal (the Exasol Personal launcher), nano (the Exasol Nano container) - or unset it for the platform default." ;;
-    esac
     case "$os" in
         Darwin)
             platform="macos"
-            [ -n "$runtime_choice" ] || runtime_choice="personal"
-            # There is no Nano path on macOS: the container runtime modules are
-            # written for Linux engines, and pretending otherwise would download
-            # the kit and fail later, deeper and less clearly.
-            [ "$runtime_choice" = "personal" ] || \
-                fail "EXAKIT_RUNTIME=nano is not available on macOS - the macOS runtime is Exasol Personal. Unset EXAKIT_RUNTIME to proceed."
             target="Exasol Personal (local deployment)"
             setup_script="setup/setup-macos.sh"
             ;;
@@ -191,20 +144,14 @@ main() {
             else
                 platform="linux"
             fi
-            # The default is Exasol Personal, everywhere. A platform it does
-            # not support exits gracefully naming what it does support - never
-            # a silent reroute onto the container runtime; EXAKIT_RUNTIME=nano
-            # stays the explicit escape hatch for the container.
-            [ -n "$runtime_choice" ] || runtime_choice="personal"
-            if [ "$runtime_choice" = "personal" ]; then
-                if [ "$platform" = "wsl" ]; then
-                    fail "Exasol Personal supports macOS, native Linux and Windows x86_64 - it does not support WSL. Nothing was installed. (To run the container runtime inside this distro instead, set EXAKIT_RUNTIME=nano.)"
-                fi
-                target="Exasol Personal (local deployment via Podman)"
-            else
-                target="Exasol Nano (container: Docker preferred, Podman fallback)"
+            # A platform Exasol Personal does not support exits gracefully
+            # naming what it does support. There is no second runtime to fall
+            # back to any more, so the refusal is the whole answer.
+            if [ "$platform" = "wsl" ]; then
+                fail "Exasol Personal supports macOS, native Linux and Windows x86_64 - it does not support WSL, and this kit has no other database to offer. Nothing was installed. Install on the Windows side instead, or use a native Linux machine."
             fi
-            setup_script="setup/setup-wsl.sh"
+            target="Exasol Personal (local deployment via Podman)"
+            setup_script="setup/setup-linux.sh"
             ;;
         *)
             fail "Unsupported platform: $os. On Windows, run install.ps1 in PowerShell."
@@ -283,14 +230,9 @@ main() {
     # When piped (curl | sh), stdin is the exhausted pipe. Reattach the
     # terminal when one is available so any interactive step (for example a
     # first-run license confirmation) can still read the keyboard.
-    # Name the platform, not just the script: setup-wsl.sh also serves native
-    # Linux, and a Linux user reading "setup-wsl" wonders if WSL is required.
     _bootstrap_s=""
     [ -n "${EXAKIT_INSTALL_T0:-}" ] && _bootstrap_s=" ($(( $(date +%s) - EXAKIT_INSTALL_T0 ))s after start)"
-    case "$setup_script" in
-        */setup-wsl.sh) say "Starting setup: $setup_script (shared Linux / WSL setup)$_bootstrap_s" ;;
-        *)              say "Starting setup: $setup_script$_bootstrap_s" ;;
-    esac
+    say "Starting setup: $setup_script$_bootstrap_s"
     printf '\n'
     # We already showed the banner above; tell the setup script to skip its
     # own so the wordmark appears exactly once through the installer. A direct

@@ -103,7 +103,6 @@ fi
 
 . "$_lib_dir/common.sh"
 . "$_lib_dir/detect.sh"
-. "$_lib_dir/runtime-nano.sh"
 . "$_lib_dir/runtime-personal.sh"
 [ -f "$_lib_dir/help.sh" ] && . "$_lib_dir/help.sh"
 [ -f "$_lib_dir/exapump.sh" ] && . "$_lib_dir/exapump.sh"
@@ -197,13 +196,6 @@ _not_installed_answer() {
 # prose shows (same exit codes; nothing else on stdout). Loaded datasets are
 # included in both forms: the manifest records them, and reconstructing state
 # after a context reset must not require knowing where that file lives.
-# _cs_engine_suffix — " (docker)" when a container runtime is what runs the
-# database, empty when the runtime is native. Reads the manifest only.
-_cs_engine_suffix() {
-    _cse="$(manifest_get runtime.engine 2>/dev/null || true)"
-    [ -n "$_cse" ] && printf ' (%s)' "$_cse"
-}
-
 # _cs_mcp_clients — "<label>|<state>" per AI client, from the manifest alone.
 #
 # configured_clients is what mcp-setup actually wrote; every other known client
@@ -264,7 +256,6 @@ cmd_status() {
     # command substitutions below capture their own stdout regardless.
     if [ "$_cs_json" -eq 0 ]; then ui_spin_begin "Checking the database"; fi
     case "$_type" in
-        nano)     _cs_db="$(nano_status)" ;;
         personal) _cs_db="$(personal_status)" ;;
         # NO RUNTIME RECORDED is a state the kit knows exactly, not an unknown:
         # the installer has not reached its runtime step, so no database is
@@ -532,7 +523,15 @@ EXAKIT_SJ_PY
     _cs_pad() { printf '%-17s %s' "$1" "$2"; }
 
     ui_panel_begin "Kit"
-    ui_panel_line "$(_cs_pad 'Runtime' "${_type:-none}$(_cs_engine_suffix) · $_cs_db")"
+    # A runtime this kit does not have is not the same as a missing one, and
+    # "nano · not installed" reads like a broken install rather than an
+    # installation that predates the removal of the container runtime. Say
+    # which it is, here, where the reader is already looking.
+    if exakit_legacy_runtime_recorded 2>/dev/null; then
+        ui_panel_line "$(_cs_pad 'Runtime' "$_type · from an older kit, not managed here")"
+    else
+        ui_panel_line "$(_cs_pad 'Runtime' "${_type:-none} · $_cs_db")"
+    fi
     ui_panel_line "$(_cs_pad 'Database' "$(manifest_get runtime.dsn 2>/dev/null || printf 'unknown')$(
         if [ "$_cs_running" -eq 1 ]; then printf ' · reachable'
         elif [ "$_cs_db" = "conflict" ]; then printf ' · port held by another process (not Exasol) — stop it, then: exakit start'
@@ -755,14 +754,34 @@ cmd_start() {
     # runtime (a stopped one is started, a missing one deployed — `exakit
     # start` promises a running database), then every add-on service.
     case "$(_runtime_type)" in
-        nano)     [ "$(nano_status 2>/dev/null)" = "running" ] && ok "Database is already running" || exakit_ensure_runtime_running deploy ;;
         personal)
             if personal_deployment_running 2>/dev/null; then
                 ok "Database is already running"
             elif [ "$(personal_status 2>/dev/null)" = "conflict" ]; then
                 # Port open is not database up: with another program on 8563 this
                 # said "already running" and exited 0 while status said stopped.
-                die "Port $EXAKIT_PERSONAL_PORT is held by another process$(personal_port_holder_hint), not by Exasol, so the database cannot start. Stop that process, then: exakit start"
+                #
+                # BUT ASK WHOSE PROCESS IT IS BEFORE REFUSING. The commonest
+                # holder by far is OUR OWN orphaned runner - the launcher
+                # leaves `.../exasol-local-runner/.../launcher __daemon__`
+                # bound to the port after a failed deploy or a destroy that
+                # could not find its PID file - and the kit already knows how
+                # to clear exactly that (personal_reap_orphan_daemon, which
+                # refuses to touch anything that is not ours).
+                #
+                # This branch used to die first, so a machine in the one state
+                # the reap exists for was told "held by another process, not by
+                # Exasol" - which was FALSE, it was Exasol's - and handed a
+                # manual `kill` it should never have needed. Reproduced on a
+                # real machine: `exakit start` was a dead end until the pid was
+                # killed by hand. The reap runs first now, and the refusal is
+                # kept for the case it was written for: a genuinely foreign
+                # program on the port.
+                if personal_reap_orphan_daemon; then
+                    exakit_ensure_runtime_running deploy
+                else
+                    die "Port $EXAKIT_PERSONAL_PORT is held by another process$(personal_port_holder_hint), not by Exasol, so the database cannot start. Stop that process, then: exakit start"
+                fi
             else
                 exakit_ensure_runtime_running deploy
             fi
@@ -790,7 +809,6 @@ cmd_stop() {
         exakit_service_stop "$_stop_id" || true
     done
     case "$(_runtime_type)" in
-        nano)     nano_stop ;;
         personal) personal_stop ;;
     esac
 }
@@ -840,7 +858,7 @@ cmd_repair_runtime() {
     _rr_kit="$(exakit_repo_root)" || die "Could not find the kit copy to re-run setup from. Re-run the installer instead."
     case "$(detect_os)" in
         macos)      _rr_setup="setup/setup-macos.sh" ;;
-        linux|wsl)  _rr_setup="setup/setup-wsl.sh" ;;
+        linux|wsl)  _rr_setup="setup/setup-linux.sh" ;;
         *)          die "repair-runtime has no setup script for this platform. On Windows, re-run install.ps1." ;;
     esac
     [ -f "$_rr_kit/$_rr_setup" ] || die "The kit copy at $_rr_kit has no $_rr_setup. Re-run the installer instead."

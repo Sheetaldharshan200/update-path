@@ -49,7 +49,7 @@ exakit update --yes     # pre-answer the one question it can ask
 ```
 
 Targets are `all`, `runtime`, `exakit`, `exapump`, `mcp`, `pyexasol`, `skills`,
-any installed add-on id, and the runtime names `nano` / `personal`. An unknown
+any installed add-on id, and the runtime name `personal`. An unknown
 target is refused with exit 2 and changes nothing.
 
 The quick components apply in seconds. A **database** change is different: it
@@ -60,6 +60,37 @@ the exact command to apply it later. Data is kept either way.
 A newer **skill set** published by the maintainers arrives through
 `exakit update` as well; no kit release is involved. `exakit skills` reports
 when the copies in your agent's folders are behind the advertised set.
+
+## An installation from an older kit
+
+Older kits could put the database in a **container**. This kit deploys Exasol
+Personal and nothing else, so such an installation has a database nothing here
+can drive. `exakit status` names it plainly — `Runtime  nano · from an older
+kit, not managed here` — and `exakit update` on it cannot help: the crossing is
+a **re-run of the installer**.
+
+The installer recognises it before touching anything and asks **once** — and
+only when there is really something to move: a container that is gone, a
+machine that has already crossed, and a resumed attempt at the same install all
+pass through in silence. When it does ask, there are two exclusive answers:
+
+- **Migrate my data** — every non-system table is copied out while the old
+  database is still running, then restored into the new deployment at the end
+  of the run. Each table is recreated from the source's own column types first,
+  so nothing is type-inferred. A text column that held an empty string arrives
+  as NULL; that is stated before the copy starts.
+- **Skip and continue** — the new database is set up empty; the old one keeps
+  its data.
+
+`EXAKIT_LEGACY_DATA=migrate` or `=skip` pre-answers it. **Unset in an
+unattended run means skip** — so an agent that wants the copy has to ask for
+it, which is the point.
+
+Two things hold on both answers: the old container is **stopped** (it holds the
+port the new deployment needs), and it is **never removed**. Its data volume
+stays, and the command that deletes it is printed rather than run. A table the
+fresh install already created is left alone rather than appended to, and named
+in the summary.
 
 ## Reading the logs
 

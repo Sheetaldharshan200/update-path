@@ -2,7 +2,7 @@ name: update-test / set A
 
 # Makes this repo advertise one fixed, pinned version set, on demand.
 #
-#   Set A: personal 2.0.0, nano 2026.2.0-nano.2, exapump 0.11.0, mcp 1.9.0,
+#   Set A: personal 2.0.0, exapump 0.11.0, mcp 1.9.0,
 #   pyexasol 2.2.1.
 #
 # WHY IT EXISTS
@@ -92,7 +92,6 @@ jobs:
       # both files, so a diff between the two shows the set and nothing else.
       SET_LABEL: 'Set A'
       SET_PERSONAL: '2.0.0'
-      SET_NANO: '2026.2.0-nano.2'
       SET_EXAPUMP: '0.11.0'
       SET_MCP: '1.9.0'
       SET_PYEXASOL: '2.2.1'
@@ -123,11 +122,10 @@ jobs:
 
           MANIFEST = "versions.json"
           # The manifest's own order, so the summary reads like the file.
-          ORDER = ("personal", "nano", "exapump", "mcp", "pyexasol")
+          ORDER = ("personal", "exapump", "mcp", "pyexasol")
 
           WANTED = {
               "personal": os.environ["SET_PERSONAL"],
-              "nano": os.environ["SET_NANO"],
               "exapump": os.environ["SET_EXAPUMP"],
               "mcp": os.environ["SET_MCP"],
               "pyexasol": os.environ["SET_PYEXASOL"],
@@ -226,10 +224,7 @@ jobs:
           COUPLED = {
               "personal": [
                   ("setup/lib/common.sh", "bash", "EXAKIT_PERSONAL_VERSION_FALLBACK"),
-              ],
-              "nano": [
-                  ("setup/lib/common.sh", "bash", "EXAKIT_NANO_TAG_FALLBACK"),
-                  ("setup/lib/exakit-common.ps1", "pwsh", "NanoTagFallback"),
+                  ("setup/lib/runtime-personal.ps1", "pwsh", "PersonalVersionFallback"),
               ],
               "exapump": [
                   ("setup/lib/common.sh", "bash", "EXAKIT_EXAPUMP_VERSION_FALLBACK"),

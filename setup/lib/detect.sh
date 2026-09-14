@@ -30,9 +30,8 @@ detect_os() {
 # detect_wsl_version — 1 or 2 for a WSL distro; empty (and non-zero) elsewhere.
 #
 # /proc/version says "Microsoft" on BOTH WSL versions, so detect_os classifies
-# them both as `wsl` — and the install then walks a WSL 1 user into the
-# container-runtime remedy, telling them to install Docker on a system that has
-# no Linux kernel to run it (Docker Desktop dropped WSL 1 support). The kernel
+# them both as `wsl`, and the two need telling apart wherever a message depends
+# on whether a Linux kernel is present at all. The kernel
 # RELEASE is what tells them apart: WSL 2 ships a Microsoft kernel whose release
 # carries "microsoft-standard" / "WSL2", while WSL 1's emulated release is the
 # 4.4.x "-Microsoft" string. Anything unrecognised answers 2: this gates a hard
@@ -158,58 +157,14 @@ detect_free_disk_gb() {
     esac
 }
 
-# detect_docker_data_gb — free space in whole GB where the container engine
-# actually stores images, containers and volumes. 0 when it cannot be told.
-#
-# `df $HOME` is not that place. On a Linux host Docker writes to
-# /var/lib/docker, which is often a different filesystem from the user's home
-# (a separate /var, an LVM volume, a mounted data disk); under Podman it is
-# ~/.local/share/containers, which usually is. Guarding the wrong filesystem is
-# how an install passes its disk check and then dies mid-pull with "no space
-# left on device".
-detect_docker_data_gb() {
-    _ddd_engine="$(detect_container_runtime)"
-    [ "$_ddd_engine" != "none" ] || { echo 0; return; }
-    _ddd_root="$(_detect_engine_probe "$_ddd_engine" info --format '{{.DockerRootDir}}' 2>/dev/null | head -n 1)"
-    # Podman reports its graph root under a different key; ask for that when the
-    # Docker-shaped template comes back empty.
-    if [ -z "$_ddd_root" ] && [ "$_ddd_engine" = "podman" ]; then
-        _ddd_root="$(_detect_engine_probe podman info --format '{{.Store.GraphRoot}}' 2>/dev/null | head -n 1)"
-    fi
-    [ -n "$_ddd_root" ] && [ -d "$_ddd_root" ] || { echo 0; return; }
-    detect_free_disk_gb "$_ddd_root"
-}
 
-# detect_wsl_windows_free_gb — free space in whole GB on the Windows drive
-# backing this WSL distro. 0 when this is not WSL, or when it cannot be told.
-#
-# Inside WSL, `df /` reports the SIZE OF THE VIRTUAL DISK (typically 1 TB), not
-# the space left on the Windows volume that file grows into. A WSL install on a
-# Windows machine with 3 GB free on C: therefore sailed through the 10 GB disk
-# check and failed later, during the image pull, with an error that named
-# neither Windows nor C:. Ask Windows directly instead.
-detect_wsl_windows_free_gb() {
-    [ "$(detect_os)" = "wsl" ] || { echo 0; return; }
-    command -v powershell.exe >/dev/null 2>&1 || { echo 0; return; }
-    # SystemDrive rather than a hard-coded C:, and whole GB so the value matches
-    # every other number in this file. Windows line endings are stripped.
-    _dwf="$(powershell.exe -NoProfile -NonInteractive -Command \
-        '[math]::Floor((Get-CimInstance Win32_LogicalDisk -Filter ("DeviceID=" + [char]39 + $env:SystemDrive + [char]39)).FreeSpace / 1GB)' \
-        2>/dev/null | tr -d '\r\n[:space:]')"
-    case "$_dwf" in
-        ''|*[!0-9]*) echo 0 ;;
-        *)           echo "$_dwf" ;;
-    esac
-}
 
-# detect_container_runtime — prints the first usable runtime:
-#   docker | podman | none
-# "Usable" means the CLI exists and the daemon/socket answers.
-# `docker info` blocks for as long as Docker Desktop takes to start, so bound it:
-# a version lookup must not sit there in silence. detect.sh is also sourced on its
-# own by the installer's preflight, before common.sh and the bounded runner exist;
-# there the plain call is correct, since preflight is allowed to wait for an engine
-# it is specifically reporting on.
+# _detect_engine_probe — run an engine command under the kit's bounded runner
+# when it exists. `podman info` can block while a machine is still coming up, so
+# a version lookup must not sit there in silence. detect.sh is also sourced on
+# its own by the installer's preflight, before common.sh and the bounded runner
+# exist; there the plain call is correct, since preflight is allowed to wait for
+# the engine it is specifically reporting on.
 _detect_engine_probe() {
     if command -v exakit_run_bounded >/dev/null 2>&1; then
         exakit_run_bounded "${EXAKIT_ENGINE_PROBE_TIMEOUT:-8}" "$@"
@@ -218,45 +173,20 @@ _detect_engine_probe() {
     fi
 }
 
-detect_container_runtime() {
-    if command -v docker >/dev/null 2>&1 && _detect_engine_probe docker info >/dev/null 2>&1; then
-        echo "docker"
-        return
-    fi
+# detect_podman — "podman" when a usable Podman is here, "none" otherwise.
+#
+# The kit drives Podman and only Podman: the Exasol launcher deploys through
+# it, and exapump's glibc shim borrows it. Bounded, because `podman info` can
+# block while a machine is still coming up, and a probe that hangs turns a
+# status command into a stall.
+detect_podman() {
     if command -v podman >/dev/null 2>&1 && _detect_engine_probe podman info >/dev/null 2>&1; then
         echo "podman"
-        return
+        return 0
     fi
     echo "none"
 }
 
-# detect_container_runtime_detail — richer status for error messages:
-#   docker | podman | docker-permission | docker-stopped | podman-stopped | none
-detect_container_runtime_detail() {
-    _usable="$(detect_container_runtime)"
-    if [ "$_usable" != "none" ]; then
-        echo "$_usable"
-        return
-    fi
-    if command -v docker >/dev/null 2>&1; then
-        # Distinguish "the daemon is down" from "the daemon is UP but this
-        # user may not talk to it" (typically: not in the docker group, so
-        # /var/run/docker.sock refuses with permission denied). The remedies
-        # are completely different — telling that user to start a daemon
-        # that is already running sends them in circles.
-        if docker info 2>&1 | grep -qi 'permission denied'; then
-            echo "docker-permission"
-            return
-        fi
-        echo "docker-stopped"
-        return
-    fi
-    if command -v podman >/dev/null 2>&1; then
-        echo "podman-stopped"
-        return
-    fi
-    echo "none"
-}
 
 # port_listener_pids <port> — the pids of whatever is LISTENING on the port,
 # newest tool first, empty when nothing can tell. The one place in the kit that
@@ -303,8 +233,7 @@ port_listener_pids() {
 #
 # Inside a WSL distro this can still come back empty while the port really is
 # taken: Windows and WSL share localhost, and no tool in the distro can see a
-# Windows process. The callers say so (runtime-nano.sh's port remedy) rather
-# than leaving the reader with an unexplained blank.
+# Windows process. Callers say so rather than leaving an unexplained blank.
 port_holder_desc() {
     _phd_port="$1"
     _phd_pid="$(port_listener_pids "$_phd_port" 2>/dev/null | head -1)"
@@ -343,14 +272,13 @@ port_in_use() {
 # precondition this machine does not meet, with its remedy; empty (and non-zero)
 # when the machine looks fine. Cheap: two greps and a file test, no engine call.
 #
-# The README asks for "Docker or Podman (running)" and stops there, but rootless
-# Podman needs two more things and says so only through an engine error the kit
-# does not translate:
+# The docs ask for Podman and stop there, but rootless Podman needs two more
+# things and says so only through an engine error the kit does not translate:
 #   - subordinate id ranges for this user (/etc/subuid, /etc/subgid). Without
 #     them `podman info` itself fails with "no subuid ranges found for user".
 #   - cgroups v2. The container is started with --pids-limit and --shm-size,
 #     and rootless Podman refuses resource limits on a cgroups-v1 host.
-# Neither applies to root, to macOS (where Podman runs in a VM), or to Docker.
+# Neither applies to root, or to macOS (where Podman runs in its own VM).
 detect_rootless_podman_gap() {
     [ "$(detect_os)" != "macos" ] || return 1
     [ "$(id -u 2>/dev/null || echo 0)" != "0" ] || return 1
@@ -368,21 +296,12 @@ detect_rootless_podman_gap() {
         fi
     done
     if [ ! -f /sys/fs/cgroup/cgroup.controllers ]; then
-        printf 'cgroups v2 is not active, so rootless Podman cannot apply the container resource limits the kit sets — boot with systemd.unified_cgroup_hierarchy=1, or run the database under Docker instead'
+        printf 'cgroups v2 is not active, so rootless Podman cannot apply the resource limits the kit sets — boot with systemd.unified_cgroup_hierarchy=1'
         return 0
     fi
     return 1
 }
 
-# wsl_docker_desktop_on_windows — inside WSL, use Windows interop to detect
-# the classic half-configured state: Docker Desktop IS running on the
-# Windows side (docker.exe answers) while this distro cannot reach it,
-# i.e. WSL integration is not enabled for this distro.
-wsl_docker_desktop_on_windows() {
-    [ "$(detect_os)" = "wsl" ] || return 1
-    command -v docker.exe >/dev/null 2>&1 || return 1
-    docker.exe info >/dev/null 2>&1
-}
 
 # preflight_report — check every requirement for this machine and print a
 # pass/fail line for each, with the remedy inline. Returns non-zero when a
@@ -409,12 +328,6 @@ preflight_report() {
     else
         _pf_ok "CPU architecture: $_arch"
     fi
-    # WSL 1 has no Linux kernel, so no container engine can run in it. Said
-    # HERE, before the engine check, because the engine check's own remedy
-    # ("install Docker") is a loop on this platform: nothing to install helps.
-    if [ "$(detect_wsl_version 2>/dev/null)" = "1" ]; then
-        _pf_bad "This distro runs on WSL 1, which cannot run a container engine — convert it from an admin PowerShell (files are kept): wsl --set-version <distro> 2 (list them with: wsl -l -v)"
-    fi
     # A kit home on a Windows drive cannot hold a protected secret: DrvFs is
     # mounted without Linux permissions, so the chmod 600 on the database
     # passwords is accepted and discarded. Warned BEFORE the install writes one.
@@ -432,27 +345,10 @@ preflight_report() {
         if [ "$_disk" -ge 20 ]; then _pf_ok "Free disk: ${_disk} GB (20+ recommended)"
         else _pf_bad "Free disk: ${_disk} GB — free up space (20 GB recommended for the local database)"; fi
     else
-        if [ "$_ram" -ge 4 ]; then _pf_ok "Memory: ${_ram} GB (Exasol Nano needs 4+)"
-        else _pf_bad "Memory: ${_ram} GB — Exasol Nano needs at least 4 GB"; fi
-        if [ "$_disk" -ge 10 ]; then _pf_ok "Free disk at $HOME: ${_disk} GB (10+ recommended)"
-        else _pf_bad "Free disk at $HOME: ${_disk} GB — free up space (10 GB recommended for the database image and data)"; fi
-
-        # The two filesystems $HOME does not speak for. Reported only when they
-        # are knowable and different, so an ordinary Linux box still sees one
-        # disk line: the container engine's data directory (where the image and
-        # the /exa volume actually land) and, under WSL, the Windows drive the
-        # virtual disk grows into — `df` inside WSL reports the vhdx's nominal
-        # size and will happily claim 1 TB free on a Windows machine with 3 GB.
-        _disk_engine="$(detect_docker_data_gb)"
-        if [ "$_disk_engine" -gt 0 ] && [ "$_disk_engine" -ne "$_disk" ]; then
-            if [ "$_disk_engine" -ge 10 ]; then _pf_ok "Free disk where the container engine stores images: ${_disk_engine} GB (10+ recommended)"
-            else _pf_bad "Free disk where the container engine stores images: ${_disk_engine} GB — free up space there (try: docker system prune -a)"; fi
-        fi
-        _disk_windows="$(detect_wsl_windows_free_gb)"
-        if [ "$_disk_windows" -gt 0 ]; then
-            if [ "$_disk_windows" -ge 10 ]; then _pf_ok "Free disk on the Windows system drive: ${_disk_windows} GB (10+ recommended; the WSL disk grows into it)"
-            else _pf_bad "Free disk on the Windows system drive: ${_disk_windows} GB — the WSL virtual disk grows into it, so free up space on Windows"; fi
-        fi
+        if [ "$_ram" -ge 8 ]; then _pf_ok "Memory: ${_ram} GB (Exasol Personal needs 8+)"
+        else _pf_bad "Memory: ${_ram} GB — Exasol Personal needs at least 8 GB"; fi
+        if [ "$_disk" -ge 20 ]; then _pf_ok "Free disk at $HOME: ${_disk} GB (20+ recommended)"
+        else _pf_bad "Free disk at $HOME: ${_disk} GB — free up space (20 GB recommended for the local database)"; fi
     fi
 
     # base tools. bash is one of them: install.sh is POSIX sh, but every setup
@@ -478,81 +374,22 @@ preflight_report() {
         _pf_note "python3 missing — the installer can bootstrap a managed Python runtime automatically"
     fi
 
-    # container runtime (only the Nano platforms need one)
-    # The preflight runs with only this file loaded, so the default is resolved
-    # inline: Exasol Personal unless EXAKIT_RUNTIME=nano says otherwise. Twin
-    # of exakit_runtime_choice. On WSL the answer is the same graceful refusal
-    # the installer gives, said here where it costs nothing.
-    _pf_runtime="${EXAKIT_RUNTIME:-personal}"
-    if [ "$_os" = "wsl" ] && [ "$_pf_runtime" = "personal" ]; then
-        _pf_bad "Exasol Personal supports macOS, native Linux and Windows x86_64 - it does not support WSL (to run the container runtime inside this distro, set EXAKIT_RUNTIME=nano)"
-    fi
-    if [ "$_os" != "macos" ] && [ "$_pf_runtime" = "personal" ] && [ "$_os" != "wsl" ]; then
-        # The personal runtime asks a narrower question than the container one:
-        # Podman specifically, because the launcher will not use Docker. The
-        # full engine triage below is the container runtime's story - running
-        # it here would fail a Podman-only machine for a stopped Docker.
+    # The database is an Exasol Personal deployment, and on Linux the launcher
+    # deploys through Podman - specifically; nothing else substitutes. macOS
+    # needs nothing installed first, and WSL is not a platform Personal
+    # supports: saying so here costs nothing and saves a download.
+    if [ "$_os" = "wsl" ]; then
+        _pf_bad "Exasol Personal supports macOS, native Linux and Windows x86_64 - it does not support WSL. Install on the Windows side, or use a native Linux machine"
+    elif [ "$_os" = "linux" ]; then
         if command -v podman >/dev/null 2>&1; then
-            _pf_ok "Podman: available (the Exasol Personal runtime deploys through it)"
+            _pf_ok "Podman: available (the Exasol Personal deployment runs through it)"
+            # Rootless Podman answers `podman info` happily and then fails at
+            # `run` when the machine is missing what rootless needs.
+            _pf_podman_gap="$(detect_rootless_podman_gap 2>/dev/null || true)"
+            [ -n "$_pf_podman_gap" ] && _pf_bad "Rootless Podman: $_pf_podman_gap"
         else
-            _pf_bad "Podman is required for EXAKIT_RUNTIME=personal on Linux and is not on PATH — install it with your package manager (e.g. 'sudo apt-get install -y podman' or 'sudo dnf install -y podman')"
+            _pf_bad "Podman is required on Linux and is not on PATH - install it with your package manager (e.g. 'sudo apt-get install -y podman' or 'sudo dnf install -y podman')"
         fi
-    elif [ "$_os" != "macos" ]; then
-        case "$(detect_container_runtime_detail)" in
-            docker)         _pf_ok "Container runtime: docker (running)" ;;
-            podman)
-                _pf_ok "Container runtime: podman (running)"
-                # Rootless Podman answers `podman info` happily and then fails
-                # at `run` when the machine is missing what rootless needs.
-                _pf_podman_gap="$(detect_rootless_podman_gap 2>/dev/null || true)"
-                [ -n "$_pf_podman_gap" ] && _pf_bad "Rootless Podman: $_pf_podman_gap"
-                ;;
-            docker-stopped)
-                if command -v podman >/dev/null 2>&1; then
-                    _pf_podman="Podman (the fallback) is installed but not running either"
-                else
-                    _pf_podman="Podman (the fallback) is not installed"
-                fi
-                if wsl_docker_desktop_on_windows; then
-                    _pf_bad "Docker is unreachable: Docker Desktop runs on Windows but is not connected to this WSL distro (Docker Desktop > Settings > Resources > WSL integration > enable this distro, Apply & restart); $_pf_podman"
-                else
-                    _pf_bad "Docker is installed but unreachable (daemon not responding) — start Docker (e.g. Docker Desktop); $_pf_podman"
-                fi ;;
-            docker-permission)
-                # Twin of the same remedy in nano_check_requirements
-                # (runtime-nano.sh): both name newgrp, because "log out and back
-                # in" is the one instruction that does NOT work in WSL — there is
-                # no login session to leave, and the group only takes effect when
-                # the distro's init restarts.
-                _pf_bad "Docker is running but this user may not use it (permission denied on the Docker socket) — add yourself to the docker group: sudo usermod -aG docker \$USER, then start a session that has it: run 'newgrp docker' in this shell, or log out and back in"
-                [ "$_os" = "wsl" ] && _pf_note "On WSL, closing the terminal is not enough: run 'wsl --terminate <distro>' from Windows, then reopen it"
-                ;;
-            podman-stopped)
-                # `podman machine` is the macOS/Windows VM wrapper and does not
-                # exist on Linux; `sudo systemctl start podman` starts the ROOT
-                # socket, which does nothing for the rootless user the installer
-                # insists on being. On Linux the real cause is almost always the
-                # user-namespace ranges.
-                if [ "$_os" = "macos" ]; then
-                    _pf_bad "Podman is installed but its VM is not running (Docker not found) — start it: podman machine start, or install Docker"
-                else
-                    _pf_podman_gap="$(detect_rootless_podman_gap 2>/dev/null || true)"
-                    if [ -n "$_pf_podman_gap" ]; then
-                        _pf_bad "Podman is installed but 'podman info' failed (Docker not found): $_pf_podman_gap"
-                    else
-                        _pf_bad "Podman is installed but 'podman info' failed (Docker not found) — on Linux this is usually the user-namespace ranges: check 'grep \$(id -un) /etc/subuid /etc/subgid'. Using the Podman socket? Start it per user: systemctl --user start podman.socket"
-                    fi
-                fi ;;
-            none)           _pf_bad "No container runtime — install Docker (docs.docker.com/get-docker) or Podman (podman.io)" ;;
-        esac
-    fi
-
-    # leftover root-owned credentials (a root Docker daemon creates missing
-    # bind-mount paths as root-owned directories; an interrupted install can
-    # leave them behind — the installer repairs this automatically)
-    _pf_creds="${EXAKIT_CREDS_DIR:-$HOME/.exasol-starter-kit/credentials}"
-    if [ -d "$_pf_creds/nano_sys_password" ] || { [ -d "$_pf_creds" ] && [ ! -w "$_pf_creds" ]; }; then
-        _pf_note "Root-owned leftovers from an interrupted install in $_pf_creds — the installer repairs this automatically via the container engine"
     fi
 
     # port
@@ -592,13 +429,6 @@ preflight_report() {
             _pf_bad "Network: cannot reach $_endpoint — check connectivity/proxy (set HTTPS_PROXY if needed)"
         fi
     done
-    if [ "$_os" != "macos" ]; then
-        if _pf_reachable "registry-1.docker.io/v2/"; then
-            _pf_ok "Network: Docker Hub reachable"
-        else
-            _pf_bad "Network: cannot reach Docker Hub — the Nano image cannot be pulled from this network"
-        fi
-    fi
     if _pf_reachable "pypi.org"; then
         _pf_ok "Network: pypi.org reachable (MCP server package)"
     else
