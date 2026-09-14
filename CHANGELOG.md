@@ -65,6 +65,18 @@ someone's behalf while they are not there, and skipping destroys nothing.
   which no longer ships, so its `exakit update` refuses the new archive and
   leaves the old kit untouched. Re-running the installer is the crossing, and
   it is what the notice above points at.
+- **Fix: `exakit start` refused to clear its own mess.** The launcher can leave
+  an orphaned runner (`.../exasol-local-runner/.../launcher __daemon__`) bound
+  to the database port after a failed deploy or a destroy that could not find
+  its PID file, and `personal_reap_orphan_daemon` exists to clear exactly that.
+  But `exakit start` has a fast path for the resulting "conflict" status, and it
+  died there with *"held by another process … not by Exasol. Stop that
+  process"* — a sentence that was **false** on the commonest cause of that
+  state, since the holder was Exasol's own. The reap never ran and the user was
+  handed a manual `kill` for a process the kit knew how to clean up.
+  Reproduced on a real machine, where `exakit start` was a dead end until the
+  pid was killed by hand. The reap runs first now; the refusal is kept for the
+  case it was written for, a genuinely foreign program on the port.
 - Fix: `EXAKIT_EXAPUMP_BIN` was assigned unconditionally in `exapump.sh`, so an
   override set in the environment was discarded the moment the file was sourced
   and `exapump_cli` fell through to whatever `exapump` was on PATH. A test that

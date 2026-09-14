@@ -118,5 +118,49 @@ RC="$(run_reaper_busy "$P3")"
 check "lingering-socket false positive" 0 "$RC"
 
 echo
+echo "exakit start reaps before it refuses:"
+# THE BUG, REPRODUCED ON A REAL MACHINE. `exakit start` has a fast path for the
+# "conflict" status - the port is open but nothing answers as Exasol - and it
+# died there with "held by another process ..., not by Exasol. Stop that
+# process". On the commonest cause of that state the sentence was FALSE: the
+# holder was Exasol's own orphaned runner, the very thing
+# personal_reap_orphan_daemon exists to clear. The reap never ran, and the user
+# was handed a manual kill for a process the kit knew how to clean up.
+#
+# Read out of the source rather than executed: driving cmd_start needs an
+# installed kit and a deployment, and what went wrong here was ORDER - the
+# refusal standing in front of the reap - which the order of the two names
+# answers exactly.
+# CODE ONLY. The first version of this check grepped the raw function body and
+# passed with the fix REVERTED, because the comment explaining the fix names
+# personal_reap_orphan_daemon too - a guard satisfied by prose about the thing
+# rather than the thing. Comment lines go before anything is located.
+_cs_body="$(awk '/^cmd_start\(\)/{f=1} f{print} f&&/^}$/{if(f)exit}' "$ROOT/setup/exakit" \
+    | sed -e 's/[[:space:]]*#.*$//' -e '/^[[:space:]]*$/d')"
+_cs_reap="$(printf '%s\n' "$_cs_body" | grep -n 'personal_reap_orphan_daemon' | head -1 | cut -d: -f1)"
+_cs_die="$(printf '%s\n' "$_cs_body" | grep -n 'not by Exasol' | head -1 | cut -d: -f1)"
+check "the conflict branch calls the reaper at all" "yes" \
+    "$([ -n "$_cs_reap" ] && echo yes || echo no)"
+check "the refusal is still there for a foreign holder" "yes" \
+    "$([ -n "$_cs_die" ] && echo yes || echo no)"
+if [ -n "$_cs_reap" ] && [ -n "$_cs_die" ]; then
+    check "and the reap comes FIRST" "yes" \
+        "$([ "$_cs_reap" -lt "$_cs_die" ] && echo yes || echo "no (reap at $_cs_reap, refusal at $_cs_die)")"
+else
+    check "and the reap comes FIRST" "yes" "no (one of them is missing)"
+fi
+# A reap that succeeds must go on to START the database, not fall through to
+# the refusal or return silently having done half the job.
+# Guarded: with no reap line, "${_cs_reap},$p" is the invalid sed address
+# ",$p", and BSD sed prints a parse error over the failure this is reporting.
+_cs_after=""
+if [ -n "$_cs_reap" ]; then
+    _cs_after="$(printf '%s\n' "$_cs_body" | sed -n "${_cs_reap},\$p" \
+        | grep -n 'exakit_ensure_runtime_running' | head -1 | cut -d: -f1)"
+fi
+check "a freed port then starts the database" "yes" \
+    "$([ -n "$_cs_after" ] && echo yes || echo no)"
+
+echo
 echo "PASS=$PASS FAIL=$FAIL"
 [ "$FAIL" -eq 0 ]

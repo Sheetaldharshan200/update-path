@@ -760,7 +760,28 @@ cmd_start() {
             elif [ "$(personal_status 2>/dev/null)" = "conflict" ]; then
                 # Port open is not database up: with another program on 8563 this
                 # said "already running" and exited 0 while status said stopped.
-                die "Port $EXAKIT_PERSONAL_PORT is held by another process$(personal_port_holder_hint), not by Exasol, so the database cannot start. Stop that process, then: exakit start"
+                #
+                # BUT ASK WHOSE PROCESS IT IS BEFORE REFUSING. The commonest
+                # holder by far is OUR OWN orphaned runner - the launcher
+                # leaves `.../exasol-local-runner/.../launcher __daemon__`
+                # bound to the port after a failed deploy or a destroy that
+                # could not find its PID file - and the kit already knows how
+                # to clear exactly that (personal_reap_orphan_daemon, which
+                # refuses to touch anything that is not ours).
+                #
+                # This branch used to die first, so a machine in the one state
+                # the reap exists for was told "held by another process, not by
+                # Exasol" - which was FALSE, it was Exasol's - and handed a
+                # manual `kill` it should never have needed. Reproduced on a
+                # real machine: `exakit start` was a dead end until the pid was
+                # killed by hand. The reap runs first now, and the refusal is
+                # kept for the case it was written for: a genuinely foreign
+                # program on the port.
+                if personal_reap_orphan_daemon; then
+                    exakit_ensure_runtime_running deploy
+                else
+                    die "Port $EXAKIT_PERSONAL_PORT is held by another process$(personal_port_holder_hint), not by Exasol, so the database cannot start. Stop that process, then: exakit start"
+                fi
             else
                 exakit_ensure_runtime_running deploy
             fi

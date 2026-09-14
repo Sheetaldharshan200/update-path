@@ -18,6 +18,9 @@
 set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# The add-on table's width and tick checks measure DRAWN columns, which only
+# comes out right where the glyphs count as one character each. See the helper.
+. "$ROOT/tests/lib/utf8-locale.sh"
 PASS=0
 FAIL=0
 
