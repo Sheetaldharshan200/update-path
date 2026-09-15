@@ -476,6 +476,13 @@ jobs:
       # exactly checkable, and the invariant worth a CI job is that it never
       # deletes the old database on either answer.
       - run: bash tests/legacy-crossing.sh
+      # The same crossing under every fault the road can throw: an engine that
+      # hangs, refuses or loses the container; a database with no password,
+      # no answer, a late answer, or nothing in it; copies and restores that
+      # fail for some tables or all; a run that dies between the two halves.
+      # It ends by measuring how much of the module it walked, and that floor
+      # is a gate.
+      - run: bash tests/legacy-crossing-resilience.sh
       - run: bash tests/skills.sh
       - run: bash tests/agent-operability.sh
       # The MCP subsystem's own tests were never wired in, so nothing in CI
@@ -529,6 +536,7 @@ jobs:
             pwsh -NoProfile -File tests/noninteractive-answers.ps1
             pwsh -NoProfile -File tests/uninstall-ps.ps1
             pwsh -NoProfile -File tests/runtime-personal-ps.ps1
+            pwsh -NoProfile -File tests/legacy-crossing-ps.ps1
           else
             echo "pwsh not installed on this runner - PowerShell suites skipped"
           fi

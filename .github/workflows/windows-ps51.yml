@@ -64,6 +64,12 @@ jobs:
       - name: personal runtime module under 5.1
         shell: powershell
         run: powershell -NoProfile -ExecutionPolicy Bypass -File tests/runtime-personal-ps.ps1
+      # The crossing from a container database, executed on the engine that
+      # exakit.cmd really runs under: the fault-injection engine and exapump
+      # behind .cmd wrappers, every gate, both halves, and the coverage floor.
+      - name: legacy crossing under 5.1
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File tests/legacy-crossing-ps.ps1
       # The skill layer, executed rather than grepped. tests/skills.sh asserts
       # this half with awk against exakit-common.ps1, which catches a deleted
       # line and nothing else.

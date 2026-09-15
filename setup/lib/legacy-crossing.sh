@@ -344,6 +344,10 @@ legacy_import() {
     _lim_skipped_names=""
     while IFS="$(printf '\t')" read -r _lim_file _lim_schema _lim_table _lim_ddl; do
         [ -n "$_lim_file" ] || continue
+        # A line with fewer than three fields names no table. Without this a
+        # truncated or hand-edited line whose first word happened to match a
+        # file was uploaded into "".""; the PowerShell twin already refused it.
+        [ -n "$_lim_schema" ] && [ -n "$_lim_table" ] || continue
         [ -f "$_lim_dir/$_lim_file" ] || continue
         _lim_target="\"$_lim_schema\".\"$_lim_table\""
         EXAKIT_ACTIVE_LABEL="Restoring $_lim_schema.$_lim_table"
@@ -492,15 +496,22 @@ legacy_crossing_before() {
 
     if [ "$EXAKIT_LEGACY_CHOICE" = "migrate" ]; then
         info "Copying $_lcb_count table(s) out of the old database"
-        _lcb_list=""
-        while IFS= read -r _lcb_t; do
-            [ -n "$_lcb_t" ] || continue
-            _lcb_list="$_lcb_list $_lcb_t"
-        done <<EOF
-$_lcb_tables
-EOF
+        # ONE ARGUMENT PER LINE, NOT PER WORD. The list is newline-separated
+        # because a schema or table name may contain a space ("My Schema" is
+        # legal in Exasol), and the first version of this handed the list to
+        # legacy_export unquoted with the default IFS - so "My Schema.T" arrived
+        # as two tables, "My" and "Schema.T", neither of which exists. Splitting
+        # on newline alone keeps each name whole; -f keeps a name with a * or ?
+        # in it from being expanded against the current directory.
+        _lcb_ifs="$IFS"; IFS='
+'
+        set -f
         # shellcheck disable=SC2086
-        if legacy_export "$EXAKIT_LEGACY_EXPORT_DIR" $_lcb_list; then
+        legacy_export "$EXAKIT_LEGACY_EXPORT_DIR" $_lcb_tables
+        _lcb_exported=$?
+        set +f
+        IFS="$_lcb_ifs"
+        if [ "$_lcb_exported" -eq 0 ]; then
             manifest_set legacy.export_dir "$EXAKIT_LEGACY_EXPORT_DIR"
             ok "Your data is saved at $(ui_tilde "$EXAKIT_LEGACY_EXPORT_DIR") — it goes into the new database at the end of this install"
         else

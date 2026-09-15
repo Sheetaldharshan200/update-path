@@ -83,6 +83,27 @@ someone's behalf while they are not there, and skipping destroys nothing.
   sandboxed `EXAKIT_HOME` and `EXAKIT_BIN_DIR` but pointed that variable at a
   stub therefore ran the real binary against the real database. Both halves now
   honour it, and the PowerShell side lets it outrank PATH.
+- **Four crossing bugs found by the new fault-injection suites**
+  (`tests/legacy-crossing-resilience.sh`, `tests/legacy-crossing-ps.ps1` — an
+  engine that hangs, refuses or loses the container; a database with no
+  password, no answer, a late answer or nothing in it; copies and restores that
+  fail for some tables or all; a run that dies between the two halves — each
+  suite ending with a line-coverage floor of 85% on its module). **(1)** On the
+  sh side a schema or table name with a space in it (`My Schema.T`, legal in
+  Exasol) was handed to the export unquoted with the default IFS and arrived as
+  two tables, `My` and `Schema.T`; the list is split on newlines only now.
+  **(2)** On the sh side an index line with fewer than three fields whose first
+  word matched a file was uploaded into `"".""`; it is stepped over, as the
+  PowerShell side already did. **(3)** On the PowerShell side a 0-byte password
+  file was a terminating error inside `Write-LegacyProfile` — the install
+  would have died on it — instead of "no profile"; the sh side had tested `-s`
+  all along. **(4)** On the PowerShell side the two paths that must pass in
+  silence (a resumed attempt, a gate that closed with nothing to offer) still
+  printed "Stopping the old database container …"; `Stop-LegacyContainer -Quiet`
+  is the twin of the sh side's redirect. One limit found and documented rather
+  than fixed: on a machine without `timeout(1)`, `exakit_run_bounded` cannot
+  end a hang in a *child* of the probed command, so a container engine whose
+  CLI spawns a helper that wedges is waited out.
 
 
 ## 0.2.1
