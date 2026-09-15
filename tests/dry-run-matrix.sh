@@ -97,9 +97,16 @@ echo "the support matrix is stated, never silently rerouted:"
 # Exasol Personal is the only runtime this kit installs. A platform it does not
 # support must be refused BY NAME, before anything is downloaded - a silent
 # reroute onto something else is exactly what this replaced.
+#
+# WSL IS NOT SUCH A PLATFORM. It is Linux to the launcher, so install.sh sends
+# it to the Linux setup rather than turning it away, and the prerequisite that
+# differs - a podman inside the distro, not on the Windows side - is checked
+# there. What must not come back is the refusal.
 grep -q 'it does not support WSL' "$ROOT/install.sh" && \
-    check "install.sh exits gracefully on WSL, naming the support matrix" present present || \
-    check "install.sh exits gracefully on WSL, naming the support matrix" present MISSING
+    check "install.sh no longer turns WSL away" absent present || \
+    check "install.sh no longer turns WSL away" absent absent
+check "install.sh sends WSL to the Linux setup" "setup/setup-linux.sh" \
+    "$(sed -n '/^        Linux)/,/^            ;;/p' "$ROOT/install.sh" | sed -n 's/.*setup_script="\([^"]*\)".*/\1/p')"
 grep -q 'it does not support Windows arm64' "$ROOT/install.ps1" && \
     check "install.ps1 exits gracefully on arm64, naming the support matrix" present present || \
     check "install.ps1 exits gracefully on arm64, naming the support matrix" present MISSING

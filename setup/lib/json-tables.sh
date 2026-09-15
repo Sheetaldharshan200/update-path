@@ -218,7 +218,7 @@ json_tables_engine_asset() {
         macos|Darwin|darwin) _jte_os="macos" ;;
         # WSL is Linux, and the engine published for linux is the one that runs
         # there. detect_os reports it as its own platform because the INSTALLER
-        # needs the distinction (WSL is refused, /mnt paths); an artifact
+        # needs the distinction (/mnt paths, .wslconfig remedies); an artifact
         # lookup does not, so it must fold back into linux or the add-on
         # silently disappears from the marketplace on every WSL machine.
         # Same mapping exapump_asset_name uses.

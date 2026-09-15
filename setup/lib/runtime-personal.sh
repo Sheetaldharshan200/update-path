@@ -31,27 +31,53 @@ personal_check_requirements() {
     _pcr_os="$(detect_os)"
     case "$_pcr_os" in
         macos) : ;;
-        linux)
-            # The launcher's own requirement, checked here so the refusal comes
-            # before anything is downloaded: Linux local deployments run on
-            # Podman, and unlike on Windows the launcher does not offer to
-            # install it. No other container engine substitutes - the
-            # launcher will not use one.
+        linux|wsl)
+            # WSL IS LINUX TO THE LAUNCHER, AND THAT IS THE WHOLE STORY. A WSL2
+            # distro is an AMD64 Linux with a real kernel, the launcher ships a
+            # Linux build, and its Linux local runtime asks for exactly one
+            # thing - a podman on PATH (linuxHostEnvironmentPreparer.EnsureReady
+            # is a single exec.LookPath). No systemd, no cgroup check, no WSL
+            # detection anywhere on that path.
+            #
+            # The kit used to refuse WSL outright, reasoning that "Personal's
+            # Windows path is host Podman inside a Podman machine, not WSL".
+            # That confused two different things: the WSL every launcher source
+            # file mentions is the one podman-for-windows boots for ITSELF
+            # (podman-machine-default), driven by the WINDOWS launcher. It says
+            # nothing about a user's own Ubuntu distro, where the LINUX launcher
+            # runs and the Linux requirements are the ones that apply.
+            #
+            # The launcher checked before anything is downloaded, so a machine
+            # without podman is told once, at the start, and not mid-install.
             if ! command -v podman >/dev/null 2>&1; then
-                error "This machine is not ready: the Exasol Personal local deployment on Linux needs Podman, and 'podman' is not on PATH."
+                # "in WSL" / "on Linux": the same sentence with the platform
+                # spelled the way its user would say it, not the way detect_os
+                # returns it.
+                _pcr_where="on Linux"
+                [ "$_pcr_os" = wsl ] && _pcr_where="in WSL"
+                error "This machine is not ready: the Exasol Personal local deployment ${_pcr_where} needs Podman, and 'podman' is not on PATH."
+                if [ "$_pcr_os" = wsl ]; then
+                    # Inside WSL the package manager is the distro's own, and
+                    # uidmap is the part people miss: without it rootless podman
+                    # fails later, deep inside a container start, with an error
+                    # that names neither podman nor the missing package.
+                    info "Install it inside this distro (Debian/Ubuntu: 'sudo apt-get install -y podman uidmap'), then re-run."
+                    info "Podman Desktop or Docker Desktop on the WINDOWS side does not count - the launcher runs in here and looks on this PATH."
+                    die "Podman is required for the Exasol Personal runtime in WSL."
+                fi
                 info "Install it with your package manager (e.g. 'sudo apt-get install -y podman' or 'sudo dnf install -y podman'), then re-run."
                 die "Podman is required for the Exasol Personal runtime on Linux."
             fi
-            ;;
-        wsl)
-            # Personal's Windows path is host Podman inside a Podman machine,
-            # not WSL. Said as the support matrix, then a graceful exit.
-            error "Exasol Personal supports macOS, native Linux and Windows x86_64 - it does not support WSL."
-            info "Nothing was installed. Run the installer on Windows itself (install.ps1) or inside a native Linux machine."
-            die "Incompatible platform: wsl."
+            # Rootless podman maps your uid into the container through
+            # newuidmap/newgidmap (the uidmap package). A warning rather than a
+            # refusal: some distros ship the setuid helpers elsewhere, and a
+            # hard gate here would block a machine that works.
+            if [ "$_pcr_os" = wsl ] && ! command -v newuidmap >/dev/null 2>&1; then
+                warn "'newuidmap' is not on PATH - rootless Podman needs it and fails at container start without it. If the deployment fails later, install it: sudo apt-get install -y uidmap"
+            fi
             ;;
         *)
-            error "Exasol Personal supports macOS, native Linux and Windows x86_64 - it does not support $_pcr_os."
+            error "Exasol Personal supports macOS, Linux (native or WSL) and Windows x86_64 - it does not support $_pcr_os."
             info "Nothing was installed. On Windows use install.ps1."
             die "Incompatible platform: $_pcr_os."
             ;;
@@ -72,7 +98,17 @@ personal_check_requirements() {
         fi
         if [ "$_ram" -lt "$EXAKIT_PERSONAL_MIN_RAM_GB" ]; then
             error "This machine is not compatible: Exasol Personal needs at least ${EXAKIT_PERSONAL_MIN_RAM_GB} GB RAM and this machine has ${_ram} GB."
-            info "Nothing was installed. Re-run on a machine with ${EXAKIT_PERSONAL_MIN_RAM_GB}+ GB RAM (or force at your own risk with EXAKIT_FORCE=1)."
+            if [ "$_pcr_os" = wsl ]; then
+                # /proc/meminfo in WSL reports the VM's share, not the PC's, so
+                # "re-run on a bigger machine" would send someone to buy RAM
+                # they already own. The knob is on the Windows side.
+                info "That is what WSL was given, not what this PC has. Raise it in %USERPROFILE%\\.wslconfig on the WINDOWS side:"
+                info "  [wsl2]"
+                info "  memory=8GB"
+                info "Then apply it from PowerShell: wsl --shutdown  (reopen this distro afterwards)"
+            else
+                info "Nothing was installed. Re-run on a machine with ${EXAKIT_PERSONAL_MIN_RAM_GB}+ GB RAM (or force at your own risk with EXAKIT_FORCE=1)."
+            fi
             die "Insufficient memory: ${_ram} GB."
         fi
         if [ "$_disk" -eq 0 ]; then

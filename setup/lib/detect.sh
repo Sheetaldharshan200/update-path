@@ -296,6 +296,13 @@ detect_rootless_podman_gap() {
         fi
     done
     if [ ! -f /sys/fs/cgroup/cgroup.controllers ]; then
+        if [ "$(detect_os)" = "wsl" ]; then
+            # There is no GRUB in WSL and the kernel comes from Windows, so the
+            # boot-flag remedy below is an instruction nobody here can follow.
+            # The equivalent knob is a Windows-side file.
+            printf 'cgroups v2 is not active, so rootless Podman cannot apply the resource limits the kit sets — on the WINDOWS side add "[wsl2]" and "kernelCommandLine = cgroup_no_v1=all" to %%USERPROFILE%%\.wslconfig, then run: wsl --shutdown'
+            return 0
+        fi
         printf 'cgroups v2 is not active, so rootless Podman cannot apply the resource limits the kit sets — boot with systemd.unified_cgroup_hierarchy=1'
         return 0
     fi
@@ -376,17 +383,21 @@ preflight_report() {
 
     # The database is an Exasol Personal deployment, and on Linux the launcher
     # deploys through Podman - specifically; nothing else substitutes. macOS
-    # needs nothing installed first, and WSL is not a platform Personal
-    # supports: saying so here costs nothing and saves a download.
-    if [ "$_os" = "wsl" ]; then
-        _pf_bad "Exasol Personal supports macOS, native Linux and Windows x86_64 - it does not support WSL. Install on the Windows side, or use a native Linux machine"
-    elif [ "$_os" = "linux" ]; then
+    # needs nothing installed first. WSL takes the Linux checks: the launcher
+    # has no WSL concept on that path, only the Linux one, and a WSL2 distro
+    # satisfies it with a podman of its own.
+    if [ "$_os" = "linux" ] || [ "$_os" = "wsl" ]; then
         if command -v podman >/dev/null 2>&1; then
             _pf_ok "Podman: available (the Exasol Personal deployment runs through it)"
             # Rootless Podman answers `podman info` happily and then fails at
             # `run` when the machine is missing what rootless needs.
             _pf_podman_gap="$(detect_rootless_podman_gap 2>/dev/null || true)"
             [ -n "$_pf_podman_gap" ] && _pf_bad "Rootless Podman: $_pf_podman_gap"
+        elif [ "$_os" = "wsl" ]; then
+            # Named for the distro, not for "Linux": the podman that counts is
+            # the one inside WSL. A Podman Desktop on the Windows side is a
+            # different machine as far as this PATH is concerned.
+            _pf_bad "Podman is required and is not on PATH inside this distro - install it here (Debian/Ubuntu: 'sudo apt-get install -y podman uidmap'); Podman or Docker Desktop on the Windows side does not count"
         else
             _pf_bad "Podman is required on Linux and is not on PATH - install it with your package manager (e.g. 'sudo apt-get install -y podman' or 'sudo dnf install -y podman')"
         fi

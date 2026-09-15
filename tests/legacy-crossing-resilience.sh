@@ -112,7 +112,7 @@ run() {
         EXAKIT_EXAPUMP_BIN="$_r_exapump" EXAKIT_EXAPUMP_CONFIG_DIR="$_r_home/exapump" \
         EXAKIT_LEGACY_EXPORT_DIR="$_r_home/migration" EXAKIT_FAULT_DIR="$_r_home/ctrl" \
         EXAKIT_ENGINE_PROBE_TIMEOUT="${PROBE_TIMEOUT:-2}" EXAKIT_NO_FANCY=1 \
-        PATH="$_r_path" PS4="$COVERAGE_PS4" ROOT="$ROOT" $_r_env \
+        PATH="$_r_path" ROOT="$ROOT" $_r_env \
         bash -c "$(coverage_prelude "$RAW_TRACE")"'
             . "$ROOT/setup/lib/common.sh"; . "$ROOT/setup/lib/detect.sh"; . "$ROOT/setup/lib/exapump.sh"
             set -x
@@ -653,8 +653,19 @@ check "every inspect was of the recorded container" "0" "$(printf '%s\n' "$_all_
 # expands every argument of every in-process function by design.
 check "the password never reached the screen" "0" "$(grep -c -- "$PASSWORD" "$SCREENS")"
 check "...nor any process the crossing ran" "0" "$(printf '%s\n' "$_all_engine" "$_all_exapump" | grep -c -- "$PASSWORD")"
+# stat is two different programs with the same name. `stat -f FMT` reads a
+# format on BSD and means --file-system on GNU, where it SUCCEEDS and prints
+# block counts - so a `-f ... || -c ...` fallback never reaches the GNU form
+# and this check read "no" on every Linux runner. Dispatch on the OS, the way
+# common.sh already does for mtime.
+_file_mode() {
+    case "$(uname -s)" in
+        Darwin|*BSD*) stat -f '%Lp' "$1" 2>/dev/null ;;
+        *)            stat -c '%a'  "$1" 2>/dev/null ;;
+    esac
+}
 check "...and it did land in a 0600 profile inside the sandbox" "yes" \
-    "$(grep -lq -- "$PASSWORD" "$WORK"/e2e-migrate/exapump/config.toml 2>/dev/null && [ "$(stat -f '%Lp' "$WORK/e2e-migrate/exapump/config.toml" 2>/dev/null || stat -c '%a' "$WORK/e2e-migrate/exapump/config.toml")" = 600 ] && echo yes || echo no)"
+    "$(grep -lq -- "$PASSWORD" "$WORK"/e2e-migrate/exapump/config.toml 2>/dev/null && [ "$(_file_mode "$WORK/e2e-migrate/exapump/config.toml")" = 600 ] && echo yes || echo no)"
 check "the developer's real exapump config is untouched" "$REAL_CONFIG_BEFORE" "$(_hash "$REAL_EXAPUMP_CONFIG")"
 # THE INSTALL IS NEVER FAILED BY THE CROSSING.
 check "every first half returned 0" "" "$(printf '%s\n' $BEFORE_RCS | grep -v '^0$' | tr '\n' ' ')"

@@ -5,8 +5,8 @@
 # pyexasol. Prints connection details when done. The database is an Exasol
 # Personal local deployment, run by the Exasol launcher through Podman.
 #
-# Linux only: Exasol Personal has no WSL deployment, and install.sh refuses
-# there before reaching this script.
+# Also the WSL path: a WSL2 distro is Linux to the launcher, so install.sh
+# routes it here and the Podman check below is the one that applies.
 #
 # Usually launched by install.sh, but runs standalone from a checkout too:
 #   bash setup/setup-linux.sh

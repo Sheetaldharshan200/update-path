@@ -1069,9 +1069,11 @@ has "...and so are the directories holding them" 'protect_path(directory)' "$(ca
 # hand - a headless Linux session without lingering - instead of promising
 # unconditionally.
 has "the restart promise names the lingering case" "loginctl enable-linger" "$(cat "$ROOT/AGENTS.md")"
-# WSL-06: WSL is refused, so no document may still route a reader into it.
+# WSL-06: EXAKIT_RUNTIME chose between the two database runtimes and there is
+# only one now, so no document may still offer the knob. (This check used to be
+# labelled as a WSL one; it never tested WSL, and WSL is supported now.)
 for _wsl_doc in README.md AGENTS.md QUICKSTART.md quickstarts/linux.md quickstarts/windows.md; do
-    lacks "no doc routes the reader into WSL: $_wsl_doc" 'EXAKIT_RUNTIME' "$(cat "$ROOT/$_wsl_doc")"
+    lacks "no doc offers the removed runtime knob: $_wsl_doc" 'EXAKIT_RUNTIME' "$(cat "$ROOT/$_wsl_doc")"
 done
 echo
 echo "round-3 residuals stay fixed:"
@@ -1306,7 +1308,28 @@ check "gate(linux, no podman) refuses podman by name" \
     "DIED: Podman is required for the Exasol Personal runtime on Linux." "$(_p2gate linux 0)"
 check "gate(linux, podman) passes" \
     "OK: Compatibility check passed (linux arm64, 16 GB RAM, 100 GB free)" "$(_p2gate linux 1)"
-check "gate(wsl) refuses by name" "DIED: Incompatible platform: wsl." "$(_p2gate wsl 1)"
+# WSL IS A SUPPORTED PLATFORM, and these four checks are why. The kit used to
+# die on it; the launcher never did - its Linux local runtime asks for a podman
+# on PATH and nothing else, and a WSL2 distro is an AMD64 Linux that can have
+# one. So WSL now passes the same gate Linux passes, and fails it the same way,
+# with a remedy written for the distro rather than for a machine the reader
+# would have to go and buy.
+# The documented promise has to match the gate: a WSL reader is now given the
+# Linux road and the one prerequisite that differs, not an exit.
+has "the README sends WSL down the Linux road" "WSL** is supported" "$(cat "$ROOT/README.md")"
+has "...naming the podman that counts" "does not count" "$(cat "$ROOT/README.md")"
+has "the Linux quickstart claims the WSL path" "also the WSL path" "$(cat "$ROOT/quickstarts/linux.md")"
+has "the Windows quickstart hands WSL over" "supported too" "$(cat "$ROOT/quickstarts/windows.md")"
+lacks "no doc still says Personal refuses WSL" "does not support WSL" \
+    "$(cat "$ROOT/README.md" "$ROOT/quickstarts/linux.md" "$ROOT/quickstarts/windows.md" "$ROOT/setup/help/personal.json")"
+check "gate(wsl, podman) passes like linux" \
+    "OK: Compatibility check passed (wsl arm64, 16 GB RAM, 100 GB free)" "$(_p2gate wsl 1)"
+check "gate(wsl, no podman) refuses podman by name" \
+    "DIED: Podman is required for the Exasol Personal runtime in WSL." "$(_p2gate wsl 0)"
+check "the installer no longer turns WSL away" "" \
+    "$(grep -c 'it does not support WSL' "$ROOT/install.sh" "$ROOT/setup/lib/runtime-personal.sh" "$ROOT/setup/lib/detect.sh" 2>/dev/null | grep -v ':0$' | tr '\n' ' ')"
+check "...and routes it to the Linux setup" "setup/setup-linux.sh" \
+    "$(sed -n '/^        Linux)/,/^            ;;/p' "$ROOT/install.sh" | sed -n 's/.*setup_script="\([^"]*\)".*/\1/p')"
 check "gate(macos) unchanged" \
     "OK: Compatibility check passed (macos arm64, 16 GB RAM, 100 GB free)" "$(_p2gate macos 0)"
 

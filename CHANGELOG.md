@@ -123,6 +123,43 @@ someone's behalf while they are not there, and skipping destroys nothing.
   CLI spawns a helper that wedges is waited out.
 
 
+- **WSL is a supported platform now, and it always could have been.** The kit
+  refused it in three places before anything was downloaded, on the grounds
+  that "Personal's Windows path is host Podman inside a Podman machine, not
+  WSL". That confused two different things. The WSL the launcher's sources
+  talk about is the one podman-for-windows boots for *itself*
+  (`podman-machine-default`), driven by the Windows launcher; it says nothing
+  about a user's own distro, where the **Linux** launcher runs. And the Linux
+  local runtime asks for exactly one thing: a `podman` on `PATH`
+  (`linuxHostEnvironmentPreparer.EnsureReady` is a single `exec.LookPath`), with
+  no systemd, cgroup or WSL check anywhere on that path. A WSL2 distro is an
+  AMD64 Linux with a real kernel, so it meets that as published.
+  `install.sh`, the preflight and the runtime gate now route WSL down the Linux
+  road, and the three remedies that would have been wrong there are written for
+  it: Podman is installed *inside the distro* (Podman or Docker Desktop on the
+  Windows side does not count), too little memory points at `[wsl2] memory=` in
+  `.wslconfig` rather than at buying a bigger machine, and a missing cgroups v2
+  points at `kernelCommandLine` in the same file rather than at a GRUB edit that
+  does not exist in WSL. A missing `newuidmap` is warned about rather than
+  refused, since rootless Podman fails much later and much less clearly without
+  it. Autostart already knew about WSL's systemd being off by default, and the
+  credential guard already refused to keep passwords on a `/mnt/c` path.
+
+- **Fix: on Windows, every quoted identifier the kit sent to exapump arrived
+  unquoted.** Windows PowerShell 5.1 builds one command line for a native
+  program and does not escape a double quote inside an argument, so the
+  receiving program reads it as a delimiter and drops it: `CREATE TABLE
+  "s1"."t2"` left as `CREATE TABLE s1.t2`, and Exasol upper-cases what is not
+  quoted. The legacy crossing therefore rebuilt each restored table under a
+  different name than the one it had exported from, its "this install already
+  created it" test always answered no, and `exakit sql` silently changed the
+  meaning of any statement a user had quoted. Arguments are now escaped for
+  those rules at the three places that carry SQL (`Invoke-ExakitLogged`,
+  `Invoke-Exapump`, the MCP setup's probe); PowerShell 7 passes an argument
+  vector straight through and is left alone. Found by the Windows runner, and
+  `tests/data-load-shapes-ps.ps1` now reproduces the 5.1 rules on every
+  platform so the defect cannot come back unnoticed.
+
 - **`exakit data-load` on the files people actually have.** Seven public
   open-data sets (Munich's bicycle counters, population, cycling network,
   district boundaries, roadworks, the MVV GTFS feed, MVG bike trips) loaded

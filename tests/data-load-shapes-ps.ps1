@@ -173,6 +173,44 @@ Has "...it names the rename that loads them" "Rename them to .csv" $gtText
 Lacks "...and does not call it empty" "No CSV or Parquet files" $gtText
 Has "...and fails, as before" "failed" $gtText
 
+Write-Host ""
+Write-Host "== a quoted identifier survives the PowerShell 5.1 command-line rules =="
+# PowerShell 5.1 builds ONE command line for a native program and does not
+# escape a double quote inside an argument, so the receiver reads it as a
+# delimiter and drops it: `--table "s1"."t2"` arrived as `--table s1.t2`, and
+# Exasol upper-cases what is not quoted. Windows CI found it in the legacy
+# crossing, where every restored table was rebuilt under a different name than
+# the one it had been exported from.
+#
+# Legacy is those exact rules, and PowerShell 7 can be asked for them - so this
+# runs the real failure on every host, not only on the Windows runner. On 5.1
+# the assignment is an ordinary variable the engine ignores, and the rules are
+# already in force.
+$savedPassing = Get-Variable -Name "PSNativeCommandArgumentPassing" -ValueOnly -ErrorAction SilentlyContinue
+$PSNativeCommandArgumentPassing = "Legacy"
+Set-Content -Path (Join-Path $got "argv") -Value "" -NoNewline
+[void](& { Invoke-ExapumpUpload -Path (Join-Path $shapes "plain.csv") -Target '"s1"."t2"' } 6>&1)
+# WHAT THE STUB CAN SEE. On Windows the stub is a .cmd and records with
+# `echo %*`, which prints cmd's RAW command line - before the un-escaping that
+# CommandLineToArgvW performs for a real program (exapump is a Rust binary and
+# gets that for free). So the escape the kit correctly applied, \", is still
+# spelled out in the recording. Undo it here and the assertion reads what
+# exapump would receive, on either host. A quote that was DROPPED, which is the
+# bug this pins, cannot come back through this normalisation.
+$argvSeen = (Get-Content (Join-Path $got "argv") -Raw) -replace '\\"', '"'
+Has "the quoted target reaches exapump with its quotes" '--table "s1"."t2"' $argvSeen
+Check "the helper escapes a quote under those rules" 'CREATE TABLE \"s1\".\"t2\"' `
+    @(ConvertTo-ExakitNativeArgs @('CREATE TABLE "s1"."t2"'))[0]
+Check "...and leaves an argument with no quote alone" "upload" @(ConvertTo-ExakitNativeArgs @("upload"))[0]
+if ($PSVersionTable.PSVersion.Major -ge 7) {
+    # PowerShell 7 hands over an argument vector, so the escape must NOT be
+    # applied there - it would arrive as a literal backslash.
+    $PSNativeCommandArgumentPassing = "Standard"
+    Check "...and changes nothing where the vector is passed straight through" 'CREATE TABLE "s1"."t2"' `
+        @(ConvertTo-ExakitNativeArgs @('CREATE TABLE "s1"."t2"'))[0]
+}
+if ($savedPassing) { $PSNativeCommandArgumentPassing = $savedPassing }
+
 Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue
 Write-Host ""
 Write-Host "data-load-shapes-ps.ps1: $($script:PASS) passed, $($script:FAIL) failed"
