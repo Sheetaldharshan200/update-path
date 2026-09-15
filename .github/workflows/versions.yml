@@ -537,6 +537,7 @@ jobs:
             pwsh -NoProfile -File tests/uninstall-ps.ps1
             pwsh -NoProfile -File tests/runtime-personal-ps.ps1
             pwsh -NoProfile -File tests/legacy-crossing-ps.ps1
+            pwsh -NoProfile -File tests/data-load-shapes-ps.ps1
           else
             echo "pwsh not installed on this runner - PowerShell suites skipped"
           fi

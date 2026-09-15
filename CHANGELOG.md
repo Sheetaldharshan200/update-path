@@ -123,6 +123,31 @@ someone's behalf while they are not there, and skipping destroys nothing.
   CLI spawns a helper that wedges is waited out.
 
 
+- **`exakit data-load` on the files people actually have.** Seven public
+  open-data sets (Munich's bicycle counters, population, cycling network,
+  district boundaries, roadworks, the MVV GTFS feed, MVG bike trips) loaded
+  zero tables through the kit as downloaded. The kit stays a bridge - it hands
+  every file to exapump or JSON Tables **as it is**, never a converted copy -
+  and now says what it sees: `.geojson` is JSON and loads through the add-on
+  like `.json`; a `;`- or tab-separated header is passed on as exapump's own
+  `--delimiter` instead of a warning; a file with a header and no rows (GTFS
+  ships `shapes.txt` that way) is skipped by name instead of failing type
+  inference; a tabular `.txt` or `.tsv` - exapump picks the format from the
+  extension and reads `.csv` and `.parquet` only - is listed with the one
+  rename that loads it instead of being silently ignored; and a failed upload
+  shows the engine's full `ETL-` detail (it was cut at the first bracket) with
+  the cause the kit saw in the header appended when the file has Windows line
+  endings, which exapump does not yet pass to the database correctly (its
+  IMPORT sets no row separator, so `7.4` arrives as `7.4<CR>`). That last one
+  is exapump's to fix, and the reason now says so. A CRLF file whose last
+  column is text *loads* - with a carriage return on every value in that
+  column (49,812 of 49,812 rows, checked) - so a successful load of such a
+  file is followed by a warning that says exactly that. A folder holding only
+  `.txt` tables (a GTFS feed as extracted) is no longer told it holds "no
+  files"; it is told the rename. Both platforms;
+  `tests/bulk-folder-load.sh` and `tests/data-load-shapes-ps.ps1` pin the
+  argv and the bytes the loader receives.
+
 ## 0.2.1
 
 The third agent-operability audit, end to end: 148 of its 149 findings, plus five defects found by running the kit on a real Windows machine. Eleven pull requests. Nothing here changes a command's name or its arguments, so an existing install updates in place.
