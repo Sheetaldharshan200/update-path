@@ -1,10 +1,9 @@
 # line-coverage.sh — line coverage for one sourced shell module, on bash 3.2.
 #
 #   . "$ROOT/tests/lib/line-coverage.sh"
-#   ... run the code under test with PS4="$COVERAGE_PS4", the statement
-#       coverage_prelude prints first and `set -x` just before the module is
-#       sourced, then hand its combined output and the raw file to
-#       coverage_collect ...
+#   ... run the code under test with the statement coverage_prelude prints
+#       first and `set -x` just before the module is sourced, then hand its
+#       combined output and the raw file to coverage_collect ...
 #   coverage_report "$ROOT/setup/lib/<module>.sh" "$TRACE" 85
 #
 # HOW IT WORKS. Bash's xtrace prints every simple command it runs, prefixed by
@@ -39,8 +38,17 @@
 
 COVERAGE_PS4='+@C@${BASH_SOURCE##*/}:${LINENO}@ '
 
-# coverage_prelude <raw-file> — the statement that decides WHERE the trace
-# goes, to be run first inside the traced shell. Turning tracing ON is the
+# coverage_prelude <raw-file> — the statements that decide WHAT the trace is
+# stamped with and WHERE it goes, to be run first inside the traced shell.
+#
+# PS4 IS SET HERE, NOT EXPORTED INTO THE SHELL. bash 3.2 takes PS4 from the
+# environment; bash 4.4 and later deliberately do NOT - PS4 is expanded before
+# each traced command, so inheriting it from the environment was a way to run
+# code in someone else's shell, and the import was dropped. A suite that only
+# exported it therefore measured every line on macOS and NOTHING on a modern
+# Linux: the trace arrived with the default "+ " prefix, no stamp matched, and
+# the report read "0 of 248 executable lines" - a coverage floor that could
+# only ever fail, and said nothing about the module when it did. Turning tracing ON is the
 # caller's `set -x`, placed right before the module under measurement is
 # sourced: everything sourced before it (common.sh is ten thousand lines) is
 # then neither traced nor counted, which is what makes fifty traced runs
@@ -56,6 +64,11 @@ COVERAGE_PS4='+@C@${BASH_SOURCE##*/}:${LINENO}@ '
 # floor on the truth, not the truth: code run under a stderr redirect is
 # invisible. The report says which bash measured.
 coverage_prelude() {
+    # Single quotes around the value: PS4 must reach the shell UNEXPANDED, so
+    # that $BASH_SOURCE and $LINENO name each traced command rather than this
+    # line. COVERAGE_PS4 holds no single quote of its own, so there is nothing
+    # to escape.
+    printf "PS4='%s'\n" "$COVERAGE_PS4"
     printf 'if [ "${BASH_VERSINFO[0]}" -gt 4 ] || { [ "${BASH_VERSINFO[0]}" -eq 4 ] && [ "${BASH_VERSINFO[1]}" -ge 1 ]; }; then exec 9>>"%s"; BASH_XTRACEFD=9; fi\n' "$1"
 }
 

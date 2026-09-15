@@ -103,7 +103,12 @@ function Invoke-Exapump {
         # rendered exapump's progress line as a seven-line red NativeCommandError
         # block ("At ...exapump.ps1 char:16", CategoryInfo, ...) that reached the
         # screen on every `exakit sql`, success or failure, and every log.
-        $out = (@(& (Get-ExapumpCli) @Arguments 2>&1) | ForEach-Object {
+        # Escaped for the 5.1 command-line rules, which drop an unescaped
+        # double quote: every quoted identifier in a statement went over
+        # unquoted, and Exasol upper-cases what is not quoted. See
+        # ConvertTo-ExakitNativeArgs.
+        $nativeArgs = ConvertTo-ExakitNativeArgs $Arguments
+        $out = (@(& (Get-ExapumpCli) @nativeArgs 2>&1) | ForEach-Object {
             if ($_ -is [System.Management.Automation.ErrorRecord]) { "$($_.Exception.Message)" } else { "$_" }
         }) -join "`n"
         $code = $LASTEXITCODE

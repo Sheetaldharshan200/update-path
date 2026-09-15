@@ -910,9 +910,59 @@ function Fail([string]$Msg) {
 # itself with a proper message, so any exception here is converted to a
 # synthetic non-zero code instead of being allowed to escape - Fail() still
 # happens, just from the caller, with the message it was meant to show.
+# ConvertTo-ExakitNativeArgs <argv> - the same arguments, safe to hand to a
+# native program under the Windows PowerShell 5.1 rules.
+#
+# WHAT GOES WRONG WITHOUT IT. PowerShell 5.1 builds ONE command line for a
+# native program and does not escape a double quote inside an argument, so the
+# receiving program's own parser reads it as a delimiter and drops it:
+#
+#   & exapump sql 'CREATE TABLE "s1"."t2" (a INT)'
+#       -> exapump receives   CREATE TABLE s1.t2 (a INT)
+#
+# Unquoted identifiers are UPPER-CASED by Exasol, so on Windows the legacy
+# crossing rebuilt every restored table under a different name than the one it
+# had exported, and `exakit sql` silently changed the meaning of any statement
+# a user quoted. Reproduced with PSNativeCommandArgumentPassing = Legacy, the
+# 5.1 rules, which is what the Windows CI runner found first.
+#
+# The fix is the documented one: a backslash before each quote. The receiving
+# program (exapump is Rust, and Rust uses the standard Windows parser) turns
+# \" back into a literal ". PowerShell 7 passes an argument vector straight
+# through, so the escape must NOT be applied there - it would arrive as a
+# literal backslash. Pass-through is therefore the default, and only 5.1 or an
+# explicit Legacy setting gets the escape.
+function ConvertTo-ExakitNativeArgs {
+    param([object[]]$Argv = @())
+    $legacy = ($PSVersionTable.PSVersion.Major -lt 7)
+    if (-not $legacy) {
+        $mode = Get-Variable -Name "PSNativeCommandArgumentPassing" -ValueOnly -ErrorAction SilentlyContinue
+        if ("$mode" -eq "Legacy") { $legacy = $true }
+    }
+    # The comma: PowerShell unrolls a returned collection, so a one-argument
+    # vector would come back as a bare string and a caller indexing it would
+    # get its first CHARACTER. The unary comma keeps the array an array.
+    if (-not $legacy) { return ,$Argv }
+    $out = @()
+    foreach ($a in $Argv) {
+        $v = "$a"
+        if ($v.Contains('"')) {
+            # A backslash run in front of a quote is itself escaped by the
+            # same parser, so it has to be doubled or it would swallow the
+            # backslash that protects the quote.
+            $v = [regex]::Replace($v, '(\\*)"', '$1$1\"')
+        }
+        $out += $v
+    }
+    return ,$out
+}
+
 function Invoke-ExakitLogged {
     param([Parameter(Mandatory)][string]$Cmd, [Parameter(ValueFromRemainingArguments)]$CmdArgs)
     Write-ExakitLog "CMD" "$Cmd $($CmdArgs -join ' ')"
+    # The log keeps the arguments as the caller meant them; the process gets
+    # the escaped form. See ConvertTo-ExakitNativeArgs.
+    $nativeArgs = ConvertTo-ExakitNativeArgs $CmdArgs
     $previousErrorActionPreference = $ErrorActionPreference
     # Animate a spinner (in a background runspace) while the command runs. Its
     # output goes to the log, not the console, so the spinner is the only
@@ -931,11 +981,11 @@ function Invoke-ExakitLogged {
             # (wrapped, with CategoryInfo trailers) inside a UTF-8 log, so a
             # a "ports are not available" line landed as "p o r t s   a r e"
             # and no grep for the remedy could find it.
-            & $Cmd @CmdArgs 2>&1 | ForEach-Object {
+            & $Cmd @nativeArgs 2>&1 | ForEach-Object {
                 if ($_ -is [System.Management.Automation.ErrorRecord]) { "$($_.Exception.Message)" } else { "$_" }
             } | Add-Content -Path $script:LogFile
         } else {
-            & $Cmd @CmdArgs | Out-Null
+            & $Cmd @nativeArgs | Out-Null
         }
         return $LASTEXITCODE
     } catch {

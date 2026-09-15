@@ -17,9 +17,21 @@ function Test-Listed([string]$Name, [string]$Value) {
     foreach ($line in (Get-Content $p)) { if ($line -eq $Value) { return $true } }
     return $false
 }
-Add-Content -Path (Join-Path $dir "exapump.calls") -Value ($args -join " ")
+# WHAT THIS STUB IS HANDED, ON WINDOWS. The kit escapes a double quote as \"
+# before it calls a native program, because the PowerShell 5.1 command-line
+# rules drop an unescaped one (see ConvertTo-ExakitNativeArgs). A real exapump
+# is a native program and its parser turns \" back into ". This stub is
+# reached through a .cmd wrapper and a second powershell, which need not undo
+# the escape, so it undoes the escape itself - and then everything below, the
+# log included, reads the same on every host. A MISSING quote still arrives
+# missing, which is the fault worth catching: the sh twin needs none of this,
+# because a shell hands its argv over untouched.
+$argv = @()
+foreach ($a in $args) { $argv += ("$a" -replace '\\"', '"') }
 
-$rest = @($args)
+Add-Content -Path (Join-Path $dir "exapump.calls") -Value ($argv -join " ")
+
+$rest = @($argv)
 $sub = "" + $rest[0]; $rest = $rest[1..($rest.Count - 1)]
 # Every subcommand takes -p <profile> first; keep it in the log, drop it here.
 if ($rest.Count -ge 2 -and $rest[0] -eq "-p") { $rest = @($rest[2..($rest.Count - 1)]) }

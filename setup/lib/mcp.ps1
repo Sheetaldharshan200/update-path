@@ -389,7 +389,10 @@ function Invoke-ExapumpAdminSql {
         # Windows. Do not let PowerShell convert that into a terminating
         # exception before Test-ExapumpSucceeded can evaluate the output.
         $ErrorActionPreference = "Continue"
-        $out = @(& $bin sql -p $Profile $Sql 2>&1) -join "`n"
+        # $Sql carries quoted identifiers; 5.1 would drop the quotes. See
+        # ConvertTo-ExakitNativeArgs.
+        $sqlArg = @(ConvertTo-ExakitNativeArgs @($Sql))[0]
+        $out = @(& $bin sql -p $Profile $sqlArg 2>&1) -join "`n"
         $code = $LASTEXITCODE
         return @{ Output = $out; ExitCode = $code; Success = (Test-ExapumpSucceeded -ExitCode $code -Output $out) }
     } catch {
