@@ -65,6 +65,23 @@ someone's behalf while they are not there, and skipping destroys nothing.
   which no longer ships, so its `exakit update` refuses the new archive and
   leaves the old kit untouched. Re-running the installer is the crossing, and
   it is what the notice above points at.
+- **Four defects in the crossing, found by running it under fault.** On the
+  sh side a schema or table name containing a space was word-split into two
+  tables that do not exist ("My Schema.T" became "My" and "Schema.T"), and a
+  malformed index line whose first word matched a file was restored into
+  `"".""`. On the PowerShell side a 0-byte password file was a terminating
+  error that ended the install instead of a quiet skip, and the two silent
+  paths (a resumed attempt, a gate closed with nothing to offer) still printed
+  "Stopping the old database container ..." where the sh side said nothing.
+  All four are pinned by `tests/legacy-crossing-resilience.sh` (181 checks) and
+  `tests/legacy-crossing-ps.ps1` (149), which drive both modules through a
+  fault-injection engine and exapump - hangs, refusals, a container lost between
+  calls, no password, no answer, a late answer, partial and total export
+  failure, partial restore, a crash between the two halves - and end by
+  measuring line coverage of the module with an 85 % floor (99 % and 97 %
+  measured). Two limits are recorded rather than hidden: a hang in a CHILD of
+  the engine outlives `exakit_run_bounded` on a machine without timeout(1), and
+  xtrace-based coverage on bash 3.2 cannot see code run under a stderr redirect.
 - **Fix: `exakit start` refused to clear its own mess.** The launcher can leave
   an orphaned runner (`.../exasol-local-runner/.../launcher __daemon__`) bound
   to the database port after a failed deploy or a destroy that could not find
