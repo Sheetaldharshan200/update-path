@@ -1,6 +1,6 @@
 # Quickstart: Linux
 
-Gets you from a Linux machine to a local Exasol database with an AI assistant connected. The database is an **Exasol Personal** local deployment, run by the Exasol launcher through Podman. WSL is not supported: the installer says so and exits without changing anything — run it on Windows itself (see the [Windows quickstart](windows.md)) or inside a native Linux machine.
+Gets you from a Linux machine to a local Exasol database with an AI assistant connected. The database is an **Exasol Personal** local deployment, run by the Exasol launcher through Podman. **This is also the WSL path**: a WSL2 distro is Linux to the launcher, so everything below applies inside it. Three things differ there and are called out where they matter — install Podman inside the distro rather than on Windows, keep the kit off `/mnt/c`, and turn systemd on if you want the database back after a reboot.
 
 ## What you need
 

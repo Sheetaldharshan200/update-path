@@ -144,12 +144,11 @@ main() {
             else
                 platform="linux"
             fi
-            # A platform Exasol Personal does not support exits gracefully
-            # naming what it does support. There is no second runtime to fall
-            # back to any more, so the refusal is the whole answer.
-            if [ "$platform" = "wsl" ]; then
-                fail "Exasol Personal supports macOS, native Linux and Windows x86_64 - it does not support WSL, and this kit has no other database to offer. Nothing was installed. Install on the Windows side instead, or use a native Linux machine."
-            fi
+            # WSL takes the Linux road, because to the launcher it IS Linux: a
+            # WSL2 distro runs a real kernel on AMD64, the launcher ships a
+            # Linux build, and its Linux local runtime wants one thing, a podman
+            # on PATH. setup-linux.sh then checks that and says so before
+            # anything is downloaded.
             target="Exasol Personal (local deployment via Podman)"
             setup_script="setup/setup-linux.sh"
             ;;

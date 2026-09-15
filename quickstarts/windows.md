@@ -2,7 +2,7 @@
 
 Gets you from Windows to a local Exasol database, staying entirely in **PowerShell**. The database is an **Exasol Personal** local deployment: the Exasol launcher runs it through host Podman, and installs Podman itself if it is missing.
 
-Exasol Personal supports Windows **x86_64**. It does not support Windows arm64 or WSL — the installer says so and exits without changing anything (see the notes below for what an arm64 machine can still do).
+Exasol Personal supports Windows **x86_64**. It does not support Windows arm64 — the installer says so and exits without changing anything (see the notes below for what an arm64 machine can still do). If you would rather work inside **WSL**, that is supported too and follows the [Linux quickstart](linux.md) instead of this one: the kit runs in the distro, and Podman has to be installed in there as well.
 
 ## What you need
 
