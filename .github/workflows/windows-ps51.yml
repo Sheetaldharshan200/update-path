@@ -70,6 +70,12 @@ jobs:
       - name: legacy crossing under 5.1
         shell: powershell
         run: powershell -NoProfile -ExecutionPolicy Bypass -File tests/legacy-crossing-ps.ps1
+      # The local data loader on the files people actually have - BOM, CRLF,
+      # ';', GTFS .txt, header-only, .geojson - against a .cmd stub exapump
+      # that keeps the bytes it was handed: the kit passes them on untouched.
+      - name: data-load shapes under 5.1
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File tests/data-load-shapes-ps.ps1
       # The skill layer, executed rather than grepped. tests/skills.sh asserts
       # this half with awk against exakit-common.ps1, which catches a deleted
       # line and nothing else.

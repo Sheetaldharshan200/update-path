@@ -631,10 +631,29 @@ function Get-ExakitUploadFailureReason {
         if (-not $row) { $row = "?" }
         return "row $row has a line break or an unescaped comma inside a quoted field"
     }
-    $e = [regex]::Match($text, "(ETL-\d+): *([^[]*)")
+    if ($text -like "*<CR>*") {
+        # The engine names the byte itself.
+        return "the file has Windows line endings (CRLF), which exapump does not yet pass to the database correctly - re-save it with LF line endings and load again"
+    }
+    # The DETAIL after the code, up to the session id. The first version
+    # stopped at the first "[" - exactly where every Exasol import message
+    # begins its detail - so the screen said "ETL-3051" and nothing else.
+    $e = [regex]::Match($text, "(ETL-\d+: .*)$")
     if ($e.Success) {
-        $out = ($e.Groups[1].Value + " " + $e.Groups[2].Value).Trim()
-        if ($out.Length -gt 100) { $out = $out.Substring(0, 100) }
+        $out = ($e.Groups[1].Value -replace " \(Session: .*$", "").Trim()
+        if ($out.Length -gt 160) {
+            # At a word, not mid-word.
+            $out = $out.Substring(0, 160)
+            $sp = $out.LastIndexOf(" ")
+            if ($sp -gt 0) { $out = $out.Substring(0, $sp) }
+            $out = "$out..."
+        }
+        # A cast or parse failure on a file the inspector flagged as CRLF is
+        # that flag, nine times in ten: the engine reports the symptom, the
+        # kit adds the cause it saw in the header.
+        if (("," + $script:ExakitCsvFlags + ",") -like "*,crlf,*") {
+            $out = "$out - the file has Windows line endings (CRLF), which exapump does not yet pass to the database correctly; re-save it with LF line endings and load again"
+        }
         return $out
     }
     $out = $text -replace "^Error: ", ""
@@ -649,7 +668,22 @@ function Invoke-ExapumpUpload {
         return $false
     }
     if (-not $script:ExakitUploadQuiet) { Info "Loading $(Split-Path $Path -Leaf) into $Target" }
-    $result = Invoke-Exapump @("upload", $Path, "--table", $Target, "-p", $script:ExapumpProfile)
+    # The file goes over AS IT IS (see Get-ExakitCsvInspection). The header's
+    # delimiter is passed on as exapump's own option; what the engine will
+    # object to is remembered so the failure reason can name it.
+    $uploadArgs = @("upload", $Path, "--table", $Target, "-p", $script:ExapumpProfile)
+    $script:ExakitCsvFlags = ""
+    if ((Get-ExakitDataFileKind $Path) -eq "csv") {
+        $look = Get-ExakitCsvInspection -Path $Path
+        if ($look.HeaderOnly) {
+            Warn2 "$(Split-Path $Path -Leaf) has a header and no rows - nothing to load"
+            return $false
+        }
+        $script:ExakitCsvFlags = $look.Flags
+        if ($look.Flags) { Write-ExakitLog "INFO" "$(Split-Path $Path -Leaf) has: $($look.Flags)" }
+        if ($look.Delimiter -ne ",") { $uploadArgs += @("--delimiter", $look.Delimiter) }
+    }
+    $result = Invoke-Exapump $uploadArgs
     if (-not $result.Success) {
         # -Soft: a bulk folder load must not lose the other thirty-nine files to
         # one bad one. Fail() exits the whole PROCESS here - PowerShell has no
@@ -677,6 +711,13 @@ function Invoke-ExapumpUpload {
         Fail "Upload failed: $Path -> $Target (see log)"
     }
     if (-not $script:ExakitUploadQuiet) { Ok "$(Split-Path $Path -Leaf) loaded" }
+    # A CRLF file whose last column is text LOADS - with a carriage return on
+    # every value in that column, because exapump set no row separator and the
+    # database took the CR as data. A bridge that will not rewrite the file
+    # says so. Twin of the same warning in exapump_upload.
+    if (("," + $script:ExakitCsvFlags + ",") -like "*,crlf,*") {
+        Warn2 "$(Split-Path $Path -Leaf) has Windows line endings (CRLF), which exapump passes through: every value in the last column of $Target ends in a carriage return. Re-save the file with LF endings and load again, or trim it in SQL with RTRIM(col, CHR(13))."
+    }
     return $true
 }
 
@@ -1004,10 +1045,84 @@ function Get-ExakitDataFileKind {
     param([Parameter(Mandatory)][string]$Path)
     $name = (Split-Path $Path -Leaf).ToLowerInvariant()
     if ($name -match '\.(gz|bz2|zst|xz)$') { $name = $name -replace '\.(gz|bz2|zst|xz)$', '' }
-    if ($name -match '\.(json|ndjson|jsonl)$')  { return "json" }
+    # .geojson IS json: a FeatureCollection is one document like any other,
+    # and every geoportal exports under that name. Twin of the same arm in
+    # exakit_data_file_kind.
+    if ($name -match '\.(json|geojson|ndjson|jsonl)$')  { return "json" }
     if ($name -match '\.(parquet|pq)$')         { return "parquet" }
     if ($name -match '\.(csv|tsv|txt)$')        { return "csv" }
     return "unknown"
+}
+
+# Test-ExakitTxtLooksTabular <path> - does this .txt hold delimited rows? A
+# GTFS feed is eleven CSV files all called .txt; a README.txt is not a table.
+# The first two lines tell them apart. Twin of _exakit_txt_looks_tabular.
+function Test-ExakitTxtLooksTabular {
+    param([Parameter(Mandatory)][string]$Path)
+    $lines = @()
+    try { $lines = @(Get-Content -Path $Path -TotalCount 2 -ErrorAction Stop) } catch { return $false }
+    if ($lines.Count -lt 2 -or -not $lines[1]) { return $false }
+    return ("" + $lines[0]) -match '[,;\t]'
+}
+
+# Get-ExakitCsvInspection <path> - what exapump is about to be handed, looked
+# at, not touched: @{ Delimiter; Flags; HeaderOnly }. Delimiter is what the
+# header uses (',' ';' or a tab); Flags names what the engine will object to
+# ("bom", "crlf"); HeaderOnly is a file with no row under its header.
+#
+# THE KIT IS A BRIDGE. It hands files to exapump and says what exapump says
+# back; it does not rewrite them. What is read from the header is passed on
+# as exapump's OWN --delimiter; what exapump cannot take is named before or
+# after the attempt; the file goes over as it is. exapump builds its IMPORT
+# without a row separator, so a Windows-ended file - on this platform, every
+# file - fails with "7.4<CR>" style casts; that fix belongs in exapump
+# (one row_separator call), and until it lands the failure reason names the
+# cause. Twin of exakit_csv_inspect in exapump.sh.
+function Get-ExakitCsvInspection {
+    param([Parameter(Mandatory)][string]$Path)
+    $result = @{ Delimiter = ","; Flags = ""; HeaderOnly = $false }
+    $name = [System.IO.Path]::GetFileName($Path).ToLowerInvariant()
+    if ($name -match '\.(gz|bz2|zst|xz)$') { return $result }
+    $stream = [System.IO.File]::OpenRead($Path)
+    try {
+        $buffer = New-Object byte[] 3
+        $got = $stream.Read($buffer, 0, 3)
+        $bom = ($got -eq 3 -and $buffer[0] -eq 0xEF -and $buffer[1] -eq 0xBB -and $buffer[2] -eq 0xBF)
+        $stream.Position = 0
+        $reader = New-Object System.IO.StreamReader($stream, [System.Text.Encoding]::UTF8, $true)
+        # The raw first line, for its ending; then the line under it.
+        $raw = New-Object System.Text.StringBuilder
+        while (-not $reader.EndOfStream) {
+            $c = [char]$reader.Read()
+            if ($c -eq "`n") { break }
+            [void]$raw.Append($c)
+            if ($raw.Length -gt 1048576) { break }
+        }
+        $first = $raw.ToString()
+        $crlf = $first.EndsWith("`r")
+        $head = $first.TrimEnd("`r")
+        $second = $null
+        if (-not $reader.EndOfStream) { $second = $reader.ReadLine() }
+    } finally { $stream.Dispose() }
+    if (-not $second) { $result.HeaderOnly = $true; return $result }
+    if ("$head" -notmatch ',') {
+        if ("$head" -match ';') { $result.Delimiter = ";" }
+        elseif ("$head" -match "`t") { $result.Delimiter = "`t" }
+    }
+    $flags = @()
+    if ($bom) { $flags += "bom" }
+    if ($crlf) { $flags += "crlf" }
+    $result.Flags = ($flags -join ",")
+    return $result
+}
+
+# A .tsv or a tabular .txt is data exapump will not take BY NAME: it picks the
+# format from the extension and reads .csv and .parquet only. The kit does not
+# rename files behind the user's back, so these are reported with the one
+# action that loads them. Twin of _exakit_csv_extension_refused.
+function Test-ExakitCsvExtensionRefused {
+    param([Parameter(Mandatory)][string]$Path)
+    return ([System.IO.Path]::GetFileName($Path).ToLowerInvariant() -match '\.(tsv|txt)(\.gz)?$')
 }
 
 # Show-ExakitJsonUnsupported - one honest explanation, with the reason the
@@ -1272,19 +1387,29 @@ function Import-ExakitLocalFile {
             # inside the loader and be recorded as a failed step.
             $llfKind = Get-ExakitDataFileKind $path
             $llfName = [System.IO.Path]::GetFileName($path).ToLowerInvariant()
-            if ($llfKind -eq "unknown" -or ($llfKind -eq "csv" -and $llfName.EndsWith(".txt"))) {
+            # A .tsv or .txt is data exapump refuses BY NAME; the kit says so
+            # and does not rename it behind the user's back.
+            if ($llfKind -eq "csv" -and (Test-ExakitCsvExtensionRefused $path)) {
+                Warn2 "$llfName looks tabular, but exapump reads .csv and .parquet only - rename it to .csv and load that."
+                if (-not (Test-ExakitInteractive)) { exit 2 }
+                continue
+            }
+            if ($llfKind -eq "unknown") {
                 if (-not (Test-ExakitInteractive)) {
-                    Write-Host ""; Write-Host "  [x] Cannot load '$llfName': only .csv, .tsv, .parquet (and .json with the JSON Tables add-on) are supported - rename or convert the file first."
+                    Write-Host ""; Write-Host "  [x] Cannot load '$llfName': only .csv and .parquet (and .json / .geojson with the JSON Tables add-on) are supported - rename or convert the file first."
                     exit 2
                 }
-                Warn2 "Only .csv, .tsv, .parquet (and .json with the JSON Tables add-on) can be loaded: $llfName"
+                Warn2 "Only .csv and .parquet (and .json / .geojson with the JSON Tables add-on) can be loaded: $llfName"
                 continue
             }
             if ($llfKind -eq "csv") {
+                # The delimiter is read from the header now, so the only thing
+                # left to say is which one was found.
                 $llfHead = ""
                 try { $llfHead = (Get-Content -Path $path -TotalCount 1 -ErrorAction Stop) } catch { }
-                if ("$llfHead" -notmatch ',' -and ("$llfHead" -match ';' -or "$llfHead" -match "`t")) {
-                    Warn2 "The header of $llfName has no comma but a ';' or tab - exapump splits on ',' and would load it as ONE column. Convert the file, or load it with: exapump upload --delimiter ';' -p $script:ExapumpProfile ..."
+                if ("$llfHead" -notmatch ',') {
+                    if ("$llfHead" -match ';') { Info "$llfName is semicolon-separated - loading it as such." }
+                    elseif ("$llfHead" -match "`t") { Info "$llfName is tab-separated - loading it as such." }
                 }
             }
             break
@@ -1378,10 +1503,13 @@ function Import-ExakitLocalFile {
 # reasonable CSV there. Scanning a folder says nothing of the kind: a README.txt
 # beside the exports is not a table, and loading one as CSV would be a silent
 # surprise rather than a service. Twin of exakit_bulk_file_kind.
+# A .txt is decided by its CONTENT: a GTFS feed is eleven CSV files all called
+# .txt, a README.txt is not a table. Twin of exakit_bulk_file_kind.
 function Get-ExakitBulkFileKind {
     param([Parameter(Mandatory)][string]$Path)
     $name = (Split-Path $Path -Leaf).ToLowerInvariant()
-    if ($name -match '\.txt(\.(gz|bz2|zst|xz))?$') { return "unknown" }
+    if ($name -match '\.txt\.(gz|bz2|zst|xz)$') { return "unknown" }
+    if ($name -match '\.txt$') { if (Test-ExakitTxtLooksTabular $Path) { return "csv" } else { return "unknown" } }
     return (Get-ExakitDataFileKind $Path)
 }
 
@@ -1424,6 +1552,14 @@ function Get-ExakitBulkFolderPlan {
         if ($kind -eq "json")    { [void]$plan.Add("skip|json-unsupported||$full"); continue }
         $size = (Get-Item $full).Length
         if ($size -le 0) { [void]$plan.Add("skip|empty||$full"); continue }
+        # A CSV whose only line is its header has no table in it (GTFS ships
+        # shapes.txt that way when a feed has no shapes). Named as such rather
+        # than failing later inside exapump's schema inference.
+        if ($kind -eq "csv") {
+            $two = @(Get-Content -Path $full -TotalCount 2 -ErrorAction SilentlyContinue)
+            if ($two.Count -lt 2 -or -not $two[1]) { [void]$plan.Add("skip|header-only||$full"); continue }
+            if (Test-ExakitCsvExtensionRefused $full) { [void]$plan.Add("skip|extension||$full"); continue }
+        }
 
         $hash = ""
         $dupe = ""
@@ -1531,6 +1667,16 @@ function Show-ExakitBulkPlan {
     if ($empty -gt 0) {
         if ($ignored) { $ignored = "$ignored, $empty empty" } else { $ignored = "$empty empty" }
     }
+    $headerOnly = @($Plan | Where-Object { $_.StartsWith("skip|header-only|") }).Count
+    if ($headerOnly -gt 0) {
+        $phrase = "$headerOnly with a header and no rows"
+        if ($ignored) { $ignored = "$ignored, $phrase" } else { $ignored = $phrase }
+    }
+    # Not folded into "ignored": these hold data, and one rename loads them.
+    $ext = @($Plan | Where-Object { $_.StartsWith("skip|extension|") }).Count
+    if ($ext -gt 0) {
+        Write-Host ("      {0}! {1} tabular but named .txt/.tsv - exapump reads .csv and .parquet only; rename to .csv to load{2}" -f $script:UiDim, (Get-ExakitPlural $ext 'file'), $script:UiReset)
+    }
     if ($ignored) {
         Write-Host ("      {0}ignored: {1}{2}" -f $script:UiDim, $ignored, $script:UiReset)
     }
@@ -1548,8 +1694,15 @@ function Import-ExakitLocalFolder {
     $loadable = @($plan | Where-Object { $_.StartsWith("load|") })
     if ($loadable.Count -eq 0) {
         $json = @($plan | Where-Object { $_.StartsWith("skip|json-unsupported|") }).Count
+        $ext = @($plan | Where-Object { $_.StartsWith("skip|extension|") }).Count
         if ($json -gt 0) {
             Show-ExakitBulkPlan -Plan $plan -Chosen @() -Schema "" -Path $Path
+        } elseif ($ext -gt 0) {
+            # A GTFS feed is eleven tables all called .txt: nothing exapump
+            # takes by name, everything the user came to load. Twin of the
+            # same branch in exakit_load_local_folder.
+            Warn2 "$(Get-ExakitPlural $ext 'file') in $Path are tabular but named .txt/.tsv - exapump reads .csv and .parquet only. Rename them to .csv and load the folder again."
+            Info "Only the folder itself is read - subfolders and files of other kinds are left alone."
         } else {
             Warn2 "No CSV or Parquet files in $Path."
             Info "Only the folder itself is read - subfolders and files of other kinds are left alone."

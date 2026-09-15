@@ -343,12 +343,15 @@ check "...exit 4" "4" "$(EXAKIT_HOME="$WORK/nowhere" bash "$CLI" status --json >
 check "the prose form exits 4 too" "4" "$(EXAKIT_HOME="$WORK/nowhere" bash "$CLI" status >/dev/null 2>&1; echo $?)"
 
 echo "R4-4. unsupported and one-column files are refused or flagged before the loader:"
-has "the loader refuses .txt and unknown kinds before running" 'unknown:*|csv:*.txt)' "$(cat "$ROOT/setup/lib/exapump.sh")"
+has "the loader refuses unknown kinds before running" 'case "$_llf_kind" in' "$(cat "$ROOT/setup/lib/exapump.sh")"
+has "...and a .txt/.tsv by name, with the rename that loads it" '_exakit_csv_extension_refused "$_path"' "$(cat "$ROOT/setup/lib/exapump.sh")"
 has "...as bad input, not a failed step" "_llf_refuse \"Cannot load '" "$(cat "$ROOT/setup/lib/exapump.sh")"
 has "a missing file without a TTY is bad input too" '_llf_refuse "File not found or empty' "$(cat "$ROOT/setup/lib/exapump.sh")"
 has "the data-load menu turns the refusal into exit 2" '_local_status" -eq 3' "$(cat "$ROOT/setup/lib/exapump.sh")"
 has "the installer does not book it as a failed step" 'The local file was refused' "$(cat "$ROOT/setup/lib/common.sh")"
-has "a ';' header is called out" "would load it as ONE column" "$(cat "$ROOT/setup/lib/exapump.sh")"
+# A ';' header used to be WARNED about; it is now read and passed on as
+# exapump's own --delimiter, the file itself untouched.
+has "a ';' header is passed on as exapump's own delimiter" '--delimiter "$_upl_delim"' "$(cat "$ROOT/setup/lib/exapump.sh")"
 has "the PowerShell twin refuses the same files" 'llfKind -eq "unknown"' "$(cat "$ROOT/setup/lib/exapump.ps1")"
 
 echo "R4-5. service logs are created owner-only before launchd opens them:"

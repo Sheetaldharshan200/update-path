@@ -122,9 +122,13 @@ check "absent"   "absent"   "$(run "$H1" absent   'legacy_container_state')"
 # withdrawing it.
 check "unparseable is unknown, never absent" "unknown" "$(run "$H1" unknown 'legacy_container_state')"
 # The engine NAME comes from the record, never from the machine: a host with a
-# different engine installed must not be asked about this container.
+# different engine installed must not be asked about this container. The stub
+# engine lives only in the bin-* directories run() prepends, so the outer PATH
+# is already an engine-less PATH; cutting it to /usr/bin:/bin took the working
+# python3 away too (a stock macOS one refuses to run until the Xcode licence is
+# accepted) and the manifest then read as empty - "absent" for the wrong reason.
 check "an engine that is gone answers unknown" "unknown" \
-    "$(EXAKIT_HOME="$H1" EXAKIT_BIN_DIR="$H1/bin" PATH="/usr/bin:/bin" ROOT="$ROOT" bash -c '
+    "$(EXAKIT_HOME="$H1" EXAKIT_BIN_DIR="$H1/bin" ROOT="$ROOT" bash -c '
         . "$ROOT/setup/lib/common.sh"; . "$ROOT/setup/lib/detect.sh"
         . "$ROOT/setup/lib/exapump.sh"; . "$ROOT/setup/lib/legacy-crossing.sh"
         legacy_container_state' 2>/dev/null)"
