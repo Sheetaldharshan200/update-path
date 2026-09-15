@@ -151,7 +151,19 @@ function MGet([string]$Path) { return ("" + (Get-ExakitManifestValue $Path)) }
 # Screen - everything a call writes, on any stream, as one string; remembered
 # for the invariants at the end.
 function Screen([scriptblock]$Body) {
-    $out = (& $Body *>&1 | Out-String)
+    # -Width, or the capture is folded at the HOST console width and these
+    # assertions start matching the terminal rather than the module.
+    #
+    # It bit once, on the Windows runner only. The "no longer needed" line
+    # carries the export directory, and a Windows temp path is long enough
+    # (172 characters all told) that the fold landed at column 128 - inside
+    # the phrase, splitting it into "no lo" and "nger needed". The module had
+    # printed it correctly; the check read MISSING. The line after it passed
+    # on the same screen because its phrase sits at column 24, before any
+    # fold. Nothing reproduces this under pwsh 7, which does not fold these
+    # records at all, so the suite was green everywhere except the one host
+    # that matters for a 5.1 test.
+    $out = (& $Body *>&1 | Out-String -Width 4096)
     $script:screens += $out
     return $out
 }
