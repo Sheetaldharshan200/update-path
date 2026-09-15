@@ -190,7 +190,15 @@ $savedPassing = Get-Variable -Name "PSNativeCommandArgumentPassing" -ValueOnly -
 $PSNativeCommandArgumentPassing = "Legacy"
 Set-Content -Path (Join-Path $got "argv") -Value "" -NoNewline
 [void](& { Invoke-ExapumpUpload -Path (Join-Path $shapes "plain.csv") -Target '"s1"."t2"' } 6>&1)
-Has "the quoted target reaches exapump with its quotes" '--table "s1"."t2"' (Get-Content (Join-Path $got "argv") -Raw)
+# WHAT THE STUB CAN SEE. On Windows the stub is a .cmd and records with
+# `echo %*`, which prints cmd's RAW command line - before the un-escaping that
+# CommandLineToArgvW performs for a real program (exapump is a Rust binary and
+# gets that for free). So the escape the kit correctly applied, \", is still
+# spelled out in the recording. Undo it here and the assertion reads what
+# exapump would receive, on either host. A quote that was DROPPED, which is the
+# bug this pins, cannot come back through this normalisation.
+$argvSeen = (Get-Content (Join-Path $got "argv") -Raw) -replace '\\"', '"'
+Has "the quoted target reaches exapump with its quotes" '--table "s1"."t2"' $argvSeen
 Check "the helper escapes a quote under those rules" 'CREATE TABLE \"s1\".\"t2\"' `
     @(ConvertTo-ExakitNativeArgs @('CREATE TABLE "s1"."t2"'))[0]
 Check "...and leaves an argument with no quote alone" "upload" @(ConvertTo-ExakitNativeArgs @("upload"))[0]
