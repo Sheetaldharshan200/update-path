@@ -1097,8 +1097,9 @@ _exakit_txt_looks_tabular() {
 # arrives with a CR on every last field - "7.4" becomes "7.4<CR>" and fails to
 # cast (ETL-3050/3051), a quoted last field fails to parse (ETL-2105). Every
 # CSV written on Windows or exported from Excel or a public data portal has
-# that shape. The fix is one builder call in exapump (row_separator), not a
-# copy in this kit; until it lands, the failure reason below names the cause.
+# that shape. The fix is one builder call in exapump (row_separator) - open
+# as exasol-labs/exapump#43 - not a copy in this kit; until it lands, the
+# failure reason below names the cause.
 exakit_csv_inspect() {
     _ci_src="$1"
     case "$(printf '%s' "${_ci_src##*/}" | tr '[:upper:]' '[:lower:]')" in

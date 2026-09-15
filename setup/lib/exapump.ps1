@@ -1076,8 +1076,9 @@ function Test-ExakitTxtLooksTabular {
 # after the attempt; the file goes over as it is. exapump builds its IMPORT
 # without a row separator, so a Windows-ended file - on this platform, every
 # file - fails with "7.4<CR>" style casts; that fix belongs in exapump
-# (one row_separator call), and until it lands the failure reason names the
-# cause. Twin of exakit_csv_inspect in exapump.sh.
+# (one row_separator call, open as exasol-labs/exapump#43), and until it
+# lands the failure reason names the cause. Twin of exakit_csv_inspect in
+# exapump.sh.
 function Get-ExakitCsvInspection {
     param([Parameter(Mandatory)][string]$Path)
     $result = @{ Delimiter = ","; Flags = ""; HeaderOnly = $false }

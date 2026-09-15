@@ -139,7 +139,8 @@ someone's behalf while they are not there, and skipping destroys nothing.
   the cause the kit saw in the header appended when the file has Windows line
   endings, which exapump does not yet pass to the database correctly (its
   IMPORT sets no row separator, so `7.4` arrives as `7.4<CR>`). That last one
-  is exapump's to fix, and the reason now says so. A CRLF file whose last
+  is exapump's to fix - exasol-labs/exapump#43 does, and is waiting on a
+  rebase - and the reason now says so. A CRLF file whose last
   column is text *loads* - with a carriage return on every value in that
   column (49,812 of 49,812 rows, checked) - so a successful load of such a
   file is followed by a warning that says exactly that. A folder holding only
