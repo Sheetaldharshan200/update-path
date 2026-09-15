@@ -115,14 +115,21 @@ function Start-LegacyContainer {
 
 # The one mutation the crossing makes to the old install, and it is reversible:
 # the container is stopped, never removed, and its data volume is not touched.
+#
+# -Quiet is the twin of the sh side's `>/dev/null 2>&1` on the two calls that
+# happen where NOTHING may reach the screen: a resumed attempt, and a gate that
+# closed with no offer to make. Without it the Windows crossing said "Stopping
+# the old database container ..." on exactly the re-runs that are supposed to
+# pass in silence - the sh side never did, and the two had drifted.
 function Stop-LegacyContainer {
+    param([switch]$Quiet)
     $name = Get-LegacyContainer
     if (-not $name) { return $true }
     if ((Get-LegacyContainerState) -ne "running") { return $true }
-    Info "Stopping the old database container ($name) so the new deployment can take the port"
+    if (-not $Quiet) { Info "Stopping the old database container ($name) so the new deployment can take the port" }
     $out = Invoke-LegacyEngine -Arguments @("stop", $name)
     if ($null -eq $out) {
-        Warn2 "Could not stop the container $name - the new deployment may find its port busy"
+        if (-not $Quiet) { Warn2 "Could not stop the container $name - the new deployment may find its port busy" }
         return $false
     }
     Set-ExakitManifestValue "legacy.container_stopped" $true
@@ -153,7 +160,12 @@ function Write-LegacyProfile {
     if ($parts.Count -lt 2) { return $false }
     $pwFile = "" + (Get-ExakitManifestValue "runtime.password_file")
     if (-not $pwFile -or -not (Test-Path $pwFile)) { return $false }
-    $password = (Get-Content $pwFile -Raw).TrimEnd("`r", "`n")
+    # "" + ..., because Get-Content -Raw on an EMPTY file returns $null, and
+    # .TrimEnd() on $null is a terminating error - which, under the global Stop
+    # preference, would have ended the install on a 0-byte password file. The
+    # sh twin tests -s for the same case; here the empty string falls to the
+    # test below and the profile is simply not written.
+    $password = ("" + (Get-Content $pwFile -Raw)).TrimEnd("`r", "`n")
     if (-not $password) { return $false }
     New-Item -ItemType Directory -Force -Path (Split-Path $script:ExapumpConfigPath -Parent) | Out-Null
     # The password goes straight into the 0600 config. It is never echoed,
@@ -409,7 +421,7 @@ function Invoke-LegacyCrossingBefore {
     if ($already) {
         $script:LegacyChoice = $already
         Write-ExakitLog "INFO" "legacy crossing: resuming with choice=$already"
-        [void](Stop-LegacyContainer)
+        [void](Stop-LegacyContainer -Quiet)
         return
     }
 
@@ -474,7 +486,7 @@ function Invoke-LegacyCrossingBefore {
         Set-ExakitManifestValue "legacy.crossed_from" $type
         Set-ExakitManifestValue "legacy.crossing_done" $true
         # It may still be holding the port, whether or not its data is readable.
-        [void](Stop-LegacyContainer)
+        [void](Stop-LegacyContainer -Quiet)
         return
     }
 
