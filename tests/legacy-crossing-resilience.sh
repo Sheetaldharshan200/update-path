@@ -652,8 +652,9 @@ has "the banner counts every table"          "It holds 3 table(s)" "$_o"
 has "...says which belong to the kit"        "1 of them belong to the kit's bundled sample data (tpch)" "$_o"
 has "...and how many are the user's own"     "Your own: 2 table(s)" "$_o"
 check "only the user's tables are copied out"        "2" "$(calls "$H" exapump | grep -c '^export')"
-check "the unchanged sample table is not"            "0" "$(calls "$H" exapump | grep '^export' | grep -c 'TPCH.REGION')"
-check "a sample table the user changed is"           "1" "$(calls "$H" exapump | grep '^export' | grep -c 'TPCH.NATION')"
+# The export names its table as a quoted query, so that is what the log holds.
+check "the unchanged sample table is not"            "0" "$(calls "$H" exapump | grep '^export' | grep -c '"TPCH"."REGION"')"
+check "a sample table the user changed is"           "1" "$(calls "$H" exapump | grep '^export' | grep -c '"TPCH"."NATION"')"
 check "the row counts were asked for once"           "1" "$(calls "$H" exapump | grep -c 'EXAKIT_LR')"
 check "...for the sample schema only"                "1" "$(calls "$H" exapump | grep 'EXAKIT_LR' | grep -c "IN ('TPCH')")"
 check "...through the legacy profile"                "1" "$(calls "$H" exapump | grep 'EXAKIT_LR' | grep -c -- '-p starter-kit-legacy')"
@@ -685,7 +686,7 @@ check "...and the container stopped for the port"    "1" "$(calls "$H" engine | 
 H="$WORK/sample-unknown"; seed "$H"
 printf 'TPCH.REGION\n' > "$H/ctrl/db.tables"
 _o="$(before "$H" EXAKIT_LEGACY_DATA=migrate)"; note_rc "$_o"
-check "an unknown row count keeps the table in the copy" "1" "$(calls "$H" exapump | grep '^export' | grep -c 'TPCH.REGION')"
+check "an unknown row count keeps the table in the copy" "1" "$(calls "$H" exapump | grep '^export' | grep -c '"TPCH"."REGION"')"
 lacks "...and nothing is called the kit's"           "bundled sample data" "$_o"
 
 # The skip road now names the later route.
@@ -863,7 +864,7 @@ _o="$(migrate "$H")"
 has "the count names the whole container"                 "The container holds 3 table(s)" "$_o"
 has "...and the kit's share"                              "1 of them belong to the kit's bundled sample data (tpch)" "$_o"
 check "two copied out"                                    "2" "$(mget "$H" legacy.exported)"
-check "the changed sample table among them"               "1" "$(calls "$H" exapump | grep '^export' | grep -c 'TPCH.NATION')"
+check "the changed sample table among them"               "1" "$(calls "$H" exapump | grep '^export' | grep -c '"TPCH"."NATION"')"
 
 # EVERY EXPORT FAILS: the deployment comes back, nothing is lost.
 H="$WORK/mig-exportfail"; seed_mig "$H"; printf 'S1.T1\nS1.T2\nS2.T3\n' > "$H/ctrl/export.fail"
@@ -970,8 +971,10 @@ for _m in "$WORK"/*/manifest.json; do python3 -c 'import json,sys; json.load(ope
 check "every manifest is still valid JSON" "" "$_bad_json"
 # THE TWO PROFILES NEVER CROSS. Reads of the old database go through the
 # legacy profile; writes into the new one go through the kit's.
+# The one SELECT the kit's profile does carry is the probe of the NEW database
+# before a restore (EXAKIT_NEW_OK) - a read of the new one, by design.
 check "no read of the old database used the kit's profile" "0" \
-    "$(printf '%s\n' "$_all_exapump" | grep -E '^(export|sql -p [^ ]+ SELECT)' | grep -c -- '-p starter-kit ')"
+    "$(printf '%s\n' "$_all_exapump" | grep -E '^(export|sql -p [^ ]+ SELECT)' | grep -v EXAKIT_NEW_OK | grep -c -- '-p starter-kit ')"
 check "no upload used the legacy profile" "0" "$(printf '%s\n' "$_all_exapump" | grep '^upload' | grep -c -- 'starter-kit-legacy')"
 check "no parquet was ever asked for" "0" "$(printf '%s\n' "$_all_exapump" | grep -c parquet)"
 
