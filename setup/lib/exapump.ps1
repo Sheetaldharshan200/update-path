@@ -221,12 +221,33 @@ function Install-Exapump {
             $ErrorActionPreference = $previousEAP
         }
         if ($existingWorks) {
-            Ok "exapump already installed: $existing"
-            Set-ExapumpManifest
-            return
+            # THE VERSION IS CHECKED, NOT JUST THAT IT RUNS. A kit-managed
+            # binary left by an earlier install answered --version, was called
+            # "already installed", and the manifest then recorded the version
+            # this kit PINS - 0.13.0 on paper, 0.12.0 on disk, and every
+            # exapump fix in between missing. Only the kit's own path is
+            # replaced; a binary the user put elsewhere is theirs. Twin of the
+            # same check in exapump_install.
+            $have = ""
+            try {
+                $ErrorActionPreference = "Continue"
+                $versionOut = (& $existing --version 2>&1 | Out-String)
+                if ($versionOut -match '(\d+\.\d+\.\d+)') { $have = $Matches[1] }
+            } catch { } finally {
+                $ErrorActionPreference = $previousEAP
+            }
+            if ($have -and $have -ne $script:ExapumpVersion -and $existing -eq $script:ExapumpBinPath) {
+                Info "exapump $have is installed; this kit ships $($script:ExapumpVersion) - replacing it"
+                Remove-Item -Force $existing -ErrorAction SilentlyContinue
+            } else {
+                Ok "exapump already installed: $existing"
+                Set-ExapumpManifest
+                return
+            }
+        } else {
+            Warn2 "Existing exapump binary does not run (interrupted download?) - reinstalling"
+            Remove-Item -Force $existing -ErrorAction SilentlyContinue
         }
-        Warn2 "Existing exapump binary does not run (interrupted download?) - reinstalling"
-        Remove-Item -Force $existing -ErrorAction SilentlyContinue
     }
 
     $url = "https://github.com/$($script:ExapumpRepo)/releases/download/v$($script:ExapumpVersion)/$asset"
@@ -258,8 +279,68 @@ function Install-Exapump {
     New-Item -ItemType Directory -Force -Path $script:BinDir | Out-Null
     Move-Item -Force $tmp $script:ExapumpBinPath
     Confirm-ExakitOnPath $script:BinDir
+    # Smoke-test the freshly installed binary BEFORE reporting success - the twin
+    # of exapump_verify_runs, which the sh side has always had and this side
+    # never did. A checksum proves the download is intact, not that the machine
+    # will let it start; without this the failure surfaced three minutes later
+    # as "SELECT 1 failed", blaming a database that was healthy all along.
+    Test-ExapumpRuns
     OkStep "exapump v$($script:ExapumpVersion) installed to $(Get-ExakitTilde $script:ExapumpBinPath) ($([int]((Get-Date) - $exiT0).TotalSeconds)s)"
     Set-ExapumpManifest
+}
+
+# Test-ExakitBinaryNotRunnableYet - is this the error of a binary that cannot
+# start YET, rather than one that cannot start at all?
+#
+# A freshly written, unsigned 20 MB executable is held open by Windows Defender
+# and by corporate EDR agents while they scan it, and every attempt to run it
+# meanwhile fails with "Access is denied". Measured on a managed Windows laptop:
+# three and a half minutes, during which all six SELECT 1 attempts failed and
+# the install reported a database fault - with the database perfectly healthy
+# and the same binary running fine a minute later. Twin of
+# exakit_binary_not_runnable_yet.
+function Test-ExakitBinaryNotRunnableYet([string]$Output) {
+    return ("$Output" -match 'Access is denied|failed to run|being used by another process|cannot access the file|contains a virus')
+}
+
+# Test-ExapumpRuns - the freshly installed binary must actually start. Twin of
+# exapump_verify_runs: it waits out a scanner that is still holding the file
+# (and only that error), then reports what is really wrong.
+function Test-ExapumpRuns {
+    $budget = 180
+    if ($env:EXAKIT_EXAPUMP_READY_TIMEOUT) { $budget = [int]$env:EXAKIT_EXAPUMP_READY_TIMEOUT }
+    $t0 = [DateTime]::UtcNow
+    $said = $false
+    $out = ""
+    while ($true) {
+        $previousEAP = $ErrorActionPreference
+        try {
+            $ErrorActionPreference = "Continue"
+            $out = (@(& $script:ExapumpBinPath --version 2>&1) | ForEach-Object {
+                if ($_ -is [System.Management.Automation.ErrorRecord]) { "$($_.Exception.Message)" } else { "$_" }
+            }) -join "`n"
+            $code = $LASTEXITCODE
+        } catch {
+            $out = "$_"
+            $code = 1
+        } finally {
+            $ErrorActionPreference = $previousEAP
+        }
+        if ($code -eq 0) { return }
+        if (-not (Test-ExakitBinaryNotRunnableYet -Output $out)) { break }
+        if (([DateTime]::UtcNow - $t0).TotalSeconds -ge $budget) { break }
+        if (-not $said) {
+            Info "The new exapump cannot start yet (a virus scanner still holds it) - waiting up to ${budget}s"
+            $said = $true
+        }
+        Start-Sleep -Seconds 5
+    }
+    Write-ExakitLog "ERR" "exapump --version failed: $out"
+    $first = ("$out" -split "`n")[0]
+    if (Test-ExakitBinaryNotRunnableYet -Output $out) {
+        Fail "exapump was installed and verified, but this machine will not let it run: $first. A virus scanner or endpoint-security agent is holding it. Allow $($script:ExapumpBinPath) (or wait for the scan to finish), then: exakit update"
+    }
+    Fail "exapump was installed but does not run: $first. See the log and https://github.com/$($script:ExapumpRepo)/issues"
 }
 
 function Set-ExapumpManifest {
@@ -481,6 +562,13 @@ function Test-ExapumpConnection {
         # exapump/database error text (auth failure vs. connection refused vs.
         # TLS handshake error) is exactly what's needed to diagnose this, and
         # making someone go dig through a log file for it is not production-grade.
+        # NAME THE REAL FAULT. When the binary cannot start, every attempt says
+        # "Access is denied" and nothing was ever asked of the database -
+        # reporting "SELECT 1 failed" sent the reader to diagnose a healthy
+        # database. See Test-ExakitBinaryNotRunnableYet.
+        if (Test-ExakitBinaryNotRunnableYet -Output $lastOutput) {
+            Fail "exapump is installed but this machine will not let it run (a virus scanner or endpoint-security agent is holding it) - the database was never asked. Allow $($script:ExapumpBinPath), then: exakit update"
+        }
         Write-ExapumpOutput -Output $lastOutput -Header "Last attempt's output:"
         Fail "SELECT 1 failed via profile '$($script:ExapumpProfile)' after 6 attempts. Try: exapump sql -p $($script:ExapumpProfile) 'SELECT 1'"
     }
@@ -792,12 +880,37 @@ $script:ExakitUploadFailures = @()
 # Failures are collected, not thrown: with several processes in flight, dying
 # on the first would leave the others running and unreaped. The caller decides
 # what to do once every process has been waited for.
+# Test-ExakitUploadCutShort - did the import connection die mid-transfer? The
+# database reads the file through its own import proxy, and when the client
+# side of that connection closes before the last byte the engine says
+# ETL-5105 "transfer closed with outstanding read data remaining". Seen on
+# Windows with exapump 0.12: one or two of eight files per run, a different
+# file each time, the same file loading fine a moment later - so the remedy is
+# a second attempt, not a message. A malformed file, a missing table or a
+# refused login is not this and is never retried. Twin of
+# exakit_upload_cut_short.
+function Test-ExakitUploadCutShort([string]$Output) {
+    return ("$Output" -match 'ETL-5105|transfer closed with outstanding read data|Transferred a partial file|Connection reset by peer|connection was aborted')
+}
+
+# Get-ExakitUploadRetries - how many more attempts a cut-short upload gets
+# (EXAKIT_UPLOAD_RETRIES, default 2; 0 disables). Twin of exakit_upload_retries.
+function Get-ExakitUploadRetries {
+    $n = 2
+    if ($env:EXAKIT_UPLOAD_RETRIES) {
+        $parsed = 0
+        if ([int]::TryParse($env:EXAKIT_UPLOAD_RETRIES, [ref]$parsed) -and $parsed -ge 0) { $n = $parsed }
+    }
+    return $n
+}
+
 function Invoke-ExapumpUploadMany {
     param(
         [Parameter(Mandatory)][object[]]$Files,
         [Parameter(Mandatory)][string]$Id
     )
     $script:ExakitUploadFailures = @()
+    $script:ExakitUploadRetried = 0
     $cli = Get-ExapumpCli
     $cap = Get-ExakitUploadParallel
     $queue = New-Object System.Collections.Queue
@@ -858,9 +971,28 @@ function Invoke-ExapumpUploadMany {
             if (Test-ExapumpSucceeded -ExitCode $r.Proc.ExitCode -Output $out) {
                 if (-not $script:ExakitUploadQuiet) { Ok "$($r.File.Name) loaded" }
             } else {
-                Write-ExapumpOutput -Output $out
-                Show-ExakitDbErrorRemedy $out
-                $script:ExakitUploadFailures += "$($r.File.Path) -> $($r.File.Target)"
+                # A CONNECTION CUT MID-TRANSFER IS TRIED AGAIN, one file at a
+                # time, before anyone hears about it. The log keeps every
+                # attempt; the screen only ever sees the outcome. See
+                # Test-ExakitUploadCutShort.
+                $try = 0
+                $max = Get-ExakitUploadRetries
+                $recovered = $false
+                while (-not $recovered -and $try -lt $max -and (Test-ExakitUploadCutShort -Output $out)) {
+                    $try++
+                    $script:ExakitUploadRetried++
+                    Write-ExakitLog "WARN" "$($r.File.Name): the import connection was cut mid-transfer - attempt $($try + 1) of $($max + 1)"
+                    $again = Invoke-Exapump @("upload", $r.File.Path, "--table", $r.File.Target, "-p", $script:ExapumpProfile)
+                    $out = "" + $again.Output
+                    if ($again.Success) { $recovered = $true }
+                }
+                if ($recovered) {
+                    if (-not $script:ExakitUploadQuiet) { Ok "$($r.File.Name) loaded" }
+                } else {
+                    Write-ExapumpOutput -Output $out
+                    Show-ExakitDbErrorRemedy $out
+                    $script:ExakitUploadFailures += "$($r.File.Path) -> $($r.File.Target)"
+                }
             }
             # No position to report: the whole upload is ONE segment of the
             # caller's bar, precisely because concurrent waves have no "current"
@@ -2046,14 +2178,27 @@ function Test-ExakitDatasetLoaded {
 # Returns $null when the query itself fails, which the caller must not confuse
 # with "the database has no tables".
 # Twin of the single SELECT in exakit_verified_datasets (exapump.sh).
+# Get-ExakitQualifiedTables - every table THAT HOLDS ROWS, as an upper-case
+# SCHEMA.TABLE set; $null when the database could not be asked.
+#
+# Rows, not existence. A dataset's DDL creates its tables before a single file
+# is uploaded, so an upload that failed left eight empty tables that the marker
+# check counted as "loaded": exakit data-load then answered "already loaded -
+# nothing to do" over ORDERS and PART with 0 rows in them (Windows, the
+# database fetching two of eight files over a NAT that cut them off). A marker
+# table with no rows is a dataset that did not land. TABLE_ROW_COUNT is exact
+# in EXA_ALL_TABLES (checked against COUNT(*) on a real database). Twin of
+# exakit_table_listing; the sentinel row is what the sh side needs to tell an
+# answered-but-empty listing from one that never came, and the same query
+# keeps the pair identical.
 function Get-ExakitQualifiedTables {
     $result = Invoke-Exapump @("sql", "-p", $script:ExapumpProfile,
-        "SELECT TABLE_SCHEMA || '.' || TABLE_NAME AS QUALIFIED FROM SYS.EXA_ALL_TABLES")
+        "SELECT 'EXAKIT.LISTING_ANSWERED' AS QUALIFIED FROM DUAL UNION ALL SELECT TABLE_SCHEMA || '.' || TABLE_NAME FROM SYS.EXA_ALL_TABLES WHERE TABLE_ROW_COUNT > 0")
     if (-not $result.Success) { return $null }
     $set = @{}
     foreach ($line in (("" + $result.Output) -split "`r?`n")) {
         $t = $line.Trim()
-        if ($t -match '^([A-Za-z0-9_$]+)\.([A-Za-z0-9_$]+)$') { $set[$t.ToUpper()] = $true }
+        if ($t -match '^([A-Za-z0-9_$]+)\.([A-Za-z0-9_$]+)$' -and $t -ne "EXAKIT.LISTING_ANSWERED") { $set[$t.ToUpper()] = $true }
     }
     return $set
 }
@@ -2701,7 +2846,10 @@ function Request-ExakitDataLoadOffer {
                 } catch {
                     $reason = Get-ExakitFailureReason
                     if (-not $reason) { $reason = "$_" }
-                    Warn2 "Dataset '$envId' did not load: $reason"
+                    # ONE TELLING. Fail already put the reason on screen with
+                    # the log path under it; repeating it here and again in
+                    # the closing line printed the same failure three times.
+                    Write-ExakitLog "WARN" "Dataset '$envId' did not load: $reason"
                     $failedIds += $envId
                     $failedReason = $reason
                 }
@@ -2711,7 +2859,7 @@ function Request-ExakitDataLoadOffer {
         }
         if (-not $validAny) { Fail "EXAKIT_DATASETS='$($env:EXAKIT_DATASETS)' matched no bundled dataset - nothing was loaded." }
         if ($failedIds.Count -gt 0) {
-            Fail "Dataset(s) $($failedIds -join ', ') did not load ($failedReason). Retry with: `$env:EXAKIT_DATASETS = '$($failedIds -join ',')'; exakit data-load"
+            Fail "Dataset(s) $($failedIds -join ', ') did not load. Retry with: `$env:EXAKIT_DATASETS = '$($failedIds -join ',')'; exakit data-load"
         }
         return
     }
@@ -2752,7 +2900,7 @@ function Request-ExakitDataLoadOffer {
                 } catch {
                     $reason = Get-ExakitFailureReason
                     if (-not $reason) { $reason = "$_" }
-                    Warn2 "Dataset '$id' did not load: $reason"
+                    Write-ExakitLog "WARN" "Dataset '$id' did not load: $reason"
                     $failedIds += $id
                     $failedReason = $reason
                 }
@@ -2762,6 +2910,6 @@ function Request-ExakitDataLoadOffer {
         Stop-ExakitDataTableRun
     }
     if ($failedIds.Count -gt 0) {
-        Fail "Dataset(s) $($failedIds -join ', ') did not load ($failedReason). Retry with: `$env:EXAKIT_DATASETS = '$($failedIds -join ',')'; exakit data-load"
+        Fail "Dataset(s) $($failedIds -join ', ') did not load. Retry with: `$env:EXAKIT_DATASETS = '$($failedIds -join ',')'; exakit data-load"
     }
 }

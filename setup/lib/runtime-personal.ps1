@@ -153,9 +153,12 @@ function Test-PersonalDeploymentExists {
 # before the database inside it accepts a connection. Twin of
 # personal_db_answers.
 function Test-PersonalDbAnswers {
-    if ((Get-Command Test-ExakitDbReachable -ErrorAction SilentlyContinue) -and (Get-ExakitManifestValue "components.exapump.profile")) {
-        return [bool](Test-ExakitDbReachable)
-    }
+    # THE HANDSHAKE ALONE, for a deployment that is ours. Asking exapump for a
+    # SELECT here made the database's liveness depend on a second tool: when a
+    # virus scanner held the freshly installed exapump.exe, every probe said
+    # "not running" about a database that was up, and the installer went on to
+    # "self-heal" it. Proving WHOSE database answers is a different question,
+    # asked only where it arises - see Test-PersonalDeploymentRunning.
     return (Test-PersonalTlsAnswers)
 }
 
