@@ -89,19 +89,53 @@ fi
 
 printf '\n== every resume branch disarms what it re-registered ==\n'
 
-# Matched WITH CONTEXT, not merely "the file mentions rollback_clear": the call
-# has to follow the redeploy in the resume branch. The bug was a branch that
-# re-ran the deploy and said nothing, while the branch beside it was correct.
-if grep -A6 'Deployment marked done but not reachable' "$ROOT/setup/setup-macos.sh" | grep -q 'rollback_clear'; then
-    pass "macOS resume clears after redeploying"
-else
-    fail "macOS resume redeploys and leaves 'destroy --remove --auto-approve' armed"
-fi
-if grep -A8 'Deployment marked done but not reachable' "$ROOT/setup/setup-linux.sh" | grep -q 'rollback_clear'; then
-    pass "Linux resume clears after redeploying"
-else
-    fail "Linux resume redeploys and leaves 'destroy --remove --auto-approve' armed"
-fi
+# RUN, not grepped. This guard used to be
+#   grep -A6 <anchor> setup-macos.sh | grep -q rollback_clear
+# which is satisfied by the word appearing in a COMMENT -- and the comment block
+# explaining the call sits directly above it. Deleting the call and leaving the
+# explanation behind kept this suite at "51 passed, 0 failed". A guard that
+# cannot fail on the thing it names is worse than no guard, because it is
+# counted as coverage.
+#
+# Executing the branch cannot be fooled that way: a commented-out call registers
+# nothing, so the stack stays armed and the check goes red. The stubs supply the
+# two things the branch touches, with the deploy registering exactly the undo a
+# real one does.
+resume_branch() {
+    awk '/Deployment marked done but not reachable/{inb=1}
+         inb && /^[[:space:]]*(elif|else|fi)([[:space:]]|$)/{exit}
+         inb{print}' "$1"
+}
+
+check_resume_disarms() {
+    _crd_label="$1"; _crd_file="$2"
+    _crd_body="$(resume_branch "$_crd_file")"
+    if [ -z "$_crd_body" ]; then
+        fail "$_crd_label resume branch not found - the anchor moved, so this guard is blind"
+        return
+    fi
+    case "$_crd_body" in
+        *personal_deploy_local*) : ;;
+        *) fail "$_crd_label resume branch no longer redeploys - this guard is testing the wrong block"
+           return ;;
+    esac
+    EXAKIT_ROLLBACK_FILE="$WORK/rb-$_crd_label"
+    : > "$EXAKIT_ROLLBACK_FILE"
+    (
+        info() { :; }
+        personal_deploy_local() { push_rollback "exasol destroy --remove --auto-approve"; }
+        eval "$_crd_body"
+    )
+    if [ -s "$EXAKIT_ROLLBACK_FILE" ]; then
+        fail "$_crd_label resume redeploys and leaves armed: $(cat "$EXAKIT_ROLLBACK_FILE")"
+    else
+        pass "$_crd_label resume clears the undo it re-registered (branch executed)"
+    fi
+}
+
+check_resume_disarms "macOS" "$ROOT/setup/setup-macos.sh"
+check_resume_disarms "Linux" "$ROOT/setup/setup-linux.sh"
+
 # The first-run branches must NOT need it - they have a mark_step, which clears
 # the stack as its side effect. A rollback_clear there would be noise that hides
 # the fact that mark_step is what normally does this.
