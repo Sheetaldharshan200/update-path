@@ -677,7 +677,15 @@ legacy_crossing_before() {
     # ticks still standing.
     legacy_forget_old_steps
 
-    [ "$(manifest_get legacy.crossing_done 2>/dev/null || true)" = "true" ] && return 0
+    # DONE MEANS ASKED AND ANSWERED, NOT "LEAVE THE PORT ALONE". The container
+    # publishes the port the new deployment needs, so a crossing that is over
+    # must still take it out of the way - without this the install died on
+    # "port 8563 is in use" on every later run, with no way forward but a
+    # docker stop by hand.
+    if [ "$(manifest_get legacy.crossing_done 2>/dev/null || true)" = "true" ]; then
+        legacy_stop_container >/dev/null 2>&1 || true
+        return 0
+    fi
 
     # An earlier attempt at THIS install already answered. Finish the leftover
     # work and say nothing: the question was asked, and asking again (or
@@ -700,13 +708,18 @@ legacy_crossing_before() {
     # THE PROBE COMES BEFORE THE BANNER. Whether there is a database worth
     # talking about is answerable without saying a word, and if the answer is
     # no this function has nothing to tell anyone.
-    _lcb_can=yes; _lcb_why=""
+    # _lcb_retry SEPARATES A CONDITION FROM A DECISION. "There is nothing to
+    # copy" is settled forever; "this machine cannot read it right now" is not,
+    # and marking the second one done cost a user their data permanently: one
+    # run could not see the engine, wrote the crossing off as finished, and no
+    # later run - with the engine right there - ever offered again.
+    _lcb_can=yes; _lcb_why=""; _lcb_retry=0
     if [ -z "$(legacy_engine)" ]; then
-        _lcb_can=no; _lcb_why="the container engine this database needs is not on this machine any more"
+        _lcb_can=no; _lcb_retry=1; _lcb_why="the container engine this database needs is not on this machine any more"
     elif [ "$_lcb_state" = "absent" ]; then
         _lcb_can=no; _lcb_why="the container is gone, so there is nothing left to copy"
     elif ! command -v "$(exapump_cli)" >/dev/null 2>&1 && [ ! -x "$(exapump_cli)" ]; then
-        _lcb_can=no; _lcb_why="exapump is not installed, and it is what reads the tables out"
+        _lcb_can=no; _lcb_retry=1; _lcb_why="exapump is not installed yet, and it is what reads the tables out"
     fi
 
     # A stopped container still holds the data, so it is started - but quietly,
@@ -716,7 +729,7 @@ legacy_crossing_before() {
         if legacy_start_container; then
             _lcb_started=1
         else
-            _lcb_can=no; _lcb_why="the old container would not start"
+            _lcb_can=no; _lcb_retry=1; _lcb_why="the old container would not start"
         fi
     fi
 
@@ -730,10 +743,10 @@ legacy_crossing_before() {
             if legacy_wait_db_answers "$_lcb_budget"; then
                 _lcb_tables="$(legacy_tables)"
             else
-                _lcb_can=no; _lcb_why="the old database did not answer in time"
+                _lcb_can=no; _lcb_retry=1; _lcb_why="the old database did not answer in time"
             fi
         else
-            _lcb_can=no; _lcb_why="the password for the old database is not on file, so it cannot be read"
+            _lcb_can=no; _lcb_retry=1; _lcb_why="the password for the old database is not on file, so it cannot be read"
         fi
     fi
 
@@ -759,12 +772,20 @@ legacy_crossing_before() {
     # and the crossing is marked done so this is never reconsidered.
     if [ "$_lcb_can" != yes ]; then
         _exakit_log_file "INFO  legacy crossing: no offer made — $_lcb_why" 2>/dev/null || true
+        # Either way the container may be holding the port the new deployment
+        # needs, whether or not its data could be read.
+        legacy_stop_container >/dev/null 2>&1 || true
+        if [ "$_lcb_retry" = 1 ]; then
+            # A CONDITION, NOT A DECISION: nothing is recorded as chosen and
+            # the crossing is not closed, so the next run - on a machine where
+            # the obstacle is gone - asks the question this one could not.
+            manifest_set legacy.offer_blocked "$_lcb_why"
+            return 0
+        fi
         manifest_set legacy.choice "skip"
         manifest_set legacy.crossed_from "$_lcb_type"
         [ "$_lcb_sample" -gt 0 ] && manifest_set legacy.sample_left_out "$EXAKIT_LEGACY_SAMPLE_IDS"
         manifest_set legacy.crossing_done true
-        # It may still be holding the port, whether or not its data is readable.
-        legacy_stop_container >/dev/null 2>&1 || true
         return 0
     fi
 
