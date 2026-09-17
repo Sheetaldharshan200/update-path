@@ -38,9 +38,7 @@ function Run-Cli {
     $previous = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
     try {
-        # -Width for the same reason as the legacy suite's Screen: a folded
-        # capture is a capture of the terminal, and this one is parsed as JSON.
-        $text = (& $engine -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $cli @CliArgs 2>$null | Out-String -Width 4096)
+        $text = (& $engine -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $cli @CliArgs 2>$null | Out-String)
         return @{ Out = $text; Code = $LASTEXITCODE }
     } finally {
         $ErrorActionPreference = $previous

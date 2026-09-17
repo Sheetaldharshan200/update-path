@@ -1478,12 +1478,6 @@ function Invoke-ExakitTableMenu {
     try {
         if (-not [Environment]::UserInteractive -or [Console]::IsInputRedirected) { $interactive = $false }
     } catch { $interactive = $false }
-    # CONFIRMED means a human pressed Enter on this table - nothing else. A
-    # caller about to INSTALL things needs the distinction: the defaults
-    # standing without a console is right for the data-load and MCP menus, and
-    # wrong for one whose defaults are "everything". Twin of
-    # EXAKIT_TABLE_CONFIRMED in ui.sh.
-    $script:ExakitTableConfirmed = $false
     if (-not $interactive -or -not $script:UiFancy) {
         # No console to answer with: the defaults stand, and the table is printed
         # once so a log still shows what was chosen.
@@ -1581,7 +1575,7 @@ function Invoke-ExakitTableMenu {
         $confirmed = $false
         $handled = $true
         switch ($key.Key) {
-            "Enter"     { if ($sel.Count -gt 0) { $confirmed = $true; $script:ExakitTableConfirmed = $true } }
+            "Enter"     { if ($sel.Count -gt 0) { $confirmed = $true } }
             "Spacebar"  {
                 # A row that cannot be picked cannot be toggled either. The cursor
                 # never rests on one, so this catches only the keypress that

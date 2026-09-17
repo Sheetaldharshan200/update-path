@@ -70,11 +70,14 @@ function Info($m) {}; function Ok($m) {}; function OkStep($m) {}; function InfoS
 # is that a warning was said at all, and when.
 $script:warnings = @()
 function Warn2($m) { $script:warnings += "$m" }
+# The manifest is not seeded here, so the target-name helper falls through to
+# the defaults - which is the case that matters, since those are the names a
+# Windows and a WSL install collide on.
 function Get-ExakitManifestValue { param([string]$Path) return "" }
-function Get-RuntimeType { "personal" }
+function Get-RuntimeType { "nano" }
 function Get-ExakitRepoRoot { return $null }   # force fallback skill list
 function Get-ExakitProfileHome { return $fakeProfile }
-function Remove-Personal { $script:markers.database = $true }
+function Remove-Nano { param([switch]$Data) $script:markers.nano = [bool]$Data }
 function Invoke-McpOperation { param($Operation, $InputArgs) $script:markers.mcp = $Operation; return $true }
 # The real helper defers deletion to a detached process (so cmd.exe does not
 # choke on exakit.cmd being removed mid-run); here we delete synchronously so
@@ -145,20 +148,27 @@ Check "dry: kit home kept"   "yes" (Ex $script:ExakitHome)
 Check "dry: exapump kept"    "yes" (Ex (Join-Path $fakeHome ".exapump"))
 Check "dry: exapump under the profile home kept" "yes" (Ex (Join-Path $fakeProfile ".exapump"))
 Check "dry: skill kept"      "yes" (Ex "$fakeHome\.claude\skills\trusted-ai-workflow")
-Check "dry: no db teardown"  ""    ("" + $script:markers.database)
+Check "dry: no db teardown"  ""    ("" + $script:markers.nano)
 # A dry run must not unregister anything either: it reports, it does not act.
 Check "dry: autostart untouched" "" ("" + $script:markers.autostart)
 
 # --- real run: everything removed, teardown + mcp invoked ----------------
 Seed
 Invoke-ExakitUninstallRun
-Check "real: db teardown"       "True"      ("" + $script:markers.database)
+Check "real: db teardown -Data" "True"      ("" + $script:markers.nano)
 Check "real: mcp uninstall"     "uninstall" ("" + $script:markers.mcp)
 # Uninstall's promise: nothing is left behind that starts the database after
 # the kit is gone. This assertion is new because the code it covers was added
 # after this suite was written, and the suite had no caller to notice.
 Check "real: autostart unregistered" "database" ("" + $script:markers.autostart)
 Check "real: kit home gone"     "no"  (Ex $script:ExakitHome)
+# The shared-engine hazard is said while the removal is still being narrated,
+# not only in the record line after the container is gone. On -Yes there is no
+# gate to read, so this is the only warning a scripted caller ever sees.
+Check "real: the shared-engine hazard was warned" "yes" `
+    $(if (($script:warnings -join " ") -match "share one Docker engine") { "yes" } else { "no" })
+Check "real: it names the container and the volume" "yes" `
+    $(if (($script:warnings -join " ") -match "exasol-nano.*exasol-nano-data") { "yes" } else { "no" })
 Check "real: exapump gone"      "no"  (Ex (Join-Path $fakeHome ".exapump"))
 # The one an ordinary machine cannot tell apart from the line above.
 Check "real: exapump under the profile home gone" "no" (Ex (Join-Path $fakeProfile ".exapump"))

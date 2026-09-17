@@ -80,21 +80,15 @@ You already use AI. The hard part is trusting it with your data. This kit gives 
 
 ### Will it run on my machine?
 
-The database everywhere is **Exasol Personal** — the same launcher-managed local deployment on every platform.
-
 | Your machine | Minimum Requirements | That's all |
 |---|---|---|
-| **macOS** | 8 GB+ RAM, 20 GB free disk | Runs in a lightweight managed VM — nothing to install first |
-| **Linux** | Podman (rootless is fine), 8 GB+ RAM, 20 GB free disk | `sudo apt-get install -y podman` / `sudo dnf install -y podman` if missing — the installer names it |
-| **Windows x86_64** | 8 GB+ RAM, 20 GB free disk | Runs through host Podman; the launcher offers to install Podman itself (may ask for administrator approval). If Podman Desktop already made the default machine, it must be **rootless** (`podman machine set --rootful=false`) — a rootful machine cannot publish the database port to Windows, and the installer says so |
-
-Already have the kit with its database in a container? Re-run the install command — it asks whether to migrate your data or continue without it, and deletes nothing either way. Skipped that, or the installer never saw the container? `exakit migrate docker-nano` does the same copy later, into the running database. On both roads the kit's own sample data (TPC-H and friends) is left out — the kit loads that itself.
-
-**WSL** is supported and takes the Linux road: a WSL2 distro is Linux to the launcher, so install Podman inside the distro (`sudo apt-get install -y podman uidmap`) and run the same command. Podman or Docker Desktop on the Windows side does not count — the kit runs in the distro and looks on its PATH. Exasol Personal does not support **Windows arm64** — the installer says so and exits without changing anything; use a Linux VM there.
+| **macOS** | 8 GB+ RAM, 20 GB free disk | Runs in a lightweight managed VM — no Docker to install |
+| **Linux / WSL** | Docker or Podman (running), 4 GB+ RAM, ~10 GB free disk where the engine keeps its data (plus ~3 GB at your home) | Container runtime required |
+| **Windows** | Docker Desktop (running), 4 GB+ RAM, ~10 GB free disk where Docker keeps its data (plus ~3 GB on the system drive) | Native Windows uses the PowerShell installer |
 
 **No Python install needed** on any platform: the kit uses a system Python 3.11+ when it finds one, and otherwise installs a managed Python for its own use.
 
-Step-by-step guides: [QUICKSTART](QUICKSTART.md) · [macOS](quickstarts/macos.md) · [Linux](quickstarts/linux.md) · [Windows](quickstarts/windows.md)
+Step-by-step guides: [QUICKSTART](QUICKSTART.md) · [macOS](quickstarts/macos.md) · [Linux](quickstarts/linux.md) · [WSL](quickstarts/windows-wsl.md) · [Windows + Docker](quickstarts/windows-docker.md)
 
 ### Installing: what to expect
 
@@ -146,7 +140,7 @@ exakit data-load --force     # reload TPC-H
 EXAKIT_DATASETS=tpch,energy,weather exakit data-load --force   # reload all three
 ```
 
-Your own data can be CSV, Parquet or JSON files (`.geojson` included), or a folder of them, one table each (JSON through the JSON Tables add-on, offered when needed). The kit hands files to the loaders as they are: a `;`-separated CSV is passed on with its delimiter, and a `.tsv` or `.txt` table is named for a rename to `.csv`, which is the one format exapump reads. Uploads land in the `STARTER_KIT` schema. Details: [what's included](data/README.md) · [data dictionary](data/data-dictionary.md) · [14 example questions with reference SQL](data/example-questions.md)
+Your own data can be CSV, Parquet or JSON files, or a folder of them, one table each (JSON through the JSON Tables add-on, offered when needed). Uploads land in the `STARTER_KIT` schema. Details: [what's included](data/README.md) · [data dictionary](data/data-dictionary.md) · [14 example questions with reference SQL](data/example-questions.md)
 
 ## More ways to connect
 
@@ -227,11 +221,12 @@ https://github.com/user-attachments/assets/77916db0-d273-4720-8d59-1aedac95d5e8
 | What&nbsp;makes&nbsp;this&nbsp;"for&nbsp;Agentic&nbsp;AI"? | An MCP server ships in the box with a dedicated read-only login, so Claude, Cursor, and other MCP clients can query your data directly, with every SQL statement inspectable before it runs. |
 | What&nbsp;sample&nbsp;data&nbsp;is&nbsp;included? | Three bundled datasets: TPC-H retail, smart-meter energy, daily weather, each in its own schema. See the [data dictionary](data/data-dictionary.md). |
 | Can&nbsp;I&nbsp;load&nbsp;my&nbsp;own&nbsp;data? | Yes. `exakit data-load` has a local CSV or Parquet option, and `exapump upload` works from the terminal. |
-| What&nbsp;do&nbsp;I&nbsp;need&nbsp;installed&nbsp;first? | Nothing on macOS or Windows — the Exasol launcher brings what it needs, and on Windows installs Podman itself if it is missing. Linux needs Podman, and the preflight names the exact install command. |
+| Docker&nbsp;installed&nbsp;but&nbsp;not&nbsp;running? | Start Docker Desktop, run the install command again. |
+| Docker Desktop runs on Windows<br>but WSL can't see it? | Docker Desktop → Settings → Resources → **WSL integration** → enable your distro → Apply & restart (the installer detects and flags this too). |
 | `exakit` not recognized after<br>a Windows install? | Re-run the install command. It adds `~\.local\bin` to your user PATH and repairs the command automatically. |
-| Port&nbsp;8563&nbsp;already&nbsp;taken? | The launcher selects and remembers the deployment's port itself, and the kit reads back whatever it selected — an existing Exasol on the port is adopted, anything else is reported with the process named. |
+| Port&nbsp;8563&nbsp;already&nbsp;taken? | Linux, WSL and Windows: `EXAKIT_DB_PORT=8564` before the install command. macOS deploys on 8563 itself — an existing Exasol there is adopted, anything else must be stopped first. |
 | Behind&nbsp;a&nbsp;corporate&nbsp;proxy? | `export HTTPS_PROXY=...` and re-run. |
-| Where's&nbsp;the&nbsp;deep-dive&nbsp;for&nbsp;my&nbsp;OS? | [macOS](quickstarts/macos.md) · [Linux](quickstarts/linux.md) · [Windows](quickstarts/windows.md) |
+| Where's&nbsp;the&nbsp;deep-dive&nbsp;for&nbsp;my&nbsp;OS? | [macOS](quickstarts/macos.md) · [Linux](quickstarts/linux.md) · [WSL](quickstarts/windows-wsl.md) · [Windows + Docker](quickstarts/windows-docker.md) |
 | Installing&nbsp;over&nbsp;a&nbsp;database<br>I&nbsp;already&nbsp;have? | An existing database is adopted, never replaced. Running or stopped, it is reused with its data intact. Only a database that cannot start at all is replaced, and the installer warns you first. |
 | How&nbsp;do&nbsp;updates&nbsp;work? | The maintainers publish one recommended set of versions. `exakit version` shows what is pending, `exakit update` applies it. See [Staying up to date](#staying-up-to-date). |
 | How&nbsp;do&nbsp;I&nbsp;remove&nbsp;everything? | `exakit uninstall` |

@@ -103,8 +103,8 @@ EOF
 # 2>$null`, which is a probe whose whole purpose is to answer a question about
 # a possibly-broken thing. Six sites were hiding behind the anchor, among them
 # Get-PyexasolInstalledVersion and Get-DashServerPackageVersion (both read by
-# `exakit version`), where a probe writing to stderr is the ORDINARY case.
-# Whole-line comments are
+# `exakit version`) and Test-NanoFirstDeployArgs, where the engine writing
+# "No such container" to stderr is the ORDINARY case. Whole-line comments are
 # skipped so prose describing the trap does not trip it.
 while IFS= read -r file; do
     rel="${file#"$ROOT"/}"

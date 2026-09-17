@@ -95,10 +95,8 @@ Re-running the installer is safe. It skips what is done and repairs what is not.
 
 | Symptom | Fix |
 |---|---|
-| I already had the starter kit, with the database in a container | Re-run the install command. It recognises the old installation before touching anything and asks whether to bring your data across: **Migrate my data** copies every non-system table into the new database, **Skip and continue** sets the new one up empty. Neither deletes the old container or its data — both stop it (it holds the port the new database needs) and print the command that removes it when you want it gone. The kit's own sample data (TPC-H, energy, weather), when unchanged, is left out of the copy: the install loads it itself |
-| I skipped that, or my container was never offered | `exakit migrate docker-nano` — the same copy, later, into the running database. It remembers the container the installer saw; name another with `--container`, `--engine docker\|podman`, `--dsn HOST:PORT`, and give the password with `--password-file` or at the prompt (never on the command line). Both databases want port 8563, so yours is stopped for the copy out and started again before the copy in. Nothing in the container is changed or removed |
-| "Podman is installed but not running" | macOS/Windows: `podman machine start`. Linux: there is no machine to start — check `grep $(id -un) /etc/subuid /etc/subgid` first. Then re-run |
-| "Port 8563 is already in use" | The launcher selects the deployment's port itself and the kit reads it back — an existing Exasol on the port is adopted; anything else is reported with the process named. Stop that app and re-run |
+| "Docker is installed but not running" | macOS/Windows: start Docker Desktop, or `podman machine start`. Linux: `sudo systemctl start docker` (and `systemctl is-enabled docker`, so it comes back after a reboot); with Podman there is no machine to start — check `grep $(id -un) /etc/subuid /etc/subgid` first. Then re-run |
+| "Port 8563 is already in use" | Stop the other app, or re-run with `EXAKIT_DB_PORT=8564` (Linux and Windows) |
 | Setup failed mid-way | Re-run the same install command. It resumes from the failed step |
 | Assistant cannot see the database | `exakit status`, then restart the AI client |
 | Anything else | `exakit logs` has the full story. Every error message names its remedy |

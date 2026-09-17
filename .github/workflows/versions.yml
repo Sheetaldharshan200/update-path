@@ -86,7 +86,7 @@ jobs:
           if not re.match(r"^\d{4}-\d{2}-\d{2}$", str(doc.get("updated", ""))):
               problems.append("updated must be an ISO date (YYYY-MM-DD)")
 
-          expected = {"personal", "exapump", "mcp", "pyexasol", "skills",
+          expected = {"personal", "nano", "exapump", "mcp", "pyexasol", "skills",
                       "dash-server", "exasol-vscode", "json-tables",
                       "exasol-scheduler", "dbt-exasol"}
           components = doc.get("components") or {}
@@ -121,6 +121,15 @@ jobs:
               min_kit = block.get("min_kit_version")
               if min_kit is not None and (not isinstance(min_kit, str) or not version_re.match(min_kit)):
                   problems.append("%s.min_kit_version is outside [A-Za-z0-9._+-]" % label)
+
+          # The kit pulls docker.io/exasol/nano:<version> verbatim, and relies on the
+          # registry to pick the right architecture. That only works for the plain,
+          # multi-arch tag: an arch-suffixed one would hand every machine of the other
+          # architecture an image it can only run under emulation, or not at all.
+          nano_version = str((components.get("nano") or {}).get("version", ""))
+          if re.search(r"(amd64|arm64|x86[_-]?64|aarch64)", nano_version, re.IGNORECASE):
+              problems.append("components.nano.version must be the plain multi-arch tag, "
+                              "not the arch-suffixed one (%s)" % nano_version)
 
           exapump = components.get("exapump") or {}
           digests = exapump.get("sha256") or {}
@@ -202,7 +211,7 @@ jobs:
       - name: every advertised version resolves at its own upstream
         # digest-verify proves the exapump binaries are the ones we say they are.
         # This job asks the other question: does what we advertise exist at all?
-        # A typo in a launcher version, an MCP version that was never published, or a
+        # A typo in a nano tag, an MCP version that was never published, or a
         # yanked pyexasol release reaches users as a failed install, and the
         # manifest is the only place to catch it before that happens.
         env:
@@ -260,7 +269,31 @@ jobs:
                   return
               print("  ok  %s: %s==%s is published and not yanked" % (label, package, version))
 
-          # --- the database runtime -------------------------------------------
+          # --- the container runtime ------------------------------------------
+          nano = components.get("nano") or {}
+          if nano:
+              tag = nano.get("version")
+              image = nano.get("image", "exasol/nano")
+              body, reason = fetch("https://hub.docker.com/v2/repositories/%s/tags/%s" % (image, tag))
+              if body is None:
+                  problems.append("nano: %s:%s did not resolve on Docker Hub (%s)" % (image, tag, reason))
+              else:
+                  # The kit pulls the plain tag and lets the registry choose the
+                  # architecture, so a single-arch tag would strand every machine
+                  # of the other architecture. Assert both are actually behind it.
+                  arches = set()
+                  for entry in body.get("images") or []:
+                      if entry.get("os") == "linux" and entry.get("architecture"):
+                          arches.add(entry["architecture"])
+                  missing = {"amd64", "arm64"} - arches
+                  if missing:
+                      problems.append("nano: %s:%s covers %s but not %s -- the kit pulls the "
+                                      "plain multi-arch tag" % (image, tag, sorted(arches) or "nothing",
+                                                                sorted(missing)))
+                  else:
+                      print("  ok  nano: %s:%s exists and covers amd64 + arm64" % (image, tag))
+
+          # --- the native macOS runtime ---------------------------------------
           personal = components.get("personal") or {}
           if personal:
               version = personal.get("version")
@@ -470,19 +503,6 @@ jobs:
       # the port conflict, and what uninstall keeps.
       - run: bash tests/agent-audit.sh
       - run: bash tests/uninstall.sh
-      # An installation made by an older kit has a database this kit cannot
-      # drive, and the crossing is the only code that touches one. What it
-      # DECIDES and what it HANDS to the engine and to exapump are both
-      # exactly checkable, and the invariant worth a CI job is that it never
-      # deletes the old database on either answer.
-      - run: bash tests/legacy-crossing.sh
-      # The same crossing under every fault the road can throw: an engine that
-      # hangs, refuses or loses the container; a database with no password,
-      # no answer, a late answer, or nothing in it; copies and restores that
-      # fail for some tables or all; a run that dies between the two halves.
-      # It ends by measuring how much of the module it walked, and that floor
-      # is a gate.
-      - run: bash tests/legacy-crossing-resilience.sh
       - run: bash tests/skills.sh
       - run: bash tests/agent-operability.sh
       # The MCP subsystem's own tests were never wired in, so nothing in CI
@@ -535,9 +555,6 @@ jobs:
           if command -v pwsh >/dev/null 2>&1; then
             pwsh -NoProfile -File tests/noninteractive-answers.ps1
             pwsh -NoProfile -File tests/uninstall-ps.ps1
-            pwsh -NoProfile -File tests/runtime-personal-ps.ps1
-            pwsh -NoProfile -File tests/legacy-crossing-ps.ps1
-            pwsh -NoProfile -File tests/data-load-shapes-ps.ps1
           else
             echo "pwsh not installed on this runner - PowerShell suites skipped"
           fi

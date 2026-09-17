@@ -1,35 +1,34 @@
 ---
 name: exasol-runtime
-description: Operate the local Exasol database the starter kit deploys — an Exasol Personal local deployment on macOS, Linux and Windows x86_64 — starting and stopping it, reading its status honestly, and deciding whether it comes back after a reboot. Triggers — "start my Exasol database", "the database is not running", "exakit status says stopped", "connection refused on 8563", "make Exasol start at login", "is my database running", "stop the database", "which Exasol runtime do I have".
+description: Operate the local Exasol database the starter kit deploys — starting and stopping it, reading its status honestly, deciding whether it comes back after a reboot, and telling the two runtimes apart (Exasol Personal, native on macOS; Exasol Nano, a container on Linux, WSL and Windows). Triggers — "start my Exasol database", "the database is not running", "exakit status says stopped", "connection refused on 8563", "make Exasol start at login", "is my database running", "stop the database", "which Exasol runtime do I have".
 ---
 
 # The local Exasol runtime
 
 The kit deploys **one local database** and manages it for you. Everything below
-is done with `exakit` — never by driving the `exasol` launcher by hand, because
-the kit records state in its manifest and hand-driving it makes that record lie.
+is done with `exakit` — never by driving Docker or the `exasol` launcher by
+hand, because the kit records state in its manifest and hand-driving it makes
+that record lie.
 
-## The runtime
+## First: which runtime is this?
 
-There is exactly one: an **Exasol Personal** local deployment, put in place by
-the `exasol` launcher. Ask the machine rather than guessing at its details:
+Two runtimes exist and they behave differently. Ask the machine, do not guess:
 
 ```bash
-exakit info        # the Runtime line, the DSN and the port actually in use
+exakit info        # the "Runtime:" line says personal or nano
 ```
 
-| | **Exasol Personal** |
-|---|---|
-| Where | macOS, native Linux (Podman), Windows x86_64 (host Podman) |
-| Not supported | WSL, Windows arm64 — the installer says so and exits, changing nothing |
-| Deployed by | the `exasol` launcher (`exasol install local`) |
-| State lives in | `~/.exasol/personal/deployments/default` |
-| Extra detail command | `exasol info` |
-| Machine minimum | 8 GB RAM, 20 GB disk |
+| | **Exasol Personal** | **Exasol Nano** |
+|---|---|---|
+| Where | macOS (native) | Linux, WSL, Windows (container) |
+| Deployed by | the `exasol` launcher (`exasol install local`) | Docker (preferred) or Podman |
+| State lives in | `~/.exasol/personal/deployments/default` | the named volume `exasol-nano-data` |
+| Extra detail command | `exasol info` | container `exasol-nano` |
+| Machine minimum | 8 GB RAM, 20 GB disk | 4 GB RAM, 10 GB disk |
 
-It listens on **`127.0.0.1`** — port **8563** unless the launcher had to pick
-another, which `exakit info` reports — connects as admin user **`sys`** with
-**TLS using a self-signed certificate**, and keeps its data across restarts.
+Both listen on **`127.0.0.1:8563`**, both connect as admin user **`sys`** with
+**TLS using a self-signed certificate**, and both keep their data across
+restarts.
 
 ## Status — and read the exit code, not just the text
 
@@ -84,8 +83,8 @@ EXAKIT_AUTOSTART_CHANGE=0 exakit autostart   # scripted: leave it off
 ```
 
 On by default from a fresh install. The mechanism differs per platform —
-launchd on macOS, `systemd --user` on Linux, a Startup entry on Windows — but
-the command is the same everywhere.
+launchd on macOS, `systemd --user` on Linux, the container restart policy for
+Nano, a Startup entry on Windows — but the command is the same everywhere.
 
 ## When the database will not come up
 
@@ -120,21 +119,20 @@ it touches the deployment:
 exakit version    # every component at once: installed, and what is advertised
 ```
 
-A MAJOR update is never applied on its own. The update reports that one is
-available, takes no destructive action, and points at the Exasol Personal
-migration guidance for the new version. Database data is left exactly where it
-is. A minor launcher update is offered inline, and its first start afterwards
-rebuilds the deployment's VM guest once — several minutes, that once only.
+On macOS, an Exasol Personal MAJOR update is never applied on its own. The
+update reports that one is available, takes no destructive action, and points at
+the Exasol Personal migration guidance for the new version. Database data is
+left exactly where it is.
 
 ## Guardrails
 
-- **Never drive the runtime underneath the kit.** No `exasol stop` or
-  `exasol install local` by hand. The kit's manifest is how `status`,
+- **Never drive the runtime underneath the kit.** No `docker stop exasol-nano`,
+  no `exasol install local` by hand. The kit's manifest is how `status`,
   `version` and a re-run of the installer know the truth; bypassing it
   makes all three lie.
 - **Never print or log the credential files** under
   `~/.exasol-starter-kit/credentials/`. Read them into a command when a command
   needs them; do not echo them into a transcript.
-- **Do not invent** ports, paths or launcher flags. The facts
+- **Do not invent** container names, ports, paths or launcher flags. The facts
   above came from the machine — get the rest the same way (`exakit info`,
   `exakit status --json`, `exakit logs`).

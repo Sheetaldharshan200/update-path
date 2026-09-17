@@ -11,10 +11,6 @@
 set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-# The width checks below drive the FANCY renderer by hand, so they need a
-# locale in which its glyphs can be measured. See the helper for the whole
-# reason; without it this suite reports seven failures about the locale.
-. "$ROOT/tests/lib/utf8-locale.sh"
 PASS=0
 FAIL=0
 
@@ -299,11 +295,7 @@ UI_TEE="$(printf '\xe2\x94\x9c\xe2\x94\x80')"; UI_CORNER="$(printf '\xe2\x94\x94
 UI_TICK="$(printf '\xe2\x9c\x93')"
 UI_PROGRESS_EIGHTHS=' ▏▎▍▌▋▊▉'
 ui_table_set "$TBL" 3 running 42 88 12 "loading 1 data file"
-if [ -z "$EXAKIT_TEST_UTF8_LOCALE" ]; then
-    check "width checks need a UTF-8 locale" "skipped" "skipped"
-fi
 for _w in 80 100 120; do
-    [ -n "$EXAKIT_TEST_UTF8_LOCALE" ] || break
     OUT="$(COLUMNS=$_w ui_table_render "$TBL" 0)"
     # Every row of a table has to be the same width, or the right border walks.
     # _ui_visible_len prints WITHOUT a trailing newline, so the loop has to add

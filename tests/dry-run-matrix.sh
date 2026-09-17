@@ -60,27 +60,46 @@ for spec in "Darwin arm64 macos arm64" \
 done
 
 echo "container runtime detection:"
-# No podman on PATH at all -> none
+# No docker/podman on PATH at all -> none
 empty="$(mktemp -d)"
 for tool in bash sh grep awk cat uname command; do
     _p="$(command -v $tool)" && ln -s "$_p" "$empty/$tool" 2>/dev/null
 done
-got="$(PATH="$empty" bash -c ". '$ROOT/setup/lib/detect.sh'; detect_podman")"
-check "podman(absent)" "none" "$got"
+got="$(PATH="$empty" bash -c ". '$ROOT/setup/lib/detect.sh'; detect_container_runtime")"
+check "runtime(no CLIs)" "none" "$got"
+got="$(PATH="$empty" bash -c ". '$ROOT/setup/lib/detect.sh'; detect_container_runtime_detail")"
+check "runtime_detail(no CLIs)" "none" "$got"
 
-# podman present but not answering -> none, so the refusal names installing or
-# starting it rather than claiming an engine that cannot be driven. The stub dir
-# is prepended to the real PATH, so a healthy real podman would otherwise leak
-# in and answer for the state under test.
+# docker present but daemon down -> docker-stopped, and not selected.
+# A FAILING podman stub is created alongside: the stub dir is prepended to
+# the real PATH, so on a machine with a healthy real podman the fallback
+# would otherwise leak in and detection would (correctly, but off-test)
+# return podman instead of the docker-* state under test.
 stub="$(mktemp -d)"
+printf '#!/bin/sh\nexit 1\n' > "$stub/docker" && chmod +x "$stub/docker"
 printf '#!/bin/sh\nexit 1\n' > "$stub/podman" && chmod +x "$stub/podman"
-got="$(PATH="$stub:$PATH" bash -c ". '$ROOT/setup/lib/detect.sh'; detect_podman")"
-check "podman(not answering)" "none" "$got"
+got="$(PATH="$stub:$PATH" bash -c ". '$ROOT/setup/lib/detect.sh'; detect_container_runtime_detail")"
+check "runtime_detail(docker down)" "docker-stopped" "$got"
 
-# podman present and healthy -> podman
+# docker daemon UP but the user lacks socket permission (not in the docker
+# group) -> docker-permission, so the error names the real remedy (usermod)
+# instead of telling the user to start a daemon that is already running.
+printf '#!/bin/sh\necho "permission denied while trying to connect to the Docker daemon socket at unix:///var/run/docker.sock" >&2\nexit 1\n' > "$stub/docker" && chmod +x "$stub/docker"
+got="$(PATH="$stub:$PATH" bash -c ". '$ROOT/setup/lib/detect.sh'; detect_container_runtime_detail")"
+check "runtime_detail(docker permission)" "docker-permission" "$got"
+
+# docker present and healthy -> docker
+printf '#!/bin/sh\nexit 0\n' > "$stub/docker" && chmod +x "$stub/docker"
+got="$(PATH="$stub:$PATH" bash -c ". '$ROOT/setup/lib/detect.sh'; detect_container_runtime")"
+check "runtime(docker up)" "docker" "$got"
+
+# podman only -> podman. The docker stub must FAIL rather than be removed:
+# the stub dir is prepended to the real PATH, so on a machine with a healthy
+# Docker the real binary would leak in and detection would return docker.
+printf '#!/bin/sh\nexit 1\n' > "$stub/docker" && chmod +x "$stub/docker"
 printf '#!/bin/sh\nexit 0\n' > "$stub/podman" && chmod +x "$stub/podman"
-got="$(PATH="$stub:$PATH" bash -c ". '$ROOT/setup/lib/detect.sh'; detect_podman")"
-check "podman(healthy)" "podman" "$got"
+got="$(PATH="$stub:$PATH" bash -c ". '$ROOT/setup/lib/detect.sh'; detect_container_runtime")"
+check "runtime(podman only)" "podman" "$got"
 rm -rf "$stub" "$empty"
 
 echo "install.sh dispatch:"
@@ -89,78 +108,9 @@ echo "install.sh dispatch:"
 grep -q 'setup_script="setup/setup-macos.sh"' "$ROOT/install.sh" && \
     check "dispatch(macos)" "setup-macos.sh" "setup-macos.sh" || \
     check "dispatch(macos)" "setup-macos.sh" "missing"
-grep -q 'setup_script="setup/setup-linux.sh"' "$ROOT/install.sh" && \
-    check "dispatch(linux/wsl)" "setup-linux.sh" "setup-linux.sh" || \
-    check "dispatch(linux/wsl)" "setup-linux.sh" "missing"
-
-echo "the support matrix is stated, never silently rerouted:"
-# Exasol Personal is the only runtime this kit installs. A platform it does not
-# support must be refused BY NAME, before anything is downloaded - a silent
-# reroute onto something else is exactly what this replaced.
-#
-# WSL IS NOT SUCH A PLATFORM. It is Linux to the launcher, so install.sh sends
-# it to the Linux setup rather than turning it away, and the prerequisite that
-# differs - a podman inside the distro, not on the Windows side - is checked
-# there. What must not come back is the refusal.
-grep -q 'it does not support WSL' "$ROOT/install.sh" && \
-    check "install.sh no longer turns WSL away" absent present || \
-    check "install.sh no longer turns WSL away" absent absent
-check "install.sh sends WSL to the Linux setup" "setup/setup-linux.sh" \
-    "$(sed -n '/^        Linux)/,/^            ;;/p' "$ROOT/install.sh" | sed -n 's/.*setup_script="\([^"]*\)".*/\1/p')"
-grep -q 'it does not support Windows arm64' "$ROOT/install.ps1" && \
-    check "install.ps1 exits gracefully on arm64, naming the support matrix" present present || \
-    check "install.ps1 exits gracefully on arm64, naming the support matrix" present MISSING
-# THE WINDOWS INSTALLER MUST NOT CLOSE THE USER'S TERMINAL. Its documented entry
-# point is `irm ... | iex`, which runs the body in the CALLER'S session - so a
-# top-level `exit` terminates the PowerShell host, window and all. That took the
-# preflight report off the screen before it could be read, and took every
-# failure message with it (the trap printed the cause, then exit closed the
-# window over it). Every stop is now a return, with exit reserved for a real
-# file invocation, and $LASTEXITCODE still carries the code.
-_pse="$(grep -cE '^\s*(exit [0-9$]|exit \()' "$ROOT/install.ps1" || true)"
-check "install.ps1 has no unguarded top-level exit" "0" "$_pse"
-grep -q 'ExakitRanAsFile = \[bool\]$PSCommandPath' "$ROOT/install.ps1" && \
-    check "...it knows whether it was run as a file" present present || \
-    check "...it knows whether it was run as a file" present MISSING
-check "...and every stop still reports a code" "3" \
-    "$(grep -c 'global:LASTEXITCODE' "$ROOT/install.ps1")"
-grep -q 'Exasol Personal (local deployment via Podman)' "$ROOT/install.sh" && \
-    check "install.sh routes personal-on-linux and names the plan" present present || \
-    check "install.sh routes personal-on-linux and names the plan" present MISSING
-# The setup script sources the one runtime module there is - no dispatch, and
-# nothing else to source.
-grep -q 'runtime-personal.sh' "$ROOT/setup/setup-linux.sh" && \
-    ! grep -q 'runtime-nano' "$ROOT/setup/setup-linux.sh" && \
-    check "setup-linux.sh sources the Personal runtime, and only it" present present || \
-    check "setup-linux.sh sources the Personal runtime, and only it" present MISSING
-# The preflight answers the question the runtime actually asks: it checks Podman
-# by name, because no other engine substitutes for it.
-_pfr() { # _pfr <with-podman:0|1> -> the engine line of the preflight
-    _pfr_bin="$(mktemp -d)/pf-bin"; mkdir -p "$_pfr_bin"
-    [ "$1" = 1 ] && { printf '#!/bin/sh\nexit 0\n' > "$_pfr_bin/podman"; chmod +x "$_pfr_bin/podman"; }
-    PATH="$_pfr_bin:/usr/bin:/bin" bash -c '
-        . "$0/setup/lib/detect.sh"
-        detect_os() { echo linux; }; detect_arch() { echo x86_64; }
-        detect_ram_gb() { echo 16; }; detect_free_disk_gb() { echo 100; }
-        detect_wsl_version() { echo 2; }; detect_wsl_drvfs_path() { return 1; }
-        preflight_report' "$ROOT" 2>/dev/null | grep -ci "podman"
-}
-# Counted as "at least once", not "exactly once": the refusal names the engine
-# and then names the package-manager command that installs it, and pinning the
-# count made the guard fail on a better message.
-check "preflight(personal) asks about podman" "yes" "$([ "$(_pfr 1)" -ge 1 ] && echo yes || echo no)"
-check "preflight(personal, no podman) fails on podman by name" "yes" "$([ "$(_pfr 0)" -ge 1 ] && echo yes || echo no)"
-grep -q 'Exasol Personal (local deployment via Podman)' "$ROOT/install.ps1" && \
-    check "install.ps1 names the personal plan" present present || \
-    check "install.ps1 names the personal plan" present MISSING
-# NO RUNTIME DISPATCH ANYWHERE. There is one runtime, so an installer or setup
-# script that still branches on a runtime name is carrying a road to somewhere
-# that no longer exists.
-_rd=0
-for _f in install.sh install.ps1 setup/setup-macos.sh setup/setup-linux.sh setup/setup-windows.ps1; do
-    grep -qiE 'nano|EXAKIT_RUNTIME=|RuntimeChoice' "$ROOT/$_f" && _rd=$((_rd + 1))
-done
-check "no installer or setup script dispatches on a runtime name" "0" "$_rd"
+grep -q 'setup_script="setup/setup-wsl.sh"' "$ROOT/install.sh" && \
+    check "dispatch(linux/wsl)" "setup-wsl.sh" "setup-wsl.sh" || \
+    check "dispatch(linux/wsl)" "setup-wsl.sh" "missing"
 
 echo "mcp credential fallback:"
 _mcp_test_dir="$(mktemp -d)"
@@ -239,8 +189,8 @@ EXAKIT_HOME=\$(mktemp -d); EXAKIT_BIN_DIR=\"\$EXAKIT_HOME/bin\"
 exakit_installed_mcp_version() { return 1; }
 manifest_get() {
   case \"\$1\" in
-    runtime.type) printf '%s\n' personal ;;
-    runtime.version) printf '%s\n' 2.2.0 ;;
+    runtime.type) printf '%s\n' nano ;;
+    runtime.image) printf '%s\n' docker.io/exasol/nano:2026.2.0-nano.2 ;;
     components.exapump.version) printf '%s\n' 0.11.2 ;;
     components.exapump.path) printf '%s\n' '$_stub_bin/exapump' ;;
     components.pyexasol.python) printf '%s\n' '$_stub_bin/python' ;;
@@ -258,7 +208,7 @@ manifest_get() {
 exakit_installed_mcp_version() { printf '%s\n' 1.10.1 ; }
 exakit_component_available() {
   case \"\$1\" in
-    personal) printf '%s\n' 2.3.0 ;;
+    nano) printf '%s\n' 2026.3.0-nano.1 ;;
     exapump) printf '%s\n' 0.12.0 ;;
     mcp) printf '%s\n' 1.11.0 ;;
     pyexasol) printf '%s\n' 2.3.0 ;;
@@ -276,8 +226,8 @@ EXAKIT_VERSION_POLICY=pinned
 . '$ROOT/setup/lib/common.sh'
 manifest_get() {
   case \"\$1\" in
-    runtime.type) printf '%s\n' personal ;;
-    runtime.version) printf '%s\n' 2.2.0 ;;
+    runtime.type) printf '%s\n' nano ;;
+    runtime.image) printf '%s\n' docker.io/exasol/nano:2026.2.0-nano.2 ;;
     components.exapump.version) printf '%s\n' 0.11.2 ;;
     kit.version) printf '%s\n' 0.2.0 ;;
     *) return 1 ;;
@@ -285,7 +235,7 @@ manifest_get() {
 }
 exakit_component_available() {
   case \"\$1\" in
-    personal) printf '%s\n' 2.3.0 ;;
+    nano) printf '%s\n' 2026.3.0-nano.1 ;;
     exapump) printf '%s\n' 0.11.2 ;;
     *) return 1 ;;
   esac
@@ -373,12 +323,13 @@ curl() {
   case \"\$*\" in
     *api.github.com*) printf '%s\n' '{\"tag_name\":\"v9.8.7\"}' ;;
     *pypi.org*) printf '%s\n' '{\"info\":{\"version\":\"6.5.4\"}}' ;;
+    *hub.docker.com*) printf '%s\n' '{\"results\":[{\"name\":\"2026.4.0-nano.1\"},{\"name\":\"latest\"}]}' ;;
   esac
 }
-printf '%s %s ' \"\$(exakit_latest_github_release_version owner/repo)\" \"\$(exakit_latest_pypi_version pkg)\"
+printf '%s %s %s ' \"\$(exakit_latest_github_release_version owner/repo)\" \"\$(exakit_latest_pypi_version pkg)\" \"\$(exakit_latest_docker_tag exasol/nano)\"
 if exakit_version_newer 3.0.0 2.9.9; then printf yes; else printf no; fi
 ")"
-check "lookup_fallback(no-python)" "9.8.7 6.5.4 yes" "$fallback_versions"
+check "lookup_fallback(no-python)" "9.8.7 6.5.4 2026.4.0-nano.1 yes" "$fallback_versions"
 
 echo "managed binary precedence:"
 _bin_test_dir="$(mktemp -d)"
@@ -469,7 +420,7 @@ fi
 echo "Windows parity guards:"
 if command -v pwsh >/dev/null 2>&1; then
     ps_parse="$(pwsh -NoProfile -Command '
-      $files = @("setup/lib/exakit-common.ps1","setup/lib/runtime-personal.ps1","setup/lib/mcp.ps1","setup/lib/dash-server.ps1","setup/lib/dbt-exasol.ps1","setup/lib/exasol-vscode.ps1","setup/lib/json-tables.ps1","setup/setup-windows.ps1","setup/exakit.ps1")
+      $files = @("setup/lib/exakit-common.ps1","setup/lib/nano.ps1","setup/lib/mcp.ps1","setup/lib/dash-server.ps1","setup/lib/dbt-exasol.ps1","setup/lib/exasol-vscode.ps1","setup/lib/json-tables.ps1","setup/setup-windows-docker.ps1","setup/exakit.ps1")
       foreach ($f in $files) {
         $errors = $null
         $null = [System.Management.Automation.PSParser]::Tokenize((Get-Content -Raw $f), [ref]$errors)
@@ -488,15 +439,13 @@ if command -v pwsh >/dev/null 2>&1; then
     mkdir -p "$_ps_tmp/home/kit/mcp"
     cp "$ROOT/versions.json" "$_ps_tmp/home/kit/versions.json"
     _read_advertised() { bash -c ". '$ROOT/setup/lib/common.sh'; exakit_versions_value '$1' '$ROOT/versions.json'"; }
-    exp_versions="baked $(_read_advertised components.personal.version) $(_read_advertised components.exapump.version) $(_read_advertised components.mcp.version)"
+    exp_versions="baked $(_read_advertised components.nano.version) $(_read_advertised components.exapump.version) $(_read_advertised components.mcp.version)"
     ps_versions="$(EXAKIT_HOME="$_ps_tmp/home" EXAKIT_BIN_DIR="$_ps_tmp/bin" \
       EXAKIT_VERSIONS_URL="http://offline.invalid/versions.json" pwsh -NoProfile -Command '
       . ./setup/lib/exakit-common.ps1
-      . ./setup/lib/runtime-personal.ps1
-      $env:EXAKIT_PERSONAL_VERSION = ""
       Initialize-ExakitManifest
       Resolve-ExakitInstallVersions
-      Write-Output "$($script:VersionsSourceUsed) $env:EXAKIT_PERSONAL_VERSION $script:ExapumpVersion $script:McpVersion"
+      Write-Output "$($script:VersionsSourceUsed) $script:NanoTag $script:ExapumpVersion $script:McpVersion"
     ' | tail -1 | tr -d '\r')"
     check "powershell(manifest_policy)" "$exp_versions" "$ps_versions"
 
@@ -505,11 +454,9 @@ if command -v pwsh >/dev/null 2>&1; then
     # literals to fall out of date either.
     ps_pinned="$(EXAKIT_HOME="$_ps_tmp/home2" EXAKIT_BIN_DIR="$_ps_tmp/bin2" EXAKIT_VERSION_POLICY=pinned pwsh -NoProfile -Command '
       . ./setup/lib/exakit-common.ps1
-      . ./setup/lib/runtime-personal.ps1
-      $env:EXAKIT_PERSONAL_VERSION = ""
       Initialize-ExakitManifest
       Resolve-ExakitInstallVersions
-      $matchesFallbacks = ($env:EXAKIT_PERSONAL_VERSION -eq $script:PersonalVersionFallback) -and
+      $matchesFallbacks = ($script:NanoTag -eq $script:NanoTagFallback) -and
         ($script:ExapumpVersion -eq $script:ExapumpVersionFallback) -and
         ($script:McpVersion -eq $script:McpVersionFallback) -and
         ($script:PyexasolVersion -eq $script:PyexasolVersionFallback)
@@ -523,7 +470,8 @@ else
     check "powershell(version_policy_fallback)" "skipped" "skipped"
 fi
 # The live-lookup helpers stay in the library: `latest` policy is still supported.
-if grep -q 'Resolve-ExakitInstallVersions' "$ROOT/setup/setup-windows.ps1" && \
+if grep -q 'Resolve-ExakitInstallVersions' "$ROOT/setup/setup-windows-docker.ps1" && \
+   grep -q 'Get-ExakitLatestDockerTag' "$ROOT/setup/lib/exakit-common.ps1" && \
    grep -q 'Get-ExakitLatestGithubRelease' "$ROOT/setup/lib/exakit-common.ps1" && \
    grep -q 'Get-ExakitLatestPypiVersion' "$ROOT/setup/lib/exakit-common.ps1"; then
     check "windows_install(latest_resolution)" "yes" "yes"
@@ -533,8 +481,8 @@ fi
 if grep -q 'Update-ExakitVersionsCache' "$ROOT/setup/lib/exakit-common.ps1" && \
    grep -q 'Get-ExakitVersionsValue' "$ROOT/setup/lib/exakit-common.ps1" && \
    grep -q 'Update-ExakitSelf' "$ROOT/setup/lib/exakit-common.ps1" && \
-   grep -q 'Set-ExakitCmdShim' "$ROOT/setup/setup-windows.ps1" && \
-   grep -q 'Get-ExakitKitVersionAt' "$ROOT/setup/setup-windows.ps1" && \
+   grep -q 'Set-ExakitCmdShim' "$ROOT/setup/setup-windows-docker.ps1" && \
+   grep -q 'Get-ExakitKitVersionAt' "$ROOT/setup/setup-windows-docker.ps1" && \
    grep -q 'Get-ExapumpExpectedSha256' "$ROOT/setup/lib/exapump.ps1"; then
     check "windows_install(manifest_wiring)" "yes" "yes"
 else
@@ -547,10 +495,10 @@ if grep -q 'exakit_soft_step exapump' "$ROOT/setup/lib/common.sh" && \
    grep -q 'exakit_soft_step mcp' "$ROOT/setup/lib/common.sh" && \
    grep -q 'exakit_soft_step pyexasol' "$ROOT/setup/lib/common.sh" && \
    grep -q 'exakit_print_soft_failures' "$ROOT/setup/lib/common.sh" && \
-   grep -q 'Invoke-ExakitSoftStep -Component "exapump"' "$ROOT/setup/setup-windows.ps1" && \
-   grep -q 'Invoke-ExakitSoftStep -Component "mcp"' "$ROOT/setup/setup-windows.ps1" && \
-   grep -q 'Invoke-ExakitSoftStep -Component "pyexasol"' "$ROOT/setup/setup-windows.ps1" && \
-   grep -q 'Write-ExakitSoftFailures' "$ROOT/setup/setup-windows.ps1"; then
+   grep -q 'Invoke-ExakitSoftStep -Component "exapump"' "$ROOT/setup/setup-windows-docker.ps1" && \
+   grep -q 'Invoke-ExakitSoftStep -Component "mcp"' "$ROOT/setup/setup-windows-docker.ps1" && \
+   grep -q 'Invoke-ExakitSoftStep -Component "pyexasol"' "$ROOT/setup/setup-windows-docker.ps1" && \
+   grep -q 'Write-ExakitSoftFailures' "$ROOT/setup/setup-windows-docker.ps1"; then
     check "install(components_soft_fail)" "yes" "yes"
 else
     check "install(components_soft_fail)" "yes" "no"
@@ -591,26 +539,16 @@ fi
 
 # A re-run over an existing install must START a stopped database, not skip
 # the step: everything after it talks SQL, and skipping used to surface as
-# "Connection refused" in the MCP user creation. All three installers, same
-# behaviour.
+# "Connection refused" in the MCP user creation (macOS was the odd one out —
+# the Nano paths already restarted). All three installers, same behaviour.
 if grep -q 'personal_deployment_running' "$ROOT/setup/setup-macos.sh" && \
    grep -q 'personal_start' "$ROOT/setup/setup-macos.sh" && \
    grep -q 'personal_wait_ready' "$ROOT/setup/setup-macos.sh" && \
-   grep -q '! personal_deployment_running' "$ROOT/setup/setup-linux.sh" && \
-   grep -q '(Test-PersonalDeploymentRunning)' "$ROOT/setup/setup-windows.ps1"; then
+   grep -qE 'nano_status.*!=.*running' "$ROOT/setup/setup-wsl.sh" && \
+   grep -q 'Get-NanoStatus) -ne "running"' "$ROOT/setup/setup-windows-docker.ps1"; then
     check "install(rerun_starts_stopped_runtime)" "yes" "yes"
 else
     check "install(rerun_starts_stopped_runtime)" "yes" "no"
-fi
-# ...and setup-linux.sh carries the same resume shape the macOS script does: redeploy what is gone (disarming the registered destroy by
-# hand), start what is merely stopped.
-if grep -q 'personal_deployment_exists' "$ROOT/setup/setup-linux.sh" && \
-   grep -q 'personal_deployment_running' "$ROOT/setup/setup-linux.sh" && \
-   grep -q 'personal_wait_ready' "$ROOT/setup/setup-linux.sh" && \
-   grep -q 'rollback_clear' "$ROOT/setup/setup-linux.sh"; then
-    check "install(linux personal resume matches macos)" "yes" "yes"
-else
-    check "install(linux personal resume matches macos)" "yes" "no"
 fi
 
 # The marketplace, both sides. The registry, the installed-only gate on
@@ -693,7 +631,7 @@ fi
 
 # The PowerShell shared layer must be SELF-SUFFICIENT for an install.
 #
-# setup/exakit.ps1 is the CLI. setup/setup-windows.ps1 is the installer,
+# setup/exakit.ps1 is the CLI. setup/setup-windows-docker.ps1 is the installer,
 # and it dot-sources setup/lib/exakit-common.ps1 plus the component and add-on
 # modules — never the CLI. So a function defined only in the CLI is invisible
 # during an install, and calling it there dies with CommandNotFoundException.
@@ -729,7 +667,7 @@ for m in modules:
     elsewhere |= defs(m)
 cli_only = cli_funcs - elsewhere
 
-loaded = [shared] + modules + [os.path.join(root, "setup", "setup-windows.ps1")]
+loaded = [shared] + modules + [os.path.join(root, "setup", "setup-windows-docker.ps1")]
 leaked = set()
 for path in loaded:
     if not os.path.exists(path):
@@ -820,6 +758,7 @@ if grep -q 'exakit_service_ids()' "$ROOT/setup/lib/common.sh" && \
    grep -q 'function Enable-ExakitAutostart' "$ROOT/setup/exakit.ps1" && \
    grep -q 'function Get-DashServerStatus' "$ROOT/setup/lib/dash-server.ps1" && \
    grep -q 'function Start-DashServer' "$ROOT/setup/lib/dash-server.ps1" && \
+   grep -q 'function Set-NanoRestartPolicy' "$ROOT/setup/lib/nano.ps1" && \
    grep -q '"autostart"    { Invoke-CmdAutostart' "$ROOT/setup/exakit.ps1"; then
     check "services(autostart_twins)" "yes" "yes"
 else
@@ -837,8 +776,8 @@ fi
 # The closing marketplace offer, all three installers: shown after everything
 # ran, and its core is shared (common.sh / exakit-common.ps1), not duplicated.
 if grep -q 'exakit_marketplace_offer' "$ROOT/setup/setup-macos.sh" && \
-   grep -q 'exakit_marketplace_offer' "$ROOT/setup/setup-linux.sh" && \
-   grep -q 'Request-ExakitMarketplaceOffer' "$ROOT/setup/setup-windows.ps1" && \
+   grep -q 'exakit_marketplace_offer' "$ROOT/setup/setup-wsl.sh" && \
+   grep -q 'Request-ExakitMarketplaceOffer' "$ROOT/setup/setup-windows-docker.ps1" && \
    grep -q 'exakit_marketplace_offer()' "$ROOT/setup/lib/common.sh" && \
    grep -q 'function Request-ExakitMarketplaceOffer' "$ROOT/setup/lib/exakit-common.ps1"; then
     check "marketplace(closing_offer)" "yes" "yes"
@@ -850,8 +789,8 @@ fi
 # offer runs after everything else, but no step invokes Install-DashServer /
 # dash_server_install directly), and no shared step may install it.
 if ! grep -qE 'dash_server_install|exasol_vscode_install|json_tables_install' "$ROOT/setup/setup-macos.sh" && \
-   ! grep -qE 'dash_server_install|exasol_vscode_install|json_tables_install' "$ROOT/setup/setup-linux.sh" && \
-   ! grep -qE 'Install-DashServer|Install-ExasolVscode|Install-JsonTables' "$ROOT/setup/setup-windows.ps1" && \
+   ! grep -qE 'dash_server_install|exasol_vscode_install|json_tables_install' "$ROOT/setup/setup-wsl.sh" && \
+   ! grep -qE 'Install-DashServer|Install-ExasolVscode|Install-JsonTables' "$ROOT/setup/setup-windows-docker.ps1" && \
    ! grep -qE 'dash_server_install|exasol_vscode_install|json_tables_install' <(awk '/^kit_shared_steps\(\)/,/^}/' "$ROOT/setup/lib/common.sh"); then
     check "marketplace(not_in_install_flow)" "yes" "yes"
 else
@@ -914,7 +853,7 @@ if grep -q 'cmd_whats_new' "$ROOT/setup/exakit" && \
    grep -q 'Invoke-CmdWhatsNew' "$ROOT/setup/exakit.ps1" && \
    grep -q 'Get-ExakitWhatsNewFile' "$ROOT/setup/lib/exakit-common.ps1" && \
    grep -q 'Write-ExakitWhatsNew -Version $stagedVersion' "$ROOT/setup/lib/exakit-common.ps1" && \
-   grep -q 'whats-new.json' "$ROOT/setup/setup-windows.ps1" && \
+   grep -q 'whats-new.json' "$ROOT/setup/setup-windows-docker.ps1" && \
    [ -f "$ROOT/setup/whats-new.json" ]; then
     check "whats_new(both_sides)" "yes" "yes"
 else
@@ -928,12 +867,12 @@ if grep -q 'exakit_note_kit_upgrade() {' "$ROOT/setup/lib/common.sh" && \
    grep -q 'exakit_whats_new_points() {' "$ROOT/setup/lib/common.sh" && \
    grep -q 'exakit_print_whats_new_box() {' "$ROOT/setup/lib/common.sh" && \
    grep -q 'exakit_note_kit_upgrade "$KIT_ROOT"' "$ROOT/setup/setup-macos.sh" && \
-   grep -q 'exakit_note_kit_upgrade "$KIT_ROOT"' "$ROOT/setup/setup-linux.sh" && \
+   grep -q 'exakit_note_kit_upgrade "$KIT_ROOT"' "$ROOT/setup/setup-wsl.sh" && \
    grep -q 'function Set-ExakitKitUpgradeNote {' "$ROOT/setup/lib/exakit-common.ps1" && \
    grep -q 'function Get-ExakitWhatsNewVersions {' "$ROOT/setup/lib/exakit-common.ps1" && \
    grep -q 'function Get-ExakitWhatsNewPoints {' "$ROOT/setup/lib/exakit-common.ps1" && \
    grep -q 'function Write-ExakitWhatsNewBox {' "$ROOT/setup/lib/exakit-common.ps1" && \
-   grep -q 'Set-ExakitKitUpgradeNote -KitRoot $KitRoot' "$ROOT/setup/setup-windows.ps1"; then
+   grep -q 'Set-ExakitKitUpgradeNote -KitRoot $KitRoot' "$ROOT/setup/setup-windows-docker.ps1"; then
     check "whats_new_box(both_sides)" "yes" "yes"
 else
     check "whats_new_box(both_sides)" "yes" "no"
@@ -961,10 +900,10 @@ check "whats_new_box(order_macos)" "panel,box,next" \
     "$(wn_box_placement "$ROOT/setup/setup-macos.sh" \
         'connection_summary' 'exakit_print_whats_new_box "$KIT_ROOT"')"
 check "whats_new_box(order_wsl)" "panel,box,next" \
-    "$(wn_box_placement "$ROOT/setup/setup-linux.sh" \
+    "$(wn_box_placement "$ROOT/setup/setup-wsl.sh" \
         'connection_summary' 'exakit_print_whats_new_box "$KIT_ROOT"')"
 check "whats_new_box(order_windows)" "panel,box,next" \
-    "$(wn_box_placement "$ROOT/setup/setup-windows.ps1" \
+    "$(wn_box_placement "$ROOT/setup/setup-windows-docker.ps1" \
         'Show-ExakitConnectionSummary' 'Write-ExakitWhatsNewBox -KitRoot')"
 # The short help is the only command list most people ever read: a bare `exakit`,
 # `exakit help` and any unknown command all print it, while the full reference is
@@ -1071,15 +1010,15 @@ else
     check "info(json_is_the_record_verbatim)" "yes" "no"
 fi
 rm -rf "$_ij"
-# Bounded probes, both sides. An engine probe does not return while the engine
-# is still starting, and a wedged launcher does not return at all, so every
-# read-path probe has to be able to give up. The PowerShell half must use
-# .Arguments and not .ArgumentList, which exists only on .NET Core and would
-# throw on the Windows PowerShell 5.1 these scripts support.
+# Bounded engine probes, both sides. `docker info` does not return while Docker
+# Desktop is starting, so every read-path probe has to be able to give up. The
+# PowerShell half must use .Arguments and not .ArgumentList, which exists only on
+# .NET Core and would throw on the Windows PowerShell 5.1 these scripts support.
 if grep -q 'exakit_run_bounded' "$ROOT/setup/lib/common.sh" && \
-   grep -q '_detect_engine_probe podman info' "$ROOT/setup/lib/detect.sh" && \
+   grep -q '_detect_engine_probe docker info' "$ROOT/setup/lib/detect.sh" && \
    grep -q 'Invoke-ExakitBounded' "$ROOT/setup/lib/exakit-common.ps1" && \
-   grep -q 'Invoke-ExakitBounded' "$ROOT/setup/lib/runtime-personal.ps1" && \
+   grep -q 'Invoke-ExakitBounded' "$ROOT/setup/lib/nano.ps1" && \
+   ! grep -q 'Start-Process.*docker' "$ROOT/setup/exakit.ps1" && \
    grep -q '\$info\.Arguments = ' "$ROOT/setup/lib/exakit-common.ps1" && \
    ! grep -qE '\$info\.ArgumentList' "$ROOT/setup/lib/exakit-common.ps1"; then
     check "engine_probe(bounded_both_sides)" "yes" "yes"
@@ -1110,7 +1049,7 @@ fi
 # The behavioural halves live in tests/versions-manifest.sh.
 if grep -q 'cmp -s "$_script_dir/exakit" "$EXAKIT_BIN_DIR/exakit"' "$ROOT/setup/lib/common.sh" && \
    grep -q 'Test-ExakitCmdShimCurrent' "$ROOT/setup/lib/exakit-common.ps1" && \
-   grep -q 'Test-ExakitCmdShimCurrent' "$ROOT/setup/setup-windows.ps1" && \
+   grep -q 'Test-ExakitCmdShimCurrent' "$ROOT/setup/setup-windows-docker.ps1" && \
    grep -q 'Get-ExakitCmdShimContent' "$ROOT/setup/lib/exakit-common.ps1"; then
     check "rerun(refreshes_stale_command)" "yes" "yes"
 else
@@ -1141,17 +1080,13 @@ for name in ("upgrade-kit2", "rollback-kit2"):
 else
     check "kit2(cli_surface)" "yes" "no"
 fi
-# A MAJOR launcher upgrade is a data migration, so it is never taken from a
-# y/N: the sh side owns the three-step --plan / --backup / --apply flow, and
-# both sides must agree that a major change is the staged route rather than an
-# ordinary one.
-if grep -q 'personal_upgrade_backup' "$ROOT/setup/lib/runtime-personal.sh" && \
-   grep -q '\-\-plan' "$ROOT/setup/lib/runtime-personal.sh" && \
-   grep -q 'exakit_runtime_update_is_staged' "$ROOT/setup/lib/common.sh" && \
-   grep -q 'function Test-ExakitRuntimeUpdateStaged' "$ROOT/setup/exakit.ps1"; then
-    check "personal_update(recoverability)" "yes" "yes"
+if grep -q 'nano_update_snapshot' "$ROOT/setup/lib/runtime-nano.sh" && \
+   grep -q 'nano_restore_previous_container' "$ROOT/setup/lib/runtime-nano.sh" && \
+   grep -q 'New-NanoUpdateSnapshot' "$ROOT/setup/lib/nano.ps1" && \
+   grep -q 'Restore-PreviousNanoContainer' "$ROOT/setup/lib/nano.ps1"; then
+    check "nano_update(recoverability)" "yes" "yes"
 else
-    check "personal_update(recoverability)" "yes" "no"
+    check "nano_update(recoverability)" "yes" "no"
 fi
 if grep -q 'mcp_update_snapshot' "$ROOT/setup/lib/mcp.sh" && \
    grep -q 'New-McpUpdateSnapshot' "$ROOT/setup/lib/mcp.ps1" && \
@@ -1741,6 +1676,16 @@ got="$(PATH="$phd_stub:$PATH" bash -c ". '$ROOT/setup/lib/detect.sh'; port_holde
 check "port_holder_desc(nothing available)" "UNKNOWN" "$got"
 rm -rf "$phd_stub"
 
+# The bash side of the WSL port remedy, whose PowerShell half tests/deploy-
+# progress.sh has asserted since 12cc3a1: inside a distro no local tool can see
+# a Windows-side holder, so the remedy has to say where to look.
+grep -q 'Get-NetTCPConnection -LocalPort' "$ROOT/setup/lib/runtime-nano.sh" && \
+    check "the shell names the Windows-side probe" "yes" "yes" || \
+    check "the shell names the Windows-side probe" "yes" "no"
+grep -q 'wsl --shutdown' "$ROOT/setup/lib/runtime-nano.sh" && \
+    check "...and the relay case" "yes" "yes" || \
+    check "...and the relay case" "yes" "no"
+
 echo
 # ---------------------------------------------------------------------------
 # install.sh refuses a bash-less machine BEFORE it downloads anything.
@@ -1770,6 +1715,73 @@ check "install.sh(no bash) left a note" "yes" \
 rm -rf "$bash_stub" "$bash_home"
 
 echo
+# ---------------------------------------------------------------------------
+# The container argv, for both engines.
+# ---------------------------------------------------------------------------
+# Engine SELECTION was covered thoroughly above; what the chosen engine is
+# actually handed was not, so the one place the deploy branches (the SELinux
+# label on the password secret) had no test at all — and it used to branch on
+# the engine name rather than on SELinux, which silently broke Docker on Fedora.
+echo "nano container argv:"
+nano_argv() { # nano_argv <engine> <selinux-enforcing 0|1>
+    ROOT="$ROOT" ENGINE="$1" ENFORCE="$2" bash <<'HARNESS' 2>/dev/null
+set -u
+SB="$(mktemp -d)"
+trap 'rm -rf "$SB"' EXIT
+# The engine binary is called directly for `volume inspect`; a stub that says
+# "no such volume" puts the run on the first-deploy branch.
+mkdir -p "$SB/bin" "$SB/credentials"
+printf '#!/bin/sh\nexit 1\n' > "$SB/bin/$ENGINE" && chmod +x "$SB/bin/$ENGINE"
+PATH="$SB/bin:$PATH"
+export EXAKIT_CREDS_DIR="$SB/credentials"
+printf 'secret' > "$EXAKIT_CREDS_DIR/nano_sys_password"
+EXAKIT_DB_PORT=8563
+. "$ROOT/setup/lib/runtime-nano.sh"
+# Everything outside the argv construction is stubbed, so what the run prints
+# is exactly what the engine would have been handed.
+info(){ :; }; ok(){ :; }; warn(){ :; }; error(){ :; }
+ok_step(){ :; }; info_step(){ :; }; _exakit_log_file(){ :; }
+die(){ printf 'die: %s\n' "$*"; exit 1; }
+push_rollback(){ :; }; nano_pull_image(){ :; }; nano_wait_ready(){ :; }
+nano_record_manifest(){ :; }; nano_repair_creds(){ :; }
+read_credential(){ cat "$EXAKIT_CREDS_DIR/$1" 2>/dev/null; }
+generate_password(){ printf 'secret'; }; store_credential(){ :; }
+detect_os(){ echo linux; }
+nano_engine(){ printf '%s' "$ENGINE"; }
+nano_image_ref(){ printf 'exasol/nano:test'; }
+nano_container_exists(){ return 1; }
+nano_container_running(){ return 1; }
+port_in_use(){ return 1; }
+_exakit_selinux_enforcing(){ [ "$ENFORCE" = "1" ]; }
+run_logged(){ printf '%s\n' "$*"; }
+nano_install
+HARNESS
+}
+_argv_podman="$(nano_argv podman 0 | grep ' run -d ' | head -1)"
+_argv_docker="$(nano_argv docker 0 | grep ' run -d ' | head -1)"
+_argv_selinux="$(nano_argv docker 1 | grep ' run -d ' | head -1)"
+
+case "$_argv_podman" in *"-p 127.0.0.1:8563:8563"*) _r=yes ;; *) _r=no ;; esac
+check "argv binds loopback only" "yes" "$_r"
+case "$_argv_podman" in *"-v exasol-nano-data:/exa"*) _r=yes ;; *) _r=no ;; esac
+check "argv mounts the named volume" "yes" "$_r"
+case "$_argv_podman" in *"--label com.exasol.exakit.os=linux"*) _r=yes ;; *) _r=no ;; esac
+check "argv stamps the creating platform" "yes" "$_r"
+case "$_argv_podman" in *"--shm-size=512mb"*"--pids-limit=-1"*) _r=yes ;; *) _r=no ;; esac
+check "argv carries the image's limits" "yes" "$_r"
+case "$_argv_podman" in *"init sys_password_file=/run/secrets/sys_password"*) _r=yes ;; *) _r=no ;; esac
+check "a first deploy passes init" "yes" "$_r"
+# The label keys on SELINUX, not on the engine name: podman without SELinux
+# must NOT get it, and docker with SELinux must.
+case "$_argv_podman" in *"/run/secrets/sys_password:ro,z"*) _r=labelled ;; *) _r=plain ;; esac
+check "podman without SELinux: no ,z" "plain" "$_r"
+case "$_argv_selinux" in *"/run/secrets/sys_password:ro,z"*) _r=labelled ;; *) _r=plain ;; esac
+check "docker with SELinux: ,z" "labelled" "$_r"
+# Nothing else may differ between the two engines. Each run gets its own
+# sandbox, so the secret's absolute path is normalised away first.
+_norm() { printf '%s' "$1" | sed 's|-v /[^ ]*/credentials/nano_sys_password:|-v CREDS:|'; }
+check "podman and docker argv agree" \
+    "$(_norm "${_argv_docker#docker }")" "$(_norm "${_argv_podman#podman }")"
 
 echo
 

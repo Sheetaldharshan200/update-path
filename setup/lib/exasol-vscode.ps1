@@ -28,9 +28,10 @@ $script:ExasolVscodeExtId = if ($env:EXAKIT_EXASOL_VSCODE_EXT_ID) { $env:EXAKIT_
 # install never touches the user's VS Code profile.
 $script:ExasolVscodeExtDir = if ($env:EXAKIT_EXASOL_VSCODE_EXTDIR) { $env:EXAKIT_EXASOL_VSCODE_EXTDIR } else { "" }
 
-# The editor CLI this add-on drives: PATH first, then the places the app
-# actually lives when the user never registered the shell command. $null means
-# "no VS Code-compatible editor on this machine".
+# The editor CLI this add-on drives, discovered the way the kit discovers
+# Docker Desktop: PATH first, then the places the app actually lives when the
+# user never registered the shell command. $null means "no VS Code-compatible
+# editor on this machine".
 #
 # FORKS COUNT. VS Code Insiders, Cursor, VSCodium and Windsurf each ship a CLI
 # with the same --install-extension / --uninstall-extension /
