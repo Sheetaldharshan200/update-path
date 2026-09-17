@@ -7131,10 +7131,22 @@ _exakit_write_exapump_config() {
     _readonly_user="$6"
     _readonly_password="$7"
     _schema="$8"
-    run_python - "$_config_path" "$_host" "$_port" "$_admin_user" "$_admin_password" "$_readonly_user" "$_readonly_password" "$_schema" <<'PY'
-import sys
+    # Both passwords -- one of them the ADMIN/SYS credential -- travel in the
+    # environment, never in argv: an argv is visible to any local user via `ps`
+    # for the life of the call, while a child's environment is readable only by
+    # its owner and root. Same rule as _exakit_run_exapump_sql below, which
+    # keeps its credential off the process table by sending it to stdin; stdin
+    # here is already carrying the Python program, so the environment is the
+    # equivalent door.
+    EXAKIT_ADMIN_PASSWORD="$_admin_password"
+    EXAKIT_READONLY_PASSWORD="$_readonly_password"
+    export EXAKIT_ADMIN_PASSWORD EXAKIT_READONLY_PASSWORD
+    run_python - "$_config_path" "$_host" "$_port" "$_admin_user" "$_readonly_user" "$_schema" <<'PY'
+import os, sys
 
-config_path, host, port, admin_user, admin_password, readonly_user, readonly_password, schema = sys.argv[1:]
+config_path, host, port, admin_user, readonly_user, schema = sys.argv[1:]
+admin_password = os.environ["EXAKIT_ADMIN_PASSWORD"]
+readonly_password = os.environ["EXAKIT_READONLY_PASSWORD"]
 
 def toml_string(value: str) -> str:
     return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
@@ -7160,6 +7172,11 @@ doc = [
 with open(config_path, "w", encoding="utf-8") as handle:
     handle.writelines(doc)
 PY
+    _wec_rc=$?
+    # Unset on BOTH paths: an exported credential that outlives this call is
+    # inherited by every later child in the run.
+    unset EXAKIT_ADMIN_PASSWORD EXAKIT_READONLY_PASSWORD
+    [ "$_wec_rc" -eq 0 ] || return 1
     chmod 600 "$_config_path"
 }
 
@@ -10795,7 +10812,15 @@ EXAKIT_UM_PANEL_EOF
     # the right next step.
     case " $_um_picked " in
         *" everything "*)
-            ok "Done. The kit is gone."
+            # "The kit is gone" is a claim, and it is false when the teardown
+            # could not read a runtime from the manifest and left the database
+            # on disk. Saying it anyway is what turns a recoverable surprise
+            # into an invisible one.
+            if [ "${EXAKIT_UNINSTALL_DB_SKIPPED:-0}" = 1 ]; then
+                ok "Done. The kit is gone - but the database was left in place (see the note above)."
+            else
+                ok "Done. The kit is gone."
+            fi
             info "Install it again any time: $(exakit_install_command)"
             ;;
         *)
@@ -10900,6 +10925,20 @@ exakit_uninstall_run() {
             personal) _done "Database removed: the local Exasol Personal deployment and all its data" ;;
             *)        : ;;
         esac
+    else
+        # No runtime.type: the manifest is missing or truncated (an interrupted
+        # install, a half-written record, a kit home staged by a dry run). The
+        # deployment does NOT live under the kit home -- it is in its own
+        # directory -- so removing the kit home does not remove it, and every
+        # tool that knew how to is about to be deleted by the steps below.
+        # Saying nothing here is how a database survives its own uninstall with
+        # no record that it exists. Name the path so the removal is possible by
+        # hand afterwards.
+        EXAKIT_UNINSTALL_DB_SKIPPED=1
+        warn "No runtime recorded in the manifest, so the database was NOT removed."
+        info "If a local deployment exists it is still on disk, with all its data, at:"
+        info "  ${EXAKIT_PERSONAL_DEPLOY_DIR:-$HOME/.exasol/personal/deployments/default}"
+        info "Remove it by hand, or re-install and then uninstall again to have the kit do it."
     fi
 
     # 2) Managed MCP configuration in every AI client the kit configures.
