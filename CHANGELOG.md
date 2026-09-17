@@ -112,6 +112,11 @@ engine, no password, a silent database, a container that will not start, a
 deployment that will not stop or does not come back, only sample data, every
 export failing, a partial restore, a waiting copy, a second fresh copy.
 
+**Exasol Personal is pinned to 2.3.0-rc3** (was rc2): the Windows path in rc3 selects and
+keeps a concrete database port and no longer changes an existing Podman
+machine. versions.json and both built-in fallbacks move together, as the
+comment on the fallback requires.
+
 **Two crossing defects found by running it on a real WSL machine, fixed.**
 **(1)** The old kit's manifest carries its own step ticks — `steps_completed:
 ["runtime"]` meant the container. The new kit trusted the tick, skipped the

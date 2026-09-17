@@ -1,12 +1,12 @@
 {
   "schema_version": 1,
-  "updated": "2026-09-08",
+  "updated": "2026-09-17",
   "kit": {
     "version": "0.2.1"
   },
   "components": {
     "personal": {
-      "version": "2.3.0-rc2",
+      "version": "2.3.0-rc3",
       "severity": "normal"
     },
     "exapump": {

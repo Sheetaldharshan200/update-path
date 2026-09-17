@@ -71,11 +71,11 @@ EXAKIT_PYEXASOL_VERSION="${EXAKIT_PYEXASOL_VERSION:-}"
 # possible (offline install, API rate limit, private mirror). Successful latest
 # resolutions are recorded in the manifest so later updates compare against the
 # version that was actually installed.
-# 2.3.0-rc2 DELIBERATELY, and only until 2.3.0 final publishes: the flipped
+# 2.3.0-rc3 DELIBERATELY, and only until 2.3.0 final publishes: the flipped
 # Linux and Windows defaults need a launcher that HAS local deployments there,
 # which no 2.2 release does. Moving to final is this constant plus
 # components.personal.version in versions.json, together in one commit.
-EXAKIT_PERSONAL_VERSION_FALLBACK="${EXAKIT_PERSONAL_VERSION_FALLBACK:-2.3.0-rc2}"
+EXAKIT_PERSONAL_VERSION_FALLBACK="${EXAKIT_PERSONAL_VERSION_FALLBACK:-2.3.0-rc3}"
 EXAKIT_EXAPUMP_VERSION_FALLBACK="${EXAKIT_EXAPUMP_VERSION_FALLBACK:-0.12.0}"
 EXAKIT_MCP_VERSION_FALLBACK="${EXAKIT_MCP_VERSION_FALLBACK:-2.2.0}"
 EXAKIT_PYEXASOL_VERSION_FALLBACK="${EXAKIT_PYEXASOL_VERSION_FALLBACK:-2.3.2}"
