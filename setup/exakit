@@ -869,6 +869,25 @@ cmd_stop() {
     esac
 }
 
+# exakit_reset_dataset_flags — every bundled dataset's "loaded" record set to
+# false, both keys (the dataset.conf flag and the canonical
+# data.datasets.<id>.loaded), before a rebuild empties the database. Twin:
+# Reset-ExakitDatasetFlags in exakit.ps1.
+exakit_reset_dataset_flags() {
+    command -v exakit_bundled_datasets >/dev/null 2>&1 || return 0
+    _rdf_lines=""
+    while IFS='|' read -r _rdf_id _rdf_label _rdf_flag _rdf_markers _rdf_schema; do
+        [ -n "$_rdf_id" ] || continue
+        _rdf_lines="${_rdf_lines}${_rdf_flag}=false
+data.datasets.${_rdf_id}.loaded=false
+"
+    done <<EXAKIT_RDF
+$(exakit_bundled_datasets 2>/dev/null)
+EXAKIT_RDF
+    [ -n "$_rdf_lines" ] && printf '%s' "$_rdf_lines" | manifest_set_many
+    return 0
+}
+
 # cmd_repair_runtime [--yes] — rebuild a database that cannot be started.
 #
 # THE ESCAPE FROM A WEDGE, and the reason it exists: a SIGKILLed Exasol Personal
@@ -951,6 +970,13 @@ cmd_repair_runtime() {
     # Drop the tick so the deployment step runs even on a runtime whose wedged
     # state step_artifact_state cannot yet recognise.
     exakit_unmark_step runtime
+    # AND THE DATASET FLAGS. The rebuilt database is empty, but the record still
+    # said every bundled dataset was loaded - and the data step trusts that
+    # record whenever the database cannot be asked, which a database that came
+    # up seconds ago sometimes cannot. So the run said "Dataset 'tpch' already
+    # loaded" over an empty schema, and the promise two lines above ("reloaded
+    # afterwards") was broken. Seen on a real machine.
+    exakit_reset_dataset_flags
     info "Re-running $_rr_setup to rebuild the database"
     export EXAKIT_BANNER_SHOWN=1
     # The deployment step must NOT offer to reuse what is there. Its reuse
