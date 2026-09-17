@@ -435,20 +435,82 @@ personal_deployment_exists() {
 # before the SQL listener exists, so require both signals before reusing an
 # existing database.
 personal_deployment_running() {
-    port_in_use "$(personal_db_port)" && personal_db_answers
+    port_in_use "$(personal_db_port)" || return 1
+    if personal_deployment_exists; then
+        # THE LAUNCHER'S WORD OUTRANKS THE PORT. "stopped" can leave a runner
+        # answering (see personal_status); "deployment_failed" is a first boot
+        # the launcher gave up on - reconciled by personal_deploy_local, never
+        # adopted as running, or its stop and start stay no-ops for good.
+        case "$(personal_launcher_state 2>/dev/null || true)" in
+            stopped|deployment_failed) return 1 ;;
+        esac
+        personal_db_answers
+        return $?
+    fi
+    # NO DEPLOYMENT OF OURS. Something answers on the port, but only a SELECT
+    # through the kit's own profile proves it is this kit's database. Windows
+    # and WSL share one network stack, so a database deployed on either side
+    # holds 8563 for both - and adopting the other side's database here handed
+    # the rest of the install a password that could never work against it.
+    command -v exakit_db_reachable >/dev/null 2>&1 && \
+        [ -n "$(manifest_get components.exapump.profile 2>/dev/null)" ] && \
+        exakit_db_reachable
 }
 
 # personal_db_answers — is the thing on the SQL port actually Exasol? A real
 # SELECT through the kit's exapump profile when that module is loaded (it is,
-# in the CLI and the installer); without it, the launcher's own view. Port
-# open alone is never the answer: see personal_status.
+# in the CLI and the installer); without it, a completed TLS handshake
+# (personal_tls_answers). Port open alone is never the answer: see
+# personal_status - and under rootless Podman the open port is pasta's, there
+# from the moment the container starts and a minute or more before the database
+# inside it accepts a connection.
 personal_db_answers() {
     if command -v exakit_db_reachable >/dev/null 2>&1 && \
        [ -n "$(manifest_get components.exapump.profile 2>/dev/null)" ]; then
         exakit_db_reachable
         return $?
     fi
-    exakit_run_bounded "$EXAKIT_PERSONAL_PROBE_TIMEOUT" "$(personal_cli)" info >/dev/null 2>&1
+    personal_tls_answers
+}
+
+# personal_tls_answers — does the database complete a TLS handshake on its
+# port? The one probe that tells a database apart from the process publishing
+# its port: pasta (rootless Podman) and the launcher's own runner accept the
+# TCP connection themselves and reset it when nothing answers behind them,
+# which every SQL client reports as "tls handshake eof" - the launcher's own
+# 27-second first-boot budget ran out on exactly that, and a port-open wait
+# returned the instant the container started. openssl where it exists (macOS,
+# nearly every Linux), python3 otherwise, the bare port as the last resort.
+personal_tls_answers() {
+    _pta_port="$(personal_db_port)"
+    if command -v openssl >/dev/null 2>&1; then
+        exakit_run_bounded "$EXAKIT_PERSONAL_PROBE_TIMEOUT" openssl s_client -connect "127.0.0.1:$_pta_port" </dev/null 2>/dev/null | grep -q 'BEGIN CERTIFICATE'
+        return $?
+    fi
+    if command -v python3 >/dev/null 2>&1; then
+        exakit_run_bounded "$EXAKIT_PERSONAL_PROBE_TIMEOUT" python3 -c 'import socket, ssl, sys
+ctx = ssl.create_default_context()
+ctx.check_hostname = False
+ctx.verify_mode = ssl.CERT_NONE
+with socket.create_connection(("127.0.0.1", int(sys.argv[1])), timeout=5) as s:
+    ctx.wrap_socket(s, server_hostname="localhost").close()' "$_pta_port" >/dev/null 2>&1
+        return $?
+    fi
+    port_in_use "$_pta_port"
+}
+
+# personal_foreign_db_hint — one sentence for a port that answers like Exasol
+# but is not this kit's deployment; empty when nothing completes a handshake.
+# Windows and WSL share one network stack, so a database deployed on either
+# side holds 8563 for both; naming that spares the reader a hunt for an
+# application that is not there.
+personal_foreign_db_hint() {
+    personal_tls_answers || return 0
+    if detect_wsl_version >/dev/null 2>&1; then
+        printf ' It answers like an Exasol database this kit did not deploy. WSL and Windows share this port, so an Exasol Personal deployed on the Windows side holds it here too: stop it there first (exakit stop in PowerShell), then re-run.'
+    else
+        printf ' It answers like an Exasol database this kit did not deploy: stop that database first, then re-run.'
+    fi
 }
 
 # personal_launcher_state — the LAUNCHER'S OWN WORD for this deployment, from
@@ -774,7 +836,7 @@ personal_recover_slow_first_boot() {
     info "The launcher stopped waiting after its own short budget, but the deployment exists — waiting up to ${_prs_budget}s for the database"
     _prs_t0="$(date +%s 2>/dev/null || echo 0)"
     _prs_tries=0
-    until port_in_use "$(personal_db_port)"; do
+    until personal_tls_answers; do
         _prs_tries=$(( _prs_tries + 1 ))
         _prs_elapsed=$(( $(date +%s 2>/dev/null || echo 0) - _prs_t0 ))
         [ "$_prs_elapsed" -ge "$_prs_budget" ] && return 1
@@ -783,12 +845,18 @@ personal_recover_slow_first_boot() {
     done
     ok "The database answered after $(( $(date +%s 2>/dev/null || echo 0) - _prs_t0 ))s"
     EXAKIT_ACTIVE_LABEL="Reconciling the launcher's record"
+    # THE RECONCILE IS THE OWNERSHIP PROOF. A handshake says a database answers
+    # on the port, not whose: with Windows and WSL sharing one network stack it
+    # may be the other side's. The launcher's deploy connects with this
+    # deployment's own credentials, so its success is the one signal that the
+    # database that answered is this one - and its failure is a failure, not a
+    # database "the kit can reach".
     if run_logged "$(personal_cli)" deploy $(personal_auto_approve_flag deploy); then
         ok "The launcher's record agrees with the running database"
-    else
-        warn "The launcher still records this deployment as failed although the database answers; the kit continues with the database it can reach. 'exasol deploy' later makes the record agree."
+        return 0
     fi
-    return 0
+    warn "The launcher still records this deployment as failed although something answers on port $(personal_db_port).$(personal_foreign_db_hint)"
+    return 1
 }
 
 # personal_deploy_local — run the local deployment. This is the long step
@@ -826,6 +894,25 @@ personal_deploy_local() {
     # start at all (a crashed VM): that is replaced — announced, never
     # silently — because there is nothing left to reuse.
     if personal_deployment_exists; then
+        # A FIRST BOOT THE LAUNCHER GAVE UP ON is not a stopped deployment. In
+        # "deployment_failed" its start and stop do nothing, so the
+        # start-and-reuse path below would report success over a record that
+        # stays failed - and every later exakit start would wait on nothing.
+        # The launcher's own retry is its deploy; when that gives up on a
+        # first boot again, the kit's budget and reconcile take over. Only a
+        # database that never answers reaches the ladder below.
+        if [ "$(personal_launcher_state 2>/dev/null || true)" = "deployment_failed" ]; then
+            info "The launcher records this deployment as failed - retrying its deploy."
+            EXAKIT_ACTIVE_LABEL="Retrying the deployment"
+            if run_logged "$(personal_cli)" deploy $(personal_auto_approve_flag deploy) || \
+               personal_recover_slow_first_boot; then
+                ok "Reusing the existing Exasol deployment (deployed again)"
+                personal_wait_ready
+                personal_record_manifest "healthy"
+                return 0
+            fi
+            warn "The failed deployment could not be brought up.$(personal_foreign_db_hint)"
+        fi
         info "An Exasol deployment was found, not running."
         if confirm_env EXAKIT_REUSE_DB "Start the existing database and keep its data?" y; then
             personal_note_guest_rebuild
@@ -874,7 +961,7 @@ personal_deploy_local() {
     # EXAKIT_DB_PORT does not apply to the personal path, so name the real port.
     if port_in_use "$(personal_db_port)"; then
         personal_reap_orphan_daemon || \
-            die "Port $(personal_db_port) is in use by a process that is not a reachable Exasol Personal deployment. Stop that application and re-run (EXAKIT_DB_PORT does not choose the port of a personal deployment)."
+            die "Port $(personal_db_port) is in use by a process that is not a reachable Exasol Personal deployment.$(personal_foreign_db_hint) Stop that application and re-run (EXAKIT_DB_PORT does not choose the port of a personal deployment)."
     fi
 
     # Two points, not three. Deploying and then checking health are one fact to
@@ -944,7 +1031,7 @@ personal_deploy_local() {
         else
             _personal_deploy_print_tail "$_deploy_tail"
             rm -rf "$_deploy_tmp"
-            die "Local deployment failed. Re-running the installer retries it safely."
+            die "Local deployment failed.$(personal_foreign_db_hint) Re-running the installer retries it safely."
         fi
     fi
 
@@ -993,8 +1080,12 @@ personal_wait_ready() {
     _pwr_maxtries=$(( _pwr_budget / 5 + 1 ))
     _tries=0
     while [ "$_pwr_elapsed" -lt "$_pwr_budget" ] && [ "$_tries" -lt "$_pwr_maxtries" ]; do
-        if port_in_use "$(personal_db_port)" && \
-           exakit_run_bounded "$EXAKIT_PERSONAL_PROBE_TIMEOUT" "$(personal_cli)" info >/dev/null 2>&1; then
+        # A HANDSHAKE, NOT AN OPEN PORT. Under rootless Podman the port is
+        # pasta's from the moment the container starts, and `exasol info`
+        # answers from the deployment directory - together they declared
+        # "reachable" a database that was still a minute from accepting a
+        # connection, and the next step's SELECT 1 paid for it six times.
+        if personal_tls_answers; then
             ui_spin_end
             ok "Deployment is reachable"
             # The database answered under this launcher, so whatever rebuild
@@ -1269,6 +1360,18 @@ personal_status() {
 
 personal_start() {
     if personal_launcher_supports start; then
+        # In "deployment_failed" the launcher's start (and stop) do nothing and
+        # exit 0, so this reported "Database started" over a database that was
+        # never asked to start and then waited its whole budget for it. The
+        # launcher's own retry for that state is its deploy.
+        if [ "$(personal_launcher_state 2>/dev/null || true)" = "deployment_failed" ]; then
+            info "The launcher records this deployment as failed - retrying its deploy instead of a start it would ignore."
+            if run_logged "$(personal_cli)" deploy $(personal_auto_approve_flag deploy); then
+                ok "Database started"
+                return 0
+            fi
+            die "The deployment could not be brought up.$(personal_foreign_db_hint) Check the log above; if it fails the same way, repair with: $(personal_repair_command)"
+        fi
         personal_note_guest_rebuild
         # A STOPPED DEPLOYMENT CAN STILL BE HOLDING ITS OWN PORT. The 2.3
         # launcher leaves its runner alive after `stop`, and the next `start`

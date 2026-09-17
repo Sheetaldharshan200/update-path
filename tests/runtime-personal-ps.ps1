@@ -148,6 +148,75 @@ Check "status(deployment exists, port silent)" "stopped" (Get-PersonalStatus)
 $script:PersonalDeployDir = Join-Path $work "absent"
 Check "status(no deployment)" "not deployed" (Get-PersonalStatus)
 
+Write-Host "readiness is a TLS handshake, not an open port:"
+# Under rootless Podman the published port is pasta's from the moment the
+# container starts; it accepts the TCP connection and resets it while the
+# database inside is still booting, which clients report as "tls handshake
+# eof". A listener that never completes a handshake must therefore read as
+# "not answering" - both the port nothing listens on and the one that accepts
+# and then says nothing. The probe's ceiling is shortened so the silent case
+# does not cost the suite the full budget.
+$listener = New-Object System.Net.Sockets.TcpListener([System.Net.IPAddress]::Loopback, 0)
+$listener.Start()
+$silentPort = ([System.Net.IPEndPoint]$listener.LocalEndpoint).Port
+$probeDir = Join-Path $work "probe"
+New-Item -ItemType Directory -Force -Path $probeDir | Out-Null
+Set-Content -Path (Join-Path $probeDir "deployment.json") -Value ('{"connection": {"host": "127.0.0.1", "dbPort": ' + $silentPort + ', "username": "sys"}}')
+$script:PersonalDeployDir = $probeDir
+$savedProbeTimeout = $script:PersonalProbeTimeout
+$script:PersonalProbeTimeout = 1
+Check "an open port that never completes a handshake does not answer" $false (Test-PersonalTlsAnswers)
+$listener.Stop()
+Check "a closed port does not answer" $false (Test-PersonalTlsAnswers)
+$script:PersonalProbeTimeout = $savedProbeTimeout
+$script:PersonalDeployDir = Join-Path $work "absent"
+
+Write-Host "the launcher's word outranks the port, and ownership is proven before a database is adopted:"
+# The decision function, with its inputs stubbed one at a time: the port is
+# open, and what the launcher says about its own deployment decides.
+function Test-ExakitPortInUse { return $true }
+function Test-PersonalDbAnswers { return $true }
+function Test-PersonalDeploymentExists { return $true }
+function Get-PersonalLauncherState { return "stopped" }
+Check "ours, launcher says stopped, port answers -> not running" $false (Test-PersonalDeploymentRunning)
+function Get-PersonalLauncherState { return "deployment_failed" }
+Check "ours, launcher says deployment_failed, port answers -> not running" $false (Test-PersonalDeploymentRunning)
+function Get-PersonalLauncherState { return "database_ready" }
+Check "ours, launcher says database_ready, database answers -> running" $true (Test-PersonalDeploymentRunning)
+function Get-PersonalLauncherState { return "" }
+Check "ours, launcher cannot say, database answers -> running" $true (Test-PersonalDeploymentRunning)
+function Test-PersonalDbAnswers { return $false }
+Check "ours, launcher says nothing, port open but no answer -> not running" $false (Test-PersonalDeploymentRunning)
+# No deployment of ours at all: something answers on 8563 (Windows and WSL
+# share the port), and without a SELECT through the kit's own profile it is
+# never adopted - the run that did adopt one handed every later step a
+# password that could never work.
+function Test-PersonalDeploymentExists { return $false }
+function Test-PersonalDbAnswers { return $true }
+Check "no deployment of ours, port answers, no profile -> NOT adopted" $false (Test-PersonalDeploymentRunning)
+function Test-ExakitDbReachable { return $false }
+function Get-ExakitManifestValue($Key) { if ($Key -eq "components.exapump.profile") { return "starter-kit" }; return $null }
+Check "no deployment of ours, the profile's SELECT fails -> NOT adopted" $false (Test-PersonalDeploymentRunning)
+function Test-ExakitDbReachable { return $true }
+Check "no deployment of ours, the profile's SELECT works -> running" $true (Test-PersonalDeploymentRunning)
+
+Write-Host "the reconcile is the ownership proof:"
+# Wait-PersonalSlowFirstBoot: the database answers, and the launcher's own
+# deploy either agrees (success) or does not - in which case the recovery
+# FAILS, instead of carrying on with whatever answered on the port.
+function Test-PersonalTlsAnswers { return $true }
+function Get-PersonalCli { return "exasol-stub" }
+function Get-PersonalAutoApproveFlag($Verb) { return "" }
+function Invoke-ExakitLogged { return 0 }
+Check "database answers, deploy reconciles -> recovered" $true (Wait-PersonalSlowFirstBoot)
+function Invoke-ExakitLogged { return 1 }
+Check "database answers, deploy fails -> NOT recovered" $false (Wait-PersonalSlowFirstBoot)
+function Test-PersonalTlsAnswers { return $false }
+Check "the foreign-database hint is empty when nothing completes a handshake" "" (Get-PersonalForeignDbHint)
+function Test-PersonalTlsAnswers { return $true }
+$hint = Get-PersonalForeignDbHint
+Check "...and names WSL when something does" $true ($hint -like "*inside WSL*")
+
 Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue
 Write-Host ""
 Write-Host "passed: $($script:PASS), failed: $($script:FAIL)"

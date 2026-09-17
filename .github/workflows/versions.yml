@@ -494,6 +494,9 @@ jobs:
       # `unittest discover` -- tests/ is not an importable package.)
       - run: python3 tests/test_sample_data_schema.py
       - run: bash tests/reap-orphan-daemon.sh
+      # Readiness is a TLS handshake and adoption needs ownership proof: the
+      # two facts the Windows install on a laptop with WSL got wrong.
+      - run: bash tests/personal-readiness.sh
       - run: bash tests/deploy-progress.sh
       - run: bash tests/bulk-folder-load.sh
       - run: bash tests/dataset-load-progress.sh
