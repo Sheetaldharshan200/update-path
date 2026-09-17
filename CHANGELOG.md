@@ -112,6 +112,28 @@ engine, no password, a silent database, a container that will not start, a
 deployment that will not stop or does not come back, only sample data, every
 export failing, a partial restore, a waiting copy, a second fresh copy.
 
+**A first boot the launcher gave up on is no longer a failed install.** The
+launcher waits 27 seconds for the database on `install local`, and a first boot
+in a fresh Podman machine takes 40 to 60; it then records `deployment_failed`,
+a state in which its own `stop` and `start` do nothing - so a database that came
+up ten seconds too late was reported as "Local deployment failed", and every
+later `exakit start` waited the full 150 s for a port the launcher would never
+bring back. Seen four times in one day, on WSL and on Windows. When the deploy
+command fails but the deployment exists, both halves now wait with the kit's
+own budget, and when the database answers they run the launcher's own `deploy`
+retry so its record agrees - and carry on either way with the database they can
+reach.
+
+**Windows refuses a rootful default Podman machine before downloading
+anything.** Podman Desktop creates the default machine rootful, and a rootful
+container publishes its port as an iptables rule inside the machine - no
+listener, so neither WSL's localhost relay nor gvproxy forwards it to Windows.
+The launcher then deploys a database that answers inside the machine and never
+on 127.0.0.1:8563. Measured on one laptop: a plain listener in the machine is
+forwarded, a rootful published port is not, a rootless one is. The requirements
+gate names the fix (`podman machine set --rootful=false`, or remove the machine
+and let the launcher create one); `EXAKIT_FORCE=1` steps past it.
+
 **Exasol Personal is pinned to 2.3.0-rc3** (was rc2): the Windows path in rc3 selects and
 keeps a concrete database port and no longer changes an existing Podman
 machine. versions.json and both built-in fallbacks move together, as the

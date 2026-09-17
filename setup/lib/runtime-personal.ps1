@@ -304,6 +304,23 @@ function Test-PersonalRequirements {
     # step names the one administrator prompt that can appear at the moment it
     # can appear - which is where a reader can act on it. A line at the gate
     # was an announcement about a step that had not started.
+    #
+    # ONE THING ABOUT A MACHINE THAT IS ALREADY THERE, though. Podman Desktop
+    # creates the default machine ROOTFUL, and a rootful container publishes
+    # its port as an iptables rule inside the machine - no listener, so neither
+    # WSL's localhost relay nor gvproxy ever forwards it to Windows. The
+    # launcher then deploys a database that answers inside the machine and
+    # never on 127.0.0.1:8563, and every start waits 150 s for it. A machine
+    # Podman creates itself is rootless and publishes through a real listener,
+    # which the relay forwards. Found by running both on one laptop; refused
+    # here, before anything is downloaded, with the fix named.
+    $podmanCmd = Get-Command podman -ErrorAction SilentlyContinue
+    if ($podmanCmd -and $env:EXAKIT_FORCE -ne "1") {
+        $rootful = ("" + (Invoke-ExakitBounded -FilePath $podmanCmd.Source -Arguments @("machine", "inspect", "--format", "{{.Rootful}}") -TimeoutSeconds 20)).Trim()
+        if ($rootful -eq "true") {
+            Fail "Podman's default machine is rootful, and a database published from a rootful machine is not reachable from Windows (the port is an iptables rule inside the machine, which nothing forwards). Make it rootless first: podman machine stop; podman machine set --rootful=false; podman machine start - or remove it and let the launcher create one (podman machine rm podman-machine-default). Force past this check with EXAKIT_FORCE=1."
+        }
+    }
     Ok "Compatibility check passed (windows $arch, ${ramGb} GB RAM)"
 }
 
@@ -491,12 +508,46 @@ function Install-PersonalDeployment {
     if ($flag) { $installArgs += $flag }
     $script:ExakitActiveLabel = "Deploying Exasol Personal locally"
     if ((Invoke-ExakitLogged (Get-PersonalCli) @installArgs) -ne 0) {
-        Fail "Local deployment failed. Re-running the installer retries it safely."
+        # A DEPLOYMENT THAT EXISTS IS GIVEN THE KIT'S OWN BUDGET FIRST: the
+        # launcher waits 27 seconds for a first boot, and a first boot in a
+        # fresh Podman machine takes longer. Twin of the same branch in
+        # personal_deploy_local; see Wait-PersonalSlowFirstBoot.
+        if (-not ((Test-PersonalDeploymentExists) -and (Wait-PersonalSlowFirstBoot))) {
+            Fail "Local deployment failed. Re-running the installer retries it safely."
+        }
     }
 
     Wait-PersonalReady
     Ok "Exasol Personal deployed and answering on 127.0.0.1:$(Get-PersonalDbPort)"
     Set-PersonalManifest "healthy"
+}
+
+# The launcher gave up on a first boot that was merely slow: wait with the kit's
+# budget and reconcile the launcher's record with its own `deploy` retry. When
+# the launcher records deployment_failed, its stop and start do nothing, so a
+# database that came up ten seconds too late read as a failed install and every
+# later `exakit start` waited 150 s for nothing. $false only when the database
+# never answered. Twin of personal_recover_slow_first_boot.
+function Wait-PersonalSlowFirstBoot {
+    $budget = 150
+    if ($env:EXAKIT_PERSONAL_READY_TIMEOUT) { $budget = [int]$env:EXAKIT_PERSONAL_READY_TIMEOUT }
+    Info "The launcher stopped waiting after its own short budget, but the deployment exists - waiting up to ${budget}s for the database"
+    $t0 = [DateTime]::UtcNow
+    while (-not (Test-ExakitPortInUse (Get-PersonalDbPort))) {
+        if (([DateTime]::UtcNow - $t0).TotalSeconds -ge $budget) { return $false }
+        Start-Sleep -Seconds 5
+    }
+    Ok "The database answered after $([int]([DateTime]::UtcNow - $t0).TotalSeconds)s"
+    $deployArgs = @("deploy")
+    $flag = Get-PersonalAutoApproveFlag "deploy"
+    if ($flag) { $deployArgs += $flag }
+    $script:ExakitActiveLabel = "Reconciling the launcher's record"
+    if ((Invoke-ExakitLogged (Get-PersonalCli) @deployArgs) -eq 0) {
+        Ok "The launcher's record agrees with the running database"
+    } else {
+        Warn2 "The launcher still records this deployment as failed although the database answers; the kit continues with the database it can reach. 'exasol deploy' later makes the record agree."
+    }
+    return $true
 }
 
 # Start-Personal / Stop-Personal - launcher start/stop with the same say-what-

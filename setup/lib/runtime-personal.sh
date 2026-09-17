@@ -756,6 +756,41 @@ _personal_deploy_print_notice() {
     done < "$1"
 }
 
+# personal_recover_slow_first_boot — the launcher gave up on a first boot that
+# was merely slow; wait with the kit's budget and reconcile the launcher.
+#
+# When the launcher's 27-second wait runs out it records deployment_failed and,
+# in that state, its own `stop` and `start` do nothing - so a database that came
+# up ten seconds later was reported as a failed install, and every later
+# `exakit start` waited the full 150 s for a port the launcher would never bring
+# back. Observed four times in one day. The port answering is the evidence that
+# matters; when it does, the launcher's own `deploy` retry (its advice on the
+# failure) makes its record agree. If that retry still fails while the database
+# answers, the kit says so and carries on with the database it can reach - the
+# launcher's record is a bookkeeping problem, not a missing database.
+# Returns 1 only when the database never answered within the budget.
+personal_recover_slow_first_boot() {
+    _prs_budget="${EXAKIT_PERSONAL_READY_TIMEOUT:-150}"
+    info "The launcher stopped waiting after its own short budget, but the deployment exists — waiting up to ${_prs_budget}s for the database"
+    _prs_t0="$(date +%s 2>/dev/null || echo 0)"
+    _prs_tries=0
+    until port_in_use "$(personal_db_port)"; do
+        _prs_tries=$(( _prs_tries + 1 ))
+        _prs_elapsed=$(( $(date +%s 2>/dev/null || echo 0) - _prs_t0 ))
+        [ "$_prs_elapsed" -ge "$_prs_budget" ] && return 1
+        [ "$_prs_tries" -ge $(( _prs_budget / 5 + 1 )) ] && return 1
+        sleep 5
+    done
+    ok "The database answered after $(( $(date +%s 2>/dev/null || echo 0) - _prs_t0 ))s"
+    EXAKIT_ACTIVE_LABEL="Reconciling the launcher's record"
+    if run_logged "$(personal_cli)" deploy $(personal_auto_approve_flag deploy); then
+        ok "The launcher's record agrees with the running database"
+    else
+        warn "The launcher still records this deployment as failed although the database answers; the kit continues with the database it can reach. 'exasol deploy' later makes the record agree."
+    fi
+    return 0
+}
+
 # personal_deploy_local — run the local deployment. This is the long step
 # (usually under 2 minutes); output stays visible and is logged.
 personal_deploy_local() {
@@ -898,9 +933,19 @@ personal_deploy_local() {
         # through foreign_note, and a step that says nothing while it works must
         # still say everything when it goes wrong.
         EXAKIT_QUIET_DETAIL="$_pdl_prev_quiet"
-        _personal_deploy_print_tail "$_deploy_tail"
-        rm -rf "$_deploy_tmp"
-        die "Local deployment failed. Re-running the installer retries it safely."
+        # A DEPLOYMENT THAT EXISTS IS GIVEN THE KIT'S OWN BUDGET FIRST. The
+        # launcher waits 27 seconds for a first boot and calls the deployment
+        # failed when the database has not answered by then - with the
+        # container up and the database ready a moment later (four times in
+        # one day, on WSL and on Windows, where a first boot in a fresh Podman
+        # machine takes 40 to 60 seconds). See personal_recover_slow_first_boot.
+        if personal_deployment_exists && personal_recover_slow_first_boot; then
+            rm -rf "$_deploy_tmp"
+        else
+            _personal_deploy_print_tail "$_deploy_tail"
+            rm -rf "$_deploy_tmp"
+            die "Local deployment failed. Re-running the installer retries it safely."
+        fi
     fi
 
     personal_wait_ready

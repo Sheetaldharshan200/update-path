@@ -86,7 +86,7 @@ The database everywhere is **Exasol Personal** — the same launcher-managed loc
 |---|---|---|
 | **macOS** | 8 GB+ RAM, 20 GB free disk | Runs in a lightweight managed VM — nothing to install first |
 | **Linux** | Podman (rootless is fine), 8 GB+ RAM, 20 GB free disk | `sudo apt-get install -y podman` / `sudo dnf install -y podman` if missing — the installer names it |
-| **Windows x86_64** | 8 GB+ RAM, 20 GB free disk | Runs through host Podman; the launcher offers to install Podman itself (may ask for administrator approval) |
+| **Windows x86_64** | 8 GB+ RAM, 20 GB free disk | Runs through host Podman; the launcher offers to install Podman itself (may ask for administrator approval). If Podman Desktop already made the default machine, it must be **rootless** (`podman machine set --rootful=false`) — a rootful machine cannot publish the database port to Windows, and the installer says so |
 
 Already have the kit with its database in a container? Re-run the install command — it asks whether to migrate your data or continue without it, and deletes nothing either way. Skipped that, or the installer never saw the container? `exakit migrate docker-nano` does the same copy later, into the running database. On both roads the kit's own sample data (TPC-H and friends) is left out — the kit loads that itself.
 
