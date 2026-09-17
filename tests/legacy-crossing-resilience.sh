@@ -664,6 +664,9 @@ check "the crossing remembers the old database"      "exasol-nano/fakeengine/127
     "$(mget "$H" legacy.container)/$(mget "$H" legacy.engine)/$(mget "$H" legacy.dsn)/$(mget "$H" legacy.user)"
 check "...and its volume and password file"          "exasol-nano-data/$H/credentials/nano_sys_password" \
     "$(mget "$H" legacy.volume)/$(mget "$H" legacy.password_file)"
+# The old kit's "runtime" tick was the container. Kept, the deployment step
+# was skipped as done and nothing recorded the new runtime (a real machine).
+check "the old kit's step ticks are dropped"          "[]" "$(mget "$H" steps_completed | tr -d ' ')"
 
 # Nothing but the sample: nothing of the user's, so nothing is asked - the same
 # silence as an empty database, with the reason settled in the record.
@@ -813,6 +816,22 @@ check "a container that will not start fails"            "1" "$(rc_of "$_o")"
 has "...pointing at its logs"                             "fakeengine logs exasol-nano" "$_o"
 check "...and the deployment is started again"           "stop start" "$(personal_calls "$H")"
 
+# A PORT STILL HELD AFTER THE STOP (seen for real: the launcher's forwarder
+# outlived its "stopped"). The kit's own reaper is tried; a port it cannot
+# free is named for what it is, the deployment is started again, and the
+# container is never blamed.
+H="$WORK/mig-portheld"; seed_mig "$H"; fault "$H" personal.port_busy 1
+_o="$(migrate "$H")"
+check "a port still held after the stop fails"          "1" "$(rc_of "$_o")"
+has "...naming the port and its holder"                  "port 8563 is still held (pid 4242: something-else)" "$_o"
+lacks "...and not the container"                         "would not start" "$_o"
+check "...the reaper was tried, the deployment restarted" "stop reap start" "$(personal_calls "$H")"
+check "...and the container was never started"           "0" "$(calls "$H" engine | grep -c '^start ')"
+H="$WORK/mig-portreaped"; seed_mig "$H"; fault "$H" personal.port_busy 1; fault "$H" personal.reap_frees 1
+_o="$(migrate "$H")"
+check "a port the reaper frees lets the copy go on"      "0" "$(rc_of "$_o")"
+check "...stop, reap, then the copy, then the restart"   "stop reap start wait" "$(personal_calls "$H")"
+
 # A DEPLOYMENT THAT WILL NOT STOP: nothing else is attempted.
 H="$WORK/mig-nostop"; seed_mig "$H"; fault "$H" personal.stop_rc 1
 _o="$(migrate "$H")"
@@ -881,6 +900,26 @@ has "...with the pointer to a fresh run"                  "Run the command again
 check "three restored now"                                "3" "$(mget "$H" legacy.restored)"
 check "no second export"                                  "3" "$(calls "$H" exapump | grep -c '^export')"
 check "the deployment was not stopped again"              "stop start" "$(personal_calls "$H")"
+
+# THE NEW DATABASE DOES NOT ANSWER at restore time: nothing is counted, the
+# copy is kept, and the record does not say restored. (On a real machine every
+# CREATE TABLE failed on authentication and read as "already there".)
+H="$WORK/mig-newdb-silent"; seed_mig "$H"; fault "$H" newdb.answers no
+_o="$(migrate "$H")"
+check "an unreachable new database fails the restore"     "1" "$(rc_of "$_o")"
+has "...keeping the copy"                                 "could not be restored. The copy is kept" "$_o"
+lacks "...and nothing is called left alone"               "Left alone" "$_o"
+check "...no upload was attempted"                        "0" "$(calls "$H" exapump | grep -c '^upload')"
+check "...and the record does not say restored"           "" "$(mget "$H" legacy.restored)"
+# The install's own second half, same fault: the copy waits for the next run.
+H="$WORK/after-newdb-silent"; seed "$H"; fault "$H" newdb.answers no
+_o="$(before "$H" EXAKIT_LEGACY_DATA=migrate)"; note_rc "$_o"
+_o2="$(after "$H")"
+has "the install's restore says the copy is kept"         "could not be restored. The copy is kept" "$_o2"
+check "...and leaves the restore unrecorded for a re-run" "" "$(mget "$H" legacy.restored)"
+fault "$H" newdb.answers yes
+_o3="$(after "$H")"
+has "...which then restores it"                           "Restored 3 table(s)" "$_o3"
 
 # A SECOND, FRESH COPY after a complete one clears the spent files first.
 H="$WORK/mig-twice"; seed_mig "$H"

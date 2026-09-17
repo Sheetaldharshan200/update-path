@@ -112,6 +112,25 @@ engine, no password, a silent database, a container that will not start, a
 deployment that will not stop or does not come back, only sample data, every
 export failing, a partial restore, a waiting copy, a second fresh copy.
 
+**Two crossing defects found by running it on a real WSL machine, fixed.**
+**(1)** The old kit's manifest carries its own step ticks — `steps_completed:
+["runtime"]` meant the container. The new kit trusted the tick, skipped the
+deployment step as already done, never recorded the Personal runtime, and every
+later step then spoke to the new database with the old container's password
+(`SELECT 1 failed via profile 'starter-kit'`). The crossing now drops the old
+kit's ticks while the record still names the container, so every step of this
+kit runs. **(2)** The export named each table with exapump's bare `--table
+S.T`, and a schema or table that needs quoting (`"My Schema"."Sales 2025"`,
+legal in Exasol) never resolved: the export sat for its full 300 s timeout and
+the table was reported as left behind. It is named as a query with both
+identifiers quoted now — the way the restore has always named its target.
+**(3)** The restore read a failed `CREATE TABLE` as "the fresh install already
+created it" — and with the profile above pointing at the wrong password, every
+one failed on authentication, so a database the kit could not reach reported
+"Restored 0 table(s), Left alone: <every table>" and recorded the restore as
+done. The restore now asks the new database to answer first; when it cannot,
+the copy is kept, said so, and left for the next run to land.
+
 - **A kit installed before this change cannot self-update past it.** The
   payload validator in every older copy requires `setup/lib/runtime-nano.sh`,
   which no longer ships, so its `exakit update` refuses the new archive and

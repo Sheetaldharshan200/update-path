@@ -286,10 +286,14 @@ STUB2="$WORK/stub2"; mkdir -p "$STUB2"
 cat > "$STUB2/exapump" <<'EOF'
 #!/bin/sh
 printf '%s\n' "$*" >> "$STUBLOG"
-# CREATE TABLE for the ALREADY table fails, the way a real one does when the
-# fresh install has already created it. Matched on "CREATE TABLE", not on the
-# name alone: "CREATE SCHEMA IF NOT EXISTS" is issued for every row.
-case "$*" in *"CREATE TABLE"*ALREADY*) exit 1 ;; esac
+# The new database answers its probe; CREATE TABLE for the ALREADY table
+# fails, the way a real one does when the fresh install has already created
+# it. Matched on "CREATE TABLE", not on the name alone: "CREATE SCHEMA IF NOT
+# EXISTS" is issued for every row.
+case "$*" in
+  *EXAKIT_NEW_OK*) printf 'EXAKIT_NEW_OK\n'; exit 0 ;;
+  *"CREATE TABLE"*ALREADY*) exit 1 ;;
+esac
 exit 0
 EOF
 chmod +x "$STUB2/exapump"
@@ -438,6 +442,9 @@ legacy_crossing_after|Invoke-LegacyCrossingAfter
 legacy_password_file|Get-LegacyPasswordFile
 legacy_engine_name|Get-LegacyEngineName
 legacy_remember_record|Save-LegacyRecord
+legacy_forget_old_steps|Clear-LegacyOldSteps
+legacy_new_db_answers|Test-LegacyNewDbAnswers
+legacy_wait_port_free|Wait-LegacyPortFree
 legacy_wait_db_answers|Wait-LegacyDbAnswers
 legacy_sample_catalog|Get-LegacySampleCatalog
 legacy_table_rows|Get-LegacyTableRows

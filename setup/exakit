@@ -509,15 +509,24 @@ payload = {
 # `command` is the runnable way to bring them across while they are not. Not a
 # remedy - nothing is broken - so it lives here rather than in `remedies`.
 if legacy_c:
-    pending = legacy_choice == "skip" and not legacy_restored
+    # `copied` is what has LANDED, not what was chosen: a migrate answered mid-
+    # install has its tables copied out but not restored until the run's end.
+    # The command is the one that finishes it - the installer's own re-run for
+    # a copy the install still owes, the migrate command for a skip.
+    copied = bool(legacy_restored)
+    command = None
+    if not copied and legacy_choice == "skip":
+        command = "exakit migrate docker-nano"
+    elif not copied and legacy_choice == "migrate":
+        command = install_cmd
     payload["legacy_database"] = {
         "container": legacy_c,
         "engine": legacy_e or None,
         "choice": legacy_choice or None,
-        "copied": not pending,
+        "copied": copied,
         "restored_tables": int(legacy_restored) if legacy_restored.isdigit() else None,
         "sample_left_out": legacy_sample.split(",") if legacy_sample else [],
-        "command": "exakit migrate docker-nano" if pending else None,
+        "command": command,
     }
 print(json.dumps(payload, indent=2))
 EXAKIT_SJ_PY
@@ -570,8 +579,14 @@ EXAKIT_SJ_PY
     # An older kit's container database that was NOT copied across: the
     # crossing recorded it and the user answered skip (or was never asked, in an
     # unattended run). Named here, with the command that copies it, until it is.
-    if [ -n "$_cs_legacy_c" ] && [ "$_cs_legacy_choice" = "skip" ] && [ -z "$_cs_legacy_restored" ]; then
-        ui_panel_line "$(_cs_pad 'Old database' "container '$_cs_legacy_c' ($_cs_legacy_e) · not copied — bring its tables across: exakit migrate docker-nano")"
+    if [ -n "$_cs_legacy_c" ] && [ -z "$_cs_legacy_restored" ]; then
+        if [ "$_cs_legacy_choice" = "skip" ]; then
+            ui_panel_line "$(_cs_pad 'Old database' "container '$_cs_legacy_c' ($_cs_legacy_e) · not copied — bring its tables across: exakit migrate docker-nano")"
+        elif [ "$_cs_legacy_choice" = "migrate" ]; then
+            # Copied out, not yet restored: the install's second half does that,
+            # so a re-run of the installer is what finishes it.
+            ui_panel_line "$(_cs_pad 'Old database' "container '$_cs_legacy_c' ($_cs_legacy_e) · copied out, not yet restored — finish with: $(exakit_install_command)")"
+        fi
     fi
     ui_panel_line "$(_cs_pad 'Database' "$(manifest_get runtime.dsn 2>/dev/null || printf 'unknown')$(
         if [ "$_cs_running" -eq 1 ]; then printf ' · reachable'

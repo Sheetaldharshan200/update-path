@@ -39,6 +39,10 @@ if ($rest.Count -ge 2 -and $rest[0] -eq "-p") { $rest = @($rest[2..($rest.Count 
 switch ($sub) {
     "sql" {
         $sql = ($rest -join " ")
+        if ($sql -match "EXAKIT_NEW_OK") {
+            if ((Read-Knob "newdb.answers" "yes").Trim() -ne "no") { Write-Output "EXAKIT_NEW_OK" }
+            exit 0
+        }
         if ($sql -match "EXAKIT_LEGACY_OK") {
             $n = [int](Read-Knob "probe.count" "0") + 1
             Set-Content -Path (Join-Path $dir "probe.count") -Value "$n" -NoNewline
@@ -85,6 +89,8 @@ switch ($sub) {
         $table = ""; $out = ""
         for ($i = 0; $i -lt $rest.Count; $i++) {
             if ($rest[$i] -eq "--table") { $table = $rest[$i + 1] }
+            # The crossing names the table as a quoted query; the fault lists say S.T.
+            if ($rest[$i] -eq "--query" -and "$($rest[$i + 1])" -match 'FROM "([^"]*)"\."([^"]*)"') { $table = $Matches[1] + "." + $Matches[2] }
             if ($rest[$i] -eq "-o")      { $out = $rest[$i + 1] }
         }
         # The file is created BEFORE the query is known to work - the real

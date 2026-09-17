@@ -191,6 +191,17 @@ legacy_stop_container() {
     return 0
 }
 
+# legacy_forget_old_steps — the step ticks an older kit recorded, dropped, so
+# this kit's steps all run. The launcher step is not among them: no older kit
+# had one, so a tick there is this install's own.
+legacy_forget_old_steps() {
+    command -v exakit_unmark_step >/dev/null 2>&1 || return 0
+    for _lfs_step in runtime exapump mcp pyexasol exakit_helper; do
+        exakit_unmark_step "$_lfs_step" 2>/dev/null || true
+    done
+    return 0
+}
+
 # legacy_remove_command — the exact command that removes the old container and
 # its data, printed for the user and never run by the kit.
 legacy_remove_command() {
@@ -487,8 +498,14 @@ legacy_export() {
         # Exasol and would otherwise escape the directory.
         _lex_file="$_lex_dir/t${_lex_n}.csv"
         EXAKIT_ACTIVE_LABEL="Copying out $_lex_t ($_lex_n/$_lex_total)"
+        # THE TABLE IS NAMED AS A QUERY, WITH BOTH IDENTIFIERS QUOTED. `--table
+        # S.T` hands exapump a bare name, and a schema or table that needs
+        # quotes ("My Schema"."Sales 2025", legal in Exasol) never resolved: on
+        # a real machine the export sat for its full 300 s timeout and the
+        # table was reported as left behind. The restore has always quoted its
+        # target the same way; the two halves now agree.
         if run_logged "$(exapump_cli)" export -p "$EXAKIT_LEGACY_PROFILE" \
-                --table "$_lex_t" --format csv -o "$_lex_file"; then
+                --query "SELECT * FROM \"$_lex_schema\".\"$_lex_table\"" --format csv -o "$_lex_file"; then
             _lex_ddl="$(legacy_table_ddl "$_lex_schema" "$_lex_table" 2>/dev/null || true)"
             # The index is read back by the other half, so it carries
             # everything that half needs: where the rows are, where they go,
@@ -512,6 +529,13 @@ legacy_export() {
     [ "$_lex_ok" -gt 0 ]
 }
 
+# legacy_new_db_answers — a real query against the NEW database through the
+# kit's own profile: the gate in front of every restore.
+legacy_new_db_answers() {
+    "$(exapump_cli)" sql -p "$EXAKIT_EXAPUMP_PROFILE" \
+        "SELECT 'EXAKIT_NEW_OK' AS P" 2>/dev/null | grep -q 'EXAKIT_NEW_OK'
+}
+
 # legacy_import <dir> — the saved tables into the database that is now running.
 #
 # A table the fresh install has already created is SKIPPED, not appended to.
@@ -520,6 +544,12 @@ legacy_export() {
 legacy_import() {
     _lim_dir="$1"
     [ -s "$_lim_dir/index" ] || return 1
+    # THE NEW DATABASE HAS TO ANSWER FIRST. A CREATE TABLE that fails is read
+    # below as "already there" - and on a real machine every one of them failed
+    # on authentication instead, so a database the kit could not reach reported
+    # "Restored 0 table(s), Left alone: <every table>" and recorded the restore
+    # as done. A copy that cannot land is kept and said so, never counted.
+    legacy_new_db_answers || return 1
     _lim_ok=0; _lim_skipped=0; _lim_bad=0
     _lim_skipped_names=""
     while IFS="$(printf '\t')" read -r _lim_file _lim_schema _lim_table _lim_ddl; do
@@ -579,6 +609,18 @@ legacy_crossing_before() {
     #
     # Only past all three does anything reach the screen.
     legacy_db_recorded || return 0
+
+    # THE OLD KIT'S STEP TICKS ARE NOT THIS KIT'S. Its manifest says "runtime"
+    # is done - that was the container. Left in place, the deployment step was
+    # skipped as already done, nothing ever recorded the new runtime, and every
+    # later step talked to the new database with the old one's password (seen
+    # on a real WSL machine: "SELECT 1 failed via profile 'starter-kit'"). The
+    # ticks go for as long as the record still names the container - BEFORE
+    # the crossing-done gate, because an install that crossed and then died
+    # before its deployment step arrives here with the gate closed and the
+    # ticks still standing.
+    legacy_forget_old_steps
+
     [ "$(manifest_get legacy.crossing_done 2>/dev/null || true)" = "true" ] && return 0
 
     # An earlier attempt at THIS install already answered. Finish the leftover
@@ -805,6 +847,17 @@ _legacy_migrate_fail() {
     return 1
 }
 
+# legacy_wait_port_free <port> <seconds> — 0 once nothing listens on the port.
+legacy_wait_port_free() {
+    _lwp_n=0
+    while port_in_use "$1" 2>/dev/null; do
+        _lwp_n=$(( _lwp_n + 1 ))
+        [ "$_lwp_n" -ge "$2" ] && return 1
+        sleep 1
+    done
+    return 0
+}
+
 # _legacy_migrate_settle — everything back the way it was found, except a
 # container on the deployment's port, which stays stopped so the deployment can
 # have the port back. Reads the _lmn_* state legacy_migrate_now sets. Non-zero
@@ -890,6 +943,22 @@ legacy_migrate_now() {
             return 1
         fi
         _lmn_db_stopped=1
+        # THE PORT MAY STILL BE HELD after the stop: the launcher can leave its
+        # runner or its port forwarder alive (seen on a real WSL machine, where
+        # `exakit stop` answered "stopped" and the container then could not
+        # bind). A moment's grace, then the kit's own orphan reaper - it only
+        # ever touches the kit's own runner - and a port that stays held is
+        # named for what it is, not blamed on the container.
+        if ! legacy_wait_port_free "$_lmn_db_port" 15; then
+            command -v personal_reap_orphan_daemon >/dev/null 2>&1 && personal_reap_orphan_daemon >/dev/null 2>&1
+            if ! legacy_wait_port_free "$_lmn_db_port" 5; then
+                personal_start >/dev/null 2>&1 || true
+                _lmn_holder=""
+                command -v personal_port_holder_hint >/dev/null 2>&1 && _lmn_holder="$(personal_port_holder_hint 2>/dev/null || true)"
+                _legacy_migrate_fail "Your database was told to stop, but port $_lmn_db_port is still held$_lmn_holder, so the old container cannot take it." "exakit stop, then check the port (ss -ltnp | grep $_lmn_db_port) before: exakit migrate docker-nano"
+                return 1
+            fi
+        fi
     fi
     _lmn_started=0
     if [ "$_lmn_state" != "running" ]; then

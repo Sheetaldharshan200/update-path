@@ -468,6 +468,9 @@ Check "the row counts were asked for once, for the sample schema" 1 @((Calls "ex
 Check "the record names the dataset left out" "tpch" (MGet "legacy.sample_left_out")
 Check "the crossing remembers the old database" "exasol-nano/fakeengine/127.0.0.1:8563/sys" ((MGet "legacy.container") + "/" + (MGet "legacy.engine") + "/" + (MGet "legacy.dsn") + "/" + (MGet "legacy.user"))
 Check "...and its volume" "exasol-nano-data" (MGet "legacy.volume")
+# The old kit's "runtime" tick was the container: kept, the deployment step was
+# skipped as done and nothing recorded the new runtime (seen on a real machine).
+Check "the old kit's step ticks are dropped" 0 @(Get-ExakitManifestValue "steps_completed").Count
 Remember
 Seed; $env:EXAKIT_LEGACY_DATA = "migrate"
 Set-Content -Path (Join-Path $env:EXAKIT_FAULT_DIR "db.tables") -Value "TPCH.REGION`nTPCH.NATION"
@@ -617,6 +620,16 @@ $s = Migrate
 Check "a container that will not start fails" 1 $script:migRc
 Has "...pointing at its logs" "fakeengine logs exasol-nano" $s
 Check "...and the deployment is started again" "stop start" (PersonalCalls)
+# A PORT STILL HELD AFTER THE STOP: named for what it is, the deployment
+# started again, the container never blamed.
+SeedMig; Fault "personal.port_busy" "1"
+$s = Migrate
+Check "a port still held after the stop fails" 1 $script:migRc
+Has "...naming the port" "port 8563 is still held" $s
+Lacks "...and not the container" "would not start" $s
+Check "...and the deployment is started again" "stop start" (PersonalCalls)
+Check "...with the container never started" 0 @((Calls "engine") | Where-Object { $_ -like "start *" }).Count
+Remember
 SeedMig; Fault "personal.stop_rc" "1"
 $s = Migrate
 Check "a deployment that will not stop fails first" 1 $script:migRc
@@ -675,6 +688,17 @@ Check "the waiting copy is restored" 0 $script:migRc
 Has "...and said to be" "waiting at" $s
 Check "three restored now" "3" (MGet "legacy.restored")
 Check "no second export" 3 @((Calls "exapump") | Where-Object { $_ -like "export *" }).Count
+Remember
+
+# THE NEW DATABASE DOES NOT ANSWER at restore time: nothing is counted, the
+# copy is kept, the record does not say restored.
+SeedMig; Fault "newdb.answers" "no"
+$s = Migrate
+Check "an unreachable new database fails the restore" 1 $script:migRc
+Has "...keeping the copy" "could not be restored. The copy is kept" $s
+Lacks "...and nothing is called left alone" "Left alone" $s
+Check "...no upload was attempted" 0 @((Calls "exapump") | Where-Object { $_ -like "upload *" }).Count
+Check "...and the record does not say restored" "" (MGet "legacy.restored")
 Remember
 
 # A SECOND, FRESH COPY after a complete one clears the spent files first.

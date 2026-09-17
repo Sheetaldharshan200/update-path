@@ -25,3 +25,8 @@ function Start-Personal {
 function Wait-PersonalReady {
     Add-Content -Path (Join-Path $env:EXAKIT_FAULT_DIR "personal.calls") -Value "wait"
 }
+# The port question is answered by the knob, never by the developer's machine.
+function Test-ExakitPortInUse {
+    param([int]$Port, [string]$ComputerName = "127.0.0.1", [int]$TimeoutMs = 700)
+    return ((Read-PersonalKnob "personal.port_busy" "0") -eq "1")
+}

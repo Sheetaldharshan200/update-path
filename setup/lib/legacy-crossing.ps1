@@ -193,6 +193,15 @@ function Stop-LegacyContainer {
     return $true
 }
 
+# The step ticks an older kit recorded, dropped, so this kit's steps all run.
+# The launcher step is not among them: no older kit had one.
+function Clear-LegacyOldSteps {
+    if (-not (Get-Command Remove-ExakitStepDone -ErrorAction SilentlyContinue)) { return }
+    foreach ($step in @("runtime", "exapump", "mcp", "pyexasol", "exakit_helper")) {
+        try { Remove-ExakitStepDone $step } catch { }
+    }
+}
+
 # The exact command that removes the old container and its data, printed for
 # the user and never run by the kit.
 function Get-LegacyRemoveCommand {
@@ -249,11 +258,12 @@ function Write-LegacyProfile {
 # succeeding, so without this every one of these probes would throw instead of
 # answering. Same guard Get-ExakitProbedVersion carries, for the same reason.
 function Invoke-LegacyQuery {
-    param([Parameter(Mandatory)][string]$Sql)
+    param([Parameter(Mandatory)][string]$Sql, [string]$Profile = "")
+    if (-not $Profile) { $Profile = $script:LegacyProfile }
     $previous = $ErrorActionPreference
     try {
         $ErrorActionPreference = "Continue"
-        $out = & (Get-ExapumpCli) sql -p $script:LegacyProfile $Sql 2>$null
+        $out = & (Get-ExapumpCli) sql -p $Profile $Sql 2>$null
         return ("" + ($out -join "`n"))
     } catch {
         return ""
@@ -487,8 +497,13 @@ function Export-LegacyTables {
         # Exasol and would otherwise escape the directory.
         $file = "t$n.csv"
         $script:ExakitActiveLabel = "Copying out $t ($n/$($Tables.Count))"
+        # THE TABLE IS NAMED AS A QUERY, WITH BOTH IDENTIFIERS QUOTED: a bare
+        # `--table S.T` never resolved a schema or table that needs quotes, and
+        # the export sat for its full timeout. The restore has always quoted its
+        # target the same way. Twin of the same change in legacy_export.
+        $query = 'SELECT * FROM "' + $schema + '"."' + $table + '"'
         if ((Invoke-ExakitLogged (Get-ExapumpCli) "export" "-p" $script:LegacyProfile `
-                "--table" $t "--format" "csv" "-o" (Join-Path $Dir $file)) -eq 0) {
+                "--query" $query "--format" "csv" "-o" (Join-Path $Dir $file)) -eq 0) {
             $ddl = Get-LegacyTableDdl -Schema $schema -Table $table
             # The index is read back by the other half, so it carries
             # everything that half needs: where the rows are, where they go,
@@ -516,10 +531,22 @@ function Export-LegacyTables {
 # A table the fresh install has already created is SKIPPED, not appended to.
 # The bundled sample data is loaded before this runs, so appending would double
 # every row of every sample table a user also had.
+# A real query against the NEW database through the kit's own profile: the gate
+# in front of every restore. The same reader as every other probe, inside the
+# same Continue window. Twin of legacy_new_db_answers.
+function Test-LegacyNewDbAnswers {
+    return ((Invoke-LegacyQuery -Sql "SELECT 'EXAKIT_NEW_OK' AS P" -Profile $script:ExapumpProfile) -match "EXAKIT_NEW_OK")
+}
+
 function Import-LegacyTables {
     param([string]$Dir)
     $indexPath = Join-Path $Dir "index"
     if (-not (Test-Path $indexPath)) { return $false }
+    # THE NEW DATABASE HAS TO ANSWER FIRST. A CREATE TABLE that fails is read
+    # below as "already there" - and on a real machine every one of them failed
+    # on authentication instead, so an unreachable database reported "Restored
+    # 0, Left alone: <every table>" and recorded the restore as done.
+    if (-not (Test-LegacyNewDbAnswers)) { return $false }
     $ok = 0; $skipped = 0; $bad = 0; $skippedNames = ""
     foreach ($line in (Get-Content $indexPath)) {
         if (-not $line) { continue }
@@ -580,6 +607,17 @@ function Invoke-LegacyCrossingBefore {
     #
     # Only past all three does anything reach the screen.
     if (-not (Test-LegacyDbRecorded)) { return }
+
+    # THE OLD KIT'S STEP TICKS ARE NOT THIS KIT'S. Its manifest says "runtime"
+    # is done - that was the container. Left in place, the deployment step was
+    # skipped as already done, nothing ever recorded the new runtime, and every
+    # later step talked to the new database with the old one's password. The
+    # ticks go for as long as the record still names the container - BEFORE the
+    # crossing-done gate, because an install that crossed and then died before
+    # its deployment step arrives here with the gate closed and the ticks still
+    # standing. Twin of legacy_forget_old_steps.
+    Clear-LegacyOldSteps
+
     if ("" + (Get-ExakitManifestValue "legacy.crossing_done") -eq "True") { return }
 
     # An earlier attempt at THIS install already answered. Finish the leftover
@@ -790,6 +828,16 @@ function Set-LegacyMigrateFailure {
     Write-ExakitLog "ERROR" "legacy migrate: $Reason"
 }
 
+# $true once nothing listens on the port. Twin of legacy_wait_port_free.
+function Wait-LegacyPortFree {
+    param([int]$Port, [int]$Seconds)
+    for ($n = 0; $n -lt $Seconds; $n++) {
+        if (-not (Test-ExakitPortInUse -Port $Port)) { return $true }
+        Start-Sleep -Seconds 1
+    }
+    return (-not (Test-ExakitPortInUse -Port $Port))
+}
+
 # Everything back the way it was found, except a container on the deployment's
 # port, which stays stopped so the deployment can have the port back. $false
 # when the deployment did not come back. Twin of _legacy_migrate_settle.
@@ -888,6 +936,15 @@ function Invoke-LegacyMigrateNow {
             return 1
         }
         $script:LegacyMigrateDbStopped = $true
+        # THE PORT MAY STILL BE HELD after the stop: the launcher can leave its
+        # runner or its port forwarder alive. A moment's grace, and a port that
+        # stays held is named for what it is, not blamed on the container.
+        # Twin of the same check in legacy_migrate_now.
+        if (-not (Wait-LegacyPortFree -Port ([int]$port) -Seconds 20)) {
+            try { Start-Personal } catch { }
+            Set-LegacyMigrateFailure "Your database was told to stop, but port $port is still held, so the old container cannot take it." "exakit stop, then check the port (netstat -ano | findstr :$port) before: exakit migrate docker-nano"
+            return 1
+        }
     }
     if ($state -ne "running") {
         Info "Starting the container '$container'"

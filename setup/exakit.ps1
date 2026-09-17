@@ -384,15 +384,22 @@ function Invoke-CmdStatus {
         # they are not. Not a remedy - nothing is broken - so it lives here rather
         # than in `remedies`. Twin of legacy_database in cmd_status.
         if ($legacyContainer) {
-            $legacyPending = ($legacyChoice -eq "skip" -and -not $legacyRestored)
+            # `copied` is what has LANDED, not what was chosen: a migrate answered
+            # mid-install has its tables copied out but not restored until the
+            # run's end. The command is the one that finishes it - the installer's
+            # own re-run for a copy the install still owes, migrate for a skip.
+            $legacyCopied = [bool]$legacyRestored
+            $legacyCommand = $null
+            if (-not $legacyCopied -and $legacyChoice -eq "skip") { $legacyCommand = "exakit migrate docker-nano" }
+            elseif (-not $legacyCopied -and $legacyChoice -eq "migrate") { $legacyCommand = $installCmd }
             $payload["legacy_database"] = [ordered]@{
                 container       = $legacyContainer
                 engine          = $(if ($legacyEngine) { $legacyEngine } else { $null })
                 choice          = $(if ($legacyChoice) { $legacyChoice } else { $null })
-                copied          = (-not $legacyPending)
+                copied          = $legacyCopied
                 restored_tables = $(if ("$legacyRestored" -match '^[0-9]+$') { [int]$legacyRestored } else { $null })
                 sample_left_out = @($legacySample -split "," | Where-Object { $_ })
-                command         = $(if ($legacyPending) { "exakit migrate docker-nano" } else { $null })
+                command         = $legacyCommand
             }
         }
         $payload | ConvertTo-Json -Depth 4
@@ -449,8 +456,14 @@ function Invoke-CmdStatus {
     # An older kit's container database that was NOT copied across: the
     # crossing recorded it and the user answered skip (or was never asked, in an
     # unattended run). Named here, with the command that copies it, until it is.
-    if ($legacyContainer -and $legacyChoice -eq "skip" -and -not $legacyRestored) {
-        Write-StatusPanelRow "Old database" "container '$legacyContainer' ($legacyEngine) - not copied; bring its tables across: exakit migrate docker-nano"
+    if ($legacyContainer -and -not $legacyRestored) {
+        if ($legacyChoice -eq "skip") {
+            Write-StatusPanelRow "Old database" "container '$legacyContainer' ($legacyEngine) - not copied; bring its tables across: exakit migrate docker-nano"
+        } elseif ($legacyChoice -eq "migrate") {
+            # Copied out, not yet restored: the install's second half does that,
+            # so a re-run of the installer is what finishes it.
+            Write-StatusPanelRow "Old database" "container '$legacyContainer' ($legacyEngine) - copied out, not yet restored; finish with: $(Get-ExakitInstallCommand)"
+        }
     }
     $dsn = Get-ExakitManifestValue "runtime.dsn"
     if (-not $dsn) { $dsn = "unknown" }

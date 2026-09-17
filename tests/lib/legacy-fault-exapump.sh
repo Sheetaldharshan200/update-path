@@ -15,6 +15,7 @@
 #   db.columns        SCHEMA.TABLE|NAME<<:>>TYPE per line                 (none)
 #   export.fail       SCHEMA.TABLE per line whose export fails
 #   export.rows       the CSV body every successful export writes         (A,B/1,2)
+#   newdb.answers     "no" makes the NEW database's probe fail            (yes)
 #   import.exists     SCHEMA.TABLE per line whose CREATE TABLE fails
 #   import.schema_rc  exit code of CREATE SCHEMA                          (0)
 #   upload.fail       SCHEMA.TABLE per line whose upload fails
@@ -38,6 +39,9 @@ case "$_sub" in
     sql)
         _sql="$*"
         case "$_sql" in
+            *EXAKIT_NEW_OK*)
+                [ "$(_read newdb.answers yes)" = no ] || printf 'EXAKIT_NEW_OK\n'
+                exit 0 ;;
             *EXAKIT_LEGACY_OK*)
                 _n="$(( $(_read probe.count 0) + 1 ))"; printf '%s' "$_n" > "$_dir/probe.count"
                 _after="$(_read db.answer_after 1)"
@@ -68,7 +72,13 @@ case "$_sub" in
     export)
         _table=""; _out=""
         while [ $# -gt 0 ]; do
-            case "$1" in --table) _table="$2"; shift ;; -o) _out="$2"; shift ;; esac
+            case "$1" in
+                --table) _table="$2"; shift ;;
+                # The crossing names the table as a quoted query; the fault
+                # lists say S.T.
+                --query) _table="$(printf '%s' "$2" | sed -n 's/.*FROM "\([^"]*\)"\."\([^"]*\)".*/\1.\2/p')"; shift ;;
+                -o) _out="$2"; shift ;;
+            esac
             shift
         done
         # The file is created BEFORE the query is known to work - the real
