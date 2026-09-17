@@ -589,5 +589,82 @@ lacks "the sh CLI has no --password option that works" '--password)' "$(sed -n '
 has "the sh prompt does not echo"          'read -rs' "$(cat "$ROOT/setup/exakit")"
 has "the ps prompt does not echo"          'Read-Host -AsSecureString' "$(cat "$ROOT/setup/exakit.ps1")"
 
+echo
+echo "the engine is the one that actually holds the container, not just the one recorded:"
+
+# THE RECORDED NAME IS A HINT, NOT THE ANSWER. The old kit ran the container
+# under Docker when it was there and Podman otherwise, and wrote whichever it
+# used into runtime.engine. A record written without that key, or a user who
+# has since moved from one engine to the other, had the whole crossing declined
+# - "the container engine this database needs is not on this machine any more"
+# - with the container sitting in the other engine, and the install then walked
+# straight into the port it holds. Seen on a real Windows machine: Docker
+# Desktop running the container, runtime.engine absent from the record.
+ENGWORK="$WORK/engines"
+mkdir -p "$ENGWORK/bin"
+# Two stub engines. Only the one named in HOLDER admits to having the
+# container; every call is recorded, so the probe ORDER can be asserted too.
+for _eng in docker podman; do
+    cat > "$ENGWORK/bin/$_eng" <<STUBEOF
+#!/bin/sh
+printf '%s %s\n' "$_eng" "\$*" >> "$ENGWORK/calls"
+case "\$1 \$2" in
+  "container inspect")
+      case "\${HOLDER:-}" in
+          "$_eng"|both) printf 'deadbeef\n'; exit 0 ;;
+      esac
+      exit 1 ;;
+esac
+exit 0
+STUBEOF
+    chmod +x "$ENGWORK/bin/$_eng"
+done
+
+_eng_seq=0
+eng_probe() { # eng_probe <recorded-engine> <holder> <expression>
+    _eng_seq=$((_eng_seq + 1))
+    _ep_home="$ENGWORK/home-$_eng_seq"
+    seed_home "$_ep_home"
+    # Rewrite the recorded engine to the case under test; an empty first
+    # argument removes the key altogether, which is the older-record case.
+    if [ -n "$1" ]; then
+        sed 's/"engine": "fakeengine"/"engine": "'"$1"'"/' "$_ep_home/manifest.json" > "$_ep_home/m.tmp"
+    else
+        grep -v '"engine":' "$_ep_home/manifest.json" > "$_ep_home/m.tmp"
+    fi
+    mv "$_ep_home/m.tmp" "$_ep_home/manifest.json"
+    : > "$ENGWORK/calls"
+    EXAKIT_HOME="$_ep_home" EXAKIT_BIN_DIR="$_ep_home/bin" HOLDER="$2" \
+    PATH="$ENGWORK/bin:/usr/bin:/bin" ROOT="$ROOT" \
+    bash -c '
+        . "$ROOT/setup/lib/common.sh"
+        . "$ROOT/setup/lib/detect.sh"
+        . "$ROOT/setup/lib/exapump.sh"
+        . "$ROOT/setup/lib/legacy-crossing.sh"
+        '"$3"' ' 2>&1
+}
+
+check "no engine recorded, docker holds it"  "docker" "$(eng_probe "" docker 'legacy_engine_name')"
+check "no engine recorded, podman holds it"  "podman" "$(eng_probe "" podman 'legacy_engine_name')"
+check "no engine recorded, neither holds it" ""       "$(eng_probe "" none 'legacy_engine_name')"
+check "...and the path is empty too"         ""       "$(eng_probe "" none 'legacy_engine')"
+# A recorded engine that IS on PATH is used as it always was - and nothing else
+# is probed, because a working record must not cost two more process starts.
+check "a recorded engine on PATH is used"    "podman" "$(eng_probe podman docker 'legacy_engine_name')"
+eng_probe podman docker 'legacy_engine >/dev/null' >/dev/null
+lacks "...without probing the other one"     "container inspect" "$(cat "$ENGWORK/calls" 2>/dev/null)"
+# A recorded engine that is GONE falls back to the one that has the container.
+check "a recorded engine that is gone falls back" "docker" "$(eng_probe uninstalled-engine docker 'legacy_engine_name')"
+check "...and reports its real path"  "$ENGWORK/bin/docker" "$(eng_probe uninstalled-engine docker 'legacy_engine')"
+# Docker before Podman, the order the old kit preferred: with both holding it,
+# docker answers and podman is never asked.
+check "docker is asked before podman"        "docker" "$(eng_probe "" both 'legacy_engine_name')"
+# An explicit override always wins, even over a container it cannot see.
+check "EXAKIT_LEGACY_ENGINE overrides everything" "podman" \
+    "$(EXAKIT_LEGACY_ENGINE=podman eng_probe "" docker 'legacy_engine_name')"
+# And the container's state reads through whatever was resolved.
+check "the state reads through the resolved engine" "unknown" \
+    "$(eng_probe "" docker 'legacy_container_state')"
+
 printf '\n%s: %d passed, %d failed\n' "$(basename "$0")" "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

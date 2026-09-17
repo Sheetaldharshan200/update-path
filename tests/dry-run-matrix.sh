@@ -341,6 +341,17 @@ printf '#!/bin/sh\n[ \"\$1\" = info ] && exit 0\nexit 1\n' > \"\$_stub_dir/exaso
 chmod +x \"\$_stub_dir/exasol\"
 personal_cli() { printf '%s\n' \"\$_stub_dir/exasol\"; }
 port_in_use() { return 0; }
+# A DEPLOYMENT OF OURS, which is what this check is about: reuse is now refused
+# for a database on the port that the launcher does not own, because Windows and
+# WSL share one network stack and the other side's database answers here too.
+# The stub directory stands in for the deployment directory the probe reads.
+EXAKIT_PERSONAL_DEPLOY_DIR=\"\$_stub_dir\"
+# The liveness signal is a completed TLS handshake, not an open port: under
+# rootless Podman the port belongs to pasta from the moment the container
+# starts. This sandbox has no database to hand, so the handshake is stubbed
+# and what is measured stays what this check is about - the guard's decision.
+# tests/personal-readiness.sh pins the handshake itself against real servers.
+personal_tls_answers() { return 0; }
 if personal_deployment_running; then printf reuse; else printf deploy; fi
 rm -rf \"\$_stub_dir\"
 ")"

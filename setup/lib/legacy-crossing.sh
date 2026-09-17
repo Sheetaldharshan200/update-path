@@ -105,16 +105,72 @@ legacy_password_file() {
 # particular container, and a machine can have another one installed.
 legacy_engine_name() {
     [ -n "${EXAKIT_LEGACY_ENGINE:-}" ] && { printf '%s' "$EXAKIT_LEGACY_ENGINE"; return 0; }
+    # The engine actually resolved, so the record and every message name the
+    # one the container is really in. Only when nothing resolves does the
+    # recorded name stand on its own, so a message can still say what is
+    # missing.
+    _len_path="$(legacy_engine)"
+    if [ -n "$_len_path" ]; then
+        _len_base="${_len_path##*/}"
+        printf '%s' "${_len_base%.exe}"
+        return 0
+    fi
     manifest_get runtime.engine 2>/dev/null || true
 }
 
-# legacy_engine — that engine as a runnable path, or empty. One that is named
-# but no longer on PATH answers empty, which is what makes the migrate option
-# offer itself as unavailable rather than fail halfway through.
+# legacy_engine — the engine that can actually reach this database, as a
+# runnable path, or empty.
+#
+# THE RECORDED NAME IS A HINT, NOT THE ANSWER. The old kit ran the container
+# under Docker when it was there and Podman otherwise, and it wrote whichever
+# it used into runtime.engine. A machine where that key is missing (an older
+# record), or where the user has since moved from one engine to the other, then
+# had its container declared unreachable - "the container engine this database
+# needs is not on this machine any more" - with the container sitting right
+# there in the other engine, and the install went on to hit the port it holds.
+# So: the recorded engine first, and if that cannot be run, whichever engine on
+# this machine actually holds the recorded container. Docker before Podman,
+# the order the old kit preferred. Probed once per run; each probe is a process
+# start.
+_EXAKIT_LEGACY_ENGINE_PATH=""
+_EXAKIT_LEGACY_ENGINE_PROBED=0
 legacy_engine() {
-    _le_name="$(legacy_engine_name)"
-    [ -n "$_le_name" ] || return 0
-    command -v "$_le_name" 2>/dev/null || true
+    if [ -n "${EXAKIT_LEGACY_ENGINE:-}" ]; then
+        command -v "$EXAKIT_LEGACY_ENGINE" 2>/dev/null || true
+        return 0
+    fi
+    if [ "$_EXAKIT_LEGACY_ENGINE_PROBED" = 1 ]; then
+        printf '%s' "$_EXAKIT_LEGACY_ENGINE_PATH"
+        return 0
+    fi
+    _le_path=""
+    _le_recorded="$(manifest_get runtime.engine 2>/dev/null || true)"
+    [ -n "$_le_recorded" ] && _le_path="$(command -v "$_le_recorded" 2>/dev/null || true)"
+    if [ -z "$_le_path" ]; then
+        _le_container="$(legacy_container)"
+        if [ -n "$_le_container" ]; then
+            for _le_try in docker podman; do
+                _le_bin="$(command -v "$_le_try" 2>/dev/null || true)"
+                [ -n "$_le_bin" ] || continue
+                if exakit_run_bounded "${EXAKIT_ENGINE_PROBE_TIMEOUT:-20}" \
+                       "$_le_bin" container inspect "$_le_container" >/dev/null 2>&1; then
+                    _le_path="$_le_bin"
+                    break
+                fi
+            done
+        fi
+    fi
+    _EXAKIT_LEGACY_ENGINE_PATH="$_le_path"
+    _EXAKIT_LEGACY_ENGINE_PROBED=1
+    printf '%s' "$_le_path"
+}
+
+# legacy_forget_engine — drop the cached answer, for the tests that change what
+# is on PATH between scenarios.
+legacy_forget_engine() {
+    _EXAKIT_LEGACY_ENGINE_PATH=""
+    _EXAKIT_LEGACY_ENGINE_PROBED=0
+    return 0
 }
 
 # legacy_remember_record — the old record, copied under legacy.* before the

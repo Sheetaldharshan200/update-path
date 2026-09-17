@@ -507,11 +507,20 @@ with socket.create_connection(("127.0.0.1", int(sys.argv[1])), timeout=5) as s:
 # application that is not there.
 personal_foreign_db_hint() {
     personal_tls_answers || return 0
-    if detect_wsl_version >/dev/null 2>&1; then
-        printf ' It answers like an Exasol database this kit did not deploy. WSL and Windows share this port, so an Exasol Personal deployed on the Windows side holds it here too: stop it there first (exakit stop in PowerShell), then re-run.'
-    else
-        printf ' It answers like an Exasol database this kit did not deploy: stop that database first, then re-run.'
+    # NAME WHAT IS ACTUALLY THERE. A recorded container of this machine's own
+    # previous kit is the commonest holder of this port, and telling that user
+    # to go and stop something in WSL sends them looking for a database that
+    # does not exist. The crossing is the road out of it.
+    if command -v legacy_db_recorded >/dev/null 2>&1 && legacy_db_recorded && \
+       [ "$(legacy_container_state 2>/dev/null || true)" = "running" ]; then
+        printf ' It is the container database of your previous starter kit (%s), which this kit no longer manages. Stop it (%s stop %s) and re-run the installer, which then offers to copy its data across.' \
+            "$(legacy_container)" "$(legacy_engine_name)" "$(legacy_container)"
+        return 0
     fi
+    printf ' It answers like an Exasol database this kit did not deploy: stop that database first, then re-run.'
+    detect_wsl_version >/dev/null 2>&1 && \
+        printf ' WSL and Windows share this port, so one deployed on the Windows side holds it here too (stop it there with: exakit stop).'
+    return 0
 }
 
 # personal_launcher_state — the LAUNCHER'S OWN WORD for this deployment, from
