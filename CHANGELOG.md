@@ -134,6 +134,16 @@ forwarded, a rootful published port is not, a rootless one is. The requirements
 gate names the fix (`podman machine set --rootful=false`, or remove the machine
 and let the launcher create one); `EXAKIT_FORCE=1` steps past it.
 
+**`exakit repair-runtime` reloads the sample data it promises to.** The record's
+"loaded" flags survived the rebuild, and the data step trusts the record
+whenever the database cannot be asked - which a database that came up seconds
+ago sometimes cannot - so a run said "Dataset 'tpch' already loaded" over an
+empty schema. The flags are reset before the rebuild, on both halves. Found
+behind it: `manifest_set_many` had never written anything, because
+`run_python -` takes the program from stdin and the script's own stdin read came
+back empty - every piped key was dropped, including the dataset-flag healing in
+`exakit_verified_datasets`. It reads its lines before Python now.
+
 **Exasol Personal is pinned to 2.3.0-rc3** (was rc2): the Windows path in rc3 selects and
 keeps a concrete database port and no longer changes an existing Podman
 machine. versions.json and both built-in fallbacks move together, as the

@@ -904,6 +904,18 @@ function Invoke-CmdStop {
 # terminal, read a success code off a command that had deliberately done
 # nothing, and re-polled status to find `interrupted` again - the loop AGENTS.md
 # warns about, one command over. Twin of the same code in cmd_repair_runtime.
+# Every bundled dataset's "loaded" record set to false, both keys, before a
+# rebuild empties the database. Twin of exakit_reset_dataset_flags.
+function Reset-ExakitDatasetFlags {
+    if (-not (Get-Command Get-ExakitBundledDatasets -ErrorAction SilentlyContinue)) { return }
+    foreach ($ds in @(Get-ExakitBundledDatasets)) {
+        try {
+            Set-ExakitManifestValue $ds.Flag $false
+            Set-ExakitManifestValue "data.datasets.$($ds.Id).loaded" $false
+        } catch { }
+    }
+}
+
 function Invoke-CmdRepairRuntime {
     param([switch]$Yes, [switch]$Json)
     Assert-ExakitInstalled -Json:$Json
@@ -951,6 +963,10 @@ function Invoke-CmdRepairRuntime {
     # Drop the tick so the deployment step runs even on a runtime whose wedged
     # state the kit cannot yet recognise on its own.
     Remove-ExakitStepDone "runtime"
+    # AND THE DATASET FLAGS: the rebuilt database is empty, and the data step
+    # trusts the record whenever the database cannot be asked - which a database
+    # that came up seconds ago sometimes cannot. Twin of exakit_reset_dataset_flags.
+    Reset-ExakitDatasetFlags
     Info "Re-running setup\setup-windows.ps1 to rebuild the database"
     $env:EXAKIT_BANNER_SHOWN = "1"
     # The deployment step must NOT offer to reuse what is there: its reuse

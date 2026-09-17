@@ -1539,12 +1539,21 @@ PY
 manifest_set_many() {
     [ -f "$EXAKIT_MANIFEST" ] || return 0
     exakit_can_run_python || return 0
-    run_python - "$EXAKIT_MANIFEST" <<'PY' 2>/dev/null || true
+    # THE LINES ARE READ HERE, NOT BY PYTHON. `run_python -` takes the program
+    # itself from stdin - the heredoc below - so the script's own
+    # sys.stdin.read() always came back empty: every caller's piped keys were
+    # silently dropped and this function had never written anything. The
+    # dataset-flag healing in exakit_verified_datasets went through it, and a
+    # rebuilt database therefore kept reading as "loaded". Found when a
+    # repair-runtime reloaded nothing on a real machine.
+    _msm_lines="$(cat)"
+    [ -n "$_msm_lines" ] || return 0
+    run_python - "$EXAKIT_MANIFEST" "$_msm_lines" <<'PY' 2>/dev/null || true
 import fcntl, json, os, sys, tempfile
 
 path = sys.argv[1]
 wanted = []
-for line in sys.stdin.read().splitlines():
+for line in sys.argv[2].splitlines():
     if "=" not in line:
         continue
     key, _, value = line.partition("=")
