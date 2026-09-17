@@ -465,11 +465,12 @@ personal_deployment_running() {
 # from the moment the container starts and a minute or more before the database
 # inside it accepts a connection.
 personal_db_answers() {
-    if command -v exakit_db_reachable >/dev/null 2>&1 && \
-       [ -n "$(manifest_get components.exapump.profile 2>/dev/null)" ]; then
-        exakit_db_reachable
-        return $?
-    fi
+    # THE HANDSHAKE ALONE, for a deployment that is ours. Asking exapump for a
+    # SELECT here made the database's liveness depend on a second tool: when a
+    # virus scanner held the freshly installed exapump binary, every probe said
+    # "not running" about a database that was up, and the installer went on to
+    # "self-heal" it. Proving WHOSE database answers is a different question,
+    # asked only where it arises — see personal_deployment_running.
     personal_tls_answers
 }
 

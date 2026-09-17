@@ -139,11 +139,24 @@ exapump_install() {
     if [ "${EXAKIT_FORCE_COMPONENT_INSTALL:-0}" != "1" ] && { command -v exapump >/dev/null 2>&1 || [ -x "$EXAKIT_EXAPUMP_BIN" ]; }; then
         # Trust the existing binary only if it actually runs — an interrupted
         # earlier download can leave a broken file at the same path.
-        if "$(exapump_cli)" --version >/dev/null 2>&1; then
-            ok "exapump already installed: $(exapump_cli)"
-            exapump_record_manifest
-            return 0
-        fi
+        if _exi_out="$("$(exapump_cli)" --version 2>/dev/null)"; then
+            # THE VERSION IS CHECKED, NOT JUST THAT IT RUNS. A kit-managed
+            # binary left by an earlier install answered --version, was called
+            # "already installed", and the manifest then recorded the version
+            # this kit PINS - 0.13.0 on paper, 0.12.0 on disk, and every
+            # exapump fix in between missing. A binary elsewhere on PATH is
+            # the user's and is left alone; only the kit's own is replaced.
+            _exi_have="$(printf '%s' "$_exi_out" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
+            if [ -n "$_exi_have" ] && [ "$_exi_have" != "$EXAKIT_EXAPUMP_VERSION" ] && \
+               [ "$(exapump_cli)" = "$EXAKIT_EXAPUMP_BIN" ]; then
+                info "exapump $_exi_have is installed; this kit ships $EXAKIT_EXAPUMP_VERSION - replacing it"
+                rm -f "$EXAKIT_EXAPUMP_BIN"
+            else
+                ok "exapump already installed: $(exapump_cli)"
+                exapump_record_manifest
+                return 0
+            fi
+        else
         # A binary that fails on the dynamic linker is not a broken download —
         # it is intact but needs a newer glibc than this system has. Shim it
         # in place instead of re-downloading the same incompatible bytes.
@@ -161,6 +174,7 @@ exapump_install() {
         fi
         warn "Existing exapump binary does not run (interrupted download?) — reinstalling"
         rm -f "$EXAKIT_EXAPUMP_BIN"
+        fi
     fi
 
     _asset="$(exapump_asset_name)"
@@ -212,11 +226,48 @@ exapump_install() {
 # exapump_verify_runs — prove the installed binary launches. On the known
 # failure (dynamic-linker GLIBC version mismatch) self-repair with the
 # container shim; anything else is a hard, explained failure.
+# exakit_binary_not_runnable_yet <output> — is this the error of a binary that
+# cannot start YET, rather than one that cannot start at all?
+#
+# A freshly written, unsigned 20 MB executable is held open by Windows Defender
+# and by corporate EDR agents while they scan it, and every attempt to run it
+# meanwhile fails with "Access is denied". Measured on a managed Windows laptop:
+# three and a half minutes, during which all six SELECT 1 attempts failed and
+# the install reported a database fault - with the database perfectly healthy
+# and the same binary running fine a minute later. On Linux and macOS this
+# matches nothing, so nothing waits there.
+exakit_binary_not_runnable_yet() {
+    case "$1" in
+        *"Access is denied"*|*"failed to run"*|*"being used by another process"*|*"Text file busy"*|*"cannot access the file"*|*"contains a virus"*)
+            return 0 ;;
+    esac
+    return 1
+}
+
 exapump_verify_runs() {
-    _evr_err="$("$EXAKIT_EXAPUMP_BIN" --version 2>&1)"
-    _evr_rc=$?
-    [ "$_evr_rc" -eq 0 ] && return 0
+    # A BINARY THAT CANNOT START YET IS NOT A BROKEN ONE: wait it out (see
+    # exakit_binary_not_runnable_yet), but only for the error that says so, so a
+    # genuinely broken binary still fails in the same second it always did.
+    _evr_budget="${EXAKIT_EXAPUMP_READY_TIMEOUT:-180}"
+    _evr_t0="$(date +%s 2>/dev/null || echo 0)"
+    _evr_said=0
+    while :; do
+        _evr_err="$("$EXAKIT_EXAPUMP_BIN" --version 2>&1)"
+        _evr_rc=$?
+        [ "$_evr_rc" -eq 0 ] && return 0
+        exakit_binary_not_runnable_yet "$_evr_err" || break
+        [ $(( $(date +%s 2>/dev/null || echo 0) - _evr_t0 )) -lt "$_evr_budget" ] || break
+        if [ "$_evr_said" = 0 ]; then
+            info "The new exapump cannot start yet (a virus scanner still holds it) - waiting up to ${_evr_budget}s"
+            _evr_said=1
+        fi
+        sleep 5
+    done
     _exakit_log_file "ERR   exapump --version failed (rc=$_evr_rc): $_evr_err"
+    if exakit_binary_not_runnable_yet "$_evr_err"; then
+        die "exapump was installed and verified, but this machine will not let it run: ${_evr_err%%
+*}. A virus scanner or endpoint-security agent is holding it. Allow $EXAKIT_EXAPUMP_BIN (or wait for the scan to finish), then: exakit update"
+    fi
     # A binary the kernel refuses to execute produces no stderr to match on, so
     # the exit status is the only evidence there is.
     if exakit_unsigned_binary_hint "$EXAKIT_EXAPUMP_BIN" "$_evr_rc"; then
@@ -694,9 +745,34 @@ exakit_upload_parallel() {
 # all succeeded). Failures are COLLECTED, not fatal on the spot: die() inside a
 # background job cannot stop the parent, and abandoning the wave would leave
 # the other uploads running unreaped.
+# exakit_upload_cut_short <exapump output> — did the import connection die
+# mid-transfer? The database reads the file through its own import proxy, and
+# when the client side of that connection closes before the last byte the
+# engine says ETL-5105 "transfer closed with outstanding read data remaining".
+# Seen on Windows with exapump 0.12: one or two of eight files per run, a
+# different file each time, the same file loading fine a moment later - so
+# the remedy is a second attempt, not a message. A malformed file, a missing
+# table or a refused login is not this and is never retried.
+exakit_upload_cut_short() {
+    case "$1" in
+        *ETL-5105*|*"transfer closed with outstanding read data"*|*"Transferred a partial file"*|*"Connection reset by peer"*|*"connection was aborted"*) return 0 ;;
+    esac
+    return 1
+}
+
+# exakit_upload_retries — how many more attempts a cut-short upload gets
+# (EXAKIT_UPLOAD_RETRIES, default 2; 0 disables).
+exakit_upload_retries() {
+    case "${EXAKIT_UPLOAD_RETRIES:-2}" in
+        ''|*[!0-9]*) printf '2' ;;
+        *) printf '%s' "${EXAKIT_UPLOAD_RETRIES:-2}" ;;
+    esac
+}
+
 exapump_upload_many() {
     _um_schema="$1"; shift
     EXAKIT_UPLOAD_FAILED=""
+    EXAKIT_UPLOAD_RETRIED=0
     [ $# -gt 0 ] || return 0
     _um_cap="$(exakit_upload_parallel)"
     _um_dir="$(mktemp -d "${TMPDIR:-/tmp}/exakit-upload.XXXXXX")" || \
@@ -738,11 +814,32 @@ exapump_upload_many() {
         fi
         if [ "$_um_rc" = "0" ]; then
             [ "${EXAKIT_UPLOAD_QUIET:-0}" = 1 ] || ok "$(basename "$_um_f") loaded"
-        else
-            [ -n "${EXAKIT_LOG_FILE:-}" ] && \
-                exakit_explain_db_error "$(tail -8 "$_um_dir/$_um_j.out" 2>/dev/null)"
-            EXAKIT_UPLOAD_FAILED="${EXAKIT_UPLOAD_FAILED:+$EXAKIT_UPLOAD_FAILED; }$_um_f -> $_um_t"
+            continue
         fi
+        # A CONNECTION CUT MID-TRANSFER IS TRIED AGAIN, one file at a time,
+        # before anyone hears about it. The log keeps every attempt; the
+        # screen only ever sees the outcome. See exakit_upload_cut_short.
+        _um_try=0
+        _um_max="$(exakit_upload_retries)"
+        while [ "$_um_rc" != "0" ] && [ "$_um_try" -lt "$_um_max" ] && \
+              exakit_upload_cut_short "$(cat "$_um_dir/$_um_j.out" 2>/dev/null)"; do
+            _um_try=$((_um_try + 1))
+            EXAKIT_UPLOAD_RETRIED=$((EXAKIT_UPLOAD_RETRIED + 1))
+            [ -n "${EXAKIT_LOG_FILE:-}" ] && \
+                printf 'WARN  %s: the import connection was cut mid-transfer - attempt %s of %s\n' \
+                    "$(basename "$_um_f")" "$((_um_try + 1))" "$((_um_max + 1))" >> "$EXAKIT_LOG_FILE"
+            "$(exapump_cli)" upload "$_um_f" --table "$_um_t" -p "$EXAKIT_EXAPUMP_PROFILE" \
+                > "$_um_dir/$_um_j.out" 2>&1
+            _um_rc=$?
+            [ -n "${EXAKIT_LOG_FILE:-}" ] && cat "$_um_dir/$_um_j.out" >> "$EXAKIT_LOG_FILE" 2>/dev/null
+        done
+        if [ "$_um_rc" = "0" ]; then
+            [ "${EXAKIT_UPLOAD_QUIET:-0}" = 1 ] || ok "$(basename "$_um_f") loaded"
+            continue
+        fi
+        [ -n "${EXAKIT_LOG_FILE:-}" ] && \
+            exakit_explain_db_error "$(tail -8 "$_um_dir/$_um_j.out" 2>/dev/null)"
+        EXAKIT_UPLOAD_FAILED="${EXAKIT_UPLOAD_FAILED:+$EXAKIT_UPLOAD_FAILED; }$_um_f -> $_um_t"
     done
     rm -rf "$_um_dir"
     [ -z "$EXAKIT_UPLOAD_FAILED" ]
@@ -1985,10 +2082,20 @@ _exakit_sync_dataset_flag() {
 # database with no schemas in it, long after this function had observed the
 # tables were gone and healed the other key. Whichever key the caller names,
 # the canonical one is written too.
-# exakit_table_listing — every table as SCHEMA.TABLE, one per line, from ONE
-# query. Cached for the shell and cleared by exakit_clear_table_listing once a
-# dataset has landed, so nothing reads a listing taken before its own tables
-# existed.
+# exakit_table_listing — every table THAT HOLDS ROWS as SCHEMA.TABLE, one per
+# line, from ONE query. Cached for the shell and cleared by
+# exakit_clear_table_listing once a dataset has landed, so nothing reads a
+# listing taken before its own tables existed.
+#
+# Rows, not existence. A dataset's DDL creates its tables before a single file
+# is uploaded, so an upload that failed left eight empty tables that the marker
+# check counted as "loaded": exakit data-load then answered "already loaded -
+# nothing to do" over ORDERS and PART with 0 rows in them (Windows, the
+# database fetching two of eight files over a NAT that cut them off). A marker
+# table with no rows is a dataset that did not land. TABLE_ROW_COUNT is exact
+# in EXA_ALL_TABLES (checked against COUNT(*) on a real database), and the
+# sentinel row keeps a database whose every table is empty apart from one
+# that could not be asked - which is what an empty answer means below.
 EXAKIT_TABLE_LISTING=""
 EXAKIT_TABLE_LISTING_READ=0
 
@@ -2000,7 +2107,7 @@ exakit_clear_table_listing() {
 exakit_table_listing() {
     if [ "$EXAKIT_TABLE_LISTING_READ" != "1" ]; then
         EXAKIT_TABLE_LISTING="$("$(exapump_cli)" sql -p "$EXAKIT_EXAPUMP_PROFILE" \
-            "SELECT TABLE_SCHEMA || '.' || TABLE_NAME AS QUALIFIED FROM SYS.EXA_ALL_TABLES" 2>/dev/null | \
+            "SELECT 'EXAKIT.LISTING_ANSWERED' AS QUALIFIED FROM DUAL UNION ALL SELECT TABLE_SCHEMA || '.' || TABLE_NAME FROM SYS.EXA_ALL_TABLES WHERE TABLE_ROW_COUNT > 0" 2>/dev/null | \
             grep -oE '^[A-Za-z0-9_$]+\.[A-Za-z0-9_$]+$' | tr '[:lower:]' '[:upper:]')"
         EXAKIT_TABLE_LISTING_READ=1
     fi

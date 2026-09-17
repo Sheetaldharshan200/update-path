@@ -162,11 +162,13 @@ check "python3 road: TLS server answers"        0 "$(rc_of "$(probe PATH="$TMP/b
 check "python3 road: accept-and-close does not" 1 "$(rc_of "$(probe PATH="$TMP/bin" STUB_PORT="$RESET_PORT" -- 'personal_tls_answers')")"
 check "python3 road: closed port does not"      1 "$(rc_of "$(probe PATH="$TMP/bin" STUB_PORT="$CLOSED_PORT" -- 'personal_tls_answers')")"
 
-echo "personal_db_answers: the profile's SELECT when there is one, the handshake otherwise"
-check "no profile, handshake completes -> answers"     0 "$(rc_of "$(probe STUB_PORT="$TLS_PORT" -- 'personal_db_answers')")"
-check "no profile, accept-and-close -> does not"       1 "$(rc_of "$(probe STUB_PORT="$RESET_PORT" -- 'personal_db_answers')")"
-check "profile, SELECT ok -> answers"                  0 "$(rc_of "$(probe STUB_PROFILE=starter-kit STUB_SQL_OK=1 STUB_PORT="$RESET_PORT" -- 'personal_db_answers')")"
-check "profile, SELECT fails -> does not (even if TLS would)" 1 "$(rc_of "$(probe STUB_PROFILE=starter-kit STUB_SQL_OK=0 STUB_PORT="$TLS_PORT" -- 'personal_db_answers')")"
+echo "personal_db_answers: the handshake alone, so a broken exapump cannot report the database down"
+check "handshake completes -> answers"                 0 "$(rc_of "$(probe STUB_PORT="$TLS_PORT" -- 'personal_db_answers')")"
+check "accept-and-close -> does not"                   1 "$(rc_of "$(probe STUB_PORT="$RESET_PORT" -- 'personal_db_answers')")"
+# A virus scanner holding the freshly installed exapump made every SELECT fail;
+# with the liveness probe asking exapump, a healthy database read as "not
+# running" and the installer went on to "self-heal" it.
+check "a failing SELECT does not make a live database dead" 0 "$(rc_of "$(probe STUB_PROFILE=starter-kit STUB_SQL_OK=0 STUB_PORT="$TLS_PORT" -- 'personal_db_answers')")"
 
 echo "personal_deployment_running: the launcher's word outranks the port, ownership is proven"
 check "port silent -> not running"                                        1 "$(rc_of "$(probe STUB_EXISTS=1 STUB_STATE=database_ready STUB_PORT="$CLOSED_PORT" -- 'personal_deployment_running')")"
@@ -175,6 +177,7 @@ check "ours, launcher says deployment_failed, TLS answers -> not running" 1 "$(r
 check "ours, launcher says database_ready, TLS answers -> running"        0 "$(rc_of "$(probe STUB_EXISTS=1 STUB_STATE=database_ready STUB_PORT="$TLS_PORT" -- 'personal_deployment_running')")"
 check "ours, launcher cannot say, TLS answers -> running"                 0 "$(rc_of "$(probe STUB_EXISTS=1 STUB_STATE= STUB_PORT="$TLS_PORT" -- 'personal_deployment_running')")"
 check "ours, launcher says database_ready, accept-and-close -> not running" 1 "$(rc_of "$(probe STUB_EXISTS=1 STUB_STATE=database_ready STUB_PORT="$RESET_PORT" -- 'personal_deployment_running')")"
+check "ours, database answers, exapump broken -> still running"            0 "$(rc_of "$(probe STUB_EXISTS=1 STUB_STATE=database_ready STUB_PROFILE=starter-kit STUB_SQL_OK=0 STUB_PORT="$TLS_PORT" -- 'personal_deployment_running')")"
 check "no deployment of ours, TLS answers, no profile -> NOT adopted"     1 "$(rc_of "$(probe STUB_EXISTS=0 STUB_PORT="$TLS_PORT" -- 'personal_deployment_running')")"
 check "no deployment of ours, profile's SELECT fails -> NOT adopted"      1 "$(rc_of "$(probe STUB_EXISTS=0 STUB_PROFILE=starter-kit STUB_SQL_OK=0 STUB_PORT="$TLS_PORT" -- 'personal_deployment_running')")"
 check "no deployment of ours, profile's SELECT works -> running"          0 "$(rc_of "$(probe STUB_EXISTS=0 STUB_PROFILE=starter-kit STUB_SQL_OK=1 STUB_PORT="$TLS_PORT" -- 'personal_deployment_running')")"

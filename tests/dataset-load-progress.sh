@@ -661,5 +661,145 @@ else
     check "the result file names each client's outcome" "skipped" "skipped"
 fi
 
+printf '\n== an import connection cut mid-transfer is tried again, quietly ==\n'
+
+# The database reads each file through its own import proxy; when the client
+# side closes before the last byte it says ETL-5105 "transfer closed with
+# outstanding read data remaining". On Windows with exapump 0.12 that hit one
+# or two of eight files per run, a different file each time, and the same file
+# loaded fine a moment later. The stub below fails a file's first N attempts
+# with exactly that message (N from a knob file), then succeeds.
+RETRY_DIR="$WORK/retry"; mkdir -p "$RETRY_DIR/data"
+for _rf in alpha beta gamma; do printf 'id\n1\n2\n' > "$RETRY_DIR/data/$_rf.csv"; done
+cat > "$EXAKIT_BIN_DIR/exapump" <<'STUBEOF'
+#!/bin/sh
+[ "$1" = upload ] || exit 0
+name="$(basename "$2" .csv)"
+count_file="$EXAKIT_RETRY_KNOBS/$name.count"; n=0; [ -f "$count_file" ] && n="$(cat "$count_file")"
+n=$((n + 1)); printf '%s' "$n" > "$count_file"
+fail_first=0; [ -f "$EXAKIT_RETRY_KNOBS/$name.fail" ] && fail_first="$(cat "$EXAKIT_RETRY_KNOBS/$name.fail")"
+if [ "$n" -le "$fail_first" ]; then
+    case "${EXAKIT_RETRY_KIND:-cut}" in
+        cut) echo "Error: SQL execution failed: Protocol error: ETL-5105: Following error occured while reading data from external connection [http://172.25.78.139:41705/001.csv failed after 393216 bytes. [transfer closed with outstanding read data remaining],[18],[Transferred a partial file]]" ;;
+        *)   echo "Error: SQL execution failed: Protocol error: ETL-2109: Error while parsing row=2" ;;
+    esac
+    exit 1
+fi
+echo "Imported 2 rows"
+exit 0
+STUBEOF
+chmod +x "$EXAKIT_BIN_DIR/exapump"
+export EXAKIT_RETRY_KNOBS="$RETRY_DIR/knobs"
+retry_reset() { rm -rf "$EXAKIT_RETRY_KNOBS"; mkdir -p "$EXAKIT_RETRY_KNOBS"; : > "$EXAKIT_LOG_FILE"; }
+retry_attempts() { cat "$EXAKIT_RETRY_KNOBS/$1.count" 2>/dev/null || echo 0; }
+
+check "a cut transfer is recognised"      "0" "$(exakit_upload_cut_short "ETL-5105: ... [transfer closed with outstanding read data remaining]"; echo $?)"
+check "so is a reset connection"          "0" "$(exakit_upload_cut_short "read: Connection reset by peer"; echo $?)"
+check "a malformed row is not"            "1" "$(exakit_upload_cut_short "ETL-2109: Error while parsing row=2"; echo $?)"
+check "a refused login is not"            "1" "$(exakit_upload_cut_short "authentication failed"; echo $?)"
+check "the default is two more attempts"  "2" "$(exakit_upload_retries)"
+check "EXAKIT_UPLOAD_RETRIES=0 disables"  "0" "$(EXAKIT_UPLOAD_RETRIES=0 exakit_upload_retries)"
+
+retry_reset; printf '1' > "$EXAKIT_RETRY_KNOBS/beta.fail"
+OUT="$(EXAKIT_UPLOAD_QUIET=1 exapump_upload_many TPCH "$RETRY_DIR/data/alpha.csv" "$RETRY_DIR/data/beta.csv" "$RETRY_DIR/data/gamma.csv" 2>&1; echo "rc=$?")"
+check "one file cut once -> the batch succeeds"      "rc=0" "$(printf '%s\n' "$OUT" | tail -1)"
+check "...that file was tried twice"                 "2"    "$(retry_attempts beta)"
+check "...the others once"                           "1"    "$(retry_attempts alpha)"
+has   "...the log says why it was retried"           "beta.csv: the import connection was cut mid-transfer - attempt 2 of 3" "$(cat "$EXAKIT_LOG_FILE")"
+check "...and the screen heard nothing about it"     ""     "$(printf '%s\n' "$OUT" | sed '$d')"
+
+retry_reset; printf '9' > "$EXAKIT_RETRY_KNOBS/beta.fail"
+EXAKIT_UPLOAD_QUIET=1 exapump_upload_many TPCH "$RETRY_DIR/data/alpha.csv" "$RETRY_DIR/data/beta.csv" >/dev/null 2>&1; RC=$?
+check "cut every time -> three attempts, then failure" "3" "$(retry_attempts beta)"
+check "...reported as a failure"                       "1" "$RC"
+has   "...naming the file"                             "beta.csv -> TPCH.BETA" "${EXAKIT_UPLOAD_FAILED:-}"
+
+retry_reset; printf '9' > "$EXAKIT_RETRY_KNOBS/beta.fail"
+OUT="$(EXAKIT_RETRY_KIND=parse EXAKIT_UPLOAD_QUIET=1 exapump_upload_many TPCH "$RETRY_DIR/data/beta.csv" 2>&1; echo "rc=$?")"
+check "a malformed file is never retried"            "1"    "$(retry_attempts beta)"
+check "...and fails at once"                         "rc=1" "$(printf '%s\n' "$OUT" | tail -1)"
+
+retry_reset; printf '1' > "$EXAKIT_RETRY_KNOBS/beta.fail"
+OUT="$(EXAKIT_UPLOAD_RETRIES=0 EXAKIT_UPLOAD_QUIET=1 exapump_upload_many TPCH "$RETRY_DIR/data/beta.csv" 2>&1; echo "rc=$?")"
+check "EXAKIT_UPLOAD_RETRIES=0 -> one attempt only"  "1"    "$(retry_attempts beta)"
+check "...and the cut is a failure"                  "rc=1" "$(printf '%s\n' "$OUT" | tail -1)"
+
+printf '\n== a binary that cannot start YET is waited for, not called broken ==\n'
+
+# A freshly written, unsigned 20 MB exe is held open by Windows Defender and by
+# corporate EDR agents while they scan it: "Access is denied" for three and a
+# half minutes on a managed laptop, during which all six SELECT 1 attempts
+# failed and the install blamed a database that was healthy the whole time.
+check "Access is denied is a not-yet"        "0" "$(exakit_binary_not_runnable_yet "Program 'exapump.exe' failed to run: Access is denied"; echo $?)"
+check "so is a file held by another process" "0" "$(exakit_binary_not_runnable_yet "The process cannot access the file because it is being used by another process"; echo $?)"
+check "so is Defender's virus wording"       "0" "$(exakit_binary_not_runnable_yet "Operation did not complete successfully because the file contains a virus"; echo $?)"
+check "a glibc fault is NOT a not-yet"       "1" "$(exakit_binary_not_runnable_yet "/lib/x86_64-linux-gnu/libc.so.6: version GLIBC_2.38 not found"; echo $?)"
+check "an ordinary error is not either"      "1" "$(exakit_binary_not_runnable_yet "unknown flag: --nope"; echo $?)"
+
+# The wait is bounded and only the not-yet error is waited for, so a genuinely
+# broken binary still fails in the same second it always did.
+VR_BIN="$WORK/vr-exapump"
+cat > "$VR_BIN" <<'VREOF'
+#!/bin/sh
+n=0; [ -f "$EXAKIT_VR_COUNT" ] && n="$(cat "$EXAKIT_VR_COUNT")"
+n=$((n + 1)); printf '%s' "$n" > "$EXAKIT_VR_COUNT"
+[ "$n" -ge "${EXAKIT_VR_OK_AT:-1}" ] && { echo "exapump 0.13.0"; exit 0; }
+echo "${EXAKIT_VR_ERR:-Program 'exapump.exe' failed to run: Access is denied}"
+exit 1
+VREOF
+chmod +x "$VR_BIN"
+EXAKIT_EXAPUMP_BIN="$VR_BIN"
+export EXAKIT_VR_COUNT="$WORK/vr.count"
+
+: > "$EXAKIT_VR_COUNT"; printf '1' > "$EXAKIT_VR_COUNT"
+OUT="$(EXAKIT_VR_OK_AT=1 exapump_verify_runs 2>&1; echo "rc=$?")"
+check "a binary that runs at once is not waited for" "rc=0" "$(printf '%s\n' "$OUT" | tail -1)"
+
+: > "$EXAKIT_VR_COUNT"
+OUT="$(EXAKIT_VR_OK_AT=2 EXAKIT_EXAPUMP_READY_TIMEOUT=30 exapump_verify_runs 2>&1; echo "rc=$?")"
+check "a locked binary is waited for, then runs"  "rc=0" "$(printf '%s\n' "$OUT" | tail -1)"
+check "...it took a second attempt"               "2"    "$(cat "$EXAKIT_VR_COUNT")"
+has   "...and the wait was announced once"        "cannot start yet" "$OUT"
+
+: > "$EXAKIT_VR_COUNT"
+# die() exits, so the status is captured outside the substitution, not inside.
+OUT="$(EXAKIT_VR_OK_AT=99 EXAKIT_EXAPUMP_READY_TIMEOUT=5 exapump_verify_runs 2>&1)"; RC=$?
+check "locked past the budget -> failure"         "1" "$RC"
+has   "...naming the scanner, not the database"   "virus scanner or endpoint-security agent" "$OUT"
+lacks "...and never mentioning SELECT"            "SELECT" "$OUT"
+
+: > "$EXAKIT_VR_COUNT"
+OUT="$(EXAKIT_VR_OK_AT=99 EXAKIT_VR_ERR="unknown flag: --nope" EXAKIT_EXAPUMP_READY_TIMEOUT=60 exapump_verify_runs 2>&1)"; RC=$?
+check "a broken binary fails at once, unwaited"   "1"    "$(cat "$EXAKIT_VR_COUNT")"
+check "...reported as a failure"                  "1" "$RC"
+
+printf '\n== a dataset whose marker tables are empty is not loaded ==\n'
+# The dataset's DDL creates its tables before a single file is uploaded, so an
+# upload that failed left empty tables that the marker check called "loaded",
+# and `exakit data-load` answered "already loaded - nothing to do" over two
+# tables with 0 rows. The listing asks for rows, and carries a sentinel so an
+# answered-but-empty database is not mistaken for one that could not be asked.
+EXAPUMP_SH3="$(cat "$ROOT/setup/lib/exapump.sh")"
+has "the listing asks for rows, not existence" "WHERE TABLE_ROW_COUNT > 0" "$EXAPUMP_SH3"
+has "...and says when it was answered"         "SELECT 'EXAKIT.LISTING_ANSWERED' AS QUALIFIED FROM DUAL UNION ALL" "$EXAPUMP_SH3"
+has "the PowerShell twin asks the same"        "WHERE TABLE_ROW_COUNT > 0" "$(cat "$ROOT/setup/lib/exapump.ps1")"
+# Behaviour: a stub listing that answers with the sentinel and every table but
+# ORDERS reads as "not loaded" for a dataset whose markers include ORDERS.
+cat > "$EXAKIT_BIN_DIR/exapump" <<'STUBEOF'
+#!/bin/sh
+case "$*" in
+    *LISTING_ANSWERED*) printf 'QUALIFIED\nEXAKIT.LISTING_ANSWERED\nTPCH.REGION\nTPCH.NATION\n'; exit 0 ;;
+esac
+exit 0
+STUBEOF
+chmod +x "$EXAKIT_BIN_DIR/exapump"
+exakit_clear_table_listing
+unset -f exakit_dataset_loaded
+. "$ROOT/setup/lib/exapump.sh"
+exapump_cli() { printf '%s\n' "$EXAKIT_BIN_DIR/exapump"; }
+_exakit_sync_dataset_flag() { :; }
+check "markers with rows -> loaded"          "0" "$(exakit_dataset_loaded data.datasets.tpch.loaded "region,nation" TPCH tpch; echo $?)"
+check "a marker without rows -> not loaded"  "1" "$(exakit_dataset_loaded data.datasets.tpch.loaded "region,orders" TPCH tpch; echo $?)"
+
 printf '\n%s: %d passed, %d failed\n' "$(basename "$0")" "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

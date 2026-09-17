@@ -211,6 +211,199 @@ if ($PSVersionTable.PSVersion.Major -ge 7) {
 }
 if ($savedPassing) { $PSNativeCommandArgumentPassing = $savedPassing }
 
+Write-Host ""
+Write-Host "== an import connection cut mid-transfer is tried again, quietly =="
+# The database reads each file through its own import proxy; when the client
+# side closes before the last byte it says ETL-5105 "transfer closed with
+# outstanding read data remaining". On Windows with exapump 0.12 that hit one
+# or two of eight files per run, a different file each time, and the same file
+# loaded fine a moment later. This stub fails a file's first N attempts with
+# that message (N from a knob file), then succeeds. Twin of the sh suite's
+# section in dataset-load-progress.sh.
+$retry = Join-Path $work "retry"
+$knobs = Join-Path $retry "knobs"
+New-Item -ItemType Directory -Force -Path (Join-Path $retry "data"), $knobs | Out-Null
+foreach ($n in @("alpha", "beta", "gamma")) { Set-Content -Path (Join-Path $retry "data\$n.csv") -Value "id`n1`n2" }
+$env:EXAKIT_RETRY_KNOBS = $knobs
+$cutMsg = "Error: SQL execution failed: Protocol error: ETL-5105: Following error occured while reading data from external connection [http://172.25.78.139:41705/001.csv failed after 393216 bytes. [transfer closed with outstanding read data remaining],[18],[Transferred a partial file]]"
+if ($onWindows) {
+    $retryStub = Join-Path $work "exapump-retry.cmd"
+    Set-Content -Path $retryStub -Encoding Ascii -Value @(
+        "@echo off",
+        "if not `"%~1`"==`"upload`" exit /b 0",
+        "for %%F in (`"%~2`") do set NAME=%%~nF",
+        "set CF=%EXAKIT_RETRY_KNOBS%\%NAME%.count",
+        "set N=0",
+        "if exist `"%CF%`" set /p N=<`"%CF%`"",
+        "set /a N+=1",
+        ">`"%CF%`" echo %N%",
+        "set FAIL=0",
+        "if exist `"%EXAKIT_RETRY_KNOBS%\%NAME%.fail`" set /p FAIL=<`"%EXAKIT_RETRY_KNOBS%\%NAME%.fail`"",
+        "if %N% LEQ %FAIL% goto :fail",
+        "echo Imported 2 rows",
+        "exit /b 0",
+        ":fail",
+        "if `"%EXAKIT_RETRY_KIND%`"==`"parse`" echo Error: SQL execution failed: Protocol error: ETL-2109: Error while parsing row=2",
+        "if not `"%EXAKIT_RETRY_KIND%`"==`"parse`" echo $cutMsg",
+        "exit /b 1"
+    )
+} else {
+    $retryStub = Join-Path $work "exapump-retry"
+    Set-Content -Path $retryStub -Value @(
+        "#!/bin/sh",
+        "[ `"`$1`" = upload ] || exit 0",
+        "name=`"`$(basename `"`$2`" .csv)`"",
+        "cf=`"`$EXAKIT_RETRY_KNOBS/`$name.count`"; n=0; [ -f `"`$cf`" ] && n=`"`$(cat `"`$cf`")`"",
+        "n=`$((n + 1)); printf '%s' `"`$n`" > `"`$cf`"",
+        "fail=0; [ -f `"`$EXAKIT_RETRY_KNOBS/`$name.fail`" ] && fail=`"`$(cat `"`$EXAKIT_RETRY_KNOBS/`$name.fail`")`"",
+        "if [ `"`$n`" -le `"`$fail`" ]; then",
+        "  if [ `"`${EXAKIT_RETRY_KIND:-cut}`" = parse ]; then echo 'Error: SQL execution failed: Protocol error: ETL-2109: Error while parsing row=2'; else echo '$cutMsg'; fi",
+        "  exit 1",
+        "fi",
+        "echo 'Imported 2 rows'",
+        "exit 0"
+    )
+    & chmod +x $retryStub
+}
+$env:EXAKIT_EXAPUMP_BIN = $retryStub
+$script:ExapumpProfile = "starter-kit"
+$script:LogFile = Join-Path $retry "install.log"
+function Reset-Retry { Remove-Item -Recurse -Force $knobs -ErrorAction SilentlyContinue; New-Item -ItemType Directory -Force -Path $knobs | Out-Null; Set-Content -Path $script:LogFile -Value "" }
+function Get-RetryAttempts($n) { $f = Join-Path $knobs "$n.count"; if (Test-Path $f) { return ((Get-Content $f -Raw).Trim()) }; return "0" }
+function New-RetryFile($n) { return @{ Path = (Join-Path $retry "data\$n.csv"); Target = "TPCH.$($n.ToUpper())"; Name = "$n.csv" } }
+
+Check "a cut transfer is recognised"     $true  (Test-ExakitUploadCutShort -Output "ETL-5105: ... [transfer closed with outstanding read data remaining]")
+Check "so is a reset connection"         $true  (Test-ExakitUploadCutShort -Output "read: Connection reset by peer")
+Check "a malformed row is not"           $false (Test-ExakitUploadCutShort -Output "ETL-2109: Error while parsing row=2")
+Check "a refused login is not"           $false (Test-ExakitUploadCutShort -Output "authentication failed")
+Check "the default is two more attempts" 2 (Get-ExakitUploadRetries)
+$env:EXAKIT_UPLOAD_RETRIES = "0"
+Check "EXAKIT_UPLOAD_RETRIES=0 disables" 0 (Get-ExakitUploadRetries)
+Remove-Item Env:EXAKIT_UPLOAD_RETRIES -ErrorAction SilentlyContinue
+
+Reset-Retry; Set-Content -Path (Join-Path $knobs "beta.fail") -Value "1"
+$screen = (& { Invoke-ExapumpUploadMany -Files @((New-RetryFile "alpha"), (New-RetryFile "beta"), (New-RetryFile "gamma")) -Id "t" } 6>&1) -join "`n"
+Check "one file cut once -> no failure recorded"  0   $script:ExakitUploadFailures.Count
+Check "...that file was tried twice"              "2" (Get-RetryAttempts "beta")
+Check "...the others once"                        "1" (Get-RetryAttempts "alpha")
+Check "...and the retry was counted"              1   $script:ExakitUploadRetried
+Has   "...the log says why it was retried" "beta.csv: the import connection was cut mid-transfer - attempt 2 of 3" (Get-Content $script:LogFile -Raw)
+Lacks "...and the screen heard nothing about it"  "exapump output" $screen
+
+Reset-Retry; Set-Content -Path (Join-Path $knobs "beta.fail") -Value "9"
+$screen = (& { Invoke-ExapumpUploadMany -Files @((New-RetryFile "alpha"), (New-RetryFile "beta")) -Id "t" } 6>&1) -join "`n"
+Check "cut every time -> three attempts, then failure" "3" (Get-RetryAttempts "beta")
+Check "...recorded as a failure"                       1   $script:ExakitUploadFailures.Count
+Has   "...naming the file"                             "beta.csv -> TPCH.BETA" ($script:ExakitUploadFailures -join "; ")
+
+Reset-Retry; Set-Content -Path (Join-Path $knobs "beta.fail") -Value "9"
+$env:EXAKIT_RETRY_KIND = "parse"
+[void](& { Invoke-ExapumpUploadMany -Files @((New-RetryFile "beta")) -Id "t" } 6>&1)
+Check "a malformed file is never retried" "1" (Get-RetryAttempts "beta")
+Check "...and fails at once"              1   $script:ExakitUploadFailures.Count
+Remove-Item Env:EXAKIT_RETRY_KIND -ErrorAction SilentlyContinue
+
+Reset-Retry; Set-Content -Path (Join-Path $knobs "beta.fail") -Value "1"
+$env:EXAKIT_UPLOAD_RETRIES = "0"
+[void](& { Invoke-ExapumpUploadMany -Files @((New-RetryFile "beta")) -Id "t" } 6>&1)
+Check "EXAKIT_UPLOAD_RETRIES=0 -> one attempt only" "1" (Get-RetryAttempts "beta")
+Check "...and the cut is a failure"                 1   $script:ExakitUploadFailures.Count
+Remove-Item Env:EXAKIT_UPLOAD_RETRIES -ErrorAction SilentlyContinue
+$env:EXAKIT_EXAPUMP_BIN = $stub
+
+Write-Host ""
+Write-Host "== a binary that cannot start YET is waited for, not called broken =="
+# A freshly written, unsigned 20 MB exe is held open by Windows Defender and by
+# corporate EDR agents while they scan it: "Access is denied" for three and a
+# half minutes on a managed laptop, during which all six SELECT 1 attempts
+# failed and the install blamed a database that was healthy the whole time.
+# Twin of the same section in dataset-load-progress.sh.
+Check "Access is denied is a not-yet"        $true  (Test-ExakitBinaryNotRunnableYet -Output "Program 'exapump.exe' failed to run: Access is denied")
+Check "so is a file held by another process" $true  (Test-ExakitBinaryNotRunnableYet -Output "The process cannot access the file because it is being used by another process")
+Check "so is Defender's virus wording"       $true  (Test-ExakitBinaryNotRunnableYet -Output "Operation did not complete successfully because the file contains a virus")
+Check "a glibc fault is NOT a not-yet"       $false (Test-ExakitBinaryNotRunnableYet -Output "libc.so.6: version GLIBC_2.38 not found")
+Check "an ordinary error is not either"      $false (Test-ExakitBinaryNotRunnableYet -Output "unknown flag: --nope")
+
+# The wait is bounded and only the not-yet error is waited for, so a genuinely
+# broken binary still fails in the same second it always did.
+$vrCount = Join-Path $work "vr.count"
+$env:EXAKIT_VR_COUNT = $vrCount
+if ($onWindows) {
+    $vrBin = Join-Path $work "vr-exapump.cmd"
+    Set-Content -Path $vrBin -Encoding Ascii -Value @(
+        "@echo off",
+        "set N=0",
+        "if exist `"%EXAKIT_VR_COUNT%`" set /p N=<`"%EXAKIT_VR_COUNT%`"",
+        "set /a N+=1",
+        ">`"%EXAKIT_VR_COUNT%`" echo %N%",
+        "if %N% GEQ %EXAKIT_VR_OK_AT% (echo exapump 0.13.0",
+        "exit /b 0)",
+        "echo %EXAKIT_VR_ERR%",
+        "exit /b 1"
+    )
+} else {
+    $vrBin = Join-Path $work "vr-exapump"
+    Set-Content -Path $vrBin -Value @(
+        "#!/bin/sh",
+        "n=0; [ -f `"`$EXAKIT_VR_COUNT`" ] && n=`"`$(cat `"`$EXAKIT_VR_COUNT`")`"",
+        "n=`$((n + 1)); printf '%s' `"`$n`" > `"`$EXAKIT_VR_COUNT`"",
+        "[ `"`$n`" -ge `"`$EXAKIT_VR_OK_AT`" ] && { echo 'exapump 0.13.0'; exit 0; }",
+        "echo `"`$EXAKIT_VR_ERR`"",
+        "exit 1"
+    )
+    & chmod +x $vrBin
+}
+$savedBinPath = $script:ExapumpBinPath
+$script:ExapumpBinPath = $vrBin
+$env:EXAKIT_VR_ERR = "Program 'exapump.exe' failed to run: Access is denied"
+function Get-VrAttempts { if (Test-Path $vrCount) { return ((Get-Content $vrCount -Raw).Trim()) }; return "0" }
+
+Remove-Item -Force $vrCount -ErrorAction SilentlyContinue
+$env:EXAKIT_VR_OK_AT = "1"; $env:EXAKIT_EXAPUMP_READY_TIMEOUT = "30"
+$failed = $false
+try { Test-ExapumpRuns } catch { $failed = $true }
+Check "a binary that runs at once is not waited for" $false $failed
+
+Remove-Item -Force $vrCount -ErrorAction SilentlyContinue
+$env:EXAKIT_VR_OK_AT = "2"
+$failed = $false
+$screen = (& { try { Test-ExapumpRuns } catch { $script:vrFailed = $true } } 6>&1) -join "`n"
+Check "a locked binary is waited for, then runs" "2" (Get-VrAttempts)
+Has   "...and the wait was announced"            "cannot start yet" $screen
+
+Remove-Item -Force $vrCount -ErrorAction SilentlyContinue
+$env:EXAKIT_VR_OK_AT = "99"; $env:EXAKIT_EXAPUMP_READY_TIMEOUT = "5"
+$reason = ""
+try { Test-ExapumpRuns } catch { $reason = "$_" }
+Has   "locked past the budget -> failure names the scanner" "virus scanner or endpoint-security agent" $reason
+Lacks "...and never mentions SELECT"                        "SELECT" $reason
+
+Remove-Item -Force $vrCount -ErrorAction SilentlyContinue
+$env:EXAKIT_VR_ERR = "unknown flag: --nope"; $env:EXAKIT_EXAPUMP_READY_TIMEOUT = "60"
+$reason = ""
+try { Test-ExapumpRuns } catch { $reason = "$_" }
+Check "a broken binary fails at once, unwaited" "1" (Get-VrAttempts)
+Has   "...saying it does not run"               "installed but does not run" $reason
+$script:ExapumpBinPath = $savedBinPath
+foreach ($v in @("EXAKIT_VR_COUNT", "EXAKIT_VR_OK_AT", "EXAKIT_VR_ERR", "EXAKIT_EXAPUMP_READY_TIMEOUT")) {
+    Remove-Item "Env:$v" -ErrorAction SilentlyContinue
+}
+
+Write-Host ""
+Write-Host "== a dataset whose marker tables are empty is not loaded =="
+# The dataset's DDL creates its tables before a single file is uploaded, so an
+# upload that failed left empty tables that the marker check called "loaded".
+# The listing asks for rows; a stub answering with every table but ORDERS
+# reads as "not loaded" for markers that include ORDERS.
+$exapumpPs1 = Get-Content (Join-Path $repo "setup/lib/exapump.ps1") -Raw
+Has "the listing asks for rows, not existence" "WHERE TABLE_ROW_COUNT > 0" $exapumpPs1
+Has "...and says when it was answered"         "SELECT 'EXAKIT.LISTING_ANSWERED' AS QUALIFIED FROM DUAL UNION ALL" $exapumpPs1
+function Get-ExakitQualifiedTables { return @{ "TPCH.REGION" = $true; "TPCH.NATION" = $true } }
+function Sync-ExakitDatasetFlag { }
+$script:ExakitTableListing = $null
+Check "markers with rows -> loaded"         $true  (Test-ExakitDatasetLoaded -Dataset @{ Id = "tpch"; Flag = "data.datasets.tpch.loaded"; Schema = "TPCH"; Markers = @("REGION", "NATION") })
+Check "a marker without rows -> not loaded" $false (Test-ExakitDatasetLoaded -Dataset @{ Id = "tpch"; Flag = "data.datasets.tpch.loaded"; Schema = "TPCH"; Markers = @("REGION", "ORDERS") })
+
 Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue
 Write-Host ""
 Write-Host "data-load-shapes-ps.ps1: $($script:PASS) passed, $($script:FAIL) failed"
