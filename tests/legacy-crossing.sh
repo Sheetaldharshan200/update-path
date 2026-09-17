@@ -590,6 +590,60 @@ has "the sh prompt does not echo"          'read -rs' "$(cat "$ROOT/setup/exakit
 has "the ps prompt does not echo"          'Read-Host -AsSecureString' "$(cat "$ROOT/setup/exakit.ps1")"
 
 echo
+echo "a crossing that could not ask is not a crossing that was answered:"
+
+# A CONDITION IS NOT A DECISION. One run could not see the container engine,
+# wrote the crossing off as finished ("no offer made"), and every later run -
+# with the engine right there - returned at that gate: the question was never
+# asked again, and the container went on holding port 8563, so the install died
+# at the database step every single time with no way forward but a docker stop
+# by hand. Seen on a real Windows machine, twice in a row.
+CROSS_SRC="$(cat "$ROOT/setup/lib/legacy-crossing.sh")"
+CROSS_PS="$(cat "$ROOT/setup/lib/legacy-crossing.ps1")"
+
+# The four environmental reasons are retryable; the three intrinsic ones are not.
+for _why in \
+    'the container engine this database needs is not on this machine any more' \
+    'exapump is not installed yet, and it is what reads the tables out' \
+    'the old container would not start' \
+    'the old database did not answer in time'; do
+    _line="$(printf '%s\n' "$CROSS_SRC" | grep -F "$_why" | head -1)"
+    has "retryable: $(printf '%s' "$_why" | cut -c1-34)" "_lcb_retry=1" "$_line"
+done
+has "retryable: the password is not on file" "_lcb_retry=1" \
+    "$(printf '%s\n' "$CROSS_SRC" | grep -F 'the password for the old database is not on file' | head -1)"
+for _why in \
+    'the container is gone, so there is nothing left to copy' \
+    'the old database has no tables in it' \
+    'unchanged, which this install loads itself'; do
+    _line="$(printf '%s\n' "$CROSS_SRC" | grep -F "$_why" | head -1)"
+    lacks "settled: $(printf '%s' "$_why" | cut -c1-34)" "_lcb_retry=1" "$_line"
+done
+
+# The retryable branch records nothing as chosen and does not close the
+# crossing, so the next run asks what this one could not.
+_retry_branch="$(printf '%s\n' "$CROSS_SRC" | sed -n '/if \[ "\$_lcb_retry" = 1 \]; then/,/fi/p')"
+has   "a blocked offer records why"            'manifest_set legacy.offer_blocked' "$_retry_branch"
+lacks "...and never records a choice"          'legacy.choice' "$_retry_branch"
+lacks "...and never closes the crossing"       'crossing_done' "$_retry_branch"
+# ...and either way the container stops, because it holds the port.
+_decline="$(printf '%s\n' "$CROSS_SRC" | sed -n '/legacy crossing: no offer made/,/^    fi$/p')"
+has "a declined offer still frees the port"    'legacy_stop_container' "$_decline"
+# The done-gate frees it too: that is the run that used to die at step 2.
+_done_gate="$(printf '%s\n' "$CROSS_SRC" | sed -n '/crossing_done 2>\/dev\/null || true)" = "true" \]; then/,/^    fi$/p')"
+has "a crossing already done still frees the port" 'legacy_stop_container' "$_done_gate"
+
+# And the PowerShell twin says all of it the same way.
+has "ps: the done-gate frees the port too"   'Stop-LegacyContainer -Quiet' \
+    "$(printf '%s\n' "$CROSS_PS" | sed -n '/legacy.crossing_done") -eq "True") {/,/^    }$/p')"
+has "ps: a blocked offer records why"        'legacy.offer_blocked' "$CROSS_PS"
+has "ps: the engine reason is retryable"     '$retry = $true' \
+    "$(printf '%s
+' "$CROSS_PS" | grep -F 'retry = $true; $why = "the container engine' | head -1)"
+lacks "ps: a gone container is settled"      '$retry = $true' \
+    "$(printf '%s\n' "$CROSS_PS" | grep -F 'nothing left to copy' | head -1)"
+
+echo
 echo "the engine is the one that actually holds the container, not just the one recorded:"
 
 # THE RECORDED NAME IS A HINT, NOT THE ANSWER. The old kit ran the container

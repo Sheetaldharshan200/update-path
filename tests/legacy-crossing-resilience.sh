@@ -173,12 +173,17 @@ check "...saying nothing on screen" "" "$(quiet "$_o")"
 check "...and settling the question for good" "true" "$(mget "$H" legacy.crossing_done)"
 
 # A stopped container that will not start: there is data in there, and no way
-# to read it. Silent skip, marked done, and the engine was asked exactly once.
+# to read it TODAY. A container that refuses to start this morning starts this
+# afternoon, so this is a condition, not a decision - nothing is recorded as
+# chosen and the crossing stays open for the next run. The engine is still
+# asked exactly once.
 H="$WORK/nostart"; seed "$H"; fault "$H" engine.state stopped; fault "$H" engine.start_rc 1
 _o="$(before "$H")"; note_rc "$_o"
 check "a container that will not start is not an error" "0" "$(rc_of "$_o")"
 check "...nothing reaches the screen" "" "$(quiet "$_o")"
-check "...the choice falls to skip" "skip" "$(mget "$H" legacy.choice)"
+check "...no choice is recorded for the user" "" "$(mget "$H" legacy.choice)"
+check "...the crossing stays open" "" "$(mget "$H" legacy.crossing_done)"
+has   "...and the reason is kept" "would not start" "$(mget "$H" legacy.offer_blocked)"
 check "start was attempted once" "1" "$(calls "$H" engine | grep -c '^start ')"
 lacks "and no export was tried" "export" "$(calls "$H" exapump)"
 
@@ -249,7 +254,10 @@ echo "the old database misbehaves:"
 H="$WORK/nopw"; SEED_NO_PASSWORD=1 seed "$H"
 _o="$(before "$H")"; note_rc "$_o"
 check "no password file: silent skip" "" "$(quiet "$_o")"
-check "...marked done" "true" "$(mget "$H" legacy.crossing_done)"
+# A password that is not on file today can be put there tomorrow, so the
+# question is left open rather than answered on the user's behalf.
+check "...the crossing stays open" "" "$(mget "$H" legacy.crossing_done)"
+has   "...with the reason kept" "not on file" "$(mget "$H" legacy.offer_blocked)"
 lacks "...and the database was never queried" "EXAKIT_LEGACY_OK" "$(calls "$H" exapump)"
 check "...and the container is still stopped, because it holds the port" "1" "$(calls "$H" engine | grep -c '^stop ')"
 
@@ -298,11 +306,14 @@ check "...but is marked done" "true" "$(mget "$H" legacy.crossing_done)"
 check "...and stopped, for the port" "1" "$(calls "$H" engine | grep -c '^stop ')"
 
 # exapump is not there to read the tables out. The gate closes before the
-# database is touched at all.
+# database is touched at all - but exapump arrives two steps later in this very
+# install, so the question is left open for the next run rather than answered
+# on the user's behalf.
 H="$WORK/noexapump"; seed "$H"
 _o="$(NO_EXAPUMP=1 before "$H")"; note_rc "$_o"
 check "no exapump: silent skip" "" "$(quiet "$_o")"
-check "...done" "true" "$(mget "$H" legacy.crossing_done)"
+check "...the crossing stays open" "" "$(mget "$H" legacy.crossing_done)"
+has   "...with the reason kept" "exapump is not installed yet" "$(mget "$H" legacy.offer_blocked)"
 check "...no query was attempted" "" "$(calls "$H" exapump)"
 
 # =============================================================================
@@ -505,14 +516,18 @@ _o3="$(after "$H")"
 has "and the second half restores the first half's copy" "Restored 3 table(s)" "$_o3"
 
 # The run died AFTER crossing_done but before the deployment recorded itself
-# as personal - the record still says nano. Gate 2 closes before any probe:
-# zero engine calls, zero exapump calls, nothing on screen.
+# as personal - the record still says nano. The question is not asked again and
+# the database is never touched; the CONTAINER, though, still holds the port the
+# new deployment needs, and leaving it alone there is what made every later
+# install die at the database step with no way forward but a docker stop by
+# hand. So: nothing on screen, no database call, and the port freed.
 H="$WORK/done-still-nano"; seed "$H"
 run "$H" "" 'manifest_set legacy.crossing_done true' >/dev/null
 _o="$(before "$H")"; note_rc "$_o"
 check "a crossing already done is never reconsidered" "" "$(quiet "$_o")"
-check "...and costs no engine call" "" "$(calls "$H" engine)"
 check "...and no database call" "" "$(calls "$H" exapump)"
+check "...but the port is freed anyway" "1" "$(calls "$H" engine | grep -c '^stop ')"
+check "...and no question is asked" "" "$(mget "$H" legacy.offer_blocked)"
 
 # The normal post-crossing state: the deployment recorded itself as personal.
 # Gate 1 closes; the machine is simply a Personal install now.

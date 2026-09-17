@@ -666,7 +666,15 @@ function Invoke-LegacyCrossingBefore {
     # standing. Twin of legacy_forget_old_steps.
     Clear-LegacyOldSteps
 
-    if ("" + (Get-ExakitManifestValue "legacy.crossing_done") -eq "True") { return }
+    # DONE MEANS ASKED AND ANSWERED, NOT "LEAVE THE PORT ALONE". The container
+    # publishes the port the new deployment needs, so a crossing that is over
+    # must still take it out of the way - without this the install died on
+    # "port 8563 is in use" on every later run, with no way forward but a
+    # docker stop by hand. Twin of legacy_crossing_before.
+    if ("" + (Get-ExakitManifestValue "legacy.crossing_done") -eq "True") {
+        [void](Stop-LegacyContainer -Quiet)
+        return
+    }
 
     # An earlier attempt at THIS install already answered. Finish the leftover
     # work and say nothing: the question was asked, and asking again (or
@@ -690,13 +698,18 @@ function Invoke-LegacyCrossingBefore {
     # THE PROBE COMES BEFORE THE BANNER. Whether there is a database worth
     # talking about is answerable without saying a word, and if the answer is
     # no this function has nothing to tell anyone.
-    $can = $true; $why = ""
+    # $retry SEPARATES A CONDITION FROM A DECISION. "There is nothing to copy"
+    # is settled forever; "this machine cannot read it right now" is not, and
+    # marking the second one done cost a user their data permanently: one run
+    # could not see the engine, wrote the crossing off as finished, and no
+    # later run - with the engine right there - ever offered again.
+    $can = $true; $why = ""; $retry = $false
     if (-not (Get-LegacyEngine)) {
-        $can = $false; $why = "the container engine this database needs is not on this machine any more"
+        $can = $false; $retry = $true; $why = "the container engine this database needs is not on this machine any more"
     } elseif ($state -eq "absent") {
         $can = $false; $why = "the container is gone, so there is nothing left to copy"
     } elseif (-not (Test-Path (Get-ExapumpCli))) {
-        $can = $false; $why = "exapump is not installed, and it is what reads the tables out"
+        $can = $false; $retry = $true; $why = "exapump is not installed yet, and it is what reads the tables out"
     }
 
     # A stopped container still holds the data, so it is started - but quietly,
@@ -704,7 +717,7 @@ function Invoke-LegacyCrossingBefore {
     $started = $false
     if ($can -and $state -eq "stopped") {
         if (Start-LegacyContainer) { $started = $true }
-        else { $can = $false; $why = "the old container would not start" }
+        else { $can = $false; $retry = $true; $why = "the old container would not start" }
     }
 
     $tables = @()
@@ -718,10 +731,10 @@ function Invoke-LegacyCrossingBefore {
             if (Wait-LegacyDbAnswers -Budget $budget) {
                 $tables = Get-LegacyTables
             } else {
-                $can = $false; $why = "the old database did not answer in time"
+                $can = $false; $retry = $true; $why = "the old database did not answer in time"
             }
         } else {
-            $can = $false; $why = "the password for the old database is not on file, so it cannot be read"
+            $can = $false; $retry = $true; $why = "the password for the old database is not on file, so it cannot be read"
         }
     }
 
@@ -749,12 +762,20 @@ function Invoke-LegacyCrossingBefore {
     # and the crossing is marked done so this is never reconsidered.
     if (-not $can) {
         Write-ExakitLog "INFO" "legacy crossing: no offer made - $why"
+        # Either way the container may be holding the port the new deployment
+        # needs, whether or not its data could be read.
+        [void](Stop-LegacyContainer -Quiet)
+        if ($retry) {
+            # A CONDITION, NOT A DECISION: nothing is recorded as chosen and the
+            # crossing is not closed, so the next run - on a machine where the
+            # obstacle is gone - asks the question this one could not.
+            Set-ExakitManifestValue "legacy.offer_blocked" $why
+            return
+        }
         Set-ExakitManifestValue "legacy.choice" "skip"
         Set-ExakitManifestValue "legacy.crossed_from" $type
         if ($sample -gt 0) { Set-ExakitManifestValue "legacy.sample_left_out" $script:LegacySampleIds }
         Set-ExakitManifestValue "legacy.crossing_done" $true
-        # It may still be holding the port, whether or not its data is readable.
-        [void](Stop-LegacyContainer -Quiet)
         return
     }
 

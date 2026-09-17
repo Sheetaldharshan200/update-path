@@ -195,6 +195,21 @@ when it cannot be run does the kit ask each engine on the machine whether it
 has that container, Docker first. The record and every message then name the
 engine actually in use.
 
+**A crossing that could not ask is no longer a crossing that was answered.**
+When the offer could not be made, the kit wrote `legacy.choice = skip` and
+closed the crossing for good - even when the reason was a condition rather than
+a decision. One run that could not see the container engine therefore cost that
+machine its data permanently: no later run ever offered again, and because the
+already-done path did not stop the container either, every later install died
+at the database step on the port it holds, with no way forward but stopping it
+by hand. Now: "there is nothing to copy" (the container is gone, the database
+is empty, it holds only unchanged sample data) still settles it forever, while
+"this machine cannot read it right now" (no engine, no exapump yet, the
+container would not start, the database did not answer, no password on file)
+records the reason and leaves the question open for the next run. And the
+container is stopped on every one of those paths, including the already-done
+one, because it holds the port the new deployment needs.
+
 **A port held by your own previous kit says so.** The hint on a busy 8563 named
 WSL whatever was really there, which sent a Windows user with a local container
 looking for a database in a distro that did not have one. When the port is held
