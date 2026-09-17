@@ -637,6 +637,262 @@ check "the legacy set is a variable" "yes" \
 
 # =============================================================================
 echo
+echo "the kit's own sample data is left out of the copy:"
+
+# TPCH.REGION with the row count the kit's own CSV has (5) is the bundled sample,
+# unchanged, and is not the user's to copy. TPCH.NATION with one row fewer than
+# the CSV (24 of 25) has been changed, so it IS the user's. S1.T1 is the user's.
+# The catalog is read from the kit's real data/datasets, so the numbers are the
+# kit's, not the suite's.
+H="$WORK/sample"; seed "$H"
+printf 'S1.T1\nTPCH.NATION\nTPCH.REGION\n' > "$H/ctrl/db.tables"
+printf 'TPCH.NATION|24\nTPCH.REGION|5\n' > "$H/ctrl/db.rows"
+_o="$(before "$H" EXAKIT_LEGACY_DATA=migrate)"; note_rc "$_o"
+has "the banner counts every table"          "It holds 3 table(s)" "$_o"
+has "...says which belong to the kit"        "1 of them belong to the kit's bundled sample data (tpch)" "$_o"
+has "...and how many are the user's own"     "Your own: 2 table(s)" "$_o"
+check "only the user's tables are copied out"        "2" "$(calls "$H" exapump | grep -c '^export')"
+check "the unchanged sample table is not"            "0" "$(calls "$H" exapump | grep '^export' | grep -c 'TPCH.REGION')"
+check "a sample table the user changed is"           "1" "$(calls "$H" exapump | grep '^export' | grep -c 'TPCH.NATION')"
+check "the row counts were asked for once"           "1" "$(calls "$H" exapump | grep -c 'EXAKIT_LR')"
+check "...for the sample schema only"                "1" "$(calls "$H" exapump | grep 'EXAKIT_LR' | grep -c "IN ('TPCH')")"
+check "...through the legacy profile"                "1" "$(calls "$H" exapump | grep 'EXAKIT_LR' | grep -c -- '-p starter-kit-legacy')"
+check "the record names the dataset left out"        "tpch" "$(mget "$H" legacy.sample_left_out)"
+# The record the migrate command reads back later, kept before runtime.* is
+# overwritten by the deployment step.
+check "the crossing remembers the old database"      "exasol-nano/fakeengine/127.0.0.1:8563/sys" \
+    "$(mget "$H" legacy.container)/$(mget "$H" legacy.engine)/$(mget "$H" legacy.dsn)/$(mget "$H" legacy.user)"
+check "...and its volume and password file"          "exasol-nano-data/$H/credentials/nano_sys_password" \
+    "$(mget "$H" legacy.volume)/$(mget "$H" legacy.password_file)"
+
+# Nothing but the sample: nothing of the user's, so nothing is asked - the same
+# silence as an empty database, with the reason settled in the record.
+H="$WORK/sample-only"; seed "$H"
+printf 'TPCH.REGION\nTPCH.NATION\n' > "$H/ctrl/db.tables"
+printf 'TPCH.REGION|5\nTPCH.NATION|25\n' > "$H/ctrl/db.rows"
+_o="$(before "$H" EXAKIT_LEGACY_DATA=migrate)"; note_rc "$_o"
+check "only the kit's sample data: nothing said"     "" "$(quiet "$_o")"
+check "...settled as skip"                           "skip" "$(mget "$H" legacy.choice)"
+check "...with the dataset named in the record"      "tpch" "$(mget "$H" legacy.sample_left_out)"
+check "...nothing copied out"                        "0" "$(calls "$H" exapump | grep -c '^export')"
+check "...and the container stopped for the port"    "1" "$(calls "$H" engine | grep -c '^stop ')"
+
+# A row count the database cannot give (no line for the table) is not evidence
+# the table is unchanged: it travels as the user's.
+H="$WORK/sample-unknown"; seed "$H"
+printf 'TPCH.REGION\n' > "$H/ctrl/db.tables"
+_o="$(before "$H" EXAKIT_LEGACY_DATA=migrate)"; note_rc "$_o"
+check "an unknown row count keeps the table in the copy" "1" "$(calls "$H" exapump | grep '^export' | grep -c 'TPCH.REGION')"
+lacks "...and nothing is called the kit's"           "bundled sample data" "$_o"
+
+# The skip road now names the later route.
+H="$WORK/skip-later"; seed "$H"
+_o="$(before "$H" EXAKIT_LEGACY_DATA=skip)"; note_rc "$_o"
+has "skip names the command that copies it later" "exakit migrate docker-nano" "$_o"
+
+# =============================================================================
+echo
+echo "after the install: exakit migrate docker-nano (legacy_migrate_now):"
+
+# The Personal runtime is a stub too (tests/lib/legacy-fault-personal.sh),
+# sourced from the control directory - a file, for the same BASH_SOURCE reason
+# as the keyboard above. The confirmation is stubbed the same way where a
+# scenario declines. Every scenario here is the state AFTER an install: the
+# record says the runtime is Personal, and the old container is named through
+# the EXAKIT_LEGACY_* variables the CLI would have set.
+seed_mig() { # seed_mig <home>
+    SEED_TYPE=personal seed "$1"
+    cp "$ROOT/tests/lib/legacy-fault-personal.sh" "$1/ctrl/personal.sh"
+    printf 'confirm() { return 1; }\n' > "$1/ctrl/decline.sh"
+}
+MIG_ENV="EXAKIT_LEGACY_CONTAINER=exasol-nano EXAKIT_LEGACY_ENGINE=fakeengine EXAKIT_LEGACY_DSN=127.0.0.1:8563 EXAKIT_LEGACY_VOLUME=exasol-nano-data"
+migrate() { # migrate <home> [extra env] [pre-statements] [yes:0|1]
+    run "$1" "$MIG_ENV ${2:-}" '. "$EXAKIT_FAULT_DIR/personal.sh"; '"${3:-}"'
+        EXAKIT_LEGACY_PASSWORD_FILE="$EXAKIT_HOME/credentials/nano_sys_password"
+        legacy_migrate_now '"${4:-1}"'; echo "RC=$?"; echo "STATUS=$EXAKIT_LEGACY_MIGRATE_STATUS"'
+}
+status_of() { printf '%s\n' "$1" | sed -n 's/^STATUS=\(.*\)$/\1/p' | tail -1; }
+personal_calls() { tr '\n' ' ' < "$1/ctrl/personal.calls" 2>/dev/null | sed 's/ $//'; }
+
+# THE WHOLE ROAD, with the port clash: both databases on 8563, both running.
+H="$WORK/mig-clash"; seed_mig "$H"
+_o="$(migrate "$H")"
+check "it finishes"                                       "0" "$(rc_of "$_o")"
+check "...as done"                                        "done" "$(status_of "$_o")"
+has "the clash is explained before anything happens"      "the port your database uses" "$_o"
+has "...and so is what will be done about it"             "stopped while the tables are copied out" "$_o"
+check "the database was stopped, started, waited for - in that order" "stop start wait" "$(personal_calls "$H")"
+check "the container was stopped after the copy (it holds the port)"  "1" "$(calls "$H" engine | grep -c '^stop ')"
+check "the engine saw inspect, inspect, stop"             "container container stop" "$(verbs "$H")"
+check "three tables copied out"                           "3" "$(mget "$H" legacy.exported)"
+check "three restored"                                    "3" "$(mget "$H" legacy.restored)"
+_copied_at="$(printf '%s\n' "$_o" | grep -n 'Copied 3 table' | head -1 | cut -d: -f1)"
+_restored_at="$(printf '%s\n' "$_o" | grep -n 'Restored 3 table' | head -1 | cut -d: -f1)"
+check "the copy out came before the restore"              "yes" "$([ -n "$_copied_at" ] && [ -n "$_restored_at" ] && [ "$_copied_at" -lt "$_restored_at" ] && echo yes || echo no)"
+has "the restore report calls the copy expendable"        "no longer needed" "$_o"
+has "...and names where the original still is"            "still holds the original" "$_o"
+check "the record says migrate, done"                     "migrate/true" "$(mget "$H" legacy.choice)/$(mget "$H" legacy.crossing_done)"
+check "...and when"                                       "yes" "$([ -n "$(mget "$H" legacy.migrated_at)" ] && echo yes || echo no)"
+check "every export used the legacy profile"              "3" "$(calls "$H" exapump | grep -c '^export -p starter-kit-legacy ')"
+check "every upload used the kit's profile"               "3" "$(calls "$H" exapump | grep -c '^upload -p starter-kit ')"
+
+# NO CLASH: the container publishes another port, so nothing of the
+# deployment's is touched and a running container is left running.
+H="$WORK/mig-noclash"; seed_mig "$H"
+_o="$(migrate "$H" "EXAKIT_LEGACY_DSN=127.0.0.1:8564")"
+check "no clash finishes too"                             "0" "$(rc_of "$_o")"
+lacks "...and does not mention the port"                  "the port your database uses" "$_o"
+check "the deployment is never stopped or started"        "" "$(personal_calls "$H")"
+check "the running container is left running"            "0" "$(calls "$H" engine | grep -c '^stop ')"
+check "...the profile points at the named port"           "yes" "$(grep -q 'port = 8564' "$H/exapump/config.toml" && echo yes || echo no)"
+
+# A stopped container on another port is started for the copy and stopped
+# again afterwards: back the way it was found.
+H="$WORK/mig-stopped"; seed_mig "$H"; fault "$H" engine.state stopped
+_o="$(migrate "$H" "EXAKIT_LEGACY_DSN=127.0.0.1:8564")"
+check "a stopped container is started, copied, stopped"   "container start container stop" "$(verbs "$H")"
+has "...and the start is announced"                       "Starting the container" "$_o"
+check "...with the deployment left alone"                 "" "$(personal_calls "$H")"
+
+# DECLINED. Nothing has happened yet at the question, so nothing is undone.
+H="$WORK/mig-declined"; seed_mig "$H"
+_o="$(migrate "$H" "" '. "$EXAKIT_FAULT_DIR/decline.sh"' 0)"
+check "declining returns 5"                               "5" "$(rc_of "$_o")"
+check "...as declined"                                    "declined" "$(status_of "$_o")"
+has "...saying nothing changed"                           "Nothing was changed" "$_o"
+check "no stop, no export, nothing"                       "0" "$(calls "$H" engine | grep -c '^stop '; )"
+check "the deployment was not touched"                    "" "$(personal_calls "$H")"
+check "no exapump call at all"                            "" "$(calls "$H" exapump)"
+
+# THE THINGS THAT CANNOT WORK, each named for what it is.
+H="$WORK/mig-absent"; seed_mig "$H"; fault "$H" engine.state absent
+_o="$(migrate "$H")"
+check "a container that is not there"                     "1" "$(rc_of "$_o")"
+has "...is named, with how to find the right one"         "no container named 'exasol-nano' in fakeengine" "$_o"
+has "...and the engine's own listing"                     "fakeengine ps -a" "$_o"
+H="$WORK/mig-unknown"; seed_mig "$H"; fault "$H" engine.state unknown
+_o="$(migrate "$H")"
+has "an engine that will not answer is asked about"       "did not answer about the container" "$_o"
+H="$WORK/mig-noengine"; seed_mig "$H"
+_o="$(migrate "$H" "EXAKIT_LEGACY_ENGINE=no-such-engine")"
+check "an engine that is gone"                            "1" "$(rc_of "$_o")"
+has "...is named"                                         "engine 'no-such-engine' is not on this machine" "$_o"
+has "...with the option that names another"               "--engine docker|podman" "$_o"
+# No name anywhere: not on the command line, not in the record either.
+H="$WORK/mig-noname"; SEED_NO_CONTAINER=1 seed_mig "$H"
+_o="$(migrate "$H" "EXAKIT_LEGACY_CONTAINER=")"
+has "no container name at all asks for one"               "--container <name>" "$_o"
+H="$WORK/mig-noexapump"; seed_mig "$H"
+_o="$(NO_EXAPUMP=1 migrate "$H")"
+has "no exapump names the repair"                         "exapump is not installed" "$_o"
+check "...and returns 1"                                  "1" "$(rc_of "$_o")"
+
+# NO PASSWORD, on the clash road: the deployment was already stopped for the
+# copy, so it is started again and the container stopped, before the failure
+# is reported.
+H="$WORK/mig-nopassword"; SEED_NO_PASSWORD=1 seed_mig "$H"
+_o="$(migrate "$H")"
+check "no password fails"                                 "1" "$(rc_of "$_o")"
+has "...naming the two ways to give one"                  "--password-file" "$_o"
+check "...but the deployment is back up"                  "stop start wait" "$(personal_calls "$H")"
+check "...and the container stopped for the port"         "1" "$(calls "$H" engine | grep -c '^stop ')"
+lacks "...and nothing was copied"                         "Copied" "$_o"
+
+# A DATABASE THAT NEVER ANSWERS, within the budget.
+H="$WORK/mig-silent"; seed_mig "$H"; fault "$H" db.answer_after never; fault "$H" engine.state stopped
+_o="$(migrate "$H" "EXAKIT_LEGACY_READY_TIMEOUT=5")"
+check "a silent database fails"                           "1" "$(rc_of "$_o")"
+has "...within the budget it names"                       "did not answer within 5s" "$_o"
+has "...suggesting the port check"                        "fakeengine port exasol-nano" "$_o"
+check "...the container it started is stopped again"      "1" "$(calls "$H" engine | grep -c '^stop ')"
+
+# A CONTAINER THAT WILL NOT START, on the clash road: the deployment comes back.
+H="$WORK/mig-nostart"; seed_mig "$H"; fault "$H" engine.state stopped; fault "$H" engine.start_rc 1
+_o="$(migrate "$H")"
+check "a container that will not start fails"            "1" "$(rc_of "$_o")"
+has "...pointing at its logs"                             "fakeengine logs exasol-nano" "$_o"
+check "...and the deployment is started again"           "stop start" "$(personal_calls "$H")"
+
+# A DEPLOYMENT THAT WILL NOT STOP: nothing else is attempted.
+H="$WORK/mig-nostop"; seed_mig "$H"; fault "$H" personal.stop_rc 1
+_o="$(migrate "$H")"
+check "a deployment that will not stop fails first"      "1" "$(rc_of "$_o")"
+has "...with the remedy"                                  "exakit stop, then exakit migrate docker-nano" "$_o"
+check "...before the container is asked anything more"   "container" "$(verbs "$H")"
+
+# ONLY THE KIT'S SAMPLE DATA in the container: nothing of the user's to copy.
+H="$WORK/mig-sample-only"; seed_mig "$H"
+printf 'TPCH.REGION\n' > "$H/ctrl/db.tables"; printf 'TPCH.REGION|5\n' > "$H/ctrl/db.rows"
+_o="$(migrate "$H")"
+check "nothing of the user's is not a failure"           "0" "$(rc_of "$_o")"
+check "...its own status"                                 "nothing" "$(status_of "$_o")"
+has "...and says what the container held"                 "all of them the kit's bundled sample data (tpch)" "$_o"
+has "...and how to get it"                                "exakit data-load" "$_o"
+check "no export"                                         "0" "$(calls "$H" exapump | grep -c '^export')"
+check "the deployment is back"                            "stop start wait" "$(personal_calls "$H")"
+check "the record notes the sample"                       "tpch" "$(mget "$H" legacy.sample_left_out)"
+# ...and an empty database, the same way.
+H="$WORK/mig-empty"; seed_mig "$H"; : > "$H/ctrl/db.tables"
+_o="$(migrate "$H")"
+has "an empty database: nothing to copy"                  "no tables in it" "$_o"
+check "...status nothing"                                 "nothing" "$(status_of "$_o")"
+
+# A MIXED CONTAINER: the sample left out, the rest copied.
+H="$WORK/mig-mixed"; seed_mig "$H"
+printf 'S1.T1\nTPCH.REGION\nTPCH.NATION\n' > "$H/ctrl/db.tables"; printf 'TPCH.REGION|5\nTPCH.NATION|1\n' > "$H/ctrl/db.rows"
+_o="$(migrate "$H")"
+has "the count names the whole container"                 "The container holds 3 table(s)" "$_o"
+has "...and the kit's share"                              "1 of them belong to the kit's bundled sample data (tpch)" "$_o"
+check "two copied out"                                    "2" "$(mget "$H" legacy.exported)"
+check "the changed sample table among them"               "1" "$(calls "$H" exapump | grep '^export' | grep -c 'TPCH.NATION')"
+
+# EVERY EXPORT FAILS: the deployment comes back, nothing is lost.
+H="$WORK/mig-exportfail"; seed_mig "$H"; printf 'S1.T1\nS1.T2\nS2.T3\n' > "$H/ctrl/export.fail"
+_o="$(migrate "$H")"
+check "a copy that copies nothing fails"                  "1" "$(rc_of "$_o")"
+has "...saying nothing is lost"                           "nothing is lost" "$_o"
+check "...with the deployment back up"                    "stop start wait" "$(personal_calls "$H")"
+check "...and no export_dir recorded"                     "" "$(mget "$H" legacy.export_dir)"
+
+# A PARTIAL RESTORE: what landed is counted, what did not keeps its copy.
+H="$WORK/mig-partial"; seed_mig "$H"; fault "$H" upload.fail S2.T3; fault "$H" import.exists S1.T2
+_o="$(migrate "$H")"
+check "a partial restore returns 1"                       "1" "$(rc_of "$_o")"
+check "...as partial"                                     "partial" "$(status_of "$_o")"
+has "one restored"                                        "Restored 1 table(s)" "$_o"
+has "one left alone, for the new database's reason"       "Left alone (the new database already had them): S1.T2" "$_o"
+has "one kept"                                            "did not restore" "$_o"
+lacks "...and the copy is not called expendable"          "no longer needed" "$_o"
+
+# THE DEPLOYMENT DOES NOT COME BACK: the copy is kept and the remedy named.
+H="$WORK/mig-noreturn"; seed_mig "$H"; fault "$H" personal.start_rc 1
+_o="$(migrate "$H")"
+check "a deployment that does not come back fails"       "1" "$(rc_of "$_o")"
+has "...keeping the copy"                                 "not restored yet" "$_o"
+has "...with the remedy"                                  "exakit start, then exakit migrate docker-nano" "$_o"
+check "three copied out, none restored"                   "3/" "$(mget "$H" legacy.exported)/$(mget "$H" legacy.restored)"
+check "...and the export_dir recorded for the next run"  "$H/migration" "$(mget "$H" legacy.export_dir)"
+
+# A WAITING COPY from that run is restored first, without touching the container.
+_o="$(migrate "$H")"
+check "the waiting copy is restored"                      "0" "$(rc_of "$_o")"
+has "...and said to be"                                   "waiting at" "$_o"
+has "...with the pointer to a fresh run"                  "Run the command again for a fresh copy" "$_o"
+check "three restored now"                                "3" "$(mget "$H" legacy.restored)"
+check "no second export"                                  "3" "$(calls "$H" exapump | grep -c '^export')"
+check "the deployment was not stopped again"              "stop start" "$(personal_calls "$H")"
+
+# A SECOND, FRESH COPY after a complete one clears the spent files first.
+H="$WORK/mig-twice"; seed_mig "$H"
+_o="$(migrate "$H")"; check "first run done" "done" "$(status_of "$_o")"
+printf 'S1.T1\n' > "$H/ctrl/db.tables"
+_o="$(migrate "$H")"
+check "second run done"                                   "done" "$(status_of "$_o")"
+check "...restoring the one table now there"              "1" "$(mget "$H" legacy.restored)"
+check "...with the earlier copy's tail gone"              "t1.csv" "$(ls "$H/migration" | grep '\.csv$' | tr '\n' ' ' | sed 's/ $//')"
+
+# =============================================================================
+echo
 echo "invariants that held across every scenario above:"
 
 _all_engine="$(cat "$WORK"/*/ctrl/engine.calls 2>/dev/null)"

@@ -34,6 +34,13 @@
 # moment to destroy the only other copy, and "skip" means skip. The container is
 # left stopped, named on screen, with the one command that removes it.
 #
+# AFTER THE INSTALL there is one more road, `exakit migrate docker-nano`
+# (legacy_migrate_now, at the end of this file): the same copy, in one sitting,
+# for someone who answered "skip" and changed their mind, or whose container the
+# installer never saw. And on BOTH roads the kit's own bundled sample data is
+# left out of the copy: the install loads it itself, and `exakit data-load` puts
+# it back any time (see "the kit's own sample data" below).
+#
 # Twin: setup/lib/legacy-crossing.ps1. Keep the two in step.
 
 # Where the export lands. Under the kit home rather than /tmp: it holds the
@@ -55,33 +62,75 @@ EXAKIT_LEGACY_SYSTEM_SCHEMAS="'SYS','EXA_STATISTICS'"
 # migrate | skip — set by legacy_choose, read by both halves.
 EXAKIT_LEGACY_CHOICE=""
 
-# --- what the old install recorded ------------------------------------------
+# --- what the old install recorded, or what the command line names -----------
+#
+# Every accessor answers from an EXAKIT_LEGACY_* variable first and from the
+# manifest second. The install-time crossing sets none of them and reads the
+# record an older kit wrote under runtime.*. `exakit migrate docker-nano` runs
+# AFTER an install, when runtime.* describes the new deployment and says nothing
+# about the old container - so the CLI fills these from its options, or from the
+# copy of the old record the crossing keeps under legacy.* (legacy_remember_record).
 
 # Whether this machine has an installation whose database is a container. The
 # predicate itself lives in common.sh so the CLI can ask the same question from
 # the same place - see exakit_legacy_runtime_recorded there.
 legacy_db_recorded() { exakit_legacy_runtime_recorded; }
 
-legacy_container() { manifest_get runtime.container 2>/dev/null || true; }
-legacy_volume()    { manifest_get runtime.volume 2>/dev/null || true; }
-legacy_dsn()       { manifest_get runtime.dsn 2>/dev/null || true; }
+legacy_container() {
+    [ -n "${EXAKIT_LEGACY_CONTAINER:-}" ] && { printf '%s' "$EXAKIT_LEGACY_CONTAINER"; return 0; }
+    manifest_get runtime.container 2>/dev/null || true
+}
+legacy_volume() {
+    [ -n "${EXAKIT_LEGACY_VOLUME:-}" ] && { printf '%s' "$EXAKIT_LEGACY_VOLUME"; return 0; }
+    manifest_get runtime.volume 2>/dev/null || true
+}
+legacy_dsn() {
+    [ -n "${EXAKIT_LEGACY_DSN:-}" ] && { printf '%s' "$EXAKIT_LEGACY_DSN"; return 0; }
+    manifest_get runtime.dsn 2>/dev/null || true
+}
 
 legacy_user() {
-    _lu="$(manifest_get runtime.user 2>/dev/null || true)"
+    _lu="${EXAKIT_LEGACY_USER:-}"
+    [ -n "$_lu" ] || _lu="$(manifest_get runtime.user 2>/dev/null || true)"
     printf '%s' "${_lu:-sys}"
 }
 
-# legacy_engine — the recorded engine, as a runnable path, or empty.
-#
-# The NAME is taken from the record and never re-detected: this is about the
-# engine that holds this particular container, and a machine can have another
-# one installed. An engine that is recorded but no longer on PATH answers empty,
-# which is what makes the migrate option offer itself as unavailable rather than
-# fail halfway through.
+legacy_password_file() {
+    [ -n "${EXAKIT_LEGACY_PASSWORD_FILE:-}" ] && { printf '%s' "$EXAKIT_LEGACY_PASSWORD_FILE"; return 0; }
+    manifest_get runtime.password_file 2>/dev/null || true
+}
+
+# legacy_engine_name — the engine's NAME (docker, podman), from the option or
+# the record, never re-detected: this is about the engine that holds this
+# particular container, and a machine can have another one installed.
+legacy_engine_name() {
+    [ -n "${EXAKIT_LEGACY_ENGINE:-}" ] && { printf '%s' "$EXAKIT_LEGACY_ENGINE"; return 0; }
+    manifest_get runtime.engine 2>/dev/null || true
+}
+
+# legacy_engine — that engine as a runnable path, or empty. One that is named
+# but no longer on PATH answers empty, which is what makes the migrate option
+# offer itself as unavailable rather than fail halfway through.
 legacy_engine() {
-    _le_name="$(manifest_get runtime.engine 2>/dev/null || true)"
+    _le_name="$(legacy_engine_name)"
     [ -n "$_le_name" ] || return 0
     command -v "$_le_name" 2>/dev/null || true
+}
+
+# legacy_remember_record — the old record, copied under legacy.* before the
+# install overwrites runtime.* with the new deployment. `exakit migrate
+# docker-nano` reads it back, so a "skip" answered today needs no options when
+# it is reversed next month, and `exakit status` reads it to say the old
+# database is still there. Strings, so one manifest_set each (manifest_set_many
+# writes booleans only).
+legacy_remember_record() {
+    _lrr_v="$(legacy_container)";    [ -n "$_lrr_v" ] && manifest_set legacy.container "$_lrr_v"
+    _lrr_v="$(legacy_engine_name)";  [ -n "$_lrr_v" ] && manifest_set legacy.engine "$_lrr_v"
+    _lrr_v="$(legacy_volume)";       [ -n "$_lrr_v" ] && manifest_set legacy.volume "$_lrr_v"
+    _lrr_v="$(legacy_dsn)";          [ -n "$_lrr_v" ] && manifest_set legacy.dsn "$_lrr_v"
+    _lrr_v="$(legacy_password_file)"; [ -n "$_lrr_v" ] && manifest_set legacy.password_file "$_lrr_v"
+    manifest_set legacy.user "$(legacy_user)"
+    return 0
 }
 
 # legacy_engine_run <args...> — one bounded engine call, output on stdout.
@@ -145,7 +194,7 @@ legacy_stop_container() {
 # legacy_remove_command — the exact command that removes the old container and
 # its data, printed for the user and never run by the kit.
 legacy_remove_command() {
-    _lrc_engine="$(manifest_get runtime.engine 2>/dev/null || true)"
+    _lrc_engine="$(legacy_engine_name)"
     _lrc_engine="${_lrc_engine:-podman}"
     _lrc_c="$(legacy_container)"; _lrc_v="$(legacy_volume)"
     [ -n "$_lrc_c" ] || return 1
@@ -166,13 +215,33 @@ legacy_write_profile() {
     [ -n "$_lwp_dsn" ] || return 1
     _lwp_host="${_lwp_dsn%%:*}"
     _lwp_port="${_lwp_dsn##*:}"
-    _lwp_pwfile="$(manifest_get runtime.password_file 2>/dev/null || true)"
-    [ -n "$_lwp_pwfile" ] && [ -s "$_lwp_pwfile" ] || return 1
     # The password is read into a variable and handed to the writer, which puts
     # it in a 0600 file. It is never echoed, logged, or passed on a command line.
+    # EXAKIT_LEGACY_PASSWORD is the one typed at `exakit migrate docker-nano`'s
+    # prompt - a shell variable, so it is not in argv and not in the environment
+    # of anything the kit runs.
+    _lwp_password="${EXAKIT_LEGACY_PASSWORD:-}"
+    if [ -z "$_lwp_password" ]; then
+        _lwp_pwfile="$(legacy_password_file)"
+        [ -n "$_lwp_pwfile" ] && [ -s "$_lwp_pwfile" ] || return 1
+        _lwp_password="$(cat "$_lwp_pwfile")"
+    fi
     exapump_write_profile "$EXAKIT_LEGACY_PROFILE" "$_lwp_host" "$_lwp_port" \
-        "$(legacy_user)" "$(cat "$_lwp_pwfile")" || return 1
+        "$(legacy_user)" "$_lwp_password" || return 1
     return 0
+}
+
+# legacy_wait_db_answers <seconds> — poll the old database until it answers or
+# the budget is spent, in five-second steps with the first ask immediate.
+legacy_wait_db_answers() {
+    _lwd_budget="$1"
+    _lwd_waited=0
+    until legacy_db_answers; do
+        _lwd_waited=$(( _lwd_waited + 5 ))
+        [ "$_lwd_waited" -ge "$_lwd_budget" ] && break
+        sleep 5
+    done
+    legacy_db_answers
 }
 
 # legacy_db_answers — a real query against the old database through its own
@@ -225,6 +294,117 @@ EOF
     printf 'CREATE TABLE "%s"."%s" (%s)' "$_ltd_schema" "$_ltd_table" "$_ltd_list"
 }
 
+# --- the kit's own sample data ----------------------------------------------
+#
+# The bundled datasets (data/datasets/<id>/) are the kit's, not the user's. The
+# install that runs around the crossing loads them itself, and `exakit
+# data-load` puts them back any time. Copying them out of the old database and
+# into the new one would spend minutes on tables the new database already has -
+# and the restore would then have to refuse each one as already there. So a
+# table that IS a bundled sample table, unchanged, is left out of the copy and
+# named as such. "Unchanged" means the same schema, the same table and the same
+# number of rows as the CSV the kit ships; a sample table the user has changed
+# is theirs and travels with the rest.
+
+# legacy_count_lines <text> — how many non-blank lines.
+legacy_count_lines() {
+    _lcn="$(printf '%s\n' "$1" | grep -c '[^[:space:]]' || true)"
+    printf '%s' "${_lcn:-0}"
+}
+
+# legacy_sample_catalog — SCHEMA.TABLE|dataset|rows, one line per table the
+# bundled datasets create, read from the kit's own files. Nothing is hardcoded:
+# the schema comes from dataset.conf, the table from the CSV's name (the same
+# rule the loader applies), the row count from the file itself.
+legacy_sample_catalog() {
+    command -v exakit_bundled_datasets >/dev/null 2>&1 || return 0
+    _lsc_root="$(exakit_repo_root 2>/dev/null)" || return 0
+    exakit_bundled_datasets | while IFS='|' read -r _lsc_id _lsc_label _lsc_flag _lsc_markers _lsc_schema; do
+        [ -n "$_lsc_id" ] || continue
+        for _lsc_csv in "$_lsc_root/data/datasets/$_lsc_id/data"/*.csv; do
+            [ -f "$_lsc_csv" ] || continue
+            _lsc_table="$(basename "$_lsc_csv" .csv | tr '[:lower:]' '[:upper:]')"
+            # The header is not a row, and a last line without a newline still is.
+            _lsc_rows="$(awk 'END { print (NR > 0 ? NR - 1 : 0) }' "$_lsc_csv" 2>/dev/null)"
+            printf '%s.%s|%s|%s\n' "$_lsc_schema" "$_lsc_table" "$_lsc_id" "${_lsc_rows:-0}"
+        done
+    done
+}
+
+# legacy_table_rows <'S1','S2'> — SCHEMA.TABLE|rows for every table of the old
+# database in those schemas, from the row count Exasol keeps in EXA_ALL_TABLES.
+# One query for all of them; a table whose count is not known yields no line.
+legacy_table_rows() {
+    "$(exapump_cli)" sql -p "$EXAKIT_LEGACY_PROFILE" \
+        "SELECT 'EXAKIT_LR[' || TABLE_SCHEMA || '.' || TABLE_NAME || '<<:>>' || CAST(TABLE_ROW_COUNT AS VARCHAR(40)) || ']' AS R FROM EXA_ALL_TABLES WHERE TABLE_SCHEMA IN ($1)" \
+        2>/dev/null | sed -n 's/.*EXAKIT_LR\[\([^]]*\)\].*/\1/p' | sed 's/<<:>>/|/'
+}
+
+# _legacy_field_of <lines> <key> <field-no> — the field of the line whose first
+# field is exactly <key>. Exact, not a substring: S1.T is not S1.T2.
+_legacy_field_of() {
+    printf '%s\n' "$1" | awk -F'|' -v k="$2" -v f="$3" '$1 == k { print $f; exit }'
+}
+
+# legacy_classify <tables, one per line> — the old database's tables split into
+# the user's own and the kit's unchanged sample tables. Sets:
+#   EXAKIT_LEGACY_OWN_TABLES     one per line — what the crossing copies
+#   EXAKIT_LEGACY_SAMPLE_TABLES  one per line — left out
+#   EXAKIT_LEGACY_SAMPLE_IDS     the datasets those belong to, comma-separated
+# Asks the old database for row counts only when a table sits in a sample
+# schema at all, and then once for all of them.
+legacy_classify() {
+    _lcl_all="$1"
+    EXAKIT_LEGACY_OWN_TABLES=""
+    EXAKIT_LEGACY_SAMPLE_TABLES=""
+    EXAKIT_LEGACY_SAMPLE_IDS=""
+    _lcl_catalog="$(legacy_sample_catalog)"
+    _lcl_schemas=""
+    if [ -n "$_lcl_catalog" ]; then
+        while IFS= read -r _lcl_t; do
+            [ -n "$_lcl_t" ] || continue
+            [ -n "$(_legacy_field_of "$_lcl_catalog" "$_lcl_t" 2)" ] || continue
+            _lcl_s="'${_lcl_t%%.*}'"
+            case ",$_lcl_schemas," in
+                *",$_lcl_s,"*) ;;
+                *) _lcl_schemas="${_lcl_schemas:+$_lcl_schemas,}$_lcl_s" ;;
+            esac
+        done <<EOF
+$_lcl_all
+EOF
+    fi
+    _lcl_rows=""
+    [ -n "$_lcl_schemas" ] && _lcl_rows="$(legacy_table_rows "$_lcl_schemas")"
+    while IFS= read -r _lcl_t; do
+        [ -n "$_lcl_t" ] || continue
+        _lcl_id=""; _lcl_want=""; _lcl_have=""
+        if [ -n "$_lcl_catalog" ]; then
+            _lcl_id="$(_legacy_field_of "$_lcl_catalog" "$_lcl_t" 2)"
+            _lcl_want="$(_legacy_field_of "$_lcl_catalog" "$_lcl_t" 3)"
+            [ -n "$_lcl_id" ] && _lcl_have="$(_legacy_field_of "$_lcl_rows" "$_lcl_t" 2)"
+        fi
+        if [ -n "$_lcl_id" ] && [ -n "$_lcl_have" ] && [ "$_lcl_have" = "$_lcl_want" ]; then
+            EXAKIT_LEGACY_SAMPLE_TABLES="${EXAKIT_LEGACY_SAMPLE_TABLES}${_lcl_t}
+"
+            case ",$EXAKIT_LEGACY_SAMPLE_IDS," in
+                *",$_lcl_id,"*) ;;
+                *) EXAKIT_LEGACY_SAMPLE_IDS="${EXAKIT_LEGACY_SAMPLE_IDS:+$EXAKIT_LEGACY_SAMPLE_IDS,}$_lcl_id" ;;
+            esac
+        else
+            EXAKIT_LEGACY_OWN_TABLES="${EXAKIT_LEGACY_OWN_TABLES}${_lcl_t}
+"
+        fi
+    done <<EOF
+$_lcl_all
+EOF
+    return 0
+}
+
+# legacy_sample_note <own> <sample> — the sentence that says what is left out.
+legacy_sample_note() {
+    info "$2 of them belong to the kit's bundled sample data ($EXAKIT_LEGACY_SAMPLE_IDS), unchanged — the kit loads that itself, so they are not copied. Your own: $1 table(s)."
+}
+
 # --- the two halves ---------------------------------------------------------
 
 # legacy_choose — the question, asked once.
@@ -259,7 +439,7 @@ legacy_choose() {
 
     if ! exakit_stdin_is_tty; then
         info "Nothing is asked in an unattended run, so the old database is left alone."
-        info "To copy it into the new one, re-run with EXAKIT_LEGACY_DATA=migrate"
+        info "To copy it into the new one, re-run with EXAKIT_LEGACY_DATA=migrate — or afterwards: exakit migrate docker-nano"
         EXAKIT_LEGACY_CHOICE="skip"
         return 0
     fi
@@ -415,6 +595,9 @@ legacy_crossing_before() {
     _lcb_type="$(manifest_get runtime.type 2>/dev/null || true)"
     _lcb_container="$(legacy_container)"
     _lcb_state="$(legacy_container_state)"
+    # The record, kept: the deployment step is about to overwrite runtime.*, and
+    # `exakit migrate docker-nano` has to find the old database afterwards.
+    legacy_remember_record
 
     # THE PROBE COMES BEFORE THE BANNER. Whether there is a database worth
     # talking about is answerable without saying a word, and if the answer is
@@ -446,13 +629,7 @@ legacy_crossing_before() {
             # started: one that was already running answers on the first ask.
             _lcb_budget="${EXAKIT_LEGACY_READY_TIMEOUT:-120}"
             [ "$_lcb_started" -eq 0 ] && _lcb_budget=10
-            _lcb_waited=0
-            until legacy_db_answers; do
-                _lcb_waited=$(( _lcb_waited + 5 ))
-                [ "$_lcb_waited" -ge "$_lcb_budget" ] && break
-                sleep 5
-            done
-            if legacy_db_answers; then
+            if legacy_wait_db_answers "$_lcb_budget"; then
                 _lcb_tables="$(legacy_tables)"
             else
                 _lcb_can=no; _lcb_why="the old database did not answer in time"
@@ -462,10 +639,21 @@ legacy_crossing_before() {
         fi
     fi
 
-    _lcb_count="$(printf '%s\n' "$_lcb_tables" | grep -c '[^[:space:]]' || true)"
-    _lcb_count="${_lcb_count:-0}"
+    # The kit's own sample data is not "my data": it is left out of the count
+    # the user is asked about, and out of the copy.
+    _lcb_total="$(legacy_count_lines "$_lcb_tables")"
+    _lcb_sample=0
+    if [ "$_lcb_can" = yes ]; then
+        legacy_classify "$_lcb_tables"
+        _lcb_sample="$(legacy_count_lines "$EXAKIT_LEGACY_SAMPLE_TABLES")"
+    fi
+    _lcb_count="$(legacy_count_lines "${EXAKIT_LEGACY_OWN_TABLES:-}")"
     if [ "$_lcb_can" = yes ] && [ "$_lcb_count" -eq 0 ]; then
-        _lcb_can=no; _lcb_why="the old database has no tables in it"
+        if [ "$_lcb_sample" -gt 0 ]; then
+            _lcb_can=no; _lcb_why="the old database holds only the kit's bundled sample data ($EXAKIT_LEGACY_SAMPLE_IDS), unchanged, which this install loads itself"
+        else
+            _lcb_can=no; _lcb_why="the old database has no tables in it"
+        fi
     fi
 
     # GATE 3. Nothing to offer, so nothing is said. The reason goes to the log,
@@ -475,6 +663,7 @@ legacy_crossing_before() {
         _exakit_log_file "INFO  legacy crossing: no offer made — $_lcb_why" 2>/dev/null || true
         manifest_set legacy.choice "skip"
         manifest_set legacy.crossed_from "$_lcb_type"
+        [ "$_lcb_sample" -gt 0 ] && manifest_set legacy.sample_left_out "$EXAKIT_LEGACY_SAMPLE_IDS"
         manifest_set legacy.crossing_done true
         # It may still be holding the port, whether or not its data is readable.
         legacy_stop_container >/dev/null 2>&1 || true
@@ -487,12 +676,14 @@ legacy_crossing_before() {
     warn "This machine has a starter kit installation whose database runs in a container."
     info "This kit deploys Exasol Personal instead, so that container is not something it can manage."
     [ -n "$_lcb_container" ] && info "The old database is the container '$_lcb_container' ($_lcb_state)."
-    info "It holds $_lcb_count table(s). Copying them takes a few minutes and changes nothing in the old database."
+    info "It holds $_lcb_total table(s). Copying them takes a few minutes and changes nothing in the old database."
+    [ "$_lcb_sample" -gt 0 ] && legacy_sample_note "$_lcb_count" "$_lcb_sample"
     info "One caveat worth knowing: a text column that held an empty string arrives as NULL."
 
     legacy_choose "$_lcb_count" "$_lcb_can" "$_lcb_why"
     manifest_set legacy.choice "$EXAKIT_LEGACY_CHOICE"
     manifest_set legacy.crossed_from "$_lcb_type"
+    [ "$_lcb_sample" -gt 0 ] && manifest_set legacy.sample_left_out "$EXAKIT_LEGACY_SAMPLE_IDS"
 
     if [ "$EXAKIT_LEGACY_CHOICE" = "migrate" ]; then
         info "Copying $_lcb_count table(s) out of the old database"
@@ -507,7 +698,7 @@ legacy_crossing_before() {
 '
         set -f
         # shellcheck disable=SC2086
-        legacy_export "$EXAKIT_LEGACY_EXPORT_DIR" $_lcb_tables
+        legacy_export "$EXAKIT_LEGACY_EXPORT_DIR" $EXAKIT_LEGACY_OWN_TABLES
         _lcb_exported=$?
         set +f
         IFS="$_lcb_ifs"
@@ -527,6 +718,7 @@ legacy_crossing_before() {
 
     if [ "$EXAKIT_LEGACY_CHOICE" = "skip" ]; then
         info "The old database is left exactly as it was, stopped, with its data."
+        info "To copy it into the new database later: exakit migrate docker-nano"
         _lcb_rm="$(legacy_remove_command 2>/dev/null || true)"
         [ -n "$_lcb_rm" ] && info "When you no longer want it: $_lcb_rm"
     fi
@@ -551,20 +743,247 @@ legacy_crossing_after() {
         warn "Your data could not be restored. The copy is kept at $(ui_tilde "$_lca_dir")."
         return 0
     }
+    legacy_report_restore "$_lca_dir" "this install had already created them" || true
+    echo
+    return 0
+}
 
+# legacy_report_restore <dir> <why-left-alone> — what landed and what did not,
+# after legacy_import. Non-zero when something did not restore, so the copy is
+# named as still needed.
+legacy_report_restore() {
+    _lrs_dir="$1"; _lrs_why="$2"
     ok "Restored ${EXAKIT_LEGACY_RESTORED:-0} table(s) from your previous database"
     if [ "${EXAKIT_LEGACY_SKIPPED:-0}" -gt 0 ]; then
-        info "Left alone (this install had already created them):${EXAKIT_LEGACY_SKIPPED_NAMES}"
+        info "Left alone ($_lrs_why):${EXAKIT_LEGACY_SKIPPED_NAMES}"
     fi
     if [ "${EXAKIT_LEGACY_RESTORE_FAILED:-0}" -gt 0 ]; then
-        warn "${EXAKIT_LEGACY_RESTORE_FAILED} table(s) did not restore — the copies are still at $(ui_tilde "$_lca_dir")"
-        return 0
+        warn "${EXAKIT_LEGACY_RESTORE_FAILED} table(s) did not restore — the copies are still at $(ui_tilde "$_lrs_dir")"
+        return 1
     fi
     # The copy is only removed once every table is accounted for, and the old
     # container still has the original either way.
-    info "The copy at $(ui_tilde "$_lca_dir") is no longer needed; remove it whenever you like."
-    _lca_rm="$(legacy_remove_command 2>/dev/null || true)"
-    [ -n "$_lca_rm" ] && info "The old container still holds the original. To remove it: $_lca_rm"
-    echo
+    info "The copy at $(ui_tilde "$_lrs_dir") is no longer needed; remove it whenever you like."
+    _lrs_rm="$(legacy_remove_command 2>/dev/null || true)"
+    [ -n "$_lrs_rm" ] && info "The old container still holds the original. To remove it: $_lrs_rm"
     return 0
+}
+
+# --- after the install: exakit migrate docker-nano --------------------------
+#
+# The crossing asks once, during an install. Someone who answered "skip" then
+# and wants the data after all, or whose container the installer never saw (made
+# by hand, or by the upstream kit on a machine this kit was installed fresh on),
+# still has a database in a container - and this is the same copy, in one
+# sitting: the old database is read, its tables restored into the deployment
+# that is already running, the kit's own sample data left where it is.
+#
+# THE PORT IS THE COMPLICATION. Both databases want 8563. When the container
+# publishes the deployment's port, the deployment is stopped for the copy out
+# and started again before the copy in; when it does not (a container started
+# on another port), nothing is stopped. The container itself ends as it began -
+# except that one holding the deployment's port stays stopped, because the
+# deployment has to have it back.
+#
+# Configured through the EXAKIT_LEGACY_* variables the accessors read, which the
+# CLI fills from its options and from the record the crossing kept. Returns 0
+# when done (or when there was nothing of the user's to copy), 1 when it failed,
+# 5 when it was declined; EXAKIT_LEGACY_MIGRATE_STATUS and _REASON carry the
+# outcome for the CLI's --json. Nothing here calls die(): the CLI decides how a
+# failure is shown.
+EXAKIT_LEGACY_MIGRATE_STATUS=""
+EXAKIT_LEGACY_MIGRATE_REASON=""
+EXAKIT_LEGACY_MIGRATE_REMEDY=""
+
+_legacy_migrate_fail() {
+    EXAKIT_LEGACY_MIGRATE_STATUS="failed"
+    EXAKIT_LEGACY_MIGRATE_REASON="$1"
+    EXAKIT_LEGACY_MIGRATE_REMEDY="${2:-}"
+    error "$1"
+    [ -n "${2:-}" ] && info "Then: $2"
+    _exakit_log_file "ERROR legacy migrate: $1" 2>/dev/null || true
+    return 1
+}
+
+# _legacy_migrate_settle — everything back the way it was found, except a
+# container on the deployment's port, which stays stopped so the deployment can
+# have the port back. Reads the _lmn_* state legacy_migrate_now sets. Non-zero
+# when the deployment did not come back.
+_legacy_migrate_settle() {
+    if [ "${_lmn_started:-0}" = 1 ] || [ "${_lmn_clash:-0}" = 1 ]; then
+        legacy_stop_container >/dev/null 2>&1 || true
+    fi
+    if [ "${_lmn_db_stopped:-0}" = 1 ] || ! personal_deployment_running >/dev/null 2>&1; then
+        EXAKIT_ACTIVE_LABEL="Starting your database again"
+        personal_start && personal_wait_ready
+    fi
+}
+
+# legacy_migrate_now <yes:0|1>
+legacy_migrate_now() {
+    _lmn_yes="${1:-0}"
+    EXAKIT_LEGACY_MIGRATE_STATUS=""; EXAKIT_LEGACY_MIGRATE_REASON=""; EXAKIT_LEGACY_MIGRATE_REMEDY=""
+    EXAKIT_LEGACY_RESTORED=0; EXAKIT_LEGACY_SKIPPED=0; EXAKIT_LEGACY_RESTORE_FAILED=0
+    EXAKIT_LEGACY_EXPORTED=0; EXAKIT_LEGACY_SAMPLE_IDS=""
+    _lmn_container="$(legacy_container)"
+    _lmn_engine_name="$(legacy_engine_name)"
+    [ -n "$_lmn_container" ] || { _legacy_migrate_fail "No container is named. Say which one holds the old database: exakit migrate docker-nano --container <name>"; return 1; }
+    [ -n "$(legacy_engine)" ] || { _legacy_migrate_fail "The container engine '${_lmn_engine_name:-?}' is not on this machine, so the container '$_lmn_container' cannot be reached." "exakit migrate docker-nano --engine docker|podman"; return 1; }
+    _lmn_state="$(legacy_container_state)"
+    case "$_lmn_state" in
+        absent)  _legacy_migrate_fail "There is no container named '$_lmn_container' in $_lmn_engine_name. List them with '$_lmn_engine_name ps -a' and name the right one with --container." ; return 1 ;;
+        unknown) _legacy_migrate_fail "$_lmn_engine_name did not answer about the container '$_lmn_container'. Is the engine running?" ; return 1 ;;
+    esac
+    _lmn_exapump="$(exapump_cli)"
+    if ! command -v "$_lmn_exapump" >/dev/null 2>&1 && [ ! -x "$_lmn_exapump" ]; then
+        _legacy_migrate_fail "exapump is not installed, and it is what reads the tables out." "exakit update"
+        return 1
+    fi
+
+    # A copy from an earlier run that never landed is finished first: it is
+    # the user's data, waiting, and a fresh copy over it would destroy it.
+    _lmn_dir="$EXAKIT_LEGACY_EXPORT_DIR"
+    if [ -s "$_lmn_dir/index" ] && [ -z "$(manifest_get legacy.restored 2>/dev/null || true)" ]; then
+        info "A copy from an earlier run is waiting at $(ui_tilde "$_lmn_dir") — restoring it first"
+        if ! legacy_import "$_lmn_dir"; then
+            _legacy_migrate_fail "The waiting copy could not be restored; it is kept at $(ui_tilde "$_lmn_dir")."
+            return 1
+        fi
+        legacy_report_restore "$_lmn_dir" "the new database already had them" || true
+        manifest_set legacy.choice "migrate"
+        manifest_set legacy.crossing_done true
+        info "Run the command again for a fresh copy of what is in the container now."
+        EXAKIT_LEGACY_MIGRATE_STATUS="done"
+        return 0
+    fi
+
+    # THE PORT. The container's published port against the deployment's.
+    _lmn_dsn="$(legacy_dsn)"
+    _lmn_port="${_lmn_dsn##*:}"
+    _lmn_db_port="$(personal_db_port 2>/dev/null || printf '%s' "${EXAKIT_PERSONAL_PORT:-8563}")"
+    _lmn_clash=0
+    [ "$_lmn_port" = "$_lmn_db_port" ] && _lmn_clash=1
+    _lmn_db_running=0
+    personal_deployment_running >/dev/null 2>&1 && _lmn_db_running=1
+
+    echo
+    info "Copying the tables of the container '$_lmn_container' ($_lmn_engine_name, $_lmn_state) into your database."
+    info "The kit's bundled sample data is left out — the kit loads that itself. Nothing in the container is changed or removed."
+    info "One caveat worth knowing: a text column that held an empty string arrives as NULL."
+    if [ "$_lmn_clash" = 1 ] && [ "$_lmn_db_running" = 1 ]; then
+        warn "The container publishes port $_lmn_port, the port your database uses, so the two cannot run at once."
+        info "Your database is stopped while the tables are copied out, and started again before they are copied in."
+    fi
+    if [ "$_lmn_yes" != 1 ]; then
+        if ! confirm "Go ahead?" y; then
+            info "Nothing was changed."
+            EXAKIT_LEGACY_MIGRATE_STATUS="declined"
+            return 5
+        fi
+    fi
+
+    _lmn_db_stopped=0
+    if [ "$_lmn_clash" = 1 ] && [ "$_lmn_db_running" = 1 ]; then
+        EXAKIT_ACTIVE_LABEL="Stopping your database for the copy"
+        if ! personal_stop; then
+            _legacy_migrate_fail "Your database could not be stopped, so the container cannot take the port." "exakit stop, then exakit migrate docker-nano"
+            return 1
+        fi
+        _lmn_db_stopped=1
+    fi
+    _lmn_started=0
+    if [ "$_lmn_state" != "running" ]; then
+        info "Starting the container '$_lmn_container'"
+        if ! legacy_start_container; then
+            [ "$_lmn_db_stopped" = 1 ] && { personal_start || true; }
+            _legacy_migrate_fail "The container '$_lmn_container' would not start (see '$_lmn_engine_name logs $_lmn_container')."
+            return 1
+        fi
+        _lmn_started=1
+    fi
+    _lmn_ok=0
+    if ! legacy_write_profile; then
+        _lmn_why="The password of the old database is not on file. Pass it with --password-file <path> (a file holding only the password), or answer the prompt on a terminal."
+    else
+        _lmn_budget="${EXAKIT_LEGACY_READY_TIMEOUT:-120}"
+        [ "$_lmn_started" -eq 0 ] && _lmn_budget=10
+        EXAKIT_ACTIVE_LABEL="Waiting for the old database to answer"
+        if legacy_wait_db_answers "$_lmn_budget"; then
+            _lmn_ok=1
+        else
+            _lmn_why="The old database did not answer within ${_lmn_budget}s. Is the password right, and is $_lmn_dsn where the container listens ('$_lmn_engine_name port $_lmn_container')?"
+        fi
+    fi
+    if [ "$_lmn_ok" != 1 ]; then
+        _legacy_migrate_settle || true
+        _legacy_migrate_fail "$_lmn_why"
+        return 1
+    fi
+
+    _lmn_tables="$(legacy_tables)"
+    _lmn_total="$(legacy_count_lines "$_lmn_tables")"
+    legacy_classify "$_lmn_tables"
+    _lmn_sample="$(legacy_count_lines "$EXAKIT_LEGACY_SAMPLE_TABLES")"
+    _lmn_own="$(legacy_count_lines "$EXAKIT_LEGACY_OWN_TABLES")"
+    [ "$_lmn_sample" -gt 0 ] && manifest_set legacy.sample_left_out "$EXAKIT_LEGACY_SAMPLE_IDS"
+    if [ "$_lmn_own" -eq 0 ]; then
+        if [ "$_lmn_sample" -gt 0 ]; then
+            info "The container holds $_lmn_total table(s), all of them the kit's bundled sample data ($EXAKIT_LEGACY_SAMPLE_IDS), unchanged — nothing of yours to copy."
+            info "The kit loads that data itself: exakit data-load"
+        else
+            info "The old database has no tables in it — nothing to copy."
+        fi
+        _legacy_migrate_settle || true
+        manifest_set legacy.choice "migrate"
+        manifest_set legacy.crossing_done true
+        EXAKIT_LEGACY_MIGRATE_STATUS="nothing"
+        return 0
+    fi
+
+    info "The container holds $_lmn_total table(s)."
+    [ "$_lmn_sample" -gt 0 ] && legacy_sample_note "$_lmn_own" "$_lmn_sample"
+    # A copy that was restored before is spent; its files go before the new one
+    # lands, or a smaller export would leave the old one's tail beside it.
+    [ -s "$_lmn_dir/index" ] && rm -rf "$_lmn_dir"
+    manifest_del legacy.restored 2>/dev/null || true
+    manifest_del legacy.restore_skipped 2>/dev/null || true
+    manifest_del legacy.restore_failed 2>/dev/null || true
+    info "Copying $_lmn_own table(s) out of the old database"
+    _lmn_ifs="$IFS"; IFS='
+'
+    set -f
+    # shellcheck disable=SC2086
+    legacy_export "$_lmn_dir" $EXAKIT_LEGACY_OWN_TABLES
+    _lmn_exported=$?
+    set +f
+    IFS="$_lmn_ifs"
+    EXAKIT_LEGACY_EXPORTED="$(manifest_get legacy.exported 2>/dev/null || printf '0')"
+    if [ "$_lmn_exported" -ne 0 ]; then
+        _legacy_migrate_settle || true
+        _legacy_migrate_fail "Nothing could be copied out. The old database is untouched; nothing is lost."
+        return 1
+    fi
+    manifest_set legacy.export_dir "$_lmn_dir"
+    ok "Copied ${EXAKIT_LEGACY_EXPORTED} table(s) out; they are saved at $(ui_tilde "$_lmn_dir")"
+
+    if ! _legacy_migrate_settle; then
+        _legacy_migrate_fail "Your database did not come back, so the copy is not restored yet. It is kept at $(ui_tilde "$_lmn_dir")." "exakit start, then exakit migrate docker-nano"
+        return 1
+    fi
+    info "Restoring your data into the new database"
+    if ! legacy_import "$_lmn_dir"; then
+        _legacy_migrate_fail "Your data could not be restored. The copy is kept at $(ui_tilde "$_lmn_dir")." "exakit migrate docker-nano"
+        return 1
+    fi
+    manifest_set legacy.choice "migrate"
+    manifest_set legacy.crossing_done true
+    manifest_set legacy.migrated_at "$(_exakit_ts 2>/dev/null || true)"
+    if legacy_report_restore "$_lmn_dir" "the new database already had them"; then
+        EXAKIT_LEGACY_MIGRATE_STATUS="done"
+        return 0
+    fi
+    EXAKIT_LEGACY_MIGRATE_STATUS="partial"
+    EXAKIT_LEGACY_MIGRATE_REASON="${EXAKIT_LEGACY_RESTORE_FAILED} table(s) did not restore"
+    EXAKIT_LEGACY_MIGRATE_REMEDY="exakit migrate docker-nano"
+    return 1
 }

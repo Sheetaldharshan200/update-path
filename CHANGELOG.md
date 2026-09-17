@@ -8,11 +8,11 @@
 block in versions.json, the `EXAKIT_RUNTIME` knob and the `EXAKIT_NANO_*`
 variables. The launcher now deploys the database on macOS, native Linux
 (through Podman, which the gate checks and names) and Windows x86_64 (host
-Podman, which the launcher installs itself when missing). The two platforms
-Exasol Personal does not support — **WSL** and **Windows arm64** — are refused
-before anything is downloaded, with the support matrix named and nothing
-changed on the machine; there is no silent reroute, because there is nowhere
-left to reroute to.
+Podman, which the launcher installs itself when missing). WSL takes the Linux
+road, with Podman inside the distro (see below). The one platform Exasol
+Personal does not support — **Windows arm64** — is refused before anything is
+downloaded, with the support matrix named and nothing changed on the machine;
+there is no silent reroute, because there is nowhere left to reroute to.
 
 - `setup/setup-wsl.sh` is now `setup/setup-linux.sh`, matching what it
   installs. `quickstarts/windows-wsl.md` is removed and its readers are sent to
@@ -59,6 +59,58 @@ the tables have been counted.
 `EXAKIT_LEGACY_DATA=migrate|skip` pre-answers the question. An unattended run
 with no answer **skips**: copying a database is not something to start on
 someone's behalf while they are not there, and skipping destroys nothing.
+
+**The kit's own sample data is not "my data", and is left out of the copy.** A
+bundled dataset (TPC-H, energy, weather) found in the old database with the
+same tables and the same row counts as the kit ships — `EXA_ALL_TABLES` keeps
+the count, one query for every sample schema, checked exact against a real Nano
+— is the kit's, unchanged, and the install loads it itself. Copying it out and
+in again spent minutes on tables the new database already had, and the restore
+then had to refuse each one as "already created". The offer now says "It holds
+11 table(s). 8 of them belong to the kit's bundled sample data (tpch), unchanged
+— the kit loads that itself, so they are not copied. Your own: 3 table(s)", and
+the copy is the three. A sample table the user has changed (rows added or
+deleted, so the count differs) is theirs and travels; a count the database
+cannot give is not evidence of anything and the table travels too. A container
+holding nothing but the kit's sample passes in the same silence as an empty
+one, with the reason in the log and `legacy.sample_left_out` in the record.
+
+**`exakit migrate docker-nano` — the same copy, after the install.** The
+installer asks once; this is for the machine that answered skip (or was never
+asked, in an unattended run) and wants the data after all, and for a container
+the installer never saw: made by hand with `docker run exasol/nano`, or by the
+upstream kit on a machine this kit was installed fresh on. Every non-system
+table is copied out while the container runs and restored into the running
+deployment with its types preserved, the sample data left out as above, nothing
+in the container changed or removed. **The port is the complication**: both
+databases want 8563, so when the container publishes the deployment's port the
+deployment is stopped for the copy out and started again before the copy in —
+said before the confirmation, never silently; a container on another port costs
+no downtime. The container ends as it began, except one holding the
+deployment's port stays stopped. What is not named (`--container`, `--engine
+docker|podman`, `--dsn`, `--user`) comes from the record the crossing now keeps
+under `legacy.*` before the deployment overwrites `runtime.*` — so a skip
+answered today needs no options when it is reversed next month — then from the
+old install's own record, then from the machine (which engine answers for the
+container, which port it publishes), then from an older kit's defaults. **The
+password never travels on a command line**: there is no `--password`, and
+asking for one is refused with the alternatives named — `--password-file`,
+`EXAKIT_LEGACY_PASSWORD` for a scripted run, or a prompt on a terminal that
+does not echo. A copy that did not finish is kept and restored first by the
+next run; a copy that did is cleared before a fresh one lands. Exit codes are
+the kit's closed set (`0` done or nothing of yours to copy, `1` not finished,
+`2` bad input, `3` no deployment to copy into, `4` not installed, `5` not
+confirmed) and `--json` answers with one object. `exakit status` names an
+old database that was not copied as `Old database … not copied` with the
+command, and `status --json` carries it as `legacy_database` with `copied`
+and `command`. Both halves of the mirror; `tests/legacy-crossing.sh`,
+`tests/legacy-crossing-resilience.sh` and `tests/legacy-crossing-ps.ps1` drive
+the sample check and the migrate road through the fault engine, exapump and a
+new Personal-runtime stub (`tests/lib/legacy-fault-personal.*`) — a clash and
+no clash, a stopped container, a declined prompt, an absent container, a gone
+engine, no password, a silent database, a container that will not start, a
+deployment that will not stop or does not come back, only sample data, every
+export failing, a partial restore, a waiting copy, a second fresh copy.
 
 - **A kit installed before this change cannot self-update past it.** The
   payload validator in every older copy requires `setup/lib/runtime-nano.sh`,

@@ -25,6 +25,14 @@
 #                       launcher reports it interrupted and every start fails);
 #                       DESTRUCTIVE — the deployment is replaced and its data
 #                       is gone, bundled datasets are reloaded afterwards
+#   migrate docker-nano [--container NAME] [--engine docker|podman]
+#                       [--dsn HOST:PORT] [--user USER] [--password-file PATH]
+#                       [--yes] [--json]
+#                       copy the tables of an older kit's container database
+#                       (Exasol Nano in Docker or Podman) into this database,
+#                       for a machine that skipped the offer at install time or
+#                       never got it; the kit's own sample data is left out and
+#                       the container is never removed
 #   autostart           whether everything comes back after a restart; shows
 #                       the current state and asks whether to change it
 #   data-load [--force|<path>]
@@ -106,6 +114,9 @@ fi
 . "$_lib_dir/runtime-personal.sh"
 [ -f "$_lib_dir/help.sh" ] && . "$_lib_dir/help.sh"
 [ -f "$_lib_dir/exapump.sh" ] && . "$_lib_dir/exapump.sh"
+# The crossing module: `exakit migrate docker-nano` is its after-the-install
+# road, and `exakit status` reads what it remembered about the old database.
+[ -f "$_lib_dir/legacy-crossing.sh" ] && . "$_lib_dir/legacy-crossing.sh"
 [ -f "$_lib_dir/mcp.sh" ] && . "$_lib_dir/mcp.sh"
 # pyexasol is an update target of its own (and its own repair command), so the
 # CLI needs the module even though it takes no part in the runtime commands.
@@ -307,6 +318,13 @@ cmd_status() {
     if [ -n "$_cs_step" ] && exakit_lock_holder_alive "$EXAKIT_HOME/.install.lock"; then
         _cs_installing=1
     fi
+    # What the crossing remembered about an older kit's container database, if
+    # anything: where it is, what was answered, whether its tables landed.
+    _cs_legacy_c="$(manifest_get legacy.container 2>/dev/null || true)"
+    _cs_legacy_e="$(manifest_get legacy.engine 2>/dev/null || true)"
+    _cs_legacy_choice="$(manifest_get legacy.choice 2>/dev/null || true)"
+    _cs_legacy_restored="$(manifest_get legacy.restored 2>/dev/null || true)"
+    _cs_legacy_sample="$(manifest_get legacy.sample_left_out 2>/dev/null || true)"
 
     if [ "$_cs_json" -eq 1 ]; then
         # Composed in Python so every value is escaped properly; the service
@@ -349,9 +367,11 @@ cmd_status() {
             exit 3
         fi
         run_python_any - "$(manifest_get kit_level 2>/dev/null)" "${_type:-}" "$_cs_db"             "${_cs_autostart:-false}" "$_cs_datasets" "${_cs_pyx:-}" "$EXAKIT_MANIFEST"             "$(manifest_get steps_completed 2>/dev/null)" "$_cs_services" "$_cs_note" "$_cs_note_at" \
-            "$_cs_installing" "$_cs_step" "$_cs_urls" "$(exakit_install_command)" <<'EXAKIT_SJ_PY'
+            "$_cs_installing" "$_cs_step" "$_cs_urls" "$(exakit_install_command)" \
+            "$_cs_legacy_c" "$_cs_legacy_e" "$_cs_legacy_choice" "$_cs_legacy_restored" "$_cs_legacy_sample" <<'EXAKIT_SJ_PY'
 import json, sys
 kit, rtype, db, autostart, datasets, pyx, manifest, steps, services, note, note_at, installing, step, urls, install_cmd = sys.argv[1:16]
+legacy_c, legacy_e, legacy_choice, legacy_restored, legacy_sample = (sys.argv[16:21] + [""] * 5)[:5]
 installing = installing == "1"
 try:
     steps_list = json.loads(steps) if steps else []
@@ -484,6 +504,21 @@ payload = {
     "last_failure_at": note_at or None,
     "manifest": manifest,
 }
+# An older kit's container database, as the crossing recorded it. Only present
+# when there is one: `copied` says whether its tables are in this database, and
+# `command` is the runnable way to bring them across while they are not. Not a
+# remedy - nothing is broken - so it lives here rather than in `remedies`.
+if legacy_c:
+    pending = legacy_choice == "skip" and not legacy_restored
+    payload["legacy_database"] = {
+        "container": legacy_c,
+        "engine": legacy_e or None,
+        "choice": legacy_choice or None,
+        "copied": not pending,
+        "restored_tables": int(legacy_restored) if legacy_restored.isdigit() else None,
+        "sample_left_out": legacy_sample.split(",") if legacy_sample else [],
+        "command": "exakit migrate docker-nano" if pending else None,
+    }
 print(json.dumps(payload, indent=2))
 EXAKIT_SJ_PY
         # 0 means healthy AND complete: while the installer runs, a poller that
@@ -531,6 +566,12 @@ EXAKIT_SJ_PY
         ui_panel_line "$(_cs_pad 'Runtime' "$_type · from an older kit, not managed here")"
     else
         ui_panel_line "$(_cs_pad 'Runtime' "${_type:-none} · $_cs_db")"
+    fi
+    # An older kit's container database that was NOT copied across: the
+    # crossing recorded it and the user answered skip (or was never asked, in an
+    # unattended run). Named here, with the command that copies it, until it is.
+    if [ -n "$_cs_legacy_c" ] && [ "$_cs_legacy_choice" = "skip" ] && [ -z "$_cs_legacy_restored" ]; then
+        ui_panel_line "$(_cs_pad 'Old database' "container '$_cs_legacy_c' ($_cs_legacy_e) · not copied — bring its tables across: exakit migrate docker-nano")"
     fi
     ui_panel_line "$(_cs_pad 'Database' "$(manifest_get runtime.dsn 2>/dev/null || printf 'unknown')$(
         if [ "$_cs_running" -eq 1 ]; then printf ' · reachable'
@@ -926,6 +967,190 @@ cmd_repair_runtime() {
         return 3
     fi
     exec bash "$_rr_kit/$_rr_setup"
+}
+
+# cmd_migrate docker-nano [options] — the after-the-install road of the legacy
+# crossing (setup/lib/legacy-crossing.sh, legacy_migrate_now).
+#
+# The installer asks about an older kit's container database exactly once. This
+# is for the machine that answered "skip" and wants the data after all, and for
+# the one whose container the installer never saw - made by hand with `docker
+# run exasol/nano`, or by the upstream kit on a machine this kit was installed
+# fresh on. Everything the copy needs can be named on the command line; what is
+# not named comes from the record the crossing kept (legacy.*), then from the
+# old install's own record, then from the machine (which engine answers for the
+# container, which port it publishes), and last from the defaults an older kit
+# used (the container `exasol-nano`, the user `sys`).
+#
+# THE PASSWORD NEVER TRAVELS ON A COMMAND LINE. `ps` is readable by every process
+# on the machine, so there is no --password: it comes from a file (--password-
+# file, or the one an older kit recorded), from EXAKIT_LEGACY_PASSWORD in the
+# environment for a scripted run, or from a prompt on a terminal.
+#
+# Exit codes are the kit's closed set: 0 done (or nothing of yours to copy),
+# 1 the copy did not finish (the reason and the copies' location are printed),
+# 2 bad input, 3 no deployment or no exapump to copy with, 4 not installed,
+# 5 not confirmed. --json prints one object on stdout and narrates on stderr.
+cmd_migrate() {
+    _mg_source="${1:-}"
+    [ $# -gt 0 ] && shift
+    _mg_json=0
+    for _mg_a in "$@"; do case "$_mg_a" in --json|-j) _mg_json=1 ;; esac; done
+    # A refusal in JSON is an object with rejected: true and exit 2, the shape
+    # `exakit sql` already answers with, so one parser reads both.
+    _mg_reject() {
+        if [ "$_mg_json" -eq 1 ]; then
+            printf '{"ok": false, "error": "%s", "remedy": null, "rejected": true}\n' "$(_mg_js "$1")"
+            exit 2
+        fi
+        reject "$1"
+    }
+    _mg_js() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g' | tr -d '\n'; }
+    _mg_usage="exakit migrate docker-nano [--container NAME] [--engine docker|podman] [--dsn HOST:PORT] [--user USER] [--password-file PATH] [--yes] [--json]"
+    case "$_mg_source" in
+        docker-nano) ;;
+        ''|-*) _mg_reject "migrate needs a source. The one there is: $_mg_usage" ;;
+        *) _mg_reject "Unknown migration source '$_mg_source' (known: docker-nano)." ;;
+    esac
+    _mg_yes=0; _mg_container=""; _mg_engine=""; _mg_dsn=""; _mg_user=""; _mg_pwfile=""
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --container=*)     _mg_container="${1#*=}" ;;
+            --container)       shift; _mg_container="${1:-}"; [ -n "$_mg_container" ] || _mg_reject "--container needs the container's name." ;;
+            --engine=*)        _mg_engine="${1#*=}" ;;
+            --engine)          shift; _mg_engine="${1:-}"; [ -n "$_mg_engine" ] || _mg_reject "--engine needs docker or podman." ;;
+            --dsn=*)           _mg_dsn="${1#*=}" ;;
+            --dsn)             shift; _mg_dsn="${1:-}"; [ -n "$_mg_dsn" ] || _mg_reject "--dsn needs HOST:PORT." ;;
+            --user=*)          _mg_user="${1#*=}" ;;
+            --user)            shift; _mg_user="${1:-}"; [ -n "$_mg_user" ] || _mg_reject "--user needs a database user." ;;
+            --password-file=*) _mg_pwfile="${1#*=}" ;;
+            --password-file)   shift; _mg_pwfile="${1:-}"; [ -n "$_mg_pwfile" ] || _mg_reject "--password-file needs a path." ;;
+            --password|--password=*) _mg_reject "A password does not go on the command line, where every process can read it. Put it in a file and pass --password-file <path>, set EXAKIT_LEGACY_PASSWORD, or answer the prompt." ;;
+            --yes|-y)          _mg_yes=1 ;;
+            --json|-j)         ;;
+            *) _mg_reject "Unknown option '$1' for migrate (supported: --container, --engine, --dsn, --user, --password-file, --yes, --json)." ;;
+        esac
+        shift
+    done
+    case "$_mg_engine" in
+        ''|docker|podman) ;;
+        *) _mg_reject "--engine must be docker or podman, not '$_mg_engine'." ;;
+    esac
+    case "$_mg_dsn" in
+        ''|*:[0-9]*) ;;
+        *) _mg_reject "--dsn must be HOST:PORT, e.g. 127.0.0.1:8563." ;;
+    esac
+    [ -z "$_mg_pwfile" ] || [ -s "$_mg_pwfile" ] || _mg_reject "--password-file: $_mg_pwfile is missing or empty."
+
+    _require_install "$_mg_json"
+    # One answer for a failure BEFORE the copy: the same three keys every state
+    # query carries, exit 3 - the code for "installed, but not usable for this".
+    _mg_refuse() {
+        if [ "$_mg_json" -eq 1 ]; then
+            printf '{"ok": false, "installed": true, "status": "%s", "error": "%s", "remedy": "%s"}\n' \
+                "$(_mg_js "$1")" "$(_mg_js "$2")" "$(_mg_js "$3")"
+            exit 3
+        fi
+        error "$2"
+        info "Then: $3"
+        exit 3
+    }
+    [ "$(_runtime_type)" = "personal" ] || \
+        _mg_refuse "no database" "This install has no Exasol Personal deployment to copy into yet." "$(exakit_install_command)"
+    command -v legacy_migrate_now >/dev/null 2>&1 || \
+        die "This kit copy has no setup/lib/legacy-crossing.sh, which migrate runs. Re-run the installer to repair the copy."
+
+    # What was named, then what the crossing remembered (legacy.*), then the old
+    # install's own record - runtime.* is only the OLD database's when the
+    # record still says the runtime is a container - then the machine.
+    _mg_legacy_rt=0
+    exakit_legacy_runtime_recorded 2>/dev/null && _mg_legacy_rt=1
+    _mg_rec() { manifest_get "legacy.$1" 2>/dev/null || true; }
+    _mg_old() { [ "$_mg_legacy_rt" = 1 ] && manifest_get "runtime.$1" 2>/dev/null || true; }
+    EXAKIT_LEGACY_CONTAINER="${_mg_container:-$(_mg_rec container)}"
+    [ -n "$EXAKIT_LEGACY_CONTAINER" ] || EXAKIT_LEGACY_CONTAINER="$(_mg_old container)"
+    [ -n "$EXAKIT_LEGACY_CONTAINER" ] || EXAKIT_LEGACY_CONTAINER="exasol-nano"
+    EXAKIT_LEGACY_VOLUME="$(_mg_rec volume)"
+    [ -n "$EXAKIT_LEGACY_VOLUME" ] || EXAKIT_LEGACY_VOLUME="$(_mg_old volume)"
+    EXAKIT_LEGACY_USER="${_mg_user:-$(_mg_rec user)}"
+    [ -n "$EXAKIT_LEGACY_USER" ] || EXAKIT_LEGACY_USER="$(_mg_old user)"
+    [ -n "$EXAKIT_LEGACY_USER" ] || EXAKIT_LEGACY_USER="sys"
+    EXAKIT_LEGACY_ENGINE="${_mg_engine:-$(_mg_rec engine)}"
+    [ -n "$EXAKIT_LEGACY_ENGINE" ] || EXAKIT_LEGACY_ENGINE="$(_mg_old engine)"
+    if [ -z "$EXAKIT_LEGACY_ENGINE" ]; then
+        # Whichever engine on this machine knows a container by that name.
+        for _mg_e in docker podman; do
+            command -v "$_mg_e" >/dev/null 2>&1 || continue
+            if exakit_run_bounded "${EXAKIT_ENGINE_PROBE_TIMEOUT:-20}" "$_mg_e" container inspect "$EXAKIT_LEGACY_CONTAINER" >/dev/null 2>&1; then
+                EXAKIT_LEGACY_ENGINE="$_mg_e"; break
+            fi
+        done
+        [ -n "$EXAKIT_LEGACY_ENGINE" ] || _mg_refuse "no container" \
+            "Neither docker nor podman on this machine has a container named '$EXAKIT_LEGACY_CONTAINER'." \
+            "exakit migrate docker-nano --engine docker --container <name>   (list them with: docker ps -a, or podman ps -a)"
+    fi
+    EXAKIT_LEGACY_DSN="${_mg_dsn:-$(_mg_rec dsn)}"
+    [ -n "$EXAKIT_LEGACY_DSN" ] || EXAKIT_LEGACY_DSN="$(_mg_old dsn)"
+    if [ -z "$EXAKIT_LEGACY_DSN" ]; then
+        # The port the container publishes for 8563, as the engine reports it
+        # ("127.0.0.1:8563", or "0.0.0.0:8563" - either way the host is local).
+        _mg_port="$(exakit_run_bounded "${EXAKIT_ENGINE_PROBE_TIMEOUT:-20}" "$EXAKIT_LEGACY_ENGINE" port "$EXAKIT_LEGACY_CONTAINER" 8563/tcp 2>/dev/null | grep -v '^\[' | head -1 | sed 's/.*://')"
+        case "$_mg_port" in
+            ''|*[!0-9]*) _mg_port=8563 ;;
+        esac
+        EXAKIT_LEGACY_DSN="127.0.0.1:$_mg_port"
+    fi
+    # The password: a named file, the environment, the recorded file, the
+    # credential an older kit kept, and last a prompt - on a terminal only.
+    EXAKIT_LEGACY_PASSWORD_FILE=""
+    if [ -n "$_mg_pwfile" ]; then
+        EXAKIT_LEGACY_PASSWORD_FILE="$_mg_pwfile"
+    elif [ -z "${EXAKIT_LEGACY_PASSWORD:-}" ]; then
+        _mg_pf="$(_mg_rec password_file)"
+        [ -n "$_mg_pf" ] && [ -s "$_mg_pf" ] || _mg_pf="$(_mg_old password_file)"
+        [ -n "$_mg_pf" ] && [ -s "$_mg_pf" ] || _mg_pf="$EXAKIT_CREDS_DIR/nano_sys_password"
+        if [ -s "$_mg_pf" ]; then
+            EXAKIT_LEGACY_PASSWORD_FILE="$_mg_pf"
+        else
+            _mg_tty="$(_exakit_prompt_tty 2>/dev/null || true)"
+            [ "$_mg_json" -eq 1 ] && _mg_tty=""
+            if [ -n "$_mg_tty" ]; then
+                [ "$_mg_tty" = stdin ] && _mg_tty=/dev/stdin
+                printf '    %s?%s Password of the %s user in the old database (not shown): ' "${UI_ASK:-}" "${UI_RESET:-}" "$EXAKIT_LEGACY_USER" > "$_mg_tty"
+                IFS= read -rs EXAKIT_LEGACY_PASSWORD < "$_mg_tty" || EXAKIT_LEGACY_PASSWORD=""
+                printf '\n' > "$_mg_tty"
+                [ -n "$EXAKIT_LEGACY_PASSWORD" ] || _mg_reject "No password was given."
+            else
+                _mg_refuse "no password" \
+                    "The old database's password is not on file, and there is no terminal to ask on." \
+                    "exakit migrate docker-nano --password-file <path>   (a file holding only the password; or set EXAKIT_LEGACY_PASSWORD)"
+            fi
+        fi
+    fi
+
+    exakit_init_logging 2>/dev/null || true
+    if [ "$_mg_json" -eq 1 ]; then
+        # The narration goes to stderr; stdout carries one object and nothing else.
+        legacy_migrate_now "$_mg_yes" >&2
+        _mg_rc=$?
+        _mg_ok=false
+        case "$EXAKIT_LEGACY_MIGRATE_STATUS" in done|nothing) _mg_ok=true ;; esac
+        _mg_remedy=null
+        [ -n "${EXAKIT_LEGACY_MIGRATE_REMEDY:-}" ] && _mg_remedy="\"$(_mg_js "$EXAKIT_LEGACY_MIGRATE_REMEDY")\""
+        [ "$EXAKIT_LEGACY_MIGRATE_STATUS" = declined ] && _mg_remedy='"exakit migrate docker-nano --yes"'
+        _mg_reason=null
+        [ -n "${EXAKIT_LEGACY_MIGRATE_REASON:-}" ] && _mg_reason="\"$(_mg_js "$EXAKIT_LEGACY_MIGRATE_REASON")\""
+        _mg_sample="[]"
+        [ -n "${EXAKIT_LEGACY_SAMPLE_IDS:-}" ] && _mg_sample="[\"$(printf '%s' "$EXAKIT_LEGACY_SAMPLE_IDS" | sed 's/,/", "/g')\"]"
+        printf '{"ok": %s, "installed": true, "status": "%s", "container": "%s", "engine": "%s", "dsn": "%s", "copied_out": %s, "restored": %s, "left_alone": %s, "failed": %s, "sample_left_out": %s, "reason": %s, "remedy": %s}\n' \
+            "$_mg_ok" "$(_mg_js "${EXAKIT_LEGACY_MIGRATE_STATUS:-failed}")" \
+            "$(_mg_js "$EXAKIT_LEGACY_CONTAINER")" "$(_mg_js "$EXAKIT_LEGACY_ENGINE")" "$(_mg_js "$EXAKIT_LEGACY_DSN")" \
+            "${EXAKIT_LEGACY_EXPORTED:-0}" "${EXAKIT_LEGACY_RESTORED:-0}" "${EXAKIT_LEGACY_SKIPPED:-0}" "${EXAKIT_LEGACY_RESTORE_FAILED:-0}" \
+            "$_mg_sample" "$_mg_reason" "$_mg_remedy"
+        exit "$_mg_rc"
+    fi
+    legacy_migrate_now "$_mg_yes"
+    exit $?
 }
 
 # cmd_autostart — one command: show where it stands, then offer to flip it.
@@ -1957,6 +2182,7 @@ case "${1:-help}" in
     start)    shift; _exakit_refuse_unknown_options start "" "$@"; _with_notice cmd_start ;;
     stop)     shift; _exakit_refuse_unknown_options stop "" "$@"; _with_notice cmd_stop ;;
     repair-runtime) shift; cmd_repair_runtime "$@" ;;
+    migrate)  shift; cmd_migrate "$@" ;;
     autostart) shift; _with_notice cmd_autostart "$@" ;;
     data-load) shift; _with_notice cmd_data_load "${1:-}" ;;
     mcp-setup) shift; _with_notice cmd_mcp_setup "$@" ;;

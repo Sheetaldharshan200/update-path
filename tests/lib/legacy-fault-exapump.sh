@@ -10,6 +10,8 @@
 #
 #   db.answer_after   the probe answers from this call on; "never" never  (1)
 #   db.tables         SCHEMA.TABLE per line, what EXA_ALL_TABLES reports  (none)
+#   db.rows           SCHEMA.TABLE|ROWS per line, the row count the
+#                     sample-data check reads off EXA_ALL_TABLES           (none)
 #   db.columns        SCHEMA.TABLE|NAME<<:>>TYPE per line                 (none)
 #   export.fail       SCHEMA.TABLE per line whose export fails
 #   export.rows       the CSV body every successful export writes         (A,B/1,2)
@@ -40,6 +42,11 @@ case "$_sub" in
                 _n="$(( $(_read probe.count 0) + 1 ))"; printf '%s' "$_n" > "$_dir/probe.count"
                 _after="$(_read db.answer_after 1)"
                 [ "$_after" != never ] && [ "$_n" -ge "$_after" ] && printf 'EXAKIT_LEGACY_OK\n'
+                exit 0 ;;
+            # The row-count query names EXA_ALL_TABLES too, so it is told apart by
+            # its own sentinel, and BEFORE the table listing.
+            *EXAKIT_LR*)
+                [ -f "$_dir/db.rows" ] && sed 's/^/EXAKIT_LR[/; s/|/<<:>>/; s/$/]/' "$_dir/db.rows"
                 exit 0 ;;
             *EXA_ALL_TABLES*)
                 [ -f "$_dir/db.tables" ] && sed 's/^/EXAKIT_LT[/; s/$/]/' "$_dir/db.tables"

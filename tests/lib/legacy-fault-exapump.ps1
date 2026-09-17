@@ -46,6 +46,17 @@ switch ($sub) {
             if ($after -ne "never" -and $n -ge [int]$after) { Write-Output "EXAKIT_LEGACY_OK" }
             exit 0
         }
+        # The row-count query names EXA_ALL_TABLES too, so it is told apart by
+        # its own sentinel, and BEFORE the table listing.
+        if ($sql -match "EXAKIT_LR") {
+            $p = Join-Path $dir "db.rows"
+            if (Test-Path $p) {
+                foreach ($line in (Get-Content $p)) {
+                    if ($line -match '^([^|]+)\|(.*)$') { Write-Output ("EXAKIT_LR[" + $Matches[1] + "<<:>>" + $Matches[2] + "]") }
+                }
+            }
+            exit 0
+        }
         if ($sql -match "EXA_ALL_TABLES") {
             $p = Join-Path $dir "db.tables"
             if (Test-Path $p) { foreach ($t in (Get-Content $p)) { if ($t) { Write-Output "EXAKIT_LT[$t]" } } }
