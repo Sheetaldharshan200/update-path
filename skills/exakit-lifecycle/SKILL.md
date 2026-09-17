@@ -92,6 +92,46 @@ stays, and the command that deletes it is printed rather than run. A table the
 fresh install already created is left alone rather than appended to, and named
 in the summary.
 
+**The kit's own sample data is not "my data".** A bundled dataset (TPC-H,
+energy, weather) found in the old database with the same tables and row counts
+as the kit ships is left out of the copy and named as such — the install loads
+it itself, and `exakit data-load` puts it back any time. A sample table the
+user has changed travels with the rest. `status --json` records what was left
+out under `legacy_database.sample_left_out`.
+
+### After the install: `exakit migrate docker-nano`
+
+The same copy, later, for a machine that answered **skip** (or was never
+asked, in an unattended run) and for a container the installer never saw —
+made by hand with `docker run exasol/nano`, or by the upstream kit. `exakit
+status` names such a container as `Old database … not copied`, and
+`status --json` carries it as `legacy_database` with `copied: false` and
+`command: "exakit migrate docker-nano"`.
+
+```bash
+exakit migrate docker-nano                                    # the container the installer remembered
+exakit migrate docker-nano --container exasol-nano --engine docker
+exakit migrate docker-nano --password-file ~/nano_sys_password --yes
+exakit migrate docker-nano --json --yes                       # one object: ok, status, copied_out, restored, left_alone, failed, sample_left_out, reason, remedy
+```
+
+What is not named comes from the record the installer kept, then the old
+install's own record, then the machine (which engine knows the container, which
+port it publishes), then an older kit's defaults (`exasol-nano`, user `sys`).
+**The password never goes on the command line**: `--password-file`, or
+`EXAKIT_LEGACY_PASSWORD` for a scripted run, or the prompt on a terminal.
+
+Both databases want port 8563. When the container publishes the deployment's
+port, the deployment is **stopped for the copy out and started again before the
+copy in**; a container on another port costs no downtime. The container ends as
+it began, except that one holding the deployment's port stays stopped. Nothing
+in it is changed or removed.
+
+Exit codes: `0` done, or nothing of the user's to copy · `1` the copy did not
+finish (the reason and where the copies are kept are printed; the next run
+restores a waiting copy first) · `2` bad input · `3` no deployment to copy into
+· `4` not installed · `5` not confirmed (`--yes` pre-answers it).
+
 ## Reading the logs
 
 ```bash

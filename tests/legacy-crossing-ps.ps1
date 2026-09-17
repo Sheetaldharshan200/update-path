@@ -448,6 +448,249 @@ Remember
 Remove-Item Env:EXAKIT_LEGACY_DATA
 
 Write-Host ""
+Write-Host "the kit's own sample data is left out of the copy:"
+# TPCH.REGION with the row count the kit's own CSV has (5) is the bundled
+# sample, unchanged, and is not the user's to copy. TPCH.NATION with one row
+# fewer than the CSV (24 of 25) has been changed, so it IS the user's. The
+# catalog is read from the kit's real data\datasets, so the numbers are the
+# kit's, not the suite's.
+Seed; $env:EXAKIT_LEGACY_DATA = "migrate"
+Set-Content -Path (Join-Path $env:EXAKIT_FAULT_DIR "db.tables") -Value "S1.T1`nTPCH.NATION`nTPCH.REGION"
+Set-Content -Path (Join-Path $env:EXAKIT_FAULT_DIR "db.rows") -Value "TPCH.NATION|24`nTPCH.REGION|5"
+$s = Screen { Invoke-LegacyCrossingBefore }
+Has "the banner counts every table" "It holds 3 table(s)" $s
+Has "...says which belong to the kit" "1 of them belong to the kit's bundled sample data (tpch)" $s
+Has "...and how many are the user's own" "Your own: 2 table(s)" $s
+Check "only the user's tables are copied out" 2 @((Calls "exapump") | Where-Object { $_ -like "export *" }).Count
+Check "the unchanged sample table is not" 0 @((Calls "exapump") | Where-Object { $_ -like "export *" -and $_ -like "*TPCH.REGION*" }).Count
+Check "a sample table the user changed is" 1 @((Calls "exapump") | Where-Object { $_ -like "export *" -and $_ -like "*TPCH.NATION*" }).Count
+Check "the row counts were asked for once, for the sample schema" 1 @((Calls "exapump") | Where-Object { $_ -like "*EXAKIT_LR*" -and $_ -like "*IN ('TPCH')*" }).Count
+Check "the record names the dataset left out" "tpch" (MGet "legacy.sample_left_out")
+Check "the crossing remembers the old database" "exasol-nano/fakeengine/127.0.0.1:8563/sys" ((MGet "legacy.container") + "/" + (MGet "legacy.engine") + "/" + (MGet "legacy.dsn") + "/" + (MGet "legacy.user"))
+Check "...and its volume" "exasol-nano-data" (MGet "legacy.volume")
+Remember
+Seed; $env:EXAKIT_LEGACY_DATA = "migrate"
+Set-Content -Path (Join-Path $env:EXAKIT_FAULT_DIR "db.tables") -Value "TPCH.REGION`nTPCH.NATION"
+Set-Content -Path (Join-Path $env:EXAKIT_FAULT_DIR "db.rows") -Value "TPCH.REGION|5`nTPCH.NATION|25"
+$s = Screen { Invoke-LegacyCrossingBefore }
+Check "only the kit's sample data: nothing said" "" $s.Trim()
+Check "...settled as skip" "skip" (MGet "legacy.choice")
+Check "...with the dataset named" "tpch" (MGet "legacy.sample_left_out")
+Check "...nothing copied out" 0 @((Calls "exapump") | Where-Object { $_ -like "export *" }).Count
+Check "...and the container stopped for the port" 1 @((Calls "engine") | Where-Object { $_ -like "stop *" }).Count
+Remember
+Seed; $env:EXAKIT_LEGACY_DATA = "migrate"
+Set-Content -Path (Join-Path $env:EXAKIT_FAULT_DIR "db.tables") -Value "TPCH.REGION"
+$s = Screen { Invoke-LegacyCrossingBefore }
+Check "an unknown row count keeps the table in the copy" 1 @((Calls "exapump") | Where-Object { $_ -like "export *" -and $_ -like "*TPCH.REGION*" }).Count
+Lacks "...and nothing is called the kit's" "bundled sample data" $s
+Remember
+Seed; $env:EXAKIT_LEGACY_DATA = "skip"
+$s = Screen { Invoke-LegacyCrossingBefore }
+Has "skip names the command that copies it later" "exakit migrate docker-nano" $s
+Remember
+Remove-Item Env:EXAKIT_LEGACY_DATA
+
+Write-Host ""
+Write-Host "after the install: exakit migrate docker-nano (Invoke-LegacyMigrateNow):"
+# The Personal runtime is a stub too (tests\lib\legacy-fault-personal.ps1): the
+# five functions the migrate road calls, driven by knob files and logging every
+# stop, start and wait. Every scenario here is the state AFTER an install: the
+# record says the runtime is Personal, and the old container is named through
+# the EXAKIT_LEGACY_* variables the CLI would have set.
+. (Join-Path $repo "tests/lib/legacy-fault-personal.ps1")
+function SeedMig {
+    param([switch]$NoPassword, [switch]$NoContainer)
+    if ($NoPassword) { Seed -Type personal -NoPassword }
+    elseif ($NoContainer) { Seed -Type personal -NoContainer }
+    else { Seed -Type personal }
+    $env:EXAKIT_LEGACY_CONTAINER = "exasol-nano"; $env:EXAKIT_LEGACY_ENGINE = "fakeengine"
+    $env:EXAKIT_LEGACY_DSN = "127.0.0.1:8563"; $env:EXAKIT_LEGACY_VOLUME = "exasol-nano-data"
+    $env:EXAKIT_LEGACY_PASSWORD_FILE = Join-Path $env:EXAKIT_HOME "credentials\nano_sys_password"
+    Remove-Item Env:EXAKIT_LEGACY_READY_TIMEOUT -ErrorAction SilentlyContinue
+}
+function Migrate([bool]$Yes = $true) {
+    $script:migRc = 1
+    $s = Screen { $script:migOut = @(Invoke-LegacyMigrateNow -Yes $Yes) }
+    foreach ($item in @($script:migOut)) { if ($item -is [int]) { $script:migRc = $item } }
+    return $s
+}
+function PersonalCalls {
+    $p = Join-Path $env:EXAKIT_FAULT_DIR "personal.calls"
+    if (Test-Path $p) { return (@(Get-Content $p) -join " ") }
+    return ""
+}
+
+# THE WHOLE ROAD, with the port clash: both databases on 8563, both running.
+SeedMig
+$s = Migrate
+Check "it finishes" 0 $script:migRc
+Check "...as done" "done" $script:LegacyMigrateStatus
+Has "the clash is explained before anything happens" "the port your database uses" $s
+Check "the database was stopped, started, waited for - in that order" "stop start wait" (PersonalCalls)
+Check "the container was stopped after the copy (it holds the port)" 1 @((Calls "engine") | Where-Object { $_ -like "stop *" }).Count
+Check "the engine saw inspect, inspect, stop" "container container stop" (Verbs)
+Check "three copied out, three restored" "3/3" ((MGet "legacy.exported") + "/" + (MGet "legacy.restored"))
+Check "the copy out came before the restore" $true ($s.IndexOf("Copied 3 table") -lt $s.IndexOf("Restored 3 table"))
+Has "the restore report calls the copy expendable" "no longer needed" $s
+Check "the record says migrate, done" "migrate/True" ((MGet "legacy.choice") + "/" + (MGet "legacy.crossing_done"))
+Check "...and when" $true ((MGet "legacy.migrated_at") -ne "")
+Check "every export used the legacy profile" 3 @((Calls "exapump") | Where-Object { $_ -like "export -p starter-kit-legacy *" }).Count
+Check "every upload used the kit's profile" 3 @((Calls "exapump") | Where-Object { $_ -like "upload -p starter-kit *" }).Count
+Remember
+
+# NO CLASH: another port, so the deployment is never touched and a running
+# container is left running.
+SeedMig; $env:EXAKIT_LEGACY_DSN = "127.0.0.1:8564"
+$s = Migrate
+Check "no clash finishes too" 0 $script:migRc
+Lacks "...and does not mention the port" "the port your database uses" $s
+Check "the deployment is never stopped or started" "" (PersonalCalls)
+Check "the running container is left running" 0 @((Calls "engine") | Where-Object { $_ -like "stop *" }).Count
+Has "...the profile points at the named port" "port = 8564" (Get-Content $cfg -Raw)
+Remember
+SeedMig; $env:EXAKIT_LEGACY_DSN = "127.0.0.1:8564"; Fault "engine.state" "stopped"
+$s = Migrate
+Check "a stopped container is started, copied, stopped" "container start container stop" (Verbs)
+Has "...and the start is announced" "Starting the container" $s
+Check "...with the deployment left alone" "" (PersonalCalls)
+Remember
+
+# DECLINED. Nothing has happened yet at the question, so nothing is undone.
+SeedMig
+function Confirm-ExakitPrompt { param([string]$Question, [bool]$DefaultYes = $true) return $false }
+$s = Migrate $false
+Check "declining returns 5" 5 $script:migRc
+Check "...as declined" "declined" $script:LegacyMigrateStatus
+Has "...saying nothing changed" "Nothing was changed" $s
+Check "the deployment was not touched" "" (PersonalCalls)
+Check "no exapump call at all" 0 @(Calls "exapump").Count
+Remove-Item Function:Confirm-ExakitPrompt
+Remember
+
+# THE THINGS THAT CANNOT WORK, each named for what it is.
+SeedMig; Fault "engine.state" "absent"
+$s = Migrate
+Check "a container that is not there" 1 $script:migRc
+Has "...is named, with how to find the right one" "no container named 'exasol-nano' in fakeengine" $s
+SeedMig; Fault "engine.state" "unknown"
+$s = Migrate
+Has "an engine that will not answer is asked about" "did not answer about the container" $s
+SeedMig; $env:EXAKIT_LEGACY_ENGINE = "no-such-engine"
+$s = Migrate
+Check "an engine that is gone" 1 $script:migRc
+Has "...is named" "engine 'no-such-engine' is not on this machine" $s
+# No name anywhere: not on the command line, not in the record either.
+SeedMig -NoContainer; $env:EXAKIT_LEGACY_CONTAINER = ""
+$s = Migrate
+Has "no container name at all asks for one" "--container <name>" $s
+SeedMig
+$realExapump = $env:EXAKIT_EXAPUMP_BIN; $env:EXAKIT_EXAPUMP_BIN = Join-Path $env:EXAKIT_HOME "no-such-exapump"
+$s = Migrate
+$env:EXAKIT_EXAPUMP_BIN = $realExapump
+Has "no exapump names the repair" "exapump is not installed" $s
+Check "...and returns 1" 1 $script:migRc
+Remember
+
+# NO PASSWORD, on the clash road: the deployment comes back before the failure.
+SeedMig -NoPassword; Remove-Item Env:EXAKIT_LEGACY_PASSWORD_FILE
+$s = Migrate
+Check "no password fails" 1 $script:migRc
+Has "...naming the two ways to give one" "--password-file" $s
+Check "...but the deployment is back up" "stop start wait" (PersonalCalls)
+Check "...and the container stopped for the port" 1 @((Calls "engine") | Where-Object { $_ -like "stop *" }).Count
+Lacks "...and nothing was copied" "Copied" $s
+Remember
+
+# A DATABASE THAT NEVER ANSWERS, within the budget.
+SeedMig; Fault "db.answer_after" "never"; Fault "engine.state" "stopped"; $env:EXAKIT_LEGACY_READY_TIMEOUT = "5"
+$s = Migrate
+Remove-Item Env:EXAKIT_LEGACY_READY_TIMEOUT
+Check "a silent database fails" 1 $script:migRc
+Has "...within the budget it names" "did not answer within 5s" $s
+Check "...the container it started is stopped again" 1 @((Calls "engine") | Where-Object { $_ -like "stop *" }).Count
+Remember
+
+# A CONTAINER THAT WILL NOT START, and a DEPLOYMENT THAT WILL NOT STOP.
+SeedMig; Fault "engine.state" "stopped"; Fault "engine.start_rc" "1"
+$s = Migrate
+Check "a container that will not start fails" 1 $script:migRc
+Has "...pointing at its logs" "fakeengine logs exasol-nano" $s
+Check "...and the deployment is started again" "stop start" (PersonalCalls)
+SeedMig; Fault "personal.stop_rc" "1"
+$s = Migrate
+Check "a deployment that will not stop fails first" 1 $script:migRc
+Has "...with the remedy" "exakit stop, then exakit migrate docker-nano" $s
+Remember
+
+# ONLY THE KIT'S SAMPLE DATA, and an EMPTY DATABASE: nothing to copy, not a failure.
+SeedMig
+Set-Content -Path (Join-Path $env:EXAKIT_FAULT_DIR "db.tables") -Value "TPCH.REGION"
+Set-Content -Path (Join-Path $env:EXAKIT_FAULT_DIR "db.rows") -Value "TPCH.REGION|5"
+$s = Migrate
+Check "nothing of the user's is not a failure" 0 $script:migRc
+Check "...its own status" "nothing" $script:LegacyMigrateStatus
+Has "...and says what the container held" "all of them the kit's bundled sample data (tpch)" $s
+Check "no export" 0 @((Calls "exapump") | Where-Object { $_ -like "export *" }).Count
+Check "the deployment is back" "stop start wait" (PersonalCalls)
+SeedMig; Set-Content -Path (Join-Path $env:EXAKIT_FAULT_DIR "db.tables") -Value ""
+$s = Migrate
+Has "an empty database: nothing to copy" "no tables in it" $s
+Check "...status nothing" "nothing" $script:LegacyMigrateStatus
+Remember
+
+# A MIXED CONTAINER: the sample left out, the rest copied.
+SeedMig
+Set-Content -Path (Join-Path $env:EXAKIT_FAULT_DIR "db.tables") -Value "S1.T1`nTPCH.REGION`nTPCH.NATION"
+Set-Content -Path (Join-Path $env:EXAKIT_FAULT_DIR "db.rows") -Value "TPCH.REGION|5`nTPCH.NATION|1"
+$s = Migrate
+Has "the count names the whole container" "The container holds 3 table(s)" $s
+Has "...and the kit's share" "1 of them belong to the kit's bundled sample data (tpch)" $s
+Check "two copied out" "2" (MGet "legacy.exported")
+Remember
+
+# EVERY EXPORT FAILS; a PARTIAL RESTORE; a DEPLOYMENT THAT DOES NOT COME BACK.
+SeedMig; Set-Content -Path (Join-Path $env:EXAKIT_FAULT_DIR "export.fail") -Value "S1.T1`nS1.T2`nS2.T3"
+$s = Migrate
+Check "a copy that copies nothing fails" 1 $script:migRc
+Has "...saying nothing is lost" "nothing is lost" $s
+Check "...with the deployment back up" "stop start wait" (PersonalCalls)
+Remember
+SeedMig; Fault "upload.fail" "S2.T3"; Fault "import.exists" "S1.T2"
+$s = Migrate
+Check "a partial restore returns 1" 1 $script:migRc
+Check "...as partial" "partial" $script:LegacyMigrateStatus
+Has "one left alone, for the new database's reason" "Left alone (the new database already had them): S1.T2" $s
+Lacks "...and the copy is not called expendable" "no longer needed" $s
+Remember
+SeedMig; Fault "personal.start_rc" "1"
+$s = Migrate
+Check "a deployment that does not come back fails" 1 $script:migRc
+Has "...keeping the copy" "not restored yet" $s
+Check "three copied out, none restored" "3/" ((MGet "legacy.exported") + "/" + (MGet "legacy.restored"))
+# ...and the WAITING COPY from that run is restored first on the next.
+Fault "personal.start_rc" "0"
+$s = Migrate
+Check "the waiting copy is restored" 0 $script:migRc
+Has "...and said to be" "waiting at" $s
+Check "three restored now" "3" (MGet "legacy.restored")
+Check "no second export" 3 @((Calls "exapump") | Where-Object { $_ -like "export *" }).Count
+Remember
+
+# A SECOND, FRESH COPY after a complete one clears the spent files first.
+SeedMig
+[void](Migrate)
+Set-Content -Path (Join-Path $env:EXAKIT_FAULT_DIR "db.tables") -Value "S1.T1"
+$s = Migrate
+Check "second run done" "done" $script:LegacyMigrateStatus
+Check "...restoring the one table now there" "1" (MGet "legacy.restored")
+Check "...with the earlier copy's tail gone" "t1.csv" ((Get-ChildItem $script:LegacyExportDir -Filter "t*.csv" | ForEach-Object { $_.Name }) -join " ")
+Remember
+foreach ($n in @("EXAKIT_LEGACY_CONTAINER", "EXAKIT_LEGACY_ENGINE", "EXAKIT_LEGACY_DSN", "EXAKIT_LEGACY_VOLUME", "EXAKIT_LEGACY_PASSWORD_FILE")) {
+    Remove-Item "Env:$n" -ErrorAction SilentlyContinue
+}
+
+Write-Host ""
 Write-Host "invariants that held across every scenario above:"
 Check "the engine was used" $true ($script:allEngine.Count -gt 0)
 Check "exapump was used" $true ($script:allExapump.Count -gt 0)

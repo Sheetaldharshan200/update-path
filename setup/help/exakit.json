@@ -47,6 +47,7 @@
       "commands": [
         "preflight",
         "repair-runtime",
+        "migrate",
         "uninstall"
       ]
     },
@@ -310,6 +311,31 @@
         "0": "your database was rebuilt",
         "2": "bad input",
         "3": "the rebuild did not finish",
+        "4": "not installed",
+        "5": "declined - not confirmed, nothing was changed"
+      }
+    },
+    {
+      "command": "migrate",
+      "options": "docker-nano [--container NAME] [--engine docker|podman] [--dsn HOST:PORT] [--user USER] [--password-file PATH] [--yes] [--json]",
+      "summary": "Copy an older kit's container database into this one.",
+      "description": "The installer asks about a container database from an older kit exactly once. This is for the machine that answered skip and wants the data after all, and for a container the installer never saw - made by hand with docker run exasol/nano, or by the upstream kit. Every non-system table is copied out while the container runs and restored into the running deployment with its column types preserved; the kit's own bundled sample data (tpch, energy, weather) is left out when it is unchanged, because the kit loads it itself (exakit data-load). When the container publishes the deployment's port, the database is stopped for the copy out and started again before the copy in; a container on another port costs no downtime. Nothing in the container is changed or removed. What is not named on the command line comes from the record the installer kept, then from the old install's own record, then from the machine (which engine knows the container, which port it publishes), then from an older kit's defaults (container exasol-nano, user sys). --json prints one object on stdout: ok, status (done | nothing | declined | failed | partial), container, engine, dsn, copied_out, restored, left_alone, failed, sample_left_out, reason, remedy.",
+      "warning": "The password never goes on the command line (there is no --password): pass a file with --password-file, set EXAKIT_LEGACY_PASSWORD for a scripted run, or answer the prompt on a terminal. A text column that held an empty string arrives as NULL.",
+      "environment": [
+        "EXAKIT_LEGACY_PASSWORD=... the old database's password for a scripted run (a file via --password-file is preferred)",
+        "EXAKIT_LEGACY_READY_TIMEOUT=n seconds to wait for a container this command had to start (120)"
+      ],
+      "examples": [
+        "exakit migrate docker-nano",
+        "exakit migrate docker-nano --container exasol-nano --engine docker",
+        "exakit migrate docker-nano --password-file ~/nano_sys_password --yes",
+        "exakit migrate docker-nano --json --yes"
+      ],
+      "exit_codes": {
+        "0": "done, or nothing of yours to copy",
+        "1": "the copy did not finish - the reason and where the copies are kept are printed",
+        "2": "bad input",
+        "3": "no deployment to copy into, or no exapump to copy with",
         "4": "not installed",
         "5": "declined - not confirmed, nothing was changed"
       }

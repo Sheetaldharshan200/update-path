@@ -88,7 +88,7 @@ The database everywhere is **Exasol Personal** — the same launcher-managed loc
 | **Linux** | Podman (rootless is fine), 8 GB+ RAM, 20 GB free disk | `sudo apt-get install -y podman` / `sudo dnf install -y podman` if missing — the installer names it |
 | **Windows x86_64** | 8 GB+ RAM, 20 GB free disk | Runs through host Podman; the launcher offers to install Podman itself (may ask for administrator approval) |
 
-Already have the kit with its database in a container? Re-run the install command — it asks whether to migrate your data or continue without it, and deletes nothing either way.
+Already have the kit with its database in a container? Re-run the install command — it asks whether to migrate your data or continue without it, and deletes nothing either way. Skipped that, or the installer never saw the container? `exakit migrate docker-nano` does the same copy later, into the running database. On both roads the kit's own sample data (TPC-H and friends) is left out — the kit loads that itself.
 
 **WSL** is supported and takes the Linux road: a WSL2 distro is Linux to the launcher, so install Podman inside the distro (`sudo apt-get install -y podman uidmap`) and run the same command. Podman or Docker Desktop on the Windows side does not count — the kit runs in the distro and looks on its PATH. Exasol Personal does not support **Windows arm64** — the installer says so and exits without changing anything; use a Linux VM there.
 

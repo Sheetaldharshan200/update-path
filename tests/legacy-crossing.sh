@@ -435,6 +435,18 @@ legacy_export|Export-LegacyTables
 legacy_import|Import-LegacyTables
 legacy_crossing_before|Invoke-LegacyCrossingBefore
 legacy_crossing_after|Invoke-LegacyCrossingAfter
+legacy_password_file|Get-LegacyPasswordFile
+legacy_engine_name|Get-LegacyEngineName
+legacy_remember_record|Save-LegacyRecord
+legacy_wait_db_answers|Wait-LegacyDbAnswers
+legacy_sample_catalog|Get-LegacySampleCatalog
+legacy_table_rows|Get-LegacyTableRows
+legacy_classify|Split-LegacyTables
+legacy_sample_note|Write-LegacySampleNote
+legacy_report_restore|Write-LegacyRestoreReport
+_legacy_migrate_fail|Set-LegacyMigrateFailure
+_legacy_migrate_settle|Restore-LegacyMigrateState
+legacy_migrate_now|Invoke-LegacyMigrateNow
 EOF
 
 # Every read from the old database goes through ONE reader on each side, and on
@@ -462,6 +474,113 @@ has "...on the Windows side too" "Re-run the installer to move across" \
 _st="$(EXAKIT_HOME="$H1" EXAKIT_BIN_DIR="$H1/bin" \
     bash "$ROOT/setup/exakit" status 2>&1 | sed 's/\x1b\[[0-9;]*m//g')"
 has "and a real status run says it" "not managed here" "$_st"
+
+echo
+echo "the kit's own sample data is told apart from the user's:"
+# The catalog is read from the kit's real data/datasets: TPC-H's region.csv has
+# 5 rows, nation.csv 25. A table with the same schema, name and row count is
+# the sample, unchanged; anything else is the user's.
+STUB3="$WORK/stub3"; mkdir -p "$STUB3"
+cat > "$STUB3/exapump" <<'EOF'
+#!/bin/sh
+printf '%s\n' "$*" >> "$STUBLOG"
+case "$*" in
+  *EXAKIT_LR*) printf 'EXAKIT_LR[TPCH.REGION<<:>>5]\nEXAKIT_LR[TPCH.NATION<<:>>24]\n'; exit 0 ;;
+esac
+exit 0
+EOF
+chmod +x "$STUB3/exapump"
+_cls="$(EXAKIT_HOME="$H1" EXAKIT_BIN_DIR="$H1/bin" EXAKIT_EXAPUMP_BIN="$STUB3/exapump" \
+    STUBLOG="$WORK/stub3.log" PATH="$STUB3:$PATH" ROOT="$ROOT" bash -c '
+    . "$ROOT/setup/lib/common.sh"; . "$ROOT/setup/lib/detect.sh"
+    . "$ROOT/setup/lib/exapump.sh"; . "$ROOT/setup/lib/legacy-crossing.sh"
+    legacy_classify "S1.T1
+TPCH.REGION
+TPCH.NATION
+My Schema.T"
+    printf "OWN=%s|SAMPLE=%s|IDS=%s" "$(printf "%s" "$EXAKIT_LEGACY_OWN_TABLES" | tr "\n" "," | sed "s/,\$//")" \
+        "$(printf "%s" "$EXAKIT_LEGACY_SAMPLE_TABLES" | tr "\n" "," | sed "s/,\$//")" "$EXAKIT_LEGACY_SAMPLE_IDS"')"
+check "the unchanged sample table is the kit's, the rest the user's" \
+    "OWN=S1.T1,TPCH.NATION,My Schema.T|SAMPLE=TPCH.REGION|IDS=tpch" "$_cls"
+check "the row counts were asked once, for the sample schema" "1" \
+    "$(grep -c "IN ('TPCH')" "$WORK/stub3.log")"
+has "the catalog names the kit's tables with their row counts" "TPCH.REGION|tpch|5" \
+    "$(ROOT="$ROOT" EXAKIT_HOME="$H1" bash -c '. "$ROOT/setup/lib/common.sh"; . "$ROOT/setup/lib/detect.sh"; . "$ROOT/setup/lib/exapump.sh"; . "$ROOT/setup/lib/legacy-crossing.sh"; legacy_sample_catalog')"
+# A table outside every sample schema never costs a query.
+: > "$WORK/stub3.log"
+_cls2="$(EXAKIT_HOME="$H1" EXAKIT_BIN_DIR="$H1/bin" EXAKIT_EXAPUMP_BIN="$STUB3/exapump" \
+    STUBLOG="$WORK/stub3.log" PATH="$STUB3:$PATH" ROOT="$ROOT" bash -c '
+    . "$ROOT/setup/lib/common.sh"; . "$ROOT/setup/lib/detect.sh"
+    . "$ROOT/setup/lib/exapump.sh"; . "$ROOT/setup/lib/legacy-crossing.sh"
+    legacy_classify "S1.T1"; printf "%s" "$EXAKIT_LEGACY_OWN_TABLES" | tr -d "\n"')"
+check "a table in no sample schema is the user's" "S1.T1" "$_cls2"
+check "...and the database was not asked about it" "0" "$(grep -c 'EXAKIT_LR' "$WORK/stub3.log" 2>/dev/null || true)"
+
+echo
+echo "the after-the-install road: exakit migrate docker-nano"
+has "the CLI loads the crossing module"      'legacy-crossing.sh' "$(cat "$ROOT/setup/exakit")"
+has "...and dispatches migrate"               'cmd_migrate' "$(sed -n '/^case "\${1:-help}" in/,/^esac/p' "$ROOT/setup/exakit")"
+has "the twin loads it too"                   'legacy-crossing.ps1' "$(cat "$ROOT/setup/exakit.ps1")"
+has "...and dispatches migrate"               'Invoke-CmdMigrate' "$(cat "$ROOT/setup/exakit.ps1")"
+has "the help document describes it"          '"command": "migrate"' "$(cat "$ROOT/setup/help/exakit.json")"
+has "...with the source it takes"             'docker-nano' "$(cat "$ROOT/setup/help/exakit.json")"
+has "the usage header names it"               'migrate docker-nano' "$(sed -n '1,80p' "$ROOT/setup/exakit")"
+has "...on the Windows side too"              'migrate docker-nano' "$(sed -n '1,60p' "$ROOT/setup/exakit.ps1")"
+# Bad input is refused BEFORE the install check, exit 2, so a typo never reads
+# as "not installed".
+_mg() { EXAKIT_HOME="$WORK/mg-nohome" EXAKIT_BIN_DIR="$WORK/mg-nohome/bin" bash "$ROOT/setup/exakit" migrate "$@" 2>&1; echo "RC=$?"; }
+_rc() { printf '%s\n' "$1" | sed -n 's/^RC=\([0-9]*\)$/\1/p' | tail -1; }
+_o="$(_mg)";                              check "no source is refused"                 "2" "$(_rc "$_o")"
+has "...naming the one there is"           "exakit migrate docker-nano [--container NAME]" "$_o"
+_o="$(_mg something-else)";               check "an unknown source is refused"         "2" "$(_rc "$_o")"
+_o="$(_mg docker-nano --password x)";     check "a password on the command line is refused" "2" "$(_rc "$_o")"
+has "...and told where it goes instead"    "--password-file" "$_o"
+_o="$(_mg docker-nano --engine lxc)";     check "an engine the kit does not drive is refused" "2" "$(_rc "$_o")"
+_o="$(_mg docker-nano --dsn nohost)";     check "a dsn without a port is refused"      "2" "$(_rc "$_o")"
+_o="$(_mg docker-nano --bogus)";          check "an unknown option is refused"         "2" "$(_rc "$_o")"
+_o="$(_mg docker-nano --container)";      check "a value flag without its value is refused" "2" "$(_rc "$_o")"
+_o="$(_mg docker-nano --password-file "$WORK/no-such-file")"; check "a missing password file is refused" "2" "$(_rc "$_o")"
+_o="$(_mg docker-nano --bogus --json)";   has "a refusal in JSON is an object"        '"rejected": true' "$_o"
+check "...exit 2 still"                    "2" "$(_rc "$_o")"
+# Then the install gate, with its documented codes.
+_o="$(_mg docker-nano)";                  check "not installed exits 4"               "4" "$(_rc "$_o")"
+_o="$(_mg docker-nano --json)";           has "...and says so in JSON"                '"installed": false' "$_o"
+# A legacy install that has not crossed yet has no deployment to copy INTO:
+# the installer is the road, and that is what the answer names.
+_o="$(EXAKIT_HOME="$H1" EXAKIT_BIN_DIR="$H1/bin" bash "$ROOT/setup/exakit" migrate docker-nano --json 2>&1; echo "RC=$?")"
+check "a not-yet-crossed legacy install exits 3"   "3" "$(_rc "$_o")"
+has "...as no database"                    '"status": "no database"' "$_o"
+has "...with the installer as the remedy"  'install' "$_o"
+# A Personal install, with a stub engine that knows no such container: the
+# command reaches the module and fails there with the container named.
+H9="$WORK/h9"; mkdir -p "$H9/bin"
+cat > "$H9/manifest.json" <<EOF
+{"manifest_version": 1, "kit_level": 1, "runtime": {"type": "personal", "dsn": "127.0.0.1:8563"},
+ "components": {"exapump": {"profile": "starter-kit"}}, "steps_completed": ["runtime"]}
+EOF
+STUB4="$WORK/stub4"; mkdir -p "$STUB4"
+printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "$STUBLOG"\nexit 1\n' > "$STUB4/docker"
+cp "$STUB3/exapump" "$STUB4/exapump"; chmod +x "$STUB4/docker" "$STUB4/exapump"
+: > "$WORK/stub4.log"
+_o="$(EXAKIT_HOME="$H9" EXAKIT_BIN_DIR="$H9/bin" EXAKIT_EXAPUMP_BIN="$STUB4/exapump" STUBLOG="$WORK/stub4.log" \
+    PATH="$STUB4:$PATH" bash "$ROOT/setup/exakit" migrate docker-nano --engine docker --container old-db --password-file "$H1/credentials/nano_sys_password" --json --yes 2>/dev/null; echo "RC=$?")"
+check "a container the engine does not know fails, exit 1" "1" "$(_rc "$_o")"
+has "...as one JSON object"                '"ok": false' "$_o"
+has "...with the status"                   '"status": "failed"' "$_o"
+has "...naming the container"              '"container": "old-db"' "$_o"
+has "...and the engine"                    '"engine": "docker"' "$_o"
+check "the engine named on the command line was the one asked" "yes" "$(grep -q '^container inspect' "$WORK/stub4.log" && echo yes || echo no)"
+# The record the crossing kept is the default for everything not named.
+_o="$(EXAKIT_HOME="$H9" EXAKIT_BIN_DIR="$H9/bin" ROOT="$ROOT" \
+    bash -c '. "$ROOT/setup/lib/common.sh"; manifest_set legacy.container remembered-db; manifest_set legacy.engine docker; manifest_set legacy.dsn 127.0.0.1:9999' 2>/dev/null
+    EXAKIT_HOME="$H9" EXAKIT_BIN_DIR="$H9/bin" EXAKIT_EXAPUMP_BIN="$STUB4/exapump" STUBLOG="$WORK/stub4.log" \
+    PATH="$STUB4:$PATH" bash "$ROOT/setup/exakit" migrate docker-nano --password-file "$H1/credentials/nano_sys_password" --json --yes 2>/dev/null; echo "RC=$?")"
+has "the remembered container is the default" '"container": "remembered-db"' "$_o"
+has "...and the remembered port"           '"dsn": "127.0.0.1:9999"' "$_o"
+# Never a password on argv, on either side; the prompt reads without echo.
+lacks "the sh CLI has no --password option that works" '--password)' "$(sed -n '/^cmd_migrate()/,/^}/p' "$ROOT/setup/exakit" | grep -v 'password-file' | grep -v 'reject')"
+has "the sh prompt does not echo"          'read -rs' "$(cat "$ROOT/setup/exakit")"
+has "the ps prompt does not echo"          'Read-Host -AsSecureString' "$(cat "$ROOT/setup/exakit.ps1")"
 
 printf '\n%s: %d passed, %d failed\n' "$(basename "$0")" "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
