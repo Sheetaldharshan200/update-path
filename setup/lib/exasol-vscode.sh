@@ -32,10 +32,10 @@ EXAKIT_EXASOL_VSCODE_EXT_ID="${EXAKIT_EXASOL_VSCODE_EXT_ID:-exasol.exasol-vscode
 # install never touches the user's VS Code profile.
 EXAKIT_EXASOL_VSCODE_EXTDIR="${EXAKIT_EXASOL_VSCODE_EXTDIR:-}"
 
-# exasol_vscode_code_cli — the editor CLI this add-on drives: PATH first, then
-# the places the app actually lives when the user never ran "Shell Command:
-# Install 'code' command". Empty output means "no VS Code-compatible editor on
-# this machine".
+# exasol_vscode_code_cli — the editor CLI this add-on drives, discovered the
+# way the kit discovers Docker Desktop: PATH first, then the places the app
+# actually lives when the user never ran "Shell Command: Install 'code'
+# command". Empty output means "no VS Code-compatible editor on this machine".
 #
 # FORKS COUNT. VS Code Insiders, Cursor, VSCodium and Windsurf each ship a CLI
 # with the same --install-extension / --uninstall-extension /

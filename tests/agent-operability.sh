@@ -35,35 +35,11 @@ check "not installed exits 4" "4" "$(EXAKIT_HOME="$WORK/none" bash "$ROOT/setup/
 has "and the JSON form says so" '"installed": false' "$(EXAKIT_HOME="$WORK/none" bash "$ROOT/setup/exakit" status --json 2>/dev/null)"
 check "not installed --json exits 4 too" "4" "$(EXAKIT_HOME="$WORK/none" bash "$ROOT/setup/exakit" status --json >/dev/null 2>&1; echo $?)"
 
-# A manifest whose deployment does not exist reads as a stopped database.
-#
-# HERMETIC, and it has to be: the Personal probes fall back to an `exasol` on
-# PATH and to the real ~/.exasol deployment, so a fixture that scrubs only
-# EXAKIT_HOME answers from the developer's own running database and inverts
-# every assertion here.
-#
-# PATH is FILTERED rather than replaced. Replacing it with the system
-# directories also takes away the 3.11+ python3 the manifest reader needs
-# (a stock macOS /usr/bin/python3 is 3.9), and the dataset rows then come back
-# empty for a reason that has nothing to do with what is being tested. Only the
-# directories that actually hold a launcher are dropped.
-mkdir -p "$WORK/stopped" "$WORK/no-bin"
-_HERMETIC_PATH="$(printf '%s' "$PATH" | tr ':' '\n' | while IFS= read -r _hp_dir; do
-    [ -n "$_hp_dir" ] || continue
-    [ -x "$_hp_dir/exasol" ] && continue
-    printf '%s:' "$_hp_dir"
-done | sed 's/:$//')"
-_stopped() {
-    env -u EXAKIT_PERSONAL_VERSION \
-        EXAKIT_HOME="$WORK/stopped" \
-        EXAKIT_PERSONAL_DEPLOY_DIR="$WORK/no-deployment" \
-        EXAKIT_BIN_DIR="$WORK/no-bin" \
-        PATH="$_HERMETIC_PATH" \
-        bash "$ROOT/setup/exakit" "$@"
-}
-printf '{\n  "runtime": {\n    "type": "personal"\n  },\n  "data": {\n    "datasets": {\n      "tpch": {\n        "loaded": true\n      }\n    }\n  }\n}\n' > "$WORK/stopped/manifest.json"
-check "stopped database exits 3" "3" "$(_stopped status >/dev/null 2>&1; echo $?)"
-_sj="$(_stopped status --json 2>/dev/null)"
+# A manifest whose nano container does not exist reads as a stopped database.
+mkdir -p "$WORK/stopped"
+printf '{\n  "runtime": {\n    "type": "nano"\n  },\n  "data": {\n    "datasets": {\n      "tpch": {\n        "loaded": true\n      }\n    }\n  }\n}\n' > "$WORK/stopped/manifest.json"
+check "stopped database exits 3" "3" "$(EXAKIT_HOME="$WORK/stopped" bash "$ROOT/setup/exakit" status >/dev/null 2>&1; echo $?)"
+_sj="$(EXAKIT_HOME="$WORK/stopped" bash "$ROOT/setup/exakit" status --json 2>/dev/null)"
 check "the JSON is valid JSON" "yes" "$(printf '%s' "$_sj" | python3 -m json.tool >/dev/null 2>&1 && echo yes || echo no)"
 has "and carries running=false" '"running": false' "$_sj"
 has "and the loaded datasets" '"tpch"' "$_sj"
@@ -74,24 +50,24 @@ has "and the loaded datasets" '"tpch"' "$_sj"
 # reading the human output can still see which datasets are loaded, and the
 # panel row says so.
 has "the human screen names the datasets too" "tpch" \
-    "$(_stopped status 2>/dev/null)"
+    "$(EXAKIT_HOME="$WORK/stopped" bash "$ROOT/setup/exakit" status 2>/dev/null)"
 # The fixture's container does not exist, so there is no runtime to start:
 # "exakit start" was the pre-runtime remedy bug this suite used to PIN as
 # correct (the audit's AGK-18). The fix an agent can act on is the installer -
 # and the row names the RUNNABLE command, byte for byte the same string
 # `status --json` hoists into `remedy`, not the prose "re-run the installer".
-has "prose names the fix, as a runnable command" "curl -fsSL" "$(_stopped status 2>/dev/null | tail -1)"
+has "prose names the fix, as a runnable command" "curl -fsSL" "$(EXAKIT_HOME="$WORK/stopped" bash "$ROOT/setup/exakit" status 2>/dev/null | tail -1)"
 # 2, not 1: bad input has its own code across the CLI now (the same one an
 # unknown subcommand uses), so an agent can tell "I typed it wrong" from "the
 # command ran and failed". It also records no failure note — see the reject
 # assertions further down.
-check "an unknown status flag is refused with the bad-input code" "2" "$(_stopped status --nope >/dev/null 2>&1; echo $?)"
+check "an unknown status flag is refused with the bad-input code" "2" "$(EXAKIT_HOME="$WORK/stopped" bash "$ROOT/setup/exakit" status --nope >/dev/null 2>&1; echo $?)"
 
 echo "mcp-doctor diagnoses the stopped database first:"
-_doc="$(_stopped mcp-doctor 2>&1)"
-check "exit 3, same as status" "3" "$(_stopped mcp-doctor >/dev/null 2>&1; echo $?)"
+_doc="$(EXAKIT_HOME="$WORK/stopped" bash "$ROOT/setup/exakit" mcp-doctor 2>&1)"
+check "exit 3, same as status" "3" "$(EXAKIT_HOME="$WORK/stopped" bash "$ROOT/setup/exakit" mcp-doctor >/dev/null 2>&1; echo $?)"
 has "and names the remedy" "exakit start" "$_doc"
-_docj="$(_stopped mcp-doctor --json 2>/dev/null)"
+_docj="$(EXAKIT_HOME="$WORK/stopped" bash "$ROOT/setup/exakit" mcp-doctor --json 2>/dev/null)"
 check "the JSON form is valid" "yes" "$(printf '%s' "$_docj" | python3 -m json.tool >/dev/null 2>&1 && echo yes || echo no)"
 has "and carries the remedy" '"remedy": "exakit start"' "$_docj"
 
@@ -372,10 +348,10 @@ has "doctor derives next_actions from its findings" "next_actions=next_actions" 
 has "and NextAction is imported so it cannot NameError" "    NextAction," \
     "$(sed -n '1,40p' "$ROOT/mcp/service.py")"
 
-# The engine-hang fixture must mask the engine the kit actually reaches for: a
-# fixture that masked something else let a real, working podman answer the probe
-# -- and "podman" is then correct, which the assertion scored as a failure.
-has "the engine-hang fixture masks podman" '> "$WORK/hang-bin/podman"' \
+# detect_container_runtime falls back to podman, so a docker-hang fixture that
+# masks only docker lets a real podman answer -- and "podman" is then correct,
+# which the assertion scored as a failure. Intermittent on Linux CI by nature.
+has "the docker-hang fixture masks podman too" "for _hang_engine in docker podman" \
     "$(cat "$ROOT/tests/versions-manifest.sh")"
 
 # common.sh derives EXAKIT_HOME from the environment, so a helper that forgets to
@@ -602,7 +578,7 @@ has "the load path asks the database, not the manifest flag" "exakit_dataset_loa
 lacks "a negative db-reachable answer is never cached" '[ -z "$_EXAKIT_DB_REACHABLE" ]' \
     "$(sed -n '/^exakit_db_reachable()/,/^}/p' "$ROOT/setup/lib/exapump.sh")"
 has "and stopping the database drops the cached yes" "exakit_forget_db_reachable" \
-    "$(cat "$ROOT/setup/lib/runtime-personal.sh")"
+    "$(cat "$ROOT/setup/lib/runtime-personal.sh" "$ROOT/setup/lib/runtime-nano.sh")"
 
 echo "every --json answer has the same three keys:"
 # THE BUG: healthy mcp-doctor returned status/findings/next_actions, a stopped
@@ -641,7 +617,7 @@ echo "the documented exit codes are the real ones:"
 # returned 3. info --json returned 0 -- so an agent branching the way it was told
 # read "healthy" off a stopped database.
 check "info --json exits 3 when the database is down" "3" \
-    "$(_stopped info --json >/dev/null 2>&1; echo $?)"
+    "$(EXAKIT_HOME="$WORK/stopped" bash "$ROOT/setup/exakit" info --json >/dev/null 2>&1; echo $?)"
 check "info --json exits 4 when nothing is installed" "4" \
     "$(EXAKIT_HOME="$WORK/none" bash "$ROOT/setup/exakit" info --json >/dev/null 2>&1; echo $?)"
 check "and still prints an object in both states" "yes" "$(
@@ -667,8 +643,8 @@ has "and routes failures through the translator" "exakit_db_error_remedy" \
     "$(sed -n '/^cmd_sql()/,/^}/p' "$ROOT/setup/exakit")"
 has "and is in the catalog" "sql" "$(exakit_help_commands)"
 has "the PowerShell twin exists" "Invoke-CmdSql" "$(cat "$ROOT/setup/exakit.ps1")"
-# PowerShell had NO translator at all: the Windows path got raw engine text and
-# nothing else, making the promise macOS-only.
+# PowerShell had NO translator at all: the Windows and Nano paths got raw engine
+# text and nothing else, making the promise macOS-only.
 has "PowerShell has the translator too" "Show-ExakitDbErrorRemedy" \
     "$(cat "$ROOT/setup/lib/exakit-common.ps1")"
 for _case in "LIMIT" "exakit start" "describe it first"; do
@@ -841,7 +817,7 @@ has "the staging copies the help corpus" \
     "$(cat "$ROOT/setup/lib/common.sh")"
 has "...and the Windows twin does too" \
     'Copy-ExakitAsset -Source (Join-Path $KitRoot "setup\help")' \
-    "$(cat "$ROOT/setup/setup-windows.ps1")"
+    "$(cat "$ROOT/setup/setup-windows-docker.ps1")"
 
 # Functional, not just textual: a kit staged the way the installer stages one
 # must answer for every topic it ships.
@@ -875,17 +851,20 @@ printf '\n== repair-runtime actually replaces the database ==\n'
 # it, and then re-runs setup -- whose deployment step asks whether to reuse what
 # is already there, defaulting to YES. So the command answered its own second
 # question with "keep it", reported "Reusing the existing Exasol deployment",
-# and repaired nothing.
+# and repaired nothing. On WSL and Windows there was not even a question:
+# nano_install adopts a running container outright.
 #
 # EXAKIT_REUSE_DB=0 is what makes the deployment step replace instead of adopt,
-# and both halves of the mirror have to honour it or the command lies on that
-# platform.
+# and every runtime has to honour it or the command lies on that platform.
 EXAKIT_SH="$(cat "$ROOT/setup/exakit")"
 has "repair-runtime forces a fresh deployment" 'export EXAKIT_REUSE_DB=0' "$EXAKIT_SH"
 has "...and the Windows twin does too" '$env:EXAKIT_REUSE_DB = "0"' "$(cat "$ROOT/setup/exakit.ps1")"
-# The runtime asks, and takes the flag as the answer.
+# Honoured by BOTH runtimes: the macOS one asks and takes the flag as the
+# answer, the Nano one has no question at all and must be told outright.
 has "the personal runtime honours it" 'confirm_env EXAKIT_REUSE_DB' \
     "$(cat "$ROOT/setup/lib/runtime-personal.sh")"
+has "the nano runtime honours it too" '[ "${EXAKIT_REUSE_DB:-1}" = "0" ] && nano_container_exists' \
+    "$(cat "$ROOT/setup/lib/runtime-nano.sh")"
 # On macOS, declining reuse of a STOPPED deployment must be as harmless as
 # declining it for a running one: the deletion has its own question and its
 # own variable, so EXAKIT_REUSE_DB=0 alone can never destroy in one state
@@ -897,8 +876,12 @@ has "repair-runtime carries that consent" 'export EXAKIT_REPLACE_DB=1' "$EXAKIT_
 has "the delete prompt names the consequence first" \
     'DELETE the stopped deployment and its data' \
     "$(cat "$ROOT/setup/lib/runtime-personal.sh")"
-has "...and its twin gates the deletion the same way" 'EXAKIT_REPLACE_DB' \
-    "$(cat "$ROOT/setup/lib/runtime-personal.ps1")"
+has "...and its twin"                 '$env:EXAKIT_REUSE_DB -eq "0" -and (Test-NanoContainerExists)' \
+    "$(cat "$ROOT/setup/lib/nano.ps1")"
+# The data volume goes with the container, or the rebuild wraps the same
+# database the repair was called to destroy.
+has "nano drops the data volume as well" 'volume" "rm' "$(cat "$ROOT/setup/lib/nano.ps1")"
+has "...on the shell side too" 'volume rm "$EXAKIT_NANO_VOLUME"' "$(cat "$ROOT/setup/lib/runtime-nano.sh")"
 
 echo
 echo "the JSON contract holds on the unhappy paths too:"
@@ -913,20 +896,15 @@ check "sql --json answers JSON when not installed" "yes" \
 has "and says why, with a runnable remedy" '"remedy": "curl -fsSL' "$_jc_out"
 check "with the not-installed exit code" "4" \
     "$(EXAKIT_HOME="$_jc" bash "$ROOT/setup/exakit" sql --json 'SELECT 1' >/dev/null 2>&1; echo $?)"
-printf '{\n  "runtime": {\n    "type": "personal"\n  }\n}\n' > "$_jc/manifest.json"
+printf '{\n  "runtime": {\n    "type": "nano"\n  }\n}\n' > "$_jc/manifest.json"
 # EXAKIT_BIN_DIR must be sandboxed too: exapump.sh derives its binary path
 # from it at load time, so leaving it at the default finds the developer's
 # real exapump and runs a real query.
 # The stripped PATH must starve the test of EXAPUMP, not of Python: hand the
-# real uv through, and the suite's own python3 via a tools dir on the PATH.
-# "On CI the system python suffices" was true only of the ubuntu runner - the
-# macOS runner's /usr/bin/python3 is 3.9, below the kit's floor, and with no
-# uv there every --json emission died empty the first time this suite ever
-# ran on that runner.
-_jc_tools="$_jc/tools"; mkdir -p "$_jc_tools"
-_jc_py="$(command -v python3 2>/dev/null || true)"
-[ -n "$_jc_py" ] && ln -sf "$_jc_py" "$_jc_tools/python3"
-_jc_nx="$(EXAKIT_HOME="$_jc" EXAKIT_BIN_DIR="$_jc/bin" EXAKIT_UV_BIN="$(command -v uv 2>/dev/null || true)" PATH="$_jc_tools:/usr/bin:/bin" bash "$ROOT/setup/exakit" sql --json 'SELECT 1' 2>/dev/null)"
+# real uv through so manifest reads keep working on a Mac whose system
+# python3 is below the kit's floor. (On CI the system python suffices and
+# the variable is simply empty.)
+_jc_nx="$(EXAKIT_HOME="$_jc" EXAKIT_BIN_DIR="$_jc/bin" EXAKIT_UV_BIN="$(command -v uv 2>/dev/null || true)" PATH="/usr/bin:/bin" bash "$ROOT/setup/exakit" sql --json 'SELECT 1' 2>/dev/null)"
 has "a missing exapump is a real error, not bash noise" '"error": "exapump (the SQL client) is not installed"' "$_jc_nx"
 has "...with a runnable remedy" '"remedy": "exakit update"' "$_jc_nx"
 
@@ -939,7 +917,7 @@ has "...with a runnable remedy" '"remedy": "exakit update"' "$_jc_nx"
 # assertions below flipped on ambient host state — red locally, green in CI
 # only because CI runners lack the binaries. uv is handed through so manifest
 # reads still work where the system python is below the kit's floor.
-_jc_ver="$(EXAKIT_HOME="$_jc" EXAKIT_BIN_DIR="$_jc/bin" EXAKIT_UV_BIN="$(command -v uv 2>/dev/null || true)" PATH="$_jc_tools:/usr/bin:/bin" bash "$ROOT/setup/exakit" version --json 2>/dev/null)"
+_jc_ver="$(EXAKIT_HOME="$_jc" EXAKIT_BIN_DIR="$_jc/bin" EXAKIT_UV_BIN="$(command -v uv 2>/dev/null || true)" PATH="/usr/bin:/bin" bash "$ROOT/setup/exakit" version --json 2>/dev/null)"
 check "no component status is a shell command" "0" \
     "$(printf '%s' "$_jc_ver" | python3 -c "
 import json,sys
@@ -1010,23 +988,11 @@ has "...and names the deliberate write path" "exakit sql --write" \
 # option guard instead of being a phantom.
 _su="$WORK/say08"; mkdir -p "$_su"
 printf '{\n  "runtime": {\n    "type": "personal"\n  }\n}\n' > "$_su/manifest.json"
-# EXAKIT_BIN_DIR sandboxed too, and not only for tidiness: this fixture runs
-# the REAL update path, and that path deletes $EXAKIT_PERSONAL_BIN before
-# installing. Unscrubbed it inherits the developer's ~/.local/bin and takes
-# their launcher with it - which is exactly what happened, downgrading a
-# working machine mid-test-run.
-_su_out="$(EXAKIT_HOME="$_su" EXAKIT_BIN_DIR="$_su/bin" bash "$ROOT/setup/exakit" update runtime --plan 2>&1)"
+_su_out="$(EXAKIT_HOME="$_su" bash "$ROOT/setup/exakit" update runtime --plan 2>&1)"
 lacks "update runtime --plan is not refused" "Unknown option" "$_su_out"
-# ...and --plan DESCRIBES. It used to describe only across a major gap and
-# install across every other one, so the flag that promises to touch nothing
-# replaced the launcher binary without asking.
-lacks "update runtime --plan installs nothing" "Installing launcher" "$_su_out"
-has "...and says how to apply it instead" "Apply it with: exakit update runtime" "$_su_out"
-check "...leaving no launcher behind" "absent" \
-    "$([ -e "$_su/bin/exasol" ] && echo PRESENT || echo absent)"
 # AGK-02: a DEAD installer answers with installing:false, the step it died at,
 # and remedies.install naming the re-run - the exact shape AGENTS.md promises.
-printf '{\n  "runtime": {\n    "type": "personal"\n  },\n  "install": {\n    "current_step": "mcp"\n  }\n}\n' > "$_su/manifest.json"
+printf '{\n  "runtime": {\n    "type": "nano"\n  },\n  "install": {\n    "current_step": "mcp"\n  }\n}\n' > "$_su/manifest.json"
 _su_dead="$(EXAKIT_HOME="$_su" bash "$ROOT/setup/exakit" status --json 2>/dev/null)"
 check "dead installer keeps its step and remedy" "False|mcp|yes" "$(printf '%s' "$_su_dead" | python3 -c "
 import json,sys
@@ -1065,16 +1031,11 @@ has "...and posix keeps the 0600 chmod" 'stat.S_IRUSR | stat.S_IWUSR' "$_py_fs"
 has "...and the security policy shares it" 'return protect_path(path)' "$(cat "$ROOT/mcp/security/policy.py")"
 has "snapshot copies are protected too" 'protect_path(target)' "$_py_fs"
 has "...and so are the directories holding them" 'protect_path(directory)' "$(cat "$ROOT/mcp/runtime/paths.py")"
-# WSL-04: the after-a-restart promise names the one case that still needs a
-# hand - a headless Linux session without lingering - instead of promising
-# unconditionally.
-has "the restart promise names the lingering case" "loginctl enable-linger" "$(cat "$ROOT/AGENTS.md")"
-# WSL-06: EXAKIT_RUNTIME chose between the two database runtimes and there is
-# only one now, so no document may still offer the knob. (This check used to be
-# labelled as a WSL one; it never tested WSL, and WSL is supported now.)
-for _wsl_doc in README.md AGENTS.md QUICKSTART.md quickstarts/linux.md quickstarts/windows.md; do
-    lacks "no doc offers the removed runtime knob: $_wsl_doc" 'EXAKIT_RUNTIME' "$(cat "$ROOT/$_wsl_doc")"
-done
+# WSL-04: the after-a-restart promise names WSL's exception instead of lying.
+has "the restart promise carries the WSL exception" "WSL is the exception" "$(cat "$ROOT/AGENTS.md")"
+# WSL-06: the WSL launch wrapper is a command plus arguments, never one string.
+lacks "no doc offers the unspawnable one-string wsl wrapper" 'wsl uvx exasol-mcp-server' \
+    "$(cat "$ROOT/quickstarts/windows-wsl.md")"
 echo
 echo "round-3 residuals stay fixed:"
 # MAC-02: a start that fails once is NOT a licence to destroy. The reap runs
@@ -1094,244 +1055,16 @@ has "the second PATH writer delegates to the one Darwin-aware policy" \
 _r3="$WORK/r3"; mkdir -p "$_r3/bin"
 printf '#!/bin/sh\necho "Error: Connection refused (Errno 61)" >&2\nexit 1\n' > "$_r3/bin/exapump"
 chmod +x "$_r3/bin/exapump"
-printf '{\n  "runtime": {\n    "type": "personal"\n  },\n  "components": {\n    "exapump": {\n      "profile": "starter-kit"\n    }\n  }\n}\n' > "$_r3/manifest.json"
-# The same interpreter hand-through as the _jc fixtures, for the same macOS
-# runner reason - the stub exapump on this PATH is the thing under test.
-_r3_tools="$_r3/tools"; mkdir -p "$_r3_tools"
-[ -n "$_jc_py" ] && ln -sf "$_jc_py" "$_r3_tools/python3"
-_r3_out="$(EXAKIT_HOME="$_r3" EXAKIT_BIN_DIR="$_r3/bin" EXAKIT_UV_BIN="$(command -v uv 2>/dev/null || true)" PATH="$_r3_tools:$_r3/bin:/usr/bin:/bin" bash "$ROOT/setup/exakit" sql --json 'SELECT 1' 2>/dev/null)"
+printf '{\n  "runtime": {\n    "type": "nano"\n  },\n  "components": {\n    "exapump": {\n      "profile": "starter-kit"\n    }\n  }\n}\n' > "$_r3/manifest.json"
+_r3_out="$(EXAKIT_HOME="$_r3" EXAKIT_BIN_DIR="$_r3/bin" EXAKIT_UV_BIN="$(command -v uv 2>/dev/null || true)" PATH="/usr/bin:/bin" bash "$ROOT/setup/exakit" sql --json 'SELECT 1' 2>/dev/null)"
 check "sql --json remedy is the runnable command" "exakit start" "$(printf '%s' "$_r3_out" | python3 -c "
 import json,sys
 print(json.load(sys.stdin).get('remedy'))" 2>/dev/null)"
 has "and the sentence lives in remedy_hint" '"remedy_hint":' "$_r3_out"
-echo
-echo "personal 2.3 readiness (P0):"
-# The launcher's 2.3 breaking change: a non-interactive host preparation now
-# FAILS rather than proceeding without approval, and the kit's deploy is a
-# pipeline - the definition of non-interactive. Every launcher call that can
-# trigger preparation carries the flag, and it is resolved per SUBCOMMAND
-# because a subcommand's flags never appear in the top-level help the older
-# capability probe reads.
-has "the deploy approves host preparation" \
-    'install local $(personal_auto_approve_flag install)' "$RP_SH"
-has "...and so does the reuse start" \
-    'run_logged "$(personal_cli)" start $(personal_auto_approve_flag start)' "$RP_SH"
-has "...and the start command itself" \
-    'if ! run_logged "$(personal_cli)" start $(personal_auto_approve_flag start); then' "$RP_SH"
-# A launcher that does not take the flag must never be handed it: 2.2 is still
-# a supported deployment and an unknown flag is a hard failure, not a warning.
-# Behavioural, against a stub whose install advertises the flag and whose start
-# does not - the text of the probe proves nothing about what it answers.
-_aa="$WORK/autoapprove"; mkdir -p "$_aa/bin"
-cat > "$_aa/bin/exasol" <<'STUB'
-#!/bin/sh
-case "$1 $2" in
-  "install --help") printf 'Flags:\n  -a, --auto-approve   Approve host preparation\n' ;;
-  "start --help")   printf 'Flags:\n      --help    help\n' ;;
-  *)                printf 'Commands:\n  install\n  start\n' ;;
-esac
-STUB
-chmod +x "$_aa/bin/exasol"
-_aa_probe() {
-    bash -c '
-        . "$0/setup/lib/common.sh" 2>/dev/null
-        . "$0/setup/lib/detect.sh" 2>/dev/null
-        . "$0/setup/lib/runtime-personal.sh"
-        EXAKIT_PERSONAL_BIN="$1"
-        personal_auto_approve_flag "$2"' "$ROOT" "$_aa/bin/exasol" "$1" 2>/dev/null
-}
-check "a launcher that takes the flag gets it"      "--auto-approve" "$(_aa_probe install)"
-check "a launcher that does not is left alone"      "" "$(_aa_probe start)"
-
-# 2.3 selects and persists a concrete database port. Asking the constant made
-# status wrong on any deployment that chose another one, so every liveness read
-# goes through personal_db_port, which prefers the launcher's deployment.json.
-has "liveness reads the deployment's own port" \
-    'port_in_use "$(personal_db_port)" && personal_db_answers' "$RP_SH"
-has "...status too" 'if port_in_use "$(personal_db_port)"; then' "$RP_SH"
-has "...and the readiness wait" 'if port_in_use "$(personal_db_port)" && \' "$RP_SH"
-has "the port comes from the launcher's deployment.json" '"dbPort"' "$RP_SH"
-_p0="$WORK/p0"; mkdir -p "$_p0/deploy"
-printf '{"connection": {"host": "127.0.0.1", "dbPort": 8571, "username": "sys"}}\n' > "$_p0/deploy/deployment.json"
-_p0_probe() {
-    EXAKIT_PERSONAL_DEPLOY_DIR="$1" bash -c '
-        . "$0/setup/lib/common.sh" 2>/dev/null
-        . "$0/setup/lib/detect.sh" 2>/dev/null
-        . "$0/setup/lib/runtime-personal.sh"
-        personal_db_port' "$ROOT" 2>/dev/null
-}
-check "a configured port is read back" 8571 "$(_p0_probe "$_p0/deploy")"
-check "no deployment falls back to the default" 8563 "$(_p0_probe "$_p0/absent")"
-
-# The one-time VM guest rebuild after a launcher change does not fit the
-# ordinary readiness budget, and overrunning it reported a successful upgrade
-# as a crash. A number the user chose still wins over the kit's guess.
-has "a guest rebuild gets its own budget" 'EXAKIT_PERSONAL_REBUILD_TIMEOUT' "$RP_SH"
-has "...only when the user set no ceiling of their own" \
-    '[ -z "${EXAKIT_PERSONAL_READY_TIMEOUT:-}" ] && personal_guest_rebuild_expected' "$RP_SH"
-has "...and the timeout names the variable that raises it" 'raise it with ${_pwr_raise}' "$RP_SH"
-has "the rebuild is announced before the start, not after the wait" \
-    'personal_note_guest_rebuild' "$RP_SH"
-
-# A COMPLETED UPDATE MUST STOP ADVERTISING ITSELF. runtime.version is the
-# component versions.json names - the LAUNCHER - so it is read from the binary;
-# the deployment keeps the version that created it and gets its own key. With
-# the two conflated, `exakit update` swapped the launcher, recorded the
-# deployment's unchanged number, and offered the same update forever (stopping
-# the database each time it was accepted).
-has "the launcher binary is asked for its own version" 'personal_launcher_version()' "$RP_SH"
-has "...and that is what runtime.version records" \
-    'manifest_set runtime.version "${_prm_ver:-${_prm_dep:-$EXAKIT_PERSONAL_VERSION}}"' "$RP_SH"
-has "...with the deployment's version beside it, not in its place" \
-    'manifest_set runtime.deployment_version' "$RP_SH"
-# ...and the rebuild notice retires itself, or it promises on every start a
-# wait that is already behind the user.
-has "a completed start records the launcher it completed under" \
-    'manifest_set runtime.guest_rebuilt_for' "$RP_SH"
-has "...and the notice checks that record" \
-    'runtime.guest_rebuilt_for 2>/dev/null' "$RP_SH"
-_gr="$WORK/guest"; mkdir -p "$_gr/dep" "$_gr/bin"
-printf '2.2.0' > "$_gr/dep/.exasolLauncher.version"
-printf '#!/bin/sh\n[ "$1" = version ] && echo 2.3.0-rc2\nexit 0\n' > "$_gr/bin/exasol"
-chmod +x "$_gr/bin/exasol"
-_gr_probe() { # _gr_probe <recorded-guest_rebuilt_for> -> yes|no
-    printf '{"runtime":{"type":"personal","guest_rebuilt_for":"%s"}}\n' "$1" > "$_gr/manifest.json"
-    EXAKIT_HOME="$_gr" EXAKIT_PERSONAL_DEPLOY_DIR="$_gr/dep" EXAKIT_PERSONAL_BIN="$_gr/bin/exasol" \
-        bash -c '
-            . "$0/setup/lib/common.sh" 2>/dev/null
-            . "$0/setup/lib/detect.sh" 2>/dev/null
-            . "$0/setup/lib/runtime-personal.sh"
-            EXAKIT_PERSONAL_BIN="'"$_gr/bin/exasol"'"
-            personal_guest_rebuild_expected && echo yes || echo no' "$ROOT" 2>/dev/null
-}
-check "a 2.2 deployment under a 2.3 launcher owes a rebuild" "yes" "$(_gr_probe "")"
-check "...and stops owing it once a start has completed" "no" "$(_gr_probe "2.3.0-rc2")"
-
-# THE LAUNCHER OWNS THE LIFECYCLE. 2.3's `stop` leaves the deployment's own
-# runner alive and still answering SQL on the port, so a port-only probe called
-# a stopped database "running" - and `exakit start` then answered "already
-# running" and did nothing, leaving no way to restart it at all. The launcher's
-# own status is the tiebreaker, and the runner it left behind is reaped before
-# the next start rather than diagnosed after it.
-_ls="$WORK/lstate"; mkdir -p "$_ls/dep" "$_ls/bin"
-printf '{}' > "$_ls/dep/deployment.json"
-_ls_stub() { # _ls_stub <status-word> [--text-only]
-    if [ "${2:-}" = "--text-only" ]; then
-        printf '#!/bin/sh\n[ "$1" = status ] && [ "$2" = --json ] && exit 1\n[ "$1" = status ] && printf "  Status: %s\\n"\nexit 0\n' "$1" > "$_ls/bin/exasol"
-    else
-        printf '#!/bin/sh\n[ "$1" = status ] && printf "{\\"status\\": \\"%s\\"}\\n"\nexit 0\n' "$1" > "$_ls/bin/exasol"
-    fi
-    chmod +x "$_ls/bin/exasol"
-}
-_ls_probe() { # _ls_probe <fn> -> the function's answer with the stub launcher
-    EXAKIT_HOME="$_ls" EXAKIT_PERSONAL_DEPLOY_DIR="$_ls/dep" bash -c '
-        . "$0/setup/lib/common.sh" 2>/dev/null
-        . "$0/setup/lib/detect.sh" 2>/dev/null
-        . "$0/setup/lib/runtime-personal.sh"
-        EXAKIT_PERSONAL_BIN="'"$_ls/bin/exasol"'"
-        # The deployment exists, the port answers, SQL answers - the exact
-        # shape a stopped 2.3 deployment presents while its runner lingers.
-        personal_deployment_exists() { return 0; }
-        port_in_use() { return 0; }
-        personal_db_answers() { return 0; }
-        '"$1" "$ROOT" 2>/dev/null
-}
-_ls_stub stopped
-check "the launcher's own word is read from its json" "stopped" "$(_ls_probe personal_launcher_state)"
-check "a stopped deployment whose runner still answers reads as stopped" "stopped" "$(_ls_probe personal_status)"
-_ls_stub stopped --text-only
-check "...and a launcher without --json is still understood" "stopped" "$(_ls_probe personal_launcher_state)"
-_ls_stub database_ready
-check "a launcher that says ready, with SQL answering, is running" "running" "$(_ls_probe personal_status)"
-# The runner the 2.3 launcher leaves behind must be recognised as OURS, or the
-# reaper calls the kit's own process foreign and refuses to clear the port.
-has "the reaper knows the 2.3 runner" '*exasol-local-runner*)   return 0 ;;' "$RP_SH"
-has "...and still knows the 2.2 one" '*mac-runner*__daemon__*) return 0 ;;' "$RP_SH"
-has "a stopped deployment holding its port is cleared before the start" \
-    'Clearing a leftover Exasol runner still holding port' "$RP_SH"
-
-# An update prompt that covers a several-minute start has to say so, and only
-# for the launcher versions that actually behave that way.
-has "the update explains the guest rebuild" 'rebuilds the deployment'"'"'s VM guest' \
+# LNX-01: the shared-engine warning is gated on the engine actually being
+# shared - rootless Podman inside the distro warns about nothing cross-side.
+has "the shared-engine warning excludes rootless podman" '_exakit_nano_rootless_podman 2>/dev/null && return 1' \
     "$(cat "$ROOT/setup/lib/common.sh")"
-has "...gated on 2.3 or newer" '_rue_guest_rebuild_from=2.2.99999' \
-    "$(cat "$ROOT/setup/lib/common.sh")"
-
-echo
-echo "personal beyond macos (P2):"
-# The module's macOS assumptions are out: the requirements gate admits Linux
-# (requiring Podman, which the launcher does not install there), refuses WSL by
-# name, and the asset map speaks the release's exact spelling - a lowercased
-# guess is a 404 at download time.
-_p2() { # _p2 <os> <arch> -> asset name under stubbed detection
-    bash -c '
-        . "$0/setup/lib/detect.sh" 2>/dev/null
-        detect_os() { echo "'"$1"'"; }
-        detect_arch() { echo "'"$2"'"; }
-        eval "$(sed -n "/^personal_asset_name()/,/^}/p" "$0/setup/lib/runtime-personal.sh")"
-        personal_asset_name' "$ROOT" 2>/dev/null
-}
-check "asset(macos/arm64)"  "exasol-personal_macOS_arm64.tar.gz"  "$(_p2 macos arm64)"
-check "asset(macos/x86_64)" "exasol-personal_macOS_x86_64.tar.gz" "$(_p2 macos x86_64)"
-check "asset(linux/arm64)"  "exasol-personal_Linux_arm64.tar.gz"  "$(_p2 linux arm64)"
-check "asset(linux/x86_64)" "exasol-personal_Linux_x86_64.tar.gz" "$(_p2 linux x86_64)"
-# The gate, behaviourally: what it says when it refuses is the user's whole
-# experience of the refusal, so the checks pin the die() reason - not the text
-# of the case arm.
-_p2gate() { # _p2gate <os> <with-podman:0|1> -> last die/ok marker
-    _pg_bin="$WORK/p2-bin-$1-$2"; mkdir -p "$_pg_bin"
-    # A PATH with the tools the probe needs and NOTHING found by accident:
-    # GitHub's ubuntu runners ship podman in /usr/bin, so scrubbing to
-    # "$stub:/usr/bin:/bin" made the no-podman case find the real one and
-    # pass a gate this check exists to see refuse.
-    for _pg_tool in bash sed tr grep head cat uname sleep; do
-        _pg_src="$(command -v "$_pg_tool" 2>/dev/null || true)"
-        [ -n "$_pg_src" ] && ln -sf "$_pg_src" "$_pg_bin/$_pg_tool"
-    done
-    [ "$2" = 1 ] && { printf '#!/bin/sh\nexit 0\n' > "$_pg_bin/podman"; chmod +x "$_pg_bin/podman"; }
-    PATH="$_pg_bin" bash -c '
-        die() { echo "DIED: $*"; exit 1; }
-        error() { :; }; info() { :; }; warn() { :; }; ok() { echo "OK: $*"; }
-        confirm_env() { return 0; }
-        . "$0/setup/lib/detect.sh" 2>/dev/null
-        detect_os() { echo "'"$1"'"; }
-        detect_arch() { echo arm64; }
-        detect_ram_gb() { echo 16; }
-        detect_free_disk_gb() { echo 100; }
-        EXAKIT_BIN_DIR="$1"
-        EXAKIT_PERSONAL_DEPLOY_DIR="$1/no-deployment"
-        eval "$(sed -n "/^EXAKIT_PERSONAL_PORT=/,/^}/p" "$0/setup/lib/runtime-personal.sh")"
-        unset EXAKIT_DB_PORT
-        personal_check_requirements 2>/dev/null' "$ROOT" "$_pg_bin" 2>/dev/null | tail -1
-}
-check "gate(linux, no podman) refuses podman by name" \
-    "DIED: Podman is required for the Exasol Personal runtime on Linux." "$(_p2gate linux 0)"
-check "gate(linux, podman) passes" \
-    "OK: Compatibility check passed (linux arm64, 16 GB RAM, 100 GB free)" "$(_p2gate linux 1)"
-# WSL IS A SUPPORTED PLATFORM, and these four checks are why. The kit used to
-# die on it; the launcher never did - its Linux local runtime asks for a podman
-# on PATH and nothing else, and a WSL2 distro is an AMD64 Linux that can have
-# one. So WSL now passes the same gate Linux passes, and fails it the same way,
-# with a remedy written for the distro rather than for a machine the reader
-# would have to go and buy.
-# The documented promise has to match the gate: a WSL reader is now given the
-# Linux road and the one prerequisite that differs, not an exit.
-has "the README sends WSL down the Linux road" "WSL** is supported" "$(cat "$ROOT/README.md")"
-has "...naming the podman that counts" "does not count" "$(cat "$ROOT/README.md")"
-has "the Linux quickstart claims the WSL path" "also the WSL path" "$(cat "$ROOT/quickstarts/linux.md")"
-has "the Windows quickstart hands WSL over" "supported too" "$(cat "$ROOT/quickstarts/windows.md")"
-lacks "no doc still says Personal refuses WSL" "does not support WSL" \
-    "$(cat "$ROOT/README.md" "$ROOT/quickstarts/linux.md" "$ROOT/quickstarts/windows.md" "$ROOT/setup/help/personal.json")"
-check "gate(wsl, podman) passes like linux" \
-    "OK: Compatibility check passed (wsl arm64, 16 GB RAM, 100 GB free)" "$(_p2gate wsl 1)"
-check "gate(wsl, no podman) refuses podman by name" \
-    "DIED: Podman is required for the Exasol Personal runtime in WSL." "$(_p2gate wsl 0)"
-check "the installer no longer turns WSL away" "" \
-    "$(grep -c 'it does not support WSL' "$ROOT/install.sh" "$ROOT/setup/lib/runtime-personal.sh" "$ROOT/setup/lib/detect.sh" 2>/dev/null | grep -v ':0$' | tr '\n' ' ')"
-check "...and routes it to the Linux setup" "setup/setup-linux.sh" \
-    "$(sed -n '/^        Linux)/,/^            ;;/p' "$ROOT/install.sh" | sed -n 's/.*setup_script="\([^"]*\)".*/\1/p')"
-check "gate(macos) unchanged" \
-    "OK: Compatibility check passed (macos arm64, 16 GB RAM, 100 GB free)" "$(_p2gate macos 0)"
 
 echo "passed: $PASS, failed: $FAIL"
 [ "$FAIL" -eq 0 ]

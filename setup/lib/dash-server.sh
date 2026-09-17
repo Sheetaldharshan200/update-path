@@ -433,59 +433,27 @@ dash_server_write_launcher() {
 # database bootstrapped as a connection profile (DASH_SERVER_EXASOL_*). Any of
 # these variables you export yourself take precedence. Re-running
 # `exakit update dash-server` regenerates this wrapper.
-# THE PORT IS NEVER BAKED INTO THIS FILE. It used to be, while the kit
-# recorded its own choice separately - two copies of one fact, which drifted:
-# a launcher written when the port was 5102 kept probing 5102 while the kit
-# passed --port 5100 and waited on it. The launcher said "already running:
-# 5102", the kit said "did not answer on 5100", and `exakit status` called a
-# live add-on stopped.
-#
-# So this resolves the port the same way the kit does, in the same order, and
-# holds no authoritative copy of its own:
-#   1. --port on this command line     (how the kit and the boot entry call it)
-#   2. the kit's record in manifest.json  (a bare hand-run, and the tiebreaker)
-#   3. 5100, the plain default          (no record to read)
-# Step 2 is a scoped read, not a JSON parser: components.dash_server.port is
-# the only "port" key the manifest carries, and the kit's writer keeps it one
-# per line.
-_ds_default_port=5100
-_ds_port=""
-_ds_seen=""
-for _ds_arg in "$@"; do
-    if [ "$_ds_seen" = "port" ]; then _ds_port="$_ds_arg"; _ds_seen=""; continue; fi
-    case "$_ds_arg" in
-        --port) _ds_seen="port" ;;
-        --port=*) _ds_port="${_ds_arg#--port=}" ;;
-    esac
-done
-if [ -z "$_ds_port" ]; then
-    _ds_manifest="${EXAKIT_HOME:-$HOME/.exasol-starter-kit}/manifest.json"
-    if [ -r "$_ds_manifest" ]; then
-        _ds_port="$(sed -n 's/.*"port"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$_ds_manifest" 2>/dev/null | head -1)"
-    fi
-fi
-case "$_ds_port" in ''|*[!0-9]*) _ds_port="$_ds_default_port" ;; esac
 # Already up? dash-server's consumption coordinator is single-process, so a
 # second copy dies on a RuntimeError traceback that reads like a crash. It is
 # not one - the first copy (often started at login by the boot entry) is
 # serving. Say that plainly and stop.
 _ds_holder=""
 if command -v lsof >/dev/null 2>&1; then
-    for _ds_pid in $(lsof -nP -iTCP:"$_ds_port" -sTCP:LISTEN -t 2>/dev/null | sort -u); do
+    for _ds_pid in $(lsof -nP -iTCP:@PORT@ -sTCP:LISTEN -t 2>/dev/null | sort -u); do
         case "$(ps -o command= -p "$_ds_pid" 2>/dev/null)" in
             *"@VENVDIR@"*) _ds_holder="ours" ;;
             *) [ -n "$_ds_holder" ] || _ds_holder="pid $_ds_pid ($(ps -o comm= -p "$_ds_pid" 2>/dev/null | sed 's|.*/||'))" ;;
         esac
     done
 elif command -v curl >/dev/null 2>&1; then
-    curl -s -o /dev/null --max-time 2 "http://127.0.0.1:$_ds_port/mcp" 2>/dev/null && _ds_holder="ours"
+    curl -s -o /dev/null --max-time 2 "http://127.0.0.1:@PORT@/mcp" 2>/dev/null && _ds_holder="ours"
 fi
 if [ "$_ds_holder" = "ours" ]; then
-    printf 'dash-server is already running: http://127.0.0.1:%s (MCP: /mcp)\n' "$_ds_port"
+    printf 'dash-server is already running: http://127.0.0.1:@PORT@ (MCP: /mcp)\n'
     printf 'State: exakit status   Logs: exakit logs dash-server -f   Stop: exakit stop\n'
     exit 0
 elif [ -n "$_ds_holder" ]; then
-    printf 'Port %s is held by another process (%s), so dash-server cannot start.\n' "$_ds_port" "$_ds_holder"
+    printf 'Port @PORT@ is held by another process (%s), so dash-server cannot start.\n' "$_ds_holder"
     printf 'Move it: EXAKIT_DASH_SERVER_PORT=<port> exakit update\n'
     exit 1
 fi
@@ -506,16 +474,13 @@ if [ -n "@DSN@" ] && [ -z "${DASH_SERVER_EXASOL_DSN:-}" ]; then
     fi
 fi
 # Bind where the kit says, not where dash-server defaults. Without these the
-# server binds its own built-in default, so an install that stepped up past a
-# busy 5100 starts on the busy port - or, if the upstream default host is not
-# loopback, exposes an unauthenticated control plane on the LAN. Setdefaults,
-# like DASH_SERVER_INSTANCE_PATH above: a user who exports their own still wins.
-#
-# $_ds_port, not a baked number: the pre-flight above and the bind below have to
-# be the same port, and a second baked copy is a second thing to drift - which
-# is precisely how the probe checked one port while the server served another.
+# pre-flight check above verdicts @PORT@ and the server then binds its own
+# built-in default, so an install that stepped up past a busy 5100 starts on
+# the busy port - or, if the upstream default host is not loopback, exposes an
+# unauthenticated control plane on the LAN. Setdefaults, like
+# DASH_SERVER_INSTANCE_PATH above: a user who exports their own still wins.
 : "${DASH_SERVER_HOST:=127.0.0.1}"
-: "${DASH_SERVER_PORT:=$_ds_port}"
+: "${DASH_SERVER_PORT:=@PORT@}"
 export DASH_SERVER_HOST DASH_SERVER_PORT
 exec "@VENVBIN@" "$@"
 EXAKIT_DS_EOF
@@ -810,10 +775,6 @@ dash_server_start() {
     _dss_waited=0
     while [ "$_dss_waited" -lt 60 ]; do
         if _dash_server_http_answers; then
-            # RECORD WHAT ACTUALLY BOUND. The record is what `exakit status`,
-            # the endpoint URL and the launcher's own fallback all read, so it
-            # follows reality rather than the intention this run started with.
-            manifest_set components.dash_server.port "$EXAKIT_DASH_SERVER_PORT" 2>/dev/null || true
             ok "dash-server is running: http://127.0.0.1:$EXAKIT_DASH_SERVER_PORT (MCP: /mcp)"
             return 0
         fi

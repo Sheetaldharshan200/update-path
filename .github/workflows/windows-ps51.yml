@@ -57,25 +57,6 @@ jobs:
       - name: non-interactive answers under 5.1
         shell: powershell
         run: powershell -NoProfile -ExecutionPolicy Bypass -File tests/noninteractive-answers.ps1
-      # The Windows Personal runtime module, executed against a sandboxed kit
-      # home: port from deployment.json, deployed-version state files, the
-      # wedge probe, the guest-rebuild recognition, the manifest keys, and the
-      # per-subcommand --auto-approve probe against a stub launcher.
-      - name: personal runtime module under 5.1
-        shell: powershell
-        run: powershell -NoProfile -ExecutionPolicy Bypass -File tests/runtime-personal-ps.ps1
-      # The crossing from a container database, executed on the engine that
-      # exakit.cmd really runs under: the fault-injection engine and exapump
-      # behind .cmd wrappers, every gate, both halves, and the coverage floor.
-      - name: legacy crossing under 5.1
-        shell: powershell
-        run: powershell -NoProfile -ExecutionPolicy Bypass -File tests/legacy-crossing-ps.ps1
-      # The local data loader on the files people actually have - BOM, CRLF,
-      # ';', GTFS .txt, header-only, .geojson - against a .cmd stub exapump
-      # that keeps the bytes it was handed: the kit passes them on untouched.
-      - name: data-load shapes under 5.1
-        shell: powershell
-        run: powershell -NoProfile -ExecutionPolicy Bypass -File tests/data-load-shapes-ps.ps1
       # The skill layer, executed rather than grepped. tests/skills.sh asserts
       # this half with awk against exakit-common.ps1, which catches a deleted
       # line and nothing else.

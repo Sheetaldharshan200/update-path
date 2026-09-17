@@ -26,13 +26,6 @@
 #                         open focused data loading options; a file path loads that
 #                         file, a FOLDER path bulk-loads every CSV/Parquet file in
 #                         it (one table each); -Force reloads bundled datasets
-#   migrate docker-nano [--container NAME] [--engine docker|podman]
-#                         [--dsn HOST:PORT] [--user USER] [--password-file PATH]
-#                         [--yes] [--json]
-#                         copy the tables of an older kit's container database
-#                         (Exasol Nano in Docker or Podman) into this database;
-#                         the kit's own sample data is left out and the
-#                         container is never removed
 #   mcp-setup             permanently configure MCP in supported AI clients
 #   mcp-doctor [clients]  check MCP config, connectivity, and managed state
 #   mcp-status [clients]  show managed MCP state for the supported AI clients
@@ -54,7 +47,7 @@
 #   catalog [search]      browse/search every exakit, exapump & exasol command
 #   help                  this text
 #
-# Installed to %USERPROFILE%\.local\bin by setup-windows.ps1; also
+# Installed to %USERPROFILE%\.local\bin by setup-windows-docker.ps1; also
 # runs straight from a repo checkout (setup\exakit.ps1).
 
 param(
@@ -88,11 +81,8 @@ if (Test-Path (Join-Path $scriptDir "lib\exakit-common.ps1")) {
 }
 
 . (Join-Path $libDir "exakit-common.ps1")
-. (Join-Path $libDir "runtime-personal.ps1")
+. (Join-Path $libDir "nano.ps1")
 . (Join-Path $libDir "exapump.ps1")
-# The crossing module: `exakit migrate docker-nano` is its after-the-install
-# road, and `exakit status` reads what it remembered about the old database.
-if (Test-Path (Join-Path $libDir "legacy-crossing.ps1")) { . (Join-Path $libDir "legacy-crossing.ps1") }
 . (Join-Path $libDir "mcp.ps1")
 # pyexasol is an update target of its own (and its own repair command), so the
 # CLI needs the module even though it takes no part in the runtime commands.
@@ -218,7 +208,7 @@ function Invoke-CmdStatus {
         # none of the arms downstream, so the screen fell through to "Start it:
         # exakit start" - a command that in this state can only fail. Twin of
         # the same case in cmd_status.
-        switch ($type) { "personal" { Get-PersonalStatus } default { "not installed" } }
+        switch ($type) { "nano" { Get-NanoStatus } default { "not installed" } }
     }
     $running = "$status".StartsWith("running")
     $steps = @(Get-ExakitManifestValue "steps_completed")
@@ -242,13 +232,6 @@ function Invoke-CmdStatus {
     # the install that failed was a different process, and its reason is the one
     # an agent needs here. Twin of the .last-failure read in cmd_status.
     $failureNote = Read-ExakitFailureNote
-    # What the crossing remembered about an older kit's container database, if
-    # anything: where it is, what was answered, whether its tables landed.
-    $legacyContainer = "" + (Get-ExakitManifestValue "legacy.container")
-    $legacyEngine = "" + (Get-ExakitManifestValue "legacy.engine")
-    $legacyChoice = "" + (Get-ExakitManifestValue "legacy.choice")
-    $legacyRestored = "" + (Get-ExakitManifestValue "legacy.restored")
-    $legacySample = "" + (Get-ExakitManifestValue "legacy.sample_left_out")
     $services = @{}
     # A service that knows its address says so through the registry's UrlFn, and
     # the JSON carries it - an agent could not get dash-server's URL from any
@@ -345,7 +328,7 @@ function Invoke-CmdStatus {
                 if (-not $topRemedy -and $property.Value.repair) { $topRemedy = "$($property.Value.repair)" }
             }
         }
-        $payload = [ordered]@{
+        [ordered]@{
             installed       = $true
             status          = $statusWord
             installing      = $installing
@@ -377,32 +360,7 @@ function Invoke-CmdStatus {
             last_failure    = $(if ($failureNote.reason) { $failureNote.reason } else { $null })
             last_failure_at = $(if ($failureNote.at) { $failureNote.at } else { $null })
             manifest        = $script:ManifestPath
-        }
-        # An older kit's container database, as the crossing recorded it. Only
-        # present when there is one: `copied` says whether its tables are in this
-        # database, and `command` is the runnable way to bring them across while
-        # they are not. Not a remedy - nothing is broken - so it lives here rather
-        # than in `remedies`. Twin of legacy_database in cmd_status.
-        if ($legacyContainer) {
-            # `copied` is what has LANDED, not what was chosen: a migrate answered
-            # mid-install has its tables copied out but not restored until the
-            # run's end. The command is the one that finishes it - the installer's
-            # own re-run for a copy the install still owes, migrate for a skip.
-            $legacyCopied = [bool]$legacyRestored
-            $legacyCommand = $null
-            if (-not $legacyCopied -and $legacyChoice -eq "skip") { $legacyCommand = "exakit migrate docker-nano" }
-            elseif (-not $legacyCopied -and $legacyChoice -eq "migrate") { $legacyCommand = $installCmd }
-            $payload["legacy_database"] = [ordered]@{
-                container       = $legacyContainer
-                engine          = $(if ($legacyEngine) { $legacyEngine } else { $null })
-                choice          = $(if ($legacyChoice) { $legacyChoice } else { $null })
-                copied          = $legacyCopied
-                restored_tables = $(if ("$legacyRestored" -match '^[0-9]+$') { [int]$legacyRestored } else { $null })
-                sample_left_out = @($legacySample -split "," | Where-Object { $_ })
-                command         = $legacyCommand
-            }
-        }
-        $payload | ConvertTo-Json -Depth 4
+        } | ConvertTo-Json -Depth 4
         # 0 means healthy AND complete: while the installer runs, a poller that
         # reads the exit code must not see success off a half-built kit.
         if ($installing) { exit 3 }
@@ -445,26 +403,7 @@ function Invoke-CmdStatus {
     $engine = Get-ExakitManifestValue "runtime.engine"
     $runtimeText = $(if ($type) { $type } else { "none" })
     if ($engine) { $runtimeText = "$runtimeText ($engine)" }
-    # A runtime this kit does not have is not the same as a missing one, and
-    # "nano - not installed" reads like a broken install rather than an
-    # installation that predates the removal of the container runtime.
-    if (Test-ExakitLegacyRuntimeRecorded) {
-        Write-StatusPanelRow "Runtime" "$runtimeText - from an older kit, not managed here"
-    } else {
-        Write-StatusPanelRow "Runtime" "$runtimeText - $status"
-    }
-    # An older kit's container database that was NOT copied across: the
-    # crossing recorded it and the user answered skip (or was never asked, in an
-    # unattended run). Named here, with the command that copies it, until it is.
-    if ($legacyContainer -and -not $legacyRestored) {
-        if ($legacyChoice -eq "skip") {
-            Write-StatusPanelRow "Old database" "container '$legacyContainer' ($legacyEngine) - not copied; bring its tables across: exakit migrate docker-nano"
-        } elseif ($legacyChoice -eq "migrate") {
-            # Copied out, not yet restored: the install's second half does that,
-            # so a re-run of the installer is what finishes it.
-            Write-StatusPanelRow "Old database" "container '$legacyContainer' ($legacyEngine) - copied out, not yet restored; finish with: $(Get-ExakitInstallCommand)"
-        }
-    }
+    Write-StatusPanelRow "Runtime" "$runtimeText - $status"
     $dsn = Get-ExakitManifestValue "runtime.dsn"
     if (-not $dsn) { $dsn = "unknown" }
     if ($running) { $reach = "reachable" } else { $reach = "not reachable" }
@@ -668,7 +607,8 @@ function Invoke-CmdStatus {
 # Every service answers the same three questions - running, start, stop - and
 # add-ons opt in through the registry (StatusFn/StartFn/StopFn/AutostartFn), so
 # `exakit start|stop|status` and the boot entry pick a new one up with no
-# wiring here. Windows registers a Startup-folder entry per service.
+# wiring here. Windows registers a Startup-folder entry; the Nano container
+# carries its own restart policy, which Docker honours on boot.
 function Get-ExakitServiceIds {
     $ids = @()
     if (Get-ExakitManifestValue "runtime.type") { $ids += "database" }
@@ -683,9 +623,7 @@ function Get-ExakitServiceIds {
 function Get-ExakitServiceStatus {
     param([Parameter(Mandatory)][string]$Id)
     if ($Id -eq "database") {
-        switch (Get-RuntimeType) {
-            "personal" { return (Get-PersonalStatus) }
-        }
+        if ((Get-RuntimeType) -eq "nano") { return (Get-NanoStatus) }
         return "unknown"
     }
     $addon = Get-ExakitMarketplaceAddon $Id
@@ -719,9 +657,7 @@ function Start-ExakitService {
 function Stop-ExakitService {
     param([Parameter(Mandatory)][string]$Id)
     if ($Id -eq "database") {
-        switch (Get-RuntimeType) {
-            "personal" { Stop-Personal }
-        }
+        if ((Get-RuntimeType) -eq "nano") { Stop-Nano }
         return
     }
     $addon = Get-ExakitMarketplaceAddon $Id
@@ -732,6 +668,9 @@ function Stop-ExakitService {
 
 function Unregister-ExakitAutostart {
     param([Parameter(Mandatory)][string]$Id)
+    if ($Id -eq "database" -and (Get-RuntimeType) -eq "nano") {
+        [void](Set-NanoRestartPolicy -Policy "no")
+    }
     $entry = Get-ExakitAutostartEntryPath -Id $Id
     if (Test-Path $entry) {
         Remove-Item -Force -ErrorAction SilentlyContinue $entry
@@ -764,6 +703,9 @@ function Test-ExakitAutostartAll {
 function Test-ExakitAutostartRegistered {
     param([Parameter(Mandatory)][string]$Id)
     if (Test-Path (Get-ExakitAutostartEntryPath -Id $Id)) { return $true }
+    if ($Id -eq "database" -and (Get-RuntimeType) -eq "nano") {
+        return (Test-NanoRestartPolicySet)
+    }
     return $false
 }
 
@@ -854,13 +796,8 @@ function Invoke-CmdStart {
     # Everything the kit runs, database first: self-heal semantics for the
     # runtime (a stopped one is started, a missing one created - `exakit start`
     # promises a running database), then every add-on service.
-    if ((Get-RuntimeType) -eq "personal" -and (Test-PersonalDeploymentRunning)) {
+    if ((Get-RuntimeType) -eq "nano" -and (Get-NanoStatus) -eq "running") {
         Ok "Database is already running"
-    } elseif ((Get-RuntimeType) -eq "personal" -and (Get-PersonalStatus) -eq "conflict") {
-        # Port open is not database up: with another program on the port this
-        # said "already running" and exited 0 while status said stopped. Twin
-        # of the same arm in cmd_start (setup/exakit).
-        Fail "Port $(Get-PersonalDbPort) is held by another process, not by Exasol, so the database cannot start. Stop that process, then: exakit start"
     } else {
         Confirm-ExakitRuntimeRunning -Deploy
     }
@@ -882,7 +819,7 @@ function Invoke-CmdStop {
         if ($id -eq "database") { continue }
         Stop-ExakitService -Id $id
     }
-    switch (Get-RuntimeType) { "personal" { Stop-Personal } }
+    switch (Get-RuntimeType) { "nano" { Stop-Nano } }
 }
 
 # Invoke-CmdRepairRuntime [-Yes] - rebuild a database that cannot be started.
@@ -912,8 +849,8 @@ function Invoke-CmdRepairRuntime {
 
     $kit = Get-ExakitRepoRoot
     if (-not $kit) { Fail "Could not find the kit copy to re-run setup from. Re-run the installer instead." }
-    $setup = Join-Path $kit "setup\setup-windows.ps1"
-    if (-not (Test-Path $setup)) { Fail "The kit copy at $kit has no setup\setup-windows.ps1. Re-run the installer instead." }
+    $setup = Join-Path $kit "setup\setup-windows-docker.ps1"
+    if (-not (Test-Path $setup)) { Fail "The kit copy at $kit has no setup\setup-windows-docker.ps1. Re-run the installer instead." }
 
     # Narration never shares stdout with the JSON object.
     if ($Json) {
@@ -951,7 +888,7 @@ function Invoke-CmdRepairRuntime {
     # Drop the tick so the deployment step runs even on a runtime whose wedged
     # state the kit cannot yet recognise on its own.
     Remove-ExakitStepDone "runtime"
-    Info "Re-running setup\setup-windows.ps1 to rebuild the database"
+    Info "Re-running setup\setup-windows-docker.ps1 to rebuild the database"
     $env:EXAKIT_BANNER_SHOWN = "1"
     # The deployment step must NOT offer to reuse what is there: its reuse
     # question defaults to YES, so a repair the user had just confirmed as
@@ -1005,209 +942,39 @@ function Invoke-CmdRepairRuntime {
     exit $repairCode
 }
 
-# Invoke-CmdMigrate docker-nano [options] - the after-the-install road of the
-# legacy crossing (setup\lib\legacy-crossing.ps1, Invoke-LegacyMigrateNow).
+# Get-ExakitNanoTargetNames - "<container>|<volume>" for the Nano deployment
+# this install recorded, so a destructive prompt can NAME what it is about to
+# delete. The manifest first (the names this install actually used, which
+# EXAKIT_NANO_CONTAINER/VOLUME may have moved), then the defaults. Twin of
+# _exakit_nano_target_names in setup/lib/common.sh.
+function Get-ExakitNanoTargetNames {
+    $c = "$(Get-ExakitManifestValue 'runtime.container')"
+    $v = "$(Get-ExakitManifestValue 'runtime.volume')"
+    if (-not $c) { $c = $env:EXAKIT_NANO_CONTAINER }
+    if (-not $c) { $c = "exasol-nano" }
+    if (-not $v) { $v = $env:EXAKIT_NANO_VOLUME }
+    if (-not $v) { $v = "exasol-nano-data" }
+    return "$c|$v"
+}
+
+# Show-ExakitSharedEngineDbWarning - the shared-Docker-engine hazard, said
+# BEFORE consent is taken.
 #
-# Twin of cmd_migrate in setup/exakit; its header carries the whole rationale.
-# The short version: the installer asks about an older kit's container database
-# once, and this is for the machine that answered "skip" and wants the data
-# after all, or whose container the installer never saw. What is not named on
-# the command line comes from the record the crossing kept (legacy.*), then the
-# old install's own record, then the machine, then an older kit's defaults.
-#
-# THE PASSWORD NEVER TRAVELS ON A COMMAND LINE: a file (--password-file, or the
-# one an older kit recorded), EXAKIT_LEGACY_PASSWORD for a scripted run, or a
-# prompt on a console. Exit codes: 0 done, 1 the copy did not finish, 2 bad
-# input, 3 no deployment or no exapump, 4 not installed, 5 not confirmed.
-function Invoke-CmdMigrate {
-    param([string[]]$Arguments = @())
-    $argv = @($Arguments)
-    $json = ($argv -contains "--json" -or $argv -contains "-j")
-    $usage = "exakit migrate docker-nano [--container NAME] [--engine docker|podman] [--dsn HOST:PORT] [--user USER] [--password-file PATH] [--yes] [--json]"
-    # A refusal in JSON is an object with rejected: true and exit 2, the shape
-    # `exakit sql` already answers with, so one parser reads both.
-    function Deny-MigrateInput([string]$Msg) {
-        if ($json) {
-            [ordered]@{ ok = $false; error = $Msg; remedy = $null; rejected = $true } | ConvertTo-Json -Compress | Write-Output
-            exit 2
-        }
-        Write-Host ""; Write-Host "  [x] $Msg"; exit 2
-    }
-    $source = ""
-    if ($argv.Count -gt 0) { $source = "" + $argv[0] }
-    $rest = @()
-    if ($source -eq "docker-nano") { $rest = @($argv | Select-Object -Skip 1) }
-    elseif (-not $source -or $source.StartsWith("-")) { Deny-MigrateInput "migrate needs a source. The one there is: $usage" }
-    else { Deny-MigrateInput "Unknown migration source '$source' (known: docker-nano)." }
-
-    $yes = $false; $container = ""; $engine = ""; $dsn = ""; $user = ""; $pwFile = ""
-    for ($i = 0; $i -lt $rest.Count; $i++) {
-        $a = "" + $rest[$i]
-        $name = $a; $value = $null
-        if ($a -match '^(--[a-z-]+)=(.*)$') { $name = $Matches[1]; $value = $Matches[2] }
-        # A value flag takes the next token when it was not written as --flag=value.
-        $takesValue = ($name -in @("--container", "--engine", "--dsn", "--user", "--password-file"))
-        if ($takesValue -and $null -eq $value) { $i++; if ($i -lt $rest.Count) { $value = "" + $rest[$i] } else { $value = "" } }
-        switch ($name) {
-            "--container"     { if (-not $value) { Deny-MigrateInput "--container needs the container's name." }; $container = $value }
-            "--engine"        { if (-not $value) { Deny-MigrateInput "--engine needs docker or podman." }; $engine = $value }
-            "--dsn"           { if (-not $value) { Deny-MigrateInput "--dsn needs HOST:PORT." }; $dsn = $value }
-            "--user"          { if (-not $value) { Deny-MigrateInput "--user needs a database user." }; $user = $value }
-            "--password-file" { if (-not $value) { Deny-MigrateInput "--password-file needs a path." }; $pwFile = $value }
-            "--password"      { Deny-MigrateInput "A password does not go on the command line, where every process can read it. Put it in a file and pass --password-file <path>, set EXAKIT_LEGACY_PASSWORD, or answer the prompt." }
-            "--yes"           { $yes = $true }
-            "-y"              { $yes = $true }
-            "-Yes"            { $yes = $true }
-            "--json"          { }
-            "-j"              { }
-            default           { Deny-MigrateInput "Unknown option '$a' for migrate (supported: --container, --engine, --dsn, --user, --password-file, --yes, --json)." }
-        }
-    }
-    if ($engine -and $engine -notin @("docker", "podman")) { Deny-MigrateInput "--engine must be docker or podman, not '$engine'." }
-    if ($dsn -and $dsn -notmatch ':[0-9]+$') { Deny-MigrateInput "--dsn must be HOST:PORT, e.g. 127.0.0.1:8563." }
-    function Test-NonEmptyFile([string]$Path) { return ($Path -and (Test-Path $Path) -and (Get-Item $Path).Length -gt 0) }
-    if ($pwFile -and -not (Test-NonEmptyFile $pwFile)) { Deny-MigrateInput "--password-file: $pwFile is missing or empty." }
-
-    Assert-ExakitInstalled -Json:$json
-    # One answer for a failure BEFORE the copy: the same three keys every state
-    # query carries, exit 3 - the code for "installed, but not usable for this".
-    function Deny-MigrateState([string]$Status, [string]$Msg, [string]$Remedy) {
-        if ($json) {
-            [ordered]@{ ok = $false; installed = $true; status = $Status; error = $Msg; remedy = $Remedy } | ConvertTo-Json -Compress | Write-Output
-            exit 3
-        }
-        Write-ExakitError $Msg
-        Info "Then: $Remedy"
-        exit 3
-    }
-    if ((Get-RuntimeType) -ne "personal") {
-        Deny-MigrateState "no database" "This install has no Exasol Personal deployment to copy into yet." (Get-ExakitInstallCommand)
-    }
-    if (-not (Get-Command Invoke-LegacyMigrateNow -ErrorAction SilentlyContinue)) {
-        Fail "This kit copy has no setup\lib\legacy-crossing.ps1, which migrate runs. Re-run the installer to repair the copy."
-    }
-
-    # What was named, then what the crossing remembered (legacy.*), then the old
-    # install's own record - runtime.* is only the OLD database's when the
-    # record still says the runtime is a container - then the machine.
-    $legacyRt = Test-ExakitLegacyRuntimeRecorded
-    function Get-Remembered([string]$Key) { return "" + (Get-ExakitManifestValue "legacy.$Key") }
-    function Get-OldRecord([string]$Key) { if ($legacyRt) { return "" + (Get-ExakitManifestValue "runtime.$Key") }; return "" }
-    if (-not $container) { $container = Get-Remembered "container" }
-    if (-not $container) { $container = Get-OldRecord "container" }
-    if (-not $container) { $container = "exasol-nano" }
-    $volume = Get-Remembered "volume"
-    if (-not $volume) { $volume = Get-OldRecord "volume" }
-    if (-not $user) { $user = Get-Remembered "user" }
-    if (-not $user) { $user = Get-OldRecord "user" }
-    if (-not $user) { $user = "sys" }
-    $probeTimeout = 20
-    if ($env:EXAKIT_ENGINE_PROBE_TIMEOUT) { $probeTimeout = [int]$env:EXAKIT_ENGINE_PROBE_TIMEOUT }
-    if (-not $engine) { $engine = Get-Remembered "engine" }
-    if (-not $engine) { $engine = Get-OldRecord "engine" }
-    if (-not $engine) {
-        # Whichever engine on this machine knows a container by that name.
-        foreach ($candidate in @("docker", "podman")) {
-            $bin = Get-Command $candidate -ErrorAction SilentlyContinue
-            if (-not $bin) { continue }
-            $probe = Invoke-ExakitBounded -FilePath $bin.Source -Arguments @("container", "inspect", $container) -TimeoutSeconds $probeTimeout
-            if ($null -ne $probe -and "$probe".Trim() -ne "") { $engine = $candidate; break }
-        }
-        if (-not $engine) {
-            Deny-MigrateState "no container" "Neither docker nor podman on this machine has a container named '$container'." "exakit migrate docker-nano --engine docker --container <name>   (list them with: docker ps -a, or podman ps -a)"
-        }
-    }
-    if (-not $dsn) { $dsn = Get-Remembered "dsn" }
-    if (-not $dsn) { $dsn = Get-OldRecord "dsn" }
-    if (-not $dsn) {
-        # The port the container publishes for 8563, as the engine reports it
-        # ("127.0.0.1:8563", or "0.0.0.0:8563" - either way the host is local).
-        $port = "8563"
-        $engineBin = Get-Command $engine -ErrorAction SilentlyContinue
-        if ($engineBin) {
-            $portOut = "" + (Invoke-ExakitBounded -FilePath $engineBin.Source -Arguments @("port", $container, "8563/tcp") -TimeoutSeconds $probeTimeout)
-            foreach ($line in ($portOut -split "`n")) {
-                $line = $line.Trim()
-                if ($line -and -not $line.StartsWith("[")) { $port = $line.Substring($line.LastIndexOf(":") + 1); break }
-            }
-        }
-        if ($port -notmatch '^[0-9]+$') { $port = "8563" }
-        $dsn = "127.0.0.1:$port"
-    }
-    # The password: a named file, the environment, the recorded file, the
-    # credential an older kit kept, and last a prompt - on a console only.
-    $script:LegacyPassword = ""
-    $passwordFile = ""
-    if ($pwFile) {
-        $passwordFile = $pwFile
-    } elseif (-not $env:EXAKIT_LEGACY_PASSWORD) {
-        $pf = Get-Remembered "password_file"
-        if (-not (Test-NonEmptyFile $pf)) { $pf = Get-OldRecord "password_file" }
-        if (-not (Test-NonEmptyFile $pf)) { $pf = Join-Path $script:CredsDir "nano_sys_password" }
-        if (Test-NonEmptyFile $pf) {
-            $passwordFile = $pf
-        } elseif ((-not $json) -and (Test-ExakitInteractive)) {
-            Write-Host ("    ? Password of the {0} user in the old database (not shown): " -f $user) -NoNewline
-            $secure = Read-Host -AsSecureString
-            $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
-            try { $script:LegacyPassword = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr) }
-            finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr) }
-            if (-not $script:LegacyPassword) { Deny-MigrateInput "No password was given." }
-        } else {
-            Deny-MigrateState "no password" "The old database's password is not on file, and there is no console to ask on." "exakit migrate docker-nano --password-file <path>   (a file holding only the password; or set EXAKIT_LEGACY_PASSWORD)"
-        }
-    }
-    # The module reads these; names and paths only, never the password itself.
-    $env:EXAKIT_LEGACY_CONTAINER = $container
-    $env:EXAKIT_LEGACY_ENGINE = $engine
-    $env:EXAKIT_LEGACY_DSN = $dsn
-    $env:EXAKIT_LEGACY_USER = $user
-    if ($volume) { $env:EXAKIT_LEGACY_VOLUME = $volume }
-    if ($passwordFile) { $env:EXAKIT_LEGACY_PASSWORD_FILE = $passwordFile }
-
-    Initialize-ExakitLogging
-    # The module returns its code on the success stream and narrates through the
-    # host; the last integer is the code. Under --json the narration is routed
-    # to stderr so stdout carries one object and nothing else.
-    $prevEap = $ErrorActionPreference
-    $rc = 1
-    try {
-        $ErrorActionPreference = "Continue"
-        if ($json) {
-            $items = @(Invoke-LegacyMigrateNow -Yes:$yes 6>&1)
-            foreach ($item in $items) {
-                if ($item -is [int]) { $rc = $item } else { [Console]::Error.WriteLine("$item") }
-            }
-        } else {
-            foreach ($item in @(Invoke-LegacyMigrateNow -Yes:$yes)) { if ($item -is [int]) { $rc = $item } }
-        }
-    } finally {
-        $ErrorActionPreference = $prevEap
-        $script:LegacyPassword = ""
-    }
-    if ($json) {
-        $st = $script:LegacyMigrateStatus
-        if (-not $st) { $st = "failed" }
-        $remedy = $null
-        if ($script:LegacyMigrateRemedy) { $remedy = $script:LegacyMigrateRemedy }
-        if ($st -eq "declined") { $remedy = "exakit migrate docker-nano --yes" }
-        [ordered]@{
-            ok              = ($st -in @("done", "nothing"))
-            installed       = $true
-            status          = $st
-            container       = $container
-            engine          = $engine
-            dsn             = $dsn
-            copied_out      = [int]$script:LegacyExported
-            restored        = [int]$script:LegacyRestored
-            left_alone      = [int]$script:LegacySkipped
-            failed          = [int]$script:LegacyRestoreFailed
-            sample_left_out = @($script:LegacySampleIds -split "," | Where-Object { $_ })
-            reason          = $(if ($script:LegacyMigrateReason) { $script:LegacyMigrateReason } else { $null })
-            remedy          = $remedy
-        } | ConvertTo-Json -Compress | Write-Output
-    }
-    exit $rc
+# It used to be printed from inside Invoke-ExakitUninstallComponent, i.e. after
+# the user had already typed UNINSTALL - the one sentence that might have
+# changed their answer, delivered once the answer could no longer be changed.
+# The confirmation named neither the container nor the volume (those appeared
+# only in the record line after the removal), so there was no moment at which a
+# Windows user could have noticed they were about to delete the database a WSL
+# install on the same machine is still using. Returns $false when the hazard
+# does not apply, so a caller can use it as a test. Twin of
+# _exakit_shared_engine_db_warning in setup/lib/common.sh; there it also has to
+# ask which OS it is on, because that file runs on four of them.
+function Show-ExakitSharedEngineDbWarning {
+    if ((Get-RuntimeType) -ne "nano") { return $false }
+    $names = (Get-ExakitNanoTargetNames) -split '\|'
+    Warn2 ("Windows and WSL share one Docker engine. If this machine also has a Windows or WSL install of the kit, removing the container '" + $names[0] + "' and the volume '" + $names[1] + "' deletes that database too, and it cannot be recovered.")
+    return $true
 }
 
 # Get-ExakitExapumpProfileDirs - every directory an exapump profile store could
@@ -1303,18 +1070,41 @@ function Invoke-ExakitUninstallRun {
     }
     if ($addonsGone.Count -gt 0) { RecordRemoved "Add-ons removed: $($addonsGone -join ', ')" }
 
-    # 1) Database + all data.
+    # 1) Database + all data (the Windows runtime is Nano).
     $type = Get-RuntimeType
     if ($type) {
+        # NAMED BEFORE THE REMOVAL, not only in the record line after it: on
+        # -Yes there is no gate to read, so this line and the shared-engine
+        # warning under it are the last chance to recognise the container as
+        # one the other side of a Windows+WSL machine is also using.
+        $targetNames = $null
+        if ($type -eq "nano") { $targetNames = (Get-ExakitNanoTargetNames) -split '\|' }
         if ($DryRun) {
-            Info "  will remove: local Exasol $type deployment and ALL its data"
+            if ($targetNames) {
+                Info ("  will remove: local Exasol nano deployment and ALL its data: container '" + $targetNames[0] + "', data volume '" + $targetNames[1] + "'")
+            } else {
+                Info "  will remove: local Exasol $type deployment and ALL its data"
+            }
+            [void](Show-ExakitSharedEngineDbWarning)
         } else {
-            Info "Removing the local Exasol $type deployment and all data"
+            if ($targetNames) {
+                Info ("Removing the local Exasol nano deployment and all data: container '" + $targetNames[0] + "', data volume '" + $targetNames[1] + "'")
+            } else {
+                Info "Removing the local Exasol $type deployment and all data"
+            }
+            [void](Show-ExakitSharedEngineDbWarning)
             switch ($type) {
-                "personal" { try { Remove-Personal } catch { Warn2 "Database removal reported errors (continuing uninstall)" } }
+                "nano" { try { Remove-Nano -Data } catch { Warn2 "Database removal reported errors (continuing uninstall)" } }
                 default { Warn2 "Unknown runtime type '$type'; skipping database removal" }
             }
-            RecordRemoved "Database removed: the local Exasol Personal deployment and all its data"
+        }
+        # BY NAME. "The database was removed" leaves the reader to guess which
+        # container and which volume that was, and those are exactly the two
+        # names they need if the engine kept one of them: a container the engine
+        # refused to remove is found again by name, and nothing else on screen
+        # ever says what it was called.
+        if ($type -eq "nano") {
+            RecordRemoved "Database removed: Nano container $script:NanoContainer, data volume $script:NanoVolume"
         }
     }
 
@@ -1641,6 +1431,8 @@ function Show-ExakitUninstallMenu {
     Warn2 "This is IRREVERSIBLE. Removed data cannot be recovered."
     if ($picked -contains "database" -or $picked -contains "everything") {
         Warn2 "The database selection deletes ALL local database data."
+        # BEFORE the typed gate, never after it.
+        [void](Show-ExakitSharedEngineDbWarning)
     }
     if (-not [Environment]::UserInteractive -or [Console]::IsInputRedirected) {
         Fail "uninstall needs an interactive terminal to confirm; use -Yes for the scripted full uninstall."
@@ -1674,8 +1466,8 @@ function Invoke-ExakitUninstallComponent {
             # from Show-ExakitUninstallMenu), which is the only place saying it
             # can still change the answer. Twin of the same move in
             # _exakit_uninstall_component.
-            Info "Removing the local Exasol Personal deployment and all data"
-            try { Remove-Personal } catch { Warn2 "Database removal reported errors" }
+            Info "Removing the local Exasol Nano deployment and all data"
+            try { Remove-Nano -Data } catch { Warn2 "Database removal reported errors" }
             Remove-ExakitStepDone "runtime"
         }
         "mcp_configs" {
@@ -1842,10 +1634,10 @@ function Invoke-CmdVersion {
         } elseif ($available -eq "unknown" -or $installed -eq "unknown") {
             $status = "unknown - check: exakit status"
         } elseif ($installed -eq "not installed" -and (Test-ExakitComponentHeavy $actual)) {
-            # A runtime that is not installed is not a runtime this machine
-            # wants: offering to deploy a database onto a machine that never
-            # had one is actively wrong. (A missing light component, by
-            # contrast, is exactly the repair case below.)
+            # A runtime that is not installed is not a runtime this machine wants:
+            # offering to deploy Exasol Personal onto a Nano install would be
+            # actively wrong. (A missing light component, by contrast, is exactly
+            # the repair case below.)
             $status = "not installed - re-run the installer"
         } elseif ($installed -ne "not installed" -and (Test-ExakitVersionNewer -Latest $installed -Current $available)) {
             # Installed is ahead of the published set. The kit never moves a
@@ -2130,11 +1922,11 @@ function Invoke-CmdMarketplace {
 
 
 # The upstream lookup helpers (Get-ExakitLatestGithubRelease,
-# Get-ExakitLatestPypiVersion) deliberately live ONLY in
-# setup/lib/exakit-common.ps1. This file used to redefine them, and because it
-# is dot-sourced afterwards its copies won - including one that was not
-# architecture-aware, so an x86_64 host could be told an arm64 build was the
-# newest one. One definition, in the library, for both entry points.
+# Get-ExakitLatestPypiVersion, Get-ExakitLatestDockerTag) deliberately live ONLY
+# in setup/lib/exakit-common.ps1. This file used to redefine them, and because it
+# is dot-sourced afterwards its copies won - including a docker-tag lookup that
+# was not architecture-aware, so an x86_64 host could be told an arm64 tag was
+# the newest one. One definition, in the library, for both entry points.
 
 
 function Get-ExakitComponentNote {
@@ -2233,7 +2025,7 @@ function Write-ExakitVersionsSourceLine {
 # An env override outranks every source above, so say so rather than letting the
 # line above take credit for a version the user picked.
 function Write-ExakitOverrideLine {
-    foreach ($component in @("exapump", "mcp", "pyexasol", "personal")) {
+    foreach ($component in @("exapump", "mcp", "pyexasol", "nano", "personal")) {
         if (Get-ExakitComponentEnvOverride $component) {
             Info "Some versions come from EXAKIT_* environment overrides and not from the manifest"
             return
@@ -2255,7 +2047,7 @@ function Write-ExakitOverrideLine {
 # branch calls and what the inline offer calls.
 
 # Invoke-ExakitRuntimeComponentUpdate - the runtime component updater itself, in
-# one place. Twin of the runtime/personal arms of exakit_update_component in
+# one place. Twin of the runtime/nano/personal arms of exakit_update_component in
 # setup/lib/common.sh.
 function Invoke-ExakitRuntimeComponentUpdate {
     param([Parameter(Mandatory)][string]$Component, [string]$Advertised)
@@ -2268,35 +2060,38 @@ function Invoke-ExakitRuntimeComponentUpdate {
     }
     switch ($Component) {
         "runtime" {
-            if ((Get-RuntimeType) -eq "personal" -and $Advertised) { Update-Personal -Advertised $Advertised }
+            if ((Get-RuntimeType) -eq "nano" -and $Advertised) { Update-Nano -LatestTag $Advertised }
+        }
+        "nano" {
+            if ($Advertised) { Update-Nano -LatestTag $Advertised }
         }
         "personal" {
-            if ($Advertised) { Update-Personal -Advertised $Advertised }
+            Warn2 "Exasol Personal local deployments are macOS-only in this kit. On Windows this target is reported for catalog parity but cannot be applied."
         }
     }
 }
 
 # Get-ExakitRuntimeStatus / Start-ExakitRuntime - the runtime-agnostic pair the
 # inline offer needs to keep its promise ("the database is running again
-# afterwards"). Anything unrecognised answers "" for "cannot tell", which is
-# not the same as "not running".
+# afterwards"). Only Nano exists on this path; anything else answers "" for
+# "cannot tell", which is not the same as "not running".
 # Twins of exakit_runtime_status / exakit_runtime_start in setup/lib/common.sh.
 function Get-ExakitRuntimeStatus {
-    switch (Get-RuntimeType) {
-        "personal" { try { return (Get-PersonalStatus) } catch { return "" } }
+    if ((Get-RuntimeType) -eq "nano") {
+        try { return (Get-NanoStatus) } catch { return "" }
     }
     return ""
 }
 
 function Start-ExakitRuntime {
-    switch (Get-RuntimeType) {
-        "personal" { Start-Personal }
-    }
+    if ((Get-RuntimeType) -eq "nano") { Start-Nano }
 }
 
 # Test-ExakitRuntimeUpdateStaged - true for an Exasol Personal MAJOR upgrade: a
 # data migration with its own backup-gated three-step flow (--plan, --backup,
-# --apply), which a single y/N is not informed consent for.
+# --apply), which a single y/N is not informed consent for. Personal is macOS-only
+# in this kit, so on Windows this is false in practice; it stays here so both
+# sides of the mirror make the same decision from the same inputs.
 # Twin of exakit_runtime_update_is_staged in setup/lib/common.sh.
 function Test-ExakitRuntimeUpdateStaged {
     param([string]$Installed, [string]$Advertised)
@@ -2307,8 +2102,8 @@ function Test-ExakitRuntimeUpdateStaged {
     return ($installedMajor -ne $advertisedMajor)
 }
 
-# Get-ExakitMajorVersion - "2.1.0" -> "2", "v2026.2.0" -> "2026". Empty when
-# the string does not start with a number.
+# Get-ExakitMajorVersion - "2.1.0" -> "2", "v2026.2.0-nano.2" -> "2026". Empty
+# when the string does not start with a number.
 # Twin of exakit_major_version in setup/lib/common.sh.
 function Get-ExakitMajorVersion {
     param([string]$Version)
@@ -2344,6 +2139,10 @@ function Write-ExakitRuntimeUpdateExplanation {
     param([string]$Actual, [string]$Installed, [string]$Advertised)
     Warn2 "$Actual $Installed -> $Advertised needs the database stopped."
     switch ($Actual) {
+        "nano" {
+            Info "The database goes down while the container is recreated, then it is started again and checked - usually a minute or two, longer if the new image still has to be pulled."
+            Info "Your data is kept: the same data volume is reused, and the previous image is put back if the new container does not come up."
+        }
         "personal" {
             Info "The launcher is replaced; the database is checked afterwards and started again if it ends up down - usually under a minute."
             Info "Your data is kept: this update neither deletes nor migrates the tables in your database."
@@ -2355,8 +2154,10 @@ function Write-ExakitRuntimeUpdateExplanation {
     }
 }
 
-# Invoke-ExakitRuntimeUpdateApply - stop, update, start, report. Update-Personal
-# owns the sequence itself, and it is called here exactly as
+# Invoke-ExakitRuntimeUpdateApply - stop, update, start, report. Update-Nano owns
+# the sequence itself (it pulls the new image, stops the container, recreates it
+# on the SAME data volume, waits for readiness and puts the previous image back if
+# it never becomes ready), and it is called here exactly as
 # `exakit update runtime` calls it. What this adds is the one thing the prompt
 # promises: a database that was up before this command is up after it.
 # Twin of exakit_apply_runtime_update in setup/lib/common.sh.
@@ -2389,11 +2190,13 @@ function Invoke-ExakitRuntimeUpdateApply {
 # it was applied, $false when it was deferred (and then prints the exact command
 # that applies it later).
 #
-# On backups: the kit has no data-export facility, and a minor launcher update
-# needs none - it replaces the launcher and leaves the deployment's data alone.
-# The one runtime change that IS a data migration is the Exasol Personal major
-# upgrade, which already has a real backup inside its own three-step flow -
-# which is why this function refuses to start it from a y/N.
+# On backups: the kit has no data-export facility, and this path needs none.
+# Update-Nano recreates the container over the persisted data volume, records a
+# pre-update snapshot of the runtime metadata under
+# ~\.exasol-starter-kit\backups\nano-update\, and restores the previous image if
+# the new one will not start. The one runtime change that IS a data migration is
+# the Exasol Personal major upgrade, which already has a real backup inside its
+# own three-step flow - which is why this function refuses to start it from a y/N.
 # Twin of exakit_offer_runtime_update in setup/lib/common.sh.
 function Invoke-ExakitRuntimeUpdateOffer {
     param(
@@ -2448,8 +2251,8 @@ function Invoke-CmdUpdate {
     if (-not $Target) { $Target = "all" }
     if ($AssumeYes) {
         # -Yes answers the only question this command asks: may it stop the
-        # database. The runtime updater reads the same variable, so an
-        # explicit `exakit update runtime -Yes` is unprompted for the same reason.
+        # database. Update-Nano reads the same variable, so an explicit
+        # `exakit update runtime -Yes` is unprompted for the same reason.
         $env:EXAKIT_CONFIRM_RUNTIME_UPDATE = "1"
     }
     # An explicit update applies what is advertised RIGHT NOW.
@@ -2535,6 +2338,7 @@ function Invoke-CmdUpdate {
                 Update-ExakitSelf -Advertised $available -Installed $current
             }
             "runtime" { Invoke-ExakitRuntimeComponentUpdate -Component "runtime" -Advertised $available }
+            "nano"    { Invoke-ExakitRuntimeComponentUpdate -Component "nano" -Advertised $available }
             "personal" { Invoke-ExakitRuntimeComponentUpdate -Component "personal" -Advertised $available }
             "skills" { Update-ExakitSkills -Advertised $available -Installed $current }
             "exapump" {
@@ -2642,6 +2446,14 @@ function Get-ExakitLogTargets {
         Sort-Object LastWriteTime -Descending | Select-Object -First 1
     if ($setup) {
         $targets += [pscustomobject]@{ Id = "setup"; Label = "Installer and setup runs"; Kind = "file"; Source = $setup.FullName }
+    }
+    if ((Get-RuntimeType) -eq "nano") {
+        $engine = Get-NanoEngine
+        if ($engine -and $engine -ne "none") {
+            Resolve-NanoNames
+            $targets += [pscustomobject]@{ Id = "database"; Label = "Database container"; Kind = "cmd"
+                Source = $engine; Container = $script:NanoContainer }
+        }
     }
     foreach ($addonId in (Get-ExakitMarketplaceInstalledAddons)) {
         $addon = Get-ExakitMarketplaceAddon $addonId
@@ -3208,10 +3020,7 @@ try {
         }
     }
     switch ($Command) {
-        "preflight"    {
-            Assert-ExakitKnownOptions -CommandName "preflight" -Allowed @() -Arguments $RestArgs
-            Test-PersonalRequirements
-        }
+        "preflight"    { Assert-ExakitKnownOptions -CommandName "preflight" -Allowed @() -Arguments $RestArgs; Test-NanoRequirements }
         "status"       {
             $statusJson = ($RestArgs -contains "--json" -or $RestArgs -contains "-j")
             $statusUnknown = @($RestArgs | Where-Object { $_ -notin @("--json", "-j") })
@@ -3304,11 +3113,6 @@ try {
             if ($sqlRest.Count -eq 1) { $sqlText = $sqlRest[0] }
             Invoke-CmdSql -Statement $sqlText -Write:$sqlWrite -File $sqlFile -Json:$sqlJson
         }
-        "migrate" {
-            # Its own option parser (values follow their flags), so the generic
-            # unknown-option assertion does not apply. Twin of cmd_migrate.
-            Invoke-CmdMigrate -Arguments @($RestArgs)
-        }
         "repair-runtime" {
             Assert-ExakitKnownOptions -CommandName "repair-runtime" -Allowed @("--yes", "-y", "-Yes", "--json", "-j") -Arguments $RestArgs
             if ($RestArgs -contains "--json" -or $RestArgs -contains "-j") { $script:JsonOutput = $true }
@@ -3373,7 +3177,7 @@ try {
             }
             $doctorArgs = @($RestArgs | Where-Object { $_ -notin @("--json", "-j") })
             $doctorType = Get-RuntimeType
-            $doctorUp = ($doctorType -eq "personal" -and (Get-PersonalStatus) -eq "running")
+            $doctorUp = ($doctorType -eq "nano" -and "$(Get-NanoStatus)".StartsWith("running"))
             if (-not $doctorUp) {
                 if ($doctorJson) {
                     # The same three keys every --json state answer carries.

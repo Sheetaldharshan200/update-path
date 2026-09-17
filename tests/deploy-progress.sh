@@ -314,11 +314,68 @@ for _p in $(grep -ohE "printf '[0-9]+\|[0-9]+\|[0-9]+\|[^']+'" "$PHASE_SRC" \
 done
 check "a phase was actually measured" "yes" "$([ "$LONGEST" -gt 0 ] && echo yes || echo NONE-FOUND)"
 
+printf '\n== a failing deploy tells the truth, and never offers to delete a database ==\n'
+
+NANO_SH="$(cat "$ROOT/setup/lib/runtime-nano.sh")"
+NANO_PS1="$(cat "$ROOT/setup/lib/nano.ps1")"
+DETECT_SH="$(cat "$ROOT/setup/lib/detect.sh")"
+
+# C1: the branch knew only that the CONTAINER was absent, and deployed over an
+# existing data volume with a freshly minted password and single-use init args
+# the image refuses on an initialised /exa. Worse, it registered a `volume rm`
+# rollback unconditionally, so "undo the failed step?" deleted a database this
+# run had merely adopted.
+has   "the volume is probed first"     'volume inspect "$EXAKIT_NANO_VOLUME"'     "$NANO_SH"
+has   "...and on Windows"              'volume inspect $script:NanoVolume'        "$NANO_PS1"
+has   "an adopted volume is adopted"   'Adopting the existing database volume'    "$NANO_SH"
+has   "...and on Windows"              'Adopting the existing database volume'    "$NANO_PS1"
+# The rollback that can delete a database is registered once, inside the branch
+# that created the volume - never beside the adopt path.
+check "one volume rollback only"       "1" \
+    "$(printf '%s\n' "$NANO_SH" | grep -c 'push_rollback "\$_engine volume rm')"
+
+# C3: the container's own last words were read straight into the log file and
+# the caller then called the exit a timeout, which it never was.
+lacks "no log-only container tail"     'logs --tail 30 "$EXAKIT_NANO_CONTAINER" >> '  "$NANO_SH"
+has   "the tail is kept and shown"     'The database container started and then exited'  "$NANO_SH"
+has   "...and on Windows"              'The database container started and then exited'  "$NANO_PS1"
+has   "an exit is not a timeout"       'EXAKIT_NANO_EXITED'                       "$NANO_SH"
+has   "known causes are explained"     'nano_explain_container_exit'              "$NANO_SH"
+has   "...and on Windows"              'Show-NanoContainerExitRemedy'             "$NANO_PS1"
+
+# C4: the readiness timeout is reached from a first deploy, from `exakit start`
+# on an established database, and from an update - and it printed `volume rm`
+# to all three.
+has   "the destructive remedy is gated" 'if [ "${EXAKIT_NANO_FIRST_DEPLOY:-0}" = "1" ]' "$NANO_SH"
+has   "...and on Windows"               'if ($script:NanoFirstDeploy)'            "$NANO_PS1"
+has   "an established database is warned" 'it IS your database'                   "$NANO_SH"
+has   "...and on Windows"                 'it IS your database'                   "$NANO_PS1"
+
+# C5: -f is true for a zero-byte file, and an empty secret makes the image
+# refuse to deploy - which surfaces minutes later as C3's container exit.
+has   "an empty secret is refused"     '[ -s "${EXAKIT_CREDS_DIR}/nano_sys_password" ]' "$NANO_SH"
+lacks "...not merely an existing one"  '[ -f "${EXAKIT_CREDS_DIR}/nano_sys_password" ]' "$NANO_SH"
+has   "Windows checks it too"          'Test-Path $pwFile -PathType Leaf'         "$NANO_PS1"
+has   "...including the empty case"    '(Get-Item $pwFile).Length -eq 0'          "$NANO_PS1"
+
+# H1: "Stop it" is unactionable when "it" is never named. On a machine with WSL
+# the holder is often wslrelay, which only `wsl --shutdown` releases.
+has   "the shell can name a holder"    'port_holder_desc()'                       "$DETECT_SH"
+has   "...and Windows can"             'function Get-ExakitPortHolder'            "$NANO_PS1"
+lacks "no unnamed culprit"             'already in use by another application'    "$NANO_SH"
+lacks "...on Windows either"           'already in use by another application'    "$NANO_PS1"
+has   "the WSL relay case is named"    'wsl --shutdown'                           "$NANO_PS1"
+
+# MEDIUM: a one-line engine error was replaced with "(see log)".
+has   "a start failure is quoted"      'nano_die_container_start'                 "$NANO_SH"
+has   "...and on Windows"              'Show-NanoContainerStartFailure'           "$NANO_PS1"
+lacks "no bare see-log on start"       'die "Container failed to start (see log)"' "$NANO_SH"
+
 printf '\n== no function is defined twice ==\n'
 
 # A duplicated definition is invisible to every check the repo already runs: the
 # file parses, the encoding guard passes, and the LAST definition silently wins.
-# It happened for real - a patch to a PowerShell runtime module computed its end
+# It happened for real - a patch to Install-Nano in nano.ps1 computed its end
 # offset from an anchor that occurs twice, re-included the region instead of
 # replacing it, and left the PRE-FIX body as the effective one. Windows kept the
 # old behaviour while every test went green.
@@ -338,11 +395,94 @@ for _dup_sh in "$ROOT"/setup/lib/*.sh; do
     check "$(basename "$_dup_sh") defines each function once" "" "$_dup_shnames"
 done
 
+printf '\n== a poisoned credential path is repaired, not just reported ==\n'
+
+NANO_PS1_R="$(cat "$ROOT/setup/lib/nano.ps1")"
+COMMON_PS1_R="$(cat "$ROOT/setup/lib/exakit-common.ps1")"
+NANO_SH_R="$(cat "$ROOT/setup/lib/runtime-nano.sh")"
+
+# Docker creates a missing bind-mount source as a DIRECTORY, so
+# credentials\nano_sys_password becomes a folder. It happened on a real machine
+# and blocked the install outright: the guard detected it correctly and then
+# had nothing to offer, because only the shell side could repair it.
+has   "the shell repairs it"          "nano_repair_creds"           "$NANO_SH_R"
+has   "...and now Windows does too"   "function Repair-NanoCredentials" "$NANO_PS1_R"
+has   "the repair runs before the read" "if (-not (Repair-NanoCredentials))" "$NANO_PS1_R"
+
+# Move-Item -Force onto a DIRECTORY moves the file INSIDE it and reports
+# success, which is how the real machine ended up holding
+# credentials\nano_sys_password\nano_sys_password.tmp - a password nothing could
+# read, inside a directory that kept poisoning the next run.
+has   "a directory target is refused" 'if (Test-Path $target -PathType Container) {' "$COMMON_PS1_R"
+
+printf '\n== asking the engine a question cannot end the run ==\n'
+
+NANO_PS1_N="$(cat "$ROOT/setup/lib/nano.ps1")"
+
+# $ErrorActionPreference is Stop module-wide, so a native command that writes to
+# stderr raises a TERMINATING error - and `2>$null` or `2>&1 | Out-Null` does not
+# prevent it, because a redirect only moves the text. This shipped once and
+# killed a clean install at step 1:
+#
+#   x Unexpected error: Error response from daemon: get exasol-nano-data: no such volume
+#
+# "the volume is not there" is an ordinary ANSWER to the question the code was
+# asking, and the probe now returns it instead of throwing.
+has   "the volume probe is a function"   "function Test-NanoVolumeExists"      "$NANO_PS1_N"
+has   "...that sets Continue"            'ErrorActionPreference = "Continue"'  "$NANO_PS1_N"
+has   "...and reads the exit code"       '$exists = ($LASTEXITCODE -eq 0)'     "$NANO_PS1_N"
+# Every caller goes through it: an inline probe is how the bug got in. Counted
+# on the INVOCATION, not the words - the helper's own comment explains the
+# hazard and names the command, and a comment is not a call.
+check "one probe, inside the helper"     "1" \
+    "$(printf '%s\n' "$NANO_PS1_N" | grep -c '& \$engine volume inspect')"
+check "and both callers use the helper"  "2" \
+    "$(printf '%s\n' "$NANO_PS1_N" | grep -c '= Test-NanoVolumeExists')"
+
+printf '\n== installing the runtime also records it ==\n'
+
+# The worst failure of this whole effort was silent. Removing a DUPLICATED copy
+# of Install-Nano took its tail with it, because the two copies were not
+# identical: the container started, the database came up in 5s, the step
+# reported "completed: runtime" - and every step after it died on
+#     No runtime DSN in the manifest - install the database first.
+# A running database the kit cannot describe is indistinguishable from no
+# database, and nothing in the suite could see it: the file parsed, the
+# encoding held, no function was duplicated any more, and 130 checks passed.
+#
+# Asserted on the FUNCTION BODY, because the recorder is also called from the
+# adopt-and-return paths higher up - a whole-file grep proves nothing here.
+ps_install_nano() {
+    awk 'index($0, "function Install-Nano {") == 1 { inside = 1 }
+         inside { print }
+         inside && /^\}/ { exit }' "$ROOT/setup/lib/nano.ps1"
+}
+sh_nano_install() {
+    awk 'index($0, "nano_install() {") == 1 { inside = 1 }
+         inside { print }
+         inside && /^\}/ { exit }' "$ROOT/setup/lib/runtime-nano.sh"
+}
+
+INSTALL_PS="$(ps_install_nano)"
+INSTALL_SH="$(sh_nano_install)"
+
+has   "the shell records the runtime"   "nano_record_manifest"  "$INSTALL_SH"
+has   "...and Windows does too"         "Set-NanoManifest"      "$INSTALL_PS"
+# It has to come after the wait: recording a DSN for a database that never came
+# up is the same lie in the other direction.
+check "the shell records it after waiting" "yes" \
+    "$(printf '%s\n' "$INSTALL_SH" | grep -nE '^[[:space:]]*(nano_wait_ready|nano_record_manifest)[[:space:]]*$' | tr '\n' ' ' | grep -q 'nano_wait_ready.*nano_record_manifest' && echo yes || echo no)"
+check "...and so does Windows"             "yes" \
+    "$(printf '%s\n' "$INSTALL_PS" | grep -nE '^[[:space:]]*(Wait-NanoReady|Set-NanoManifest)[[:space:]]*$' | tr '\n' ' ' | grep -q 'Wait-NanoReady.*Set-NanoManifest' && echo yes || echo no)"
+# And it says so on screen, which is the only reason a human notices the step ran.
+has   "the shell announces the runtime" "running on 127.0.0.1" "$INSTALL_SH"
+has   "...and Windows announces it"     "running on 127.0.0.1" "$INSTALL_PS"
+
 printf '\n== all three platforms install in the same six steps ==\n'
 
 MAC_SH="$(cat "$ROOT/setup/setup-macos.sh")"
-WSL_SH="$(cat "$ROOT/setup/setup-linux.sh")"
-WIN_PS="$(cat "$ROOT/setup/setup-windows.ps1")"
+WSL_SH="$(cat "$ROOT/setup/setup-wsl.sh")"
+WIN_PS="$(cat "$ROOT/setup/setup-windows-docker.ps1")"
 
 # The container platforms used to fold "fetch the image" and "deploy the
 # database" into one step, so Step 1/5 covered an 18-second network download AND
@@ -376,15 +516,61 @@ lacks "macOS has no stale total"   "/5  " "$MAC_SH"
 lacks "WSL has no stale total"     "/5  " "$WSL_SH"
 lacks "Windows has no stale total" "/5  " "$WIN_PS"
 
+# The pull is idempotent, because a step boundary is not a promise about
+# ordering: a re-run, an update or a repair calls the deploy directly.
+NANO_SH_6="$(cat "$ROOT/setup/lib/runtime-nano.sh")"
+NANO_PS_6="$(cat "$ROOT/setup/lib/nano.ps1")"
+has "the shell pull is a function"  "nano_pull_image() {"        "$NANO_SH_6"
+has "...and Windows too"            "function Install-NanoImage" "$NANO_PS_6"
+has "the shell deploy delegates"    "        nano_pull_image"    "$NANO_SH_6"
+has "...and Windows too"            "        Install-NanoImage"  "$NANO_PS_6"
+has "an existing image is not refetched" "already present; not pulling again" "$NANO_SH_6"
+has "...and Windows says so too"         "already present; not pulling again" "$NANO_PS_6"
+
+# --- adoption never silently takes over another install's database -----------
+# Windows and WSL share one Docker engine, so the container the install finds
+# may be the OTHER side's database. Adopting it without that side's stored SYS
+# password used to record a password_file that does not exist, report healthy,
+# and strand both sides. The guard refuses; the label names the creator.
+echo
+echo "cross-runtime adoption is loud, labeled, and password-gated:"
+has "adoption without the password is refused" \
+    'Refusing to silently adopt a database this install has no password for' "$NANO_SH_6"
+has "...and on Windows too" \
+    'Refusing to silently adopt a database this install has no password for' "$NANO_PS_6"
+has "the refusal names the shared engine" \
+    "Windows and WSL share one Docker engine" "$NANO_SH_6"
+# The creator label at EVERY container creation: adopt, fresh, recreate,
+# update and restore all pass through a line carrying it, so provenance is
+# never unrecoverable again.
+check "every shell run site carries the creator label" "5" \
+    "$(printf '%s\n' "$NANO_SH_6" | grep -c -- '--label "com.exasol.exakit.os=')"
+check "...and every Windows run site too" "5" \
+    "$(printf '%s\n' "$NANO_PS_6" | grep -c -- '"--label" "com.exasol.exakit.os=windows"')"
+# The adoption notice survives a one-line step narration (ok_step, not ok).
+has "adoption reaches the screen" 'ok_step "Adopt' "$NANO_SH_6"
+has "...on Windows as well"       'OkStep "Adopt' "$NANO_PS_6"
+
 # --- Linux is a served platform ----------------------------------------------
 echo
-echo "autostart is honest, and linux has a quickstart:"
+echo "selinux is detected, autostart is honest, linux has a quickstart:"
+NANO_SH_7="$(cat "$ROOT/setup/lib/runtime-nano.sh")"
 COMMON_SH_7="$(cat "$ROOT/setup/lib/common.sh")"
-# LNX-01: nothing on Linux restarts the deployment at boot on its own, so
-# autostart is a systemd USER unit that runs the launcher's start - and a
-# starter that hands off must not be declared as a service that crashed.
-has "autostart is a systemd user unit" 'EXAKIT_SYSTEMD_USER_DIR' "$COMMON_SH_7"
-has "...as a oneshot where the command hands off" 'Type=oneshot' "$COMMON_SH_7"
+# LNX-02: the :z bind-mount label is about SELINUX ENFORCEMENT, not about
+# which engine happens to run - Docker on Fedora needed it and never got it,
+# Podman on Ubuntu got it and never needed it.
+has "the secret mount label keys on enforcement" '_exakit_selinux_enforcing && _secret_mount' "$NANO_SH_7"
+lacks "...never on the engine name" '"$_engine" = "podman" ] && _secret_mount' "$NANO_SH_7"
+has "detection asks getenforce first" 'getenforce' "$NANO_SH_7"
+has "...and the kernel where getenforce is absent" '/sys/fs/selinux/enforce' "$NANO_SH_7"
+# LNX-01: rootless Podman has no daemon at boot to honour a restart policy.
+# Registration goes through a systemd user unit there, and the registered
+# check stops counting the policy as autostart - so status stops reporting
+# "autostart: true" for a database nothing will restart.
+has "rootless podman is its own autostart case" '_exakit_nano_rootless_podman' "$COMMON_SH_7"
+has "...registered via a start unit" '_ar_cmd="podman start' "$COMMON_SH_7"
+has "...as a oneshot, not a crash-looping simple service" 'Type=oneshot' "$COMMON_SH_7"
+has "the policy only counts as autostart under docker" '! _exakit_nano_rootless_podman' "$COMMON_SH_7"
 # LNX-12: a user unit dies at logout without lingering; the kit enables it or
 # says what an admin has to run.
 has "lingering is attempted" 'loginctl enable-linger' "$COMMON_SH_7"
@@ -463,11 +649,14 @@ check "...and a caller that just watched it answer records healthy" "healthy" \
 
 # CPY-10. THE LICENCE, SAID BEFORE THE SOFTWARE ARRIVES.
 #
-# The launcher's own notice IS replayed verbatim, but only after `install
-# local` has succeeded - i.e. once the deployment already exists. Both halves
-# now say which licence covers what while the reader can still stop, and the
-# ORDER is the point: an assertion that the sentence merely exists would pass
-# with it printed at the end.
+# The container path mentioned no licence anywhere: `grep -i licen` over
+# runtime-nano.sh and nano.ps1 returned nothing, so a Linux, WSL or Windows
+# user was never told the database ships under terms other than the kit's MIT.
+# On macOS the launcher's own notice IS replayed verbatim, but only after
+# `install local` has succeeded - i.e. once the deployment already exists.
+# Both halves now say which licence covers what while the reader can still
+# stop, and the ORDER is the point: an assertion that the sentence merely
+# exists would pass with it printed at the end.
 echo
 echo "the licence is named before the software arrives:"
 _lic_before() { # _lic_before <file> <function-opener> <marker-after>
@@ -478,17 +667,23 @@ _lic_before() { # _lic_before <file> <function-opener> <marker-after>
     if [ -z "$_lb_mark" ]; then printf 'no-marker\n'; return; fi
     if [ "$_lb_lic" -lt "$_lb_mark" ]; then printf 'before\n'; else printf 'after\n'; fi
 }
-check "the deploy says it before it deploys" "before" \
+check "container path: before the image pull" "before" \
+    "$(_lic_before setup/lib/runtime-nano.sh 'nano_pull_image() {' 'Pulling image')"
+check "macOS path: before the deploy" "before" \
     "$(_lic_before setup/lib/runtime-personal.sh 'personal_deploy_local() {' 'Deploying Exasol Personal locally')"
 # The PowerShell twin is not run here; its ordering is read the same way.
-_ps_dep="$(awk '/^function Install-PersonalDeployment/{f=1} f{print} f&&/^}$/{if(f)exit}' "$ROOT/setup/lib/runtime-personal.ps1")"
-_ps_lic="$(printf '%s\n' "$_ps_dep" | grep -n "own licence terms" | head -1 | cut -d: -f1)"
-_ps_mark="$(printf '%s\n' "$_ps_dep" | grep -n 'Deploying Exasol Personal locally' | head -1 | cut -d: -f1)"
-if [ -n "$_ps_lic" ] && [ -n "$_ps_mark" ] && [ "$_ps_lic" -lt "$_ps_mark" ]; then
-    check "the twin says it before its deploy too" "before" "before"
+_ps_nano="$(awk '/^function Install-NanoImage/{f=1} f{print} f&&/^}$/{if(f)exit}' "$ROOT/setup/lib/nano.ps1")"
+_ps_lic="$(printf '%s\n' "$_ps_nano" | grep -n "own licence terms" | head -1 | cut -d: -f1)"
+_ps_pull="$(printf '%s\n' "$_ps_nano" | grep -n 'Info "Pulling image' | head -1 | cut -d: -f1)"
+if [ -n "$_ps_lic" ] && [ -n "$_ps_pull" ] && [ "$_ps_lic" -lt "$_ps_pull" ]; then
+    check "the twin says it before its pull too" "before" "before"
 else
-    check "the twin says it before its deploy too" "before" "lic=${_ps_lic:-none} deploy=${_ps_mark:-none}"
+    check "the twin says it before its pull too" "before" "lic=${_ps_lic:-none} pull=${_ps_pull:-none}"
 fi
+# And it points at terms rather than paraphrasing them: this kit must never
+# state Exasol's licence in words of its own.
+has "the container line points at Exasol's terms, not a paraphrase" \
+    "https://www.exasol.com/legal/" "$(cat "$ROOT/setup/lib/runtime-nano.sh")"
 
 printf '\n%s: %d passed, %d failed\n' "$(basename "$0")" "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

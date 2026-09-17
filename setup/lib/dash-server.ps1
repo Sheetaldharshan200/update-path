@@ -277,23 +277,9 @@ function Write-DashServerLauncher {
         # Escaping the parens would fix today's message and leave the trap set
         # for whoever edits it next. `goto` has no body to terminate, so no
         # punctuation in any of these lines can break the control flow again.
-        # THE PORT IS NEVER BAKED IN. It used to be written into the probe
-        # below AND into the bind further down, while the kit records its own
-        # choice separately - two copies of one fact, which drift: a launcher
-        # written when the port was 5102 kept probing and binding 5102 while
-        # the kit passed 5100 and waited on it. Resolved here in the same order
-        # the kit uses - the kit's record, then the plain default - so there is
-        # nothing left to disagree with. Twin of the same block in
-        # dash_server_write_launcher (dash-server.sh), where argv is read too.
-        "set `"EXAKIT_DS_PORT=`""
-        "if not defined EXAKIT_HOME set `"EXAKIT_DS_MANIFEST=%USERPROFILE%\.exasol-starter-kit\manifest.json`""
-        "if defined EXAKIT_HOME set `"EXAKIT_DS_MANIFEST=%EXAKIT_HOME%\manifest.json`""
-        "if exist `"%EXAKIT_DS_MANIFEST%`" for /f `"tokens=2 delims=:,`" %%P in ('findstr /r /c:`"\`"port\`"[ ]*:`" `"%EXAKIT_DS_MANIFEST%`"') do set `"EXAKIT_DS_PORT=%%P`""
-        "for /f `"tokens=* delims= `" %%Q in (`"%EXAKIT_DS_PORT%`") do set `"EXAKIT_DS_PORT=%%Q`""
-        "if not defined EXAKIT_DS_PORT set `"EXAKIT_DS_PORT=5100`""
-        "curl -s -o NUL -m 2 http://127.0.0.1:%EXAKIT_DS_PORT%/mcp >NUL 2>&1"
+        "curl -s -o NUL -m 2 http://127.0.0.1:$($script:DashServerPort)/mcp >NUL 2>&1"
         "if errorlevel 1 goto exakit_dash_start"
-        "echo dash-server is already running: http://127.0.0.1:%EXAKIT_DS_PORT% (MCP: /mcp)"
+        "echo dash-server is already running: http://127.0.0.1:$($script:DashServerPort) (MCP: /mcp)"
         "echo State: exakit status   Logs: exakit logs dash-server -f   Stop: exakit stop"
         "exit /b 0"
         ":exakit_dash_start"
@@ -325,7 +311,7 @@ function Write-DashServerLauncher {
         # their own still wins. Twin of the same block in
         # dash_server_write_launcher.
         "if not defined DASH_SERVER_HOST set `"DASH_SERVER_HOST=127.0.0.1`""
-        "if not defined DASH_SERVER_PORT set `"DASH_SERVER_PORT=%EXAKIT_DS_PORT%`""
+        "if not defined DASH_SERVER_PORT set `"DASH_SERVER_PORT=$($script:DashServerPort)`""
         "`"$exe`" %*"
     )
     try {

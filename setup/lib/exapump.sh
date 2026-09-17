@@ -13,14 +13,7 @@
 #   - CSV/Parquet load: exapump upload <file> --table <schema.table>
 
 EXAKIT_EXAPUMP_PROFILE="${EXAKIT_EXAPUMP_PROFILE:-starter-kit}"
-# OVERRIDABLE, like every sibling variable here. It was assigned
-# unconditionally, so an EXAKIT_EXAPUMP_BIN set in the environment was
-# discarded the moment this file was sourced - and exapump_cli then fell
-# through to the `exapump` on PATH. A test that sandboxes EXAKIT_HOME and
-# EXAKIT_BIN_DIR but points EXAKIT_EXAPUMP_BIN at a stub therefore ran the
-# DEVELOPER'S REAL exapump against the DEVELOPER'S REAL database, and created
-# a schema in it. Same class of escape as the HOME/.exapump note below.
-EXAKIT_EXAPUMP_BIN="${EXAKIT_EXAPUMP_BIN:-$EXAKIT_BIN_DIR/exapump}"
+EXAKIT_EXAPUMP_BIN="$EXAKIT_BIN_DIR/exapump"
 # ONE definition of where exapump keeps its profiles, and it is overridable.
 # The uninstall path used to spell it `rm -rf "$HOME/.exapump"` inline: a test
 # that sandboxes EXAKIT_HOME and EXAKIT_BIN_DIR (as every suite here does) but
@@ -235,22 +228,24 @@ exapump_verify_runs() {
 # exapump_install_glibc_shim — the exapump release binary needs a newer glibc
 # than this system provides (all published Linux builds currently require
 # 2.38+, while e.g. Ubuntu 22.04 LTS and every other Jammy-era distro ship
-# 2.35). The Linux install path already requires Podman for the database, so
-# run the real binary inside a small newer-glibc container with host
-# networking instead of failing the install. The wrapper is transparent
+# 2.35). The Linux install path already requires a container runtime for the
+# database, so run the real binary inside a small newer-glibc container with
+# host networking instead of failing the install. The wrapper is transparent
 # to every caller: same path, same CLI, profiles and data files under $HOME
 # and /tmp remain visible.
-EXAKIT_EXAPUMP_SHIM_IMAGE="${EXAKIT_EXAPUMP_SHIM_IMAGE:-ubuntu:24.04}"
+EXAKIT_EXAPUMP_SHIM_IMAGE="${EXAKIT_EXAPUMP_SHIM_IMAGE:-docker.io/library/ubuntu:24.04}"
 exapump_install_glibc_shim() {
-    _shim_runtime="$(detect_podman)"
-    # Rootless podman remaps ownership inside the container: without keep-id
-    # the user's own files (profile at ~/.exapump, mode 600) appear root-owned
-    # and unreadable to the -u uid.
-    _shim_userns="--userns=keep-id"
+    _shim_runtime="$(detect_container_runtime)"
+    # Rootless podman remaps ownership inside the container: without
+    # keep-id the user's own files (profile at ~/.exapump, mode 600) appear
+    # root-owned and unreadable to the -u uid. Docker has no such remap and
+    # no such flag.
+    _shim_userns=""
+    [ "$_shim_runtime" = "podman" ] && _shim_userns="--userns=keep-id"
     _sys_glibc="$(ldd --version 2>/dev/null | head -1)"
     warn "The exapump release binary needs a newer glibc than this system provides (${_sys_glibc:-unknown glibc})."
     if [ "$_shim_runtime" = "none" ]; then
-        die "exapump cannot run on this system's glibc and Podman is not available to shim it. Install Podman and re-run, or use a distro with glibc 2.38+ (e.g. Ubuntu 24.04)."
+        die "exapump cannot run on this system's glibc and no container runtime is available to shim it. Install Docker or Podman and re-run, or use a distro with glibc 2.38+ (e.g. Ubuntu 24.04)."
     fi
     info "Self-repair: running exapump inside a $EXAKIT_EXAPUMP_SHIM_IMAGE container via $_shim_runtime"
 
@@ -341,25 +336,9 @@ exapump_create_profile() {
         _EXAKIT_PENDING_RUNTIME_PASSWORD="$_password"
     fi
 
-    exapump_write_profile "$EXAKIT_EXAPUMP_PROFILE" "$_host" "$_port" "$_user" "$_password" \
-        || die "Could not write the exapump profile"
-    manifest_set components.exapump.profile "$EXAKIT_EXAPUMP_PROFILE"
-    ok_step "Connection profile [$EXAKIT_EXAPUMP_PROFILE] written to $(ui_tilde "$EXAPUMP_CONFIG")"
-}
-
-# exapump_write_profile <profile> <host> <port> <user> <password> - one TOML
-# section in ~/.exapump/config.toml, replaced in place if it is already there.
-#
-# Split out of exapump_create_profile, which reads the manifest and can only
-# ever write the kit's own profile. The legacy crossing needs a SECOND profile,
-# pointing at the database an older kit deployed, and a password belongs in a
-# 0600 config file rather than in argv where `ps` can read it - so both callers
-# go through one writer instead of a second copy of this TOML surgery.
-exapump_write_profile() {
-    _ewp_profile="$1"; _ewp_host="$2"; _ewp_port="$3"; _ewp_user="$4"; _ewp_password="$5"
     require_python3
     mkdir -p "$(dirname "$EXAPUMP_CONFIG")"
-    run_python - "$EXAPUMP_CONFIG" "$_ewp_profile" "$_ewp_host" "$_ewp_port" "$_ewp_user" "$_ewp_password" <<'PY' || return 1
+    run_python - "$EXAPUMP_CONFIG" "$EXAKIT_EXAPUMP_PROFILE" "$_host" "$_port" "$_user" "$_password" <<'PY' || die "Could not write the exapump profile"
 import os, re, sys
 path, profile, host, port, user, password = sys.argv[1:7]
 try:
@@ -393,13 +372,15 @@ os.chmod(tmp, 0o600)
 os.replace(tmp, path)
 PY
     chmod 600 "$EXAPUMP_CONFIG"
+    manifest_set components.exapump.profile "$EXAKIT_EXAPUMP_PROFILE"
+    ok_step "Connection profile [$EXAKIT_EXAPUMP_PROFILE] written to $(ui_tilde "$EXAPUMP_CONFIG")"
 }
 
 # exapump_ddl_roundtrip — one DDL write-readback round through the profile.
 # Returns 0 ONLY if a freshly created schema+table is durably persisted and
 # visible from SUBSEQUENT connections (each exapump invocation reconnects).
 #
-# This is the real readiness signal. Right after first boot the database
+# This is the real readiness signal. Right after first boot the Nano database
 # accepts a connection and answers SELECT 1 while still stabilizing, and in that
 # window it can ACKNOWLEDGE a DDL batch ("N statements executed, 0 failed")
 # without durably persisting it — so the schema-creation step "succeeds" but the
@@ -548,28 +529,8 @@ exakit_upload_failure_reason() {
             # the newline and then finds the fragment malformed.
             printf 'row %s has a line break or an unescaped %s inside a quoted field\n' \
                 "${_ufr_row:-?}" "${EXAKIT_CSV_DELIM_NAME:-comma}" ;;
-        *"<CR>"*)
-            # The engine names the byte itself.
-            printf 'the file has Windows line endings (CRLF), which exapump does not yet pass to the database correctly - re-save it with LF line endings (dos2unix, or "Save as" UTF-8 without CRLF) and load again\n' ;;
         *"ETL-"*)
-            # The DETAIL after the code, up to the session id. The first
-            # version stopped at the first "[", which is exactly where every
-            # Exasol import message begins its detail ("[Column=11 Row=0]
-            # [Transformation of value=...]") - so the screen said "ETL-3051"
-            # and nothing else, and the one clause that named the fix was the
-            # one dropped.
-            _ufr_detail="$(printf '%s' "$_ufr_line" | sed -n 's/.*\(ETL-[0-9]*: .*\)$/\1/p' | sed 's/ (Session: .*//')"
-            if [ "${#_ufr_detail}" -gt 160 ]; then
-                _ufr_detail="$(printf '%s' "$_ufr_detail" | cut -c1-160 | sed 's/ [^ ]*$//')..."
-            fi
-            # A cast or parse failure on a file the inspector flagged as CRLF
-            # is that flag, nine times in ten: the engine reports the symptom
-            # ("invalid character value", "not correct enclosed field"), the
-            # kit adds the cause it saw in the header.
-            case ",${EXAKIT_CSV_FLAGS:-}," in
-                *,crlf,*) _ufr_detail="$_ufr_detail - the file has Windows line endings (CRLF), which exapump does not yet pass to the database correctly; re-save it with LF line endings and load again" ;;
-            esac
-            printf '%s\n' "$_ufr_detail" ;;
+            printf '%s\n' "$(printf '%s' "$_ufr_line" | sed -n 's/.*\(ETL-[0-9]*\): *\([^[]*\).*/\1 \2/p' | cut -c1-100)" ;;
         *)
             printf '%s\n' "$(printf '%s' "$_ufr_line" | sed 's/^Error: //' | cut -c1-100)" ;;
     esac
@@ -582,31 +543,7 @@ exapump_upload() {
     # single "Loading your data" spinner, so per-file chatter is noise there.
     # The installer leaves it unset and keeps its step-by-step narration.
     [ "${EXAKIT_UPLOAD_QUIET:-0}" = 1 ] || info "Loading $(basename "$1") into $2"
-    # The file goes over AS IT IS (see exakit_csv_inspect). What the header
-    # says about the delimiter is passed on as exapump's own --delimiter; what
-    # the engine will object to is remembered, so the failure reason can name
-    # it.
-    _upl_delim=","; EXAKIT_CSV_FLAGS=""
-    if [ "$(exakit_data_file_kind "$1")" = csv ]; then
-        if ! _upl_look="$(exakit_csv_inspect "$1")"; then
-            warn "$(basename "$1") has a header and no rows - nothing to load"
-            return 1
-        fi
-        _upl_delim="${_upl_look%%|*}"; EXAKIT_CSV_FLAGS="${_upl_look#*|}"
-        case "$_upl_delim" in
-            ";")  EXAKIT_CSV_DELIM_NAME="semicolon" ;;
-            ",")  EXAKIT_CSV_DELIM_NAME="comma" ;;
-            *)    EXAKIT_CSV_DELIM_NAME="tab" ;;
-        esac
-        [ -n "$EXAKIT_CSV_FLAGS" ] && _exakit_log_file "INFO  $(basename "$1") has: $EXAKIT_CSV_FLAGS"
-    fi
-    if [ "$_upl_delim" = "," ]; then
-        run_logged "$(exapump_cli)" upload "$1" --table "$2" -p "$EXAKIT_EXAPUMP_PROFILE"
-    else
-        run_logged "$(exapump_cli)" upload "$1" --table "$2" -p "$EXAKIT_EXAPUMP_PROFILE" --delimiter "$_upl_delim"
-    fi
-    _upl_rc=$?
-    if [ "$_upl_rc" -ne 0 ]; then
+    if ! run_logged "$(exapump_cli)" upload "$1" --table "$2" -p "$EXAKIT_EXAPUMP_PROFILE"; then
         # EXAKIT_UPLOAD_SOFT: the caller is loading MANY files, reports each one
         # itself and carries on. Dying here announced a whole-job failure for one
         # file out of three -- a red "Upload failed" and a log path, directly
@@ -633,15 +570,6 @@ exapump_upload() {
         die "Upload failed: $1 -> $2 (see log)"
     fi
     [ "${EXAKIT_UPLOAD_QUIET:-0}" = 1 ] || ok "$(basename "$1") loaded"
-    # A CRLF file whose last column is text LOADS - and every value in that
-    # column ends in a carriage return, because exapump set no row separator
-    # and Exasol took the CR as data. 49,812 of 49,812 rows of one public
-    # dataset, checked. A load that silently corrupts one column is worse
-    # than one that fails, so a bridge that will not rewrite the file has to
-    # say this out loud.
-    case ",${EXAKIT_CSV_FLAGS:-}," in
-        *,crlf,*) warn "$(basename "$1") has Windows line endings (CRLF), which exapump passes through: every value in the last column of $2 ends in a carriage return. Re-save the file with LF endings and load again, or trim it in SQL with RTRIM(col, CHR(13))." ;;
-    esac
 }
 
 # exakit_upload_parallel — how many uploads may run at once.
@@ -1051,73 +979,11 @@ exakit_data_file_kind() {
         *.gz|*.bz2|*.zst|*.xz) _dfk_name="${_dfk_name%.*}" ;;
     esac
     case "$_dfk_name" in
-        # .geojson IS json - a FeatureCollection is one document like any
-        # other, and every geoportal on earth exports under that name. Without
-        # this arm the roadworks and district files of a city open-data portal
-        # were "ignored: 1 of other kinds" while the same bytes loaded when
-        # renamed to .json.
-        *.json|*.geojson|*.ndjson|*.jsonl) printf 'json\n' ;;
+        *.json|*.ndjson|*.jsonl) printf 'json\n' ;;
         *.parquet|*.pq)          printf 'parquet\n' ;;
         *.csv|*.tsv|*.txt)       printf 'csv\n' ;;
         *)                       printf 'unknown\n' ;;
     esac
-}
-
-# _exakit_txt_looks_tabular <path> - does this .txt hold delimited rows?
-#
-# A GTFS feed is eleven CSV files that are all called .txt, by specification.
-# A README.txt is not a table. The difference is visible in the first two
-# lines: a header with a comma, semicolon or tab in it, and a second line under
-# it. That is what a folder scan asks before it decides a .txt is data.
-_exakit_txt_looks_tabular() {
-    _tlt_head="$(head -n 1 "$1" 2>/dev/null)"
-    [ -n "$(sed -n '2p' "$1" 2>/dev/null)" ] || return 1
-    case "$_tlt_head" in
-        *,*|*";"*|*"$(printf '\t')"*) return 0 ;;
-    esac
-    return 1
-}
-
-# exakit_csv_inspect <path> - what exapump is about to be handed, looked at,
-# not touched. Prints one line, "<delimiter>|<flags>": the delimiter the
-# header uses (',' ';' or a tab), and flags naming what the engine will
-# object to - "bom" for a byte-order mark, "crlf" for Windows line endings.
-# Returns 1 for a file that holds a header and no rows.
-#
-# THE KIT IS A BRIDGE. It hands files to exapump and says what exapump says
-# back; it does not rewrite them. That is a decision, not an omission: a kit
-# that silently produced converted copies of a user's data would be loading
-# something other than the file they named. So what is read from the header
-# is passed on as exapump's OWN option (--delimiter), what exapump cannot take
-# is named before or after the attempt, and the file goes over as it is.
-#
-# What exapump cannot take today, for the record: it builds its IMPORT with a
-# column separator, a quote character and a skipped header row and NO row
-# separator, so Exasol applies its default (LF) and a Windows-ended file
-# arrives with a CR on every last field - "7.4" becomes "7.4<CR>" and fails to
-# cast (ETL-3050/3051), a quoted last field fails to parse (ETL-2105). Every
-# CSV written on Windows or exported from Excel or a public data portal has
-# that shape. The fix is one builder call in exapump (row_separator), not a
-# copy in this kit; until it lands, the failure reason below names the cause.
-exakit_csv_inspect() {
-    _ci_src="$1"
-    case "$(printf '%s' "${_ci_src##*/}" | tr '[:upper:]' '[:lower:]')" in
-        *.gz|*.bz2|*.zst|*.xz) printf ',|\n'; return 0 ;;
-    esac
-    _ci_cr="$(printf '\r')"; _ci_bom="$(printf '\357\273\277')"; _ci_tab="$(printf '\t')"
-    _ci_head="$(head -n 1 "$_ci_src" 2>/dev/null)"
-    _ci_flags=""
-    case "$_ci_head" in "$_ci_bom"*) _ci_flags="bom"; _ci_head="${_ci_head#"$_ci_bom"}" ;; esac
-    case "$_ci_head" in *"$_ci_cr") _ci_flags="${_ci_flags:+$_ci_flags,}crlf"; _ci_head="${_ci_head%"$_ci_cr"}" ;; esac
-    # A header with nothing under it: there is no table in this file.
-    [ -n "$(sed -n '2p' "$_ci_src" 2>/dev/null)" ] || return 1
-    _ci_delim=","
-    case "$_ci_head" in
-        *,*) ;;
-        *";"*)        _ci_delim=";" ;;
-        *"$_ci_tab"*) _ci_delim="$_ci_tab" ;;
-    esac
-    printf '%s|%s\n' "$_ci_delim" "$_ci_flags"
 }
 
 # _exakit_json_tables_ready — is the add-on installed AND usable right now?
@@ -1355,33 +1221,24 @@ exakit_load_local_file() {
         [ -d "$_path" ] && { exakit_load_local_folder "$_path"; return $?; }
         if [ -s "$_path" ]; then
             # Refuse what the loader cannot take BEFORE it runs. exapump loads
-            # .csv and .parquet (JSON through the add-on); anything else died
-            # inside the loader and was recorded as a failed install step,
+            # .csv/.tsv and .parquet (JSON through the add-on); anything else
+            # died inside the loader and was recorded as a failed install step,
             # although it was only the wrong file. Bad input: exit 2, no note.
-            # A .tsv or .txt is data exapump refuses BY NAME; the kit says so
-            # and does not rename it behind the user's back.
             _llf_kind="$(exakit_data_file_kind "$_path")"
-            if [ "$_llf_kind" = csv ] && _exakit_csv_extension_refused "$_path"; then
-                warn "${_path##*/} looks tabular, but exapump reads .csv and .parquet only - rename it to .csv and load that."
-                [ -n "$(_exakit_prompt_tty)" ] || _llf_refuse "Cannot load '${_path##*/}': exapump reads .csv and .parquet only - rename it to .csv first."
-                continue
-            fi
-            case "$_llf_kind" in
-                unknown)
-                    [ -n "$(_exakit_prompt_tty)" ] || _llf_refuse "Cannot load '${_path##*/}': only .csv and .parquet (and .json / .geojson with the JSON Tables add-on) are supported — rename or convert the file first."
-                    warn "Only .csv and .parquet (and .json / .geojson with the JSON Tables add-on) can be loaded: ${_path##*/}"
+            case "$_llf_kind:$(printf '%s' "${_path##*/}" | tr '[:upper:]' '[:lower:]')" in
+                unknown:*|csv:*.txt)
+                    [ -n "$(_exakit_prompt_tty)" ] || _llf_refuse "Cannot load '${_path##*/}': only .csv, .tsv, .parquet (and .json with the JSON Tables add-on) are supported — rename or convert the file first."
+                    warn "Only .csv, .tsv, .parquet (and .json with the JSON Tables add-on) can be loaded: ${_path##*/}"
                     continue ;;
             esac
             if [ "$_llf_kind" = csv ]; then
-                # A header with no comma but a ';' or a tab used to be a
-                # warning and a hand-typed exapump command; the delimiter is
-                # read from the header now (exakit_csv_prepare), so the only
-                # thing left to say is which one was found.
+                # A header with no comma but a ';' or a tab is one column to
+                # exapump, which splits on ','; the load "succeeds" as a single
+                # column and nothing says so.
                 _llf_head="$(head -n 1 "$_path" 2>/dev/null)"
                 case "$_llf_head" in
                     *,*) ;;
-                    *";"*)  info "${_path##*/} is semicolon-separated — loading it as such." ;;
-                    *"	"*) info "${_path##*/} is tab-separated — loading it as such." ;;
+                    *";"*|*"	"*) warn "The header of ${_path##*/} has no comma but a ';' or tab — exapump splits on ',' and would load it as ONE column. Convert the file, or load it with: exapump upload --delimiter ';' -p $EXAKIT_EXAPUMP_PROFILE ..." ;;
                 esac
             fi
             break
@@ -1443,33 +1300,18 @@ exakit_load_local_file() {
 # are left alone, so a directory of exports loads without dragging in a nested
 # archive/, a .DS_Store, or the images sitting next to the data.
 
-# exakit_bulk_file_kind <path> — exakit_data_file_kind, with .txt decided by
-# its content.
+# exakit_bulk_file_kind <path> — exakit_data_file_kind, minus .txt.
 #
 # Naming one file says "this is my data, whatever it is called", and .txt is a
-# reasonable CSV there. Scanning a folder says less: a README.txt or
-# LICENSE.txt beside the exports is not a table, and loading one as CSV would
-# be a silent surprise. But a GTFS feed - the public-transport standard - is
-# eleven CSV files that are ALL called .txt, and refusing them by name left an
-# extracted feed loading "0 files". So a .txt is looked at: delimited header,
-# a row under it, and it is data; anything else is left alone.
+# reasonable CSV there. Scanning a folder says nothing of the kind: a README.txt
+# or LICENSE.txt beside the exports is not a table, and loading one as CSV would
+# be a silent surprise rather than a service. Everything else is unchanged, so a
+# file that loads on its own loads in bulk.
 exakit_bulk_file_kind() {
     case "$(printf '%s' "${1##*/}" | tr '[:upper:]' '[:lower:]')" in
-        *.txt.gz|*.txt.bz2|*.txt.zst|*.txt.xz) printf 'unknown\n' ;;
-        *.txt) if _exakit_txt_looks_tabular "$1"; then printf 'csv\n'; else printf 'unknown\n'; fi ;;
+        *.txt|*.txt.gz|*.txt.bz2|*.txt.zst|*.txt.xz) printf 'unknown\n' ;;
         *) exakit_data_file_kind "$1" ;;
     esac
-}
-
-# _exakit_csv_extension_refused <path> - exapump picks the file format from
-# the extension and reads .csv and .parquet only; a .tsv or a tabular .txt is
-# data it will not take BY NAME. The kit does not rename files behind the
-# user's back, so these are reported with the one action that loads them.
-_exakit_csv_extension_refused() {
-    case "$(printf '%s' "${1##*/}" | tr '[:upper:]' '[:lower:]')" in
-        *.tsv|*.txt|*.tsv.gz|*.txt.gz) return 0 ;;
-    esac
-    return 1
 }
 
 # exakit_bulk_scan_folder <dir> — the plan for a folder, one line per top-level
@@ -1518,17 +1360,6 @@ exakit_bulk_scan_folder() {
         fi
         if [ ! -s "$_bsf_f" ]; then
             printf 'skip|empty||%s\n' "$_bsf_f"
-            continue
-        fi
-        # A CSV whose only line is its header (GTFS ships shapes.txt that way
-        # when a feed has no shapes) has no table in it. Named as such, rather
-        # than failing later inside exapump's schema inference.
-        if [ "$(exakit_bulk_file_kind "$_bsf_f")" = csv ] && [ -z "$(sed -n '2p' "$_bsf_f" 2>/dev/null)" ]; then
-            printf 'skip|header-only||%s\n' "$_bsf_f"
-            continue
-        fi
-        if [ "$(exakit_bulk_file_kind "$_bsf_f")" = csv ] && _exakit_csv_extension_refused "$_bsf_f"; then
-            printf 'skip|extension||%s\n' "$_bsf_f"
             continue
         fi
         _bsf_size="$(wc -c < "$_bsf_f" | tr -d ' ')"
@@ -1602,15 +1433,7 @@ exakit_load_local_folder() {
 
     _blf_loadable="$(printf '%s\n' "$_blf_plan" | grep -c '^load|' || true)"
     if [ "$_blf_loadable" -eq 0 ]; then
-        # A GTFS feed is eleven tables all called .txt: a folder with nothing
-        # exapump takes by name, and everything the user came to load. Saying
-        # "no files" to that is untrue; say what is there and what loads it.
-        _blf_ext="$(printf '%s\n' "$_blf_plan" | grep -c '^skip|extension|' || true)"
-        if [ "$_blf_ext" -gt 0 ]; then
-            warn "$(exakit_plural "$_blf_ext" file) in $(ui_tilde "$_blf_dir") are tabular but named .txt/.tsv - exapump reads .csv and .parquet only. Rename them to .csv and load the folder again."
-        else
-            warn "No CSV, Parquet or JSON files in $(ui_tilde "$_blf_dir")."
-        fi
+        warn "No CSV, Parquet or JSON files in $(ui_tilde "$_blf_dir")."
         info "Only the folder itself is read — subfolders and files of other kinds are left alone."
         return 1
     fi
@@ -1701,13 +1524,6 @@ EXAKIT_BULK_WEIGH_EOF
         # a failed job: this loop reports each file and carries on, so the
         # engine's own "Upload failed" banner would be the same news twice, in a
         # louder voice than the truth deserves.
-        # The upload runs in a subshell, so what it learns about the file dies
-        # with it; the failure reason needs the inspector's flags, so they are
-        # read here, in the loop's own shell, before the attempt.
-        EXAKIT_CSV_FLAGS=""
-        if [ "$_blf_kind" = csv ]; then
-            EXAKIT_CSV_FLAGS="$(exakit_csv_inspect "$_blf_path" 2>/dev/null | cut -d'|' -f2)"
-        fi
         if ( EXAKIT_UPLOAD_SOFT=1 exapump_upload "$_blf_path" "$_blf_target" ); then
             _exakit_log_file "OK    $(basename "$_blf_path") -> $_blf_target"
             _blf_done=$((_blf_done + 1))
@@ -1776,15 +1592,9 @@ exakit_bulk_print_plan() {
     # more lines about what is NOT being loaded than about what is.
     _bpp_other="$(printf '%s\n' "$1" | grep -c '^skip|unsupported|' || true)"
     _bpp_empty="$(printf '%s\n' "$1" | grep -c '^skip|empty|' || true)"
-    _bpp_hdr="$(printf '%s\n' "$1" | grep -c '^skip|header-only|' || true)"
     _bpp_ig=""
     [ "$_bpp_other" -gt 0 ] && _bpp_ig="$_bpp_other of other kinds"
     [ "$_bpp_empty" -gt 0 ] && _bpp_ig="${_bpp_ig:+$_bpp_ig, }$_bpp_empty empty"
-    [ "$_bpp_hdr" -gt 0 ] && _bpp_ig="${_bpp_ig:+$_bpp_ig, }$_bpp_hdr with a header and no rows"
-    # Not folded into "ignored": these hold data, and one rename loads them.
-    _bpp_ext="$(printf '%s\n' "$1" | grep -c '^skip|extension|' || true)"
-    [ "$_bpp_ext" -gt 0 ] && printf '      %s! %s tabular but named .txt/.tsv - exapump reads .csv and .parquet only; rename to .csv to load%s\n' \
-        "${UI_DIM:-}" "$(exakit_plural "$_bpp_ext" file)" "${UI_RESET:-}"
     [ -n "$_bpp_ig" ] && printf '      %signored: %s%s\n' \
         "${UI_DIM:-}" "$_bpp_ig" "${UI_RESET:-}"
     return 0
@@ -1909,7 +1719,7 @@ exakit_bundled_datasets() {
 # against a database with no schemas in it — and the run exited 0.
 #
 # A "yes" cannot go stale the same way: nothing in a kit run takes the database
-# down without going through personal_stop, and that calls
+# down without going through personal_stop/nano_stop, and those call
 # exakit_forget_db_reachable. A "no" can go stale on any run that starts or
 # deploys one, so it is re-probed. The cost is one refused local connection per
 # ask, and exakit_dataset_loaded is the only caller.

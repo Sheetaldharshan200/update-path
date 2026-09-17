@@ -339,7 +339,7 @@ class LoadWiringTests(unittest.TestCase):
 class DatabaseReadinessTests(unittest.TestCase):
     """Lock in the first-boot readiness fix so it cannot silently regress.
 
-    Right after first boot the database answers SELECT 1 while still
+    Right after first boot the Nano database answers SELECT 1 while still
     stabilizing, and in that window it can ACK a DDL batch ("0 failed") without
     durably persisting it — the schema-creation step "succeeds" but the next
     upload fails with "schema not found". Two guards must stay in place and in

@@ -97,10 +97,10 @@ if grep -A6 'Deployment marked done but not reachable' "$ROOT/setup/setup-macos.
 else
     fail "macOS resume redeploys and leaves 'destroy --remove --auto-approve' armed"
 fi
-if grep -A8 'Deployment marked done but not reachable' "$ROOT/setup/setup-linux.sh" | grep -q 'rollback_clear'; then
-    pass "Linux resume clears after redeploying"
+if grep -A8 'Runtime marked done but not running' "$ROOT/setup/setup-wsl.sh" | grep -q 'rollback_clear'; then
+    pass "WSL resume clears after re-installing Nano"
 else
-    fail "Linux resume redeploys and leaves 'destroy --remove --auto-approve' armed"
+    fail "WSL resume re-installs Nano and leaves 'volume rm' armed"
 fi
 # The first-run branches must NOT need it - they have a mark_step, which clears
 # the stack as its side effect. A rollback_clear there would be noise that hides
@@ -144,7 +144,7 @@ if [ "$_outside" = "0" ]; then
 else
     fail "exakit_autostart_enable is called from outside exakit_autostart_default_on, so 'exakit autostart off' does not survive a re-run"
 fi
-for f in setup-macos.sh setup-linux.sh; do
+for f in setup-macos.sh setup-wsl.sh; do
     if grep -q 'exakit_autostart_default_on' "$ROOT/setup/$f"; then
         pass "$f still defaults it on for a fresh install"
     else
@@ -175,14 +175,14 @@ fi
 
 # --- the Windows installer -------------------------------------------------
 #
-# Everything below guards install.ps1 and setup/setup-windows.ps1. They
+# Everything below guards install.ps1 and setup/setup-windows-docker.ps1. They
 # belong with the resume-path checks above for the same reason: none of these
 # bugs shows up on the run that installs a kit for the first time. They show up
 # on the second run, on the machine that cannot run the kit at all, and on the
 # architecture nobody has on their desk.
 _IPS="$ROOT/install.ps1"
-_SWD="$ROOT/setup/setup-windows.ps1"
-_RPS="$ROOT/setup/lib/runtime-personal.ps1"
+_SWD="$ROOT/setup/setup-windows-docker.ps1"
+_NANO="$ROOT/setup/lib/nano.ps1"
 
 # Line number of the first line holding a fixed string, or "" when absent.
 _line_of() { grep -n -m1 -F "$2" "$1" | cut -d: -f1; }
@@ -198,16 +198,10 @@ printf '\n== a failed Windows install ends with the reason, not with a number ==
 # exit code as "Setup failed with exit code 1", which the trap printed as THE
 # reason -- over the top of the named cause and remedy the setup script had
 # printed one line earlier -- and then added a network hypothesis to a failure
-# that was, twice in the field, a stopped container engine.
+# that was, twice in the field, a stopped Docker Desktop.
 _handoff="$(sed -n '/& powershell -ExecutionPolicy Bypass -File/,$p' "$_IPS")"
-# The code is PASSED THROUGH, and the shape it is passed through in matters:
-# install.ps1 is documented as `irm ... | iex`, which runs it in the caller's
-# session, so a top-level `exit` closes the user's terminal - taking this very
-# message with it. The invariant is the code reaching $LASTEXITCODE, with exit
-# reserved for a real file invocation.
-if printf '%s\n' "$_handoff" | grep -qF 'global:LASTEXITCODE = $setupExitCode' && \
-   printf '%s\n' "$_handoff" | grep -qF 'if ($ExakitRanAsFile) { exit $setupExitCode }'; then
-    pass "install.ps1 passes the setup script's own exit code through, without closing the terminal"
+if printf '%s\n' "$_handoff" | grep -qF 'if ($setupExitCode -ne 0) { exit $setupExitCode }'; then
+    pass "install.ps1 exits with the setup script's own exit code"
 else
     fail "install.ps1 no longer passes the setup script's exit code through"
 fi
@@ -257,8 +251,8 @@ printf '\n== the Windows installer checks the machine before it writes to it ==\
 # install.ps1 checked only "is this Windows" before downloading the kit,
 # replacing ~/.exasol-starter-kit/kit and handing off to a setup script that
 # opens a logfile and writes five manifest entries -- all before
-# Test-PersonalRequirements looked at memory or disk. Verified in the field:
-# on a machine below the minimum, the refused install still left an install log.
+# Test-NanoRequirements looked at Docker, memory or disk. Verified in the
+# field: with Docker stopped, the refused install still left an install log.
 _gate="$(_line_of "$_IPS" '$RequirementChecks = Get-ExakitRequirementChecks')"
 _enforce="$(_line_of "$_IPS" 'throw $check.Reason')"
 if [ -n "$_gate" ] && [ -n "$_enforce" ] && [ -n "$_dl" ] && \
@@ -268,10 +262,10 @@ else
     fail "the requirements gate no longer runs before the download (gate at ${_gate:-none}, refusal at ${_enforce:-none}, fetch at ${_dl:-none})"
 fi
 # Each probe has to be CALLED by the check builder, not merely defined: a gate
-# that quietly stopped asking about memory would still have the function
+# that quietly stopped asking about Docker would still have the function
 # sitting in the file for a grep to find.
 _builder="$(sed -n '/^function Get-ExakitRequirementChecks {/,/^}/p' "$_IPS")"
-for _probe in 'Get-Command podman' 'Get-ExakitTotalRamGb' 'Get-ExakitFreeGb'; do
+for _probe in 'Get-ExakitDockerEvidence' 'Get-ExakitTotalRamGb' 'Get-ExakitFreeGb'; do
     if printf '%s
 ' "$_builder" | grep -qF "$_probe"; then
         pass "...and the gate asks $_probe"
@@ -280,7 +274,7 @@ for _probe in 'Get-Command podman' 'Get-ExakitTotalRamGb' 'Get-ExakitFreeGb'; do
     fi
 done
 # ...and everything those probes read is read before the download writes anything.
-for _probe in 'Get-Command podman' 'TotalPhysicalMemory' 'AvailableFreeSpace'; do
+for _probe in 'Get-Command docker' 'TotalPhysicalMemory' 'AvailableFreeSpace'; do
     _l="$(_line_of "$_IPS" "$_probe")"
     if [ -n "$_l" ] && [ -n "$_dl" ] && [ "$_l" -lt "$_dl" ]; then
         pass "...reading $_probe while the machine is still untouched"
@@ -291,24 +285,19 @@ done
 
 # The gate borrows its refusals word for word from the library that owns them,
 # so nobody meets two spellings of the same message. BOTH sides are checked:
-# rewording runtime-personal.ps1 alone is exactly how they would drift apart in
-# silence.
+# rewording nano.ps1 alone is exactly how they would drift apart in silence.
 for _msg in \
-    'This machine is not compatible: Exasol Personal needs at least' \
-    'This machine is not compatible right now:'
+    'No container runtime found. Install Docker Desktop (https://docs.docker.com/desktop/), then re-run.' \
+    'This machine is not compatible: Exasol Nano needs at least' \
+    'This machine is not compatible right now:' \
+    'Insufficient memory: ' \
+    'Insufficient free disk space on '
 do
-    if grep -qF "$_msg" "$_IPS" && grep -qF "$_msg" "$_RPS"; then
-        pass "the gate and runtime-personal.ps1 both say: $_msg"
+    if grep -qF "$_msg" "$_IPS" && grep -qF "$_msg" "$_NANO"; then
+        pass "the gate and nano.ps1 both say: $_msg"
     else
-        fail "install.ps1 and setup/lib/runtime-personal.ps1 no longer share this refusal, so the same machine gets two spellings of it: $_msg"
+        fail "install.ps1 and setup/lib/nano.ps1 no longer share this refusal, so the same machine gets two spellings of it: $_msg"
     fi
-done
-# The two the gate owns alone: they are what the trap prints as the reason, and
-# nothing in the runtime module has a peer for them.
-for _msg in 'Insufficient memory: ' 'Insufficient free disk space on '
-do
-    _has "$_IPS" "$_msg" "the gate names its own refusal reason: $_msg" \
-        "install.ps1 no longer names its refusal reason: $_msg"
 done
 
 # Permissive by design: this gate works from less information than the check it
@@ -340,14 +329,9 @@ if [ -n "$_pf" ] && [ -n "$_dl" ] && [ "$_pf" -lt "$_dl" ]; then
 else
     fail "install.ps1 has no \$env:EXAKIT_PREFLIGHT check ahead of the download - the docs offer Windows a check-only run that does not exist"
 fi
-# Stops at the report - by RETURNING, for the same reason as above: an `exit`
-# here closed the window over the very report the run exists to print.
-_has "$_IPS" '$preflightFailures = Write-ExakitRequirementReport' \
+_has "$_IPS" 'exit (Write-ExakitRequirementReport' \
     "...and a preflight run stops at the report instead of installing" \
     "a preflight run on Windows no longer stops at the report"
-_has "$_IPS" 'if ($ExakitRanAsFile) { exit $preflightFailures }' \
-    "...leaving the session alive to read it" \
-    "the preflight can close the user's terminal again"
 
 printf '\n== a failed re-install never leaves the user without a kit ==\n'
 

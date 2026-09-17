@@ -1,17 +1,17 @@
-name: update-test / set A
+name: versiontag1
 
 # Makes this repo advertise one fixed, pinned version set, on demand.
 #
-#   Set A: personal 2.0.0, exapump 0.11.0, mcp 1.9.0,
+#   Set A: personal 2.0.0, nano 2026.2.0-nano.2, exapump 0.11.0, mcp 1.9.0,
 #   pyexasol 2.2.1.
 #
 # WHY IT EXISTS
 #   The update path is tested by installing the kit while the repo advertises
 #   one set, then making the repo advertise a different one, so the installed
 #   kit sees an update and can be walked through taking it. By hand that is a
-#   four-file edit plus five downloaded digests, every single time. update-test-set-a
-#   and update-test-set-b are the two ends of that loop: install with update-test-set-a
-#   advertised, run update-test-set-b, watch the installed kit notice.
+#   four-file edit plus five downloaded digests, every single time. versiontag1
+#   and versiontag2 are the two ends of that loop: install with versiontag1
+#   advertised, run versiontag2, watch the installed kit notice.
 #
 # IT MAY MOVE A VERSION DOWNWARD, ON PURPOSE
 #   versions-bump.yml never lowers a version, because the kit cannot move a
@@ -50,7 +50,7 @@ name: update-test / set A
 #   and a run that finds nothing to do says so and succeeds.
 #
 # RUNNING IT
-#   Actions > update-test-set-a > Run workflow. Nothing gates it: no repository
+#   Actions > versiontag1 > Run workflow. Nothing gates it: no repository
 #   variable, no schedule. GitHub only lists a workflow_dispatch workflow once
 #   the file is on the default branch, so it appears in the Actions tab after
 #   this file is merged, not while it is still on a branch.
@@ -88,10 +88,11 @@ jobs:
     runs-on: ubuntu-latest
     env:
       # The pinned set. This block is the only thing that differs between
-      # update-test-set-a and update-test-set-b -- everything below it is byte-identical in
+      # versiontag1 and versiontag2 -- everything below it is byte-identical in
       # both files, so a diff between the two shows the set and nothing else.
       SET_LABEL: 'Set A'
       SET_PERSONAL: '2.0.0'
+      SET_NANO: '2026.2.0-nano.2'
       SET_EXAPUMP: '0.11.0'
       SET_MCP: '1.9.0'
       SET_PYEXASOL: '2.2.1'
@@ -122,10 +123,11 @@ jobs:
 
           MANIFEST = "versions.json"
           # The manifest's own order, so the summary reads like the file.
-          ORDER = ("personal", "exapump", "mcp", "pyexasol")
+          ORDER = ("personal", "nano", "exapump", "mcp", "pyexasol")
 
           WANTED = {
               "personal": os.environ["SET_PERSONAL"],
+              "nano": os.environ["SET_NANO"],
               "exapump": os.environ["SET_EXAPUMP"],
               "mcp": os.environ["SET_MCP"],
               "pyexasol": os.environ["SET_PYEXASOL"],
@@ -134,7 +136,7 @@ jobs:
           MODE = os.environ["MODE"]
           TARGET = os.environ["TARGET_BRANCH"]
           TAG = os.environ.get("TAG", "").strip()
-          WORKFLOW = os.environ.get("GITHUB_WORKFLOW", "update-test")
+          WORKFLOW = os.environ.get("GITHUB_WORKFLOW", "versiontag")
 
           # The five platforms versions.yml's schema job insists on.
           PLATFORMS = ("linux-aarch64", "linux-x86_64", "macos-aarch64",
@@ -144,7 +146,7 @@ jobs:
               """Fetch url as bytes, or (None, reason). Retries the transient
               failures only: a 404 is an answer, not a flake."""
               request = urllib.request.Request(url, headers={
-                  "User-Agent": "exakit-update-test",
+                  "User-Agent": "exakit-versiontag",
               })
               last = "unknown error"
               for attempt in range(3):
@@ -224,7 +226,10 @@ jobs:
           COUPLED = {
               "personal": [
                   ("setup/lib/common.sh", "bash", "EXAKIT_PERSONAL_VERSION_FALLBACK"),
-                  ("setup/lib/runtime-personal.ps1", "pwsh", "PersonalVersionFallback"),
+              ],
+              "nano": [
+                  ("setup/lib/common.sh", "bash", "EXAKIT_NANO_TAG_FALLBACK"),
+                  ("setup/lib/exakit-common.ps1", "pwsh", "NanoTagFallback"),
               ],
               "exapump": [
                   ("setup/lib/common.sh", "bash", "EXAKIT_EXAPUMP_VERSION_FALLBACK"),
@@ -337,7 +342,7 @@ jobs:
                              "in `commit` mode to tag." % TAG)
 
           text = "\n".join(summary) + "\n"
-          pathlib.Path("update-test-summary.md").write_text(text)
+          pathlib.Path("versiontag-summary.md").write_text(text)
           print(text)
 
           if os.environ.get("GITHUB_STEP_SUMMARY"):
@@ -368,7 +373,7 @@ jobs:
             # Everything the flip touched, never the summary (a build artifact).
             git add versions.json setup/lib/common.sh setup/lib/exakit-common.ps1 \
                     mcp/runtime/exakit.py
-            git commit -m "$TITLE" -m "$(cat update-test-summary.md)" \
+            git commit -m "$TITLE" -m "$(cat versiontag-summary.md)" \
                 -- versions.json setup/lib/common.sh setup/lib/exakit-common.ps1 \
                    mcp/runtime/exakit.py
             git push origin "HEAD:refs/heads/$TARGET_BRANCH"
@@ -398,7 +403,7 @@ jobs:
           git switch -c "$BRANCH"
           git add versions.json setup/lib/common.sh setup/lib/exakit-common.ps1 \
                   mcp/runtime/exakit.py
-          git commit -m "$TITLE" -m "$(cat update-test-summary.md)" \
+          git commit -m "$TITLE" -m "$(cat versiontag-summary.md)" \
               -- versions.json setup/lib/common.sh setup/lib/exakit-common.ps1 \
                  mcp/runtime/exakit.py
           # One reusable branch, force-pushed: a later run replaces the proposal
@@ -407,10 +412,10 @@ jobs:
           existing="$(gh pr list --head "$BRANCH" --base "$TARGET_BRANCH" --state open \
               --json number --jq '.[0].number' || true)"
           if [ -n "$existing" ]; then
-            gh pr edit "$existing" --title "$TITLE" --body-file update-test-summary.md
+            gh pr edit "$existing" --title "$TITLE" --body-file versiontag-summary.md
             url="$(gh pr view "$existing" --json url --jq .url)"
           else
             url="$(gh pr create --base "$TARGET_BRANCH" --head "$BRANCH" \
-                --title "$TITLE" --body-file update-test-summary.md)"
+                --title "$TITLE" --body-file versiontag-summary.md)"
           fi
           printf '\nPull request: %s\n' "$url" >> "$GITHUB_STEP_SUMMARY"
