@@ -105,18 +105,66 @@ function Get-LegacyPasswordFile {
 # a machine can have another one installed.
 function Get-LegacyEngineName {
     if ($env:EXAKIT_LEGACY_ENGINE) { return "" + $env:EXAKIT_LEGACY_ENGINE }
+    # The engine actually resolved, so the record and every message name the one
+    # the container is really in. Only when nothing resolves does the recorded
+    # name stand on its own, so a message can still say what is missing.
+    $path = Get-LegacyEngine
+    if ($path) { return [System.IO.Path]::GetFileNameWithoutExtension($path) }
     return "" + (Get-ExakitManifestValue "runtime.engine")
 }
 
-# Get-LegacyEngine - that engine as a runnable path, or "". One that is named
-# but no longer on PATH answers "", which is what makes the migrate option offer
-# itself as unavailable rather than fail halfway through.
+# Get-LegacyEngine - the engine that can actually reach this database, as a
+# runnable path, or "".
+#
+# THE RECORDED NAME IS A HINT, NOT THE ANSWER. The old kit ran the container
+# under Docker when it was there and Podman otherwise, and it wrote whichever it
+# used into runtime.engine. A machine where that key is missing (an older
+# record), or where the user has since moved from one engine to the other, then
+# had its container declared unreachable - "the container engine this database
+# needs is not on this machine any more" - with the container sitting right
+# there in the other engine, and the install went on to hit the port it holds.
+# So: the recorded engine first, and if that cannot be run, whichever engine on
+# this machine actually holds the recorded container. Docker before Podman, the
+# order the old kit preferred. Probed once per run; each probe is a process
+# start. Twin of legacy_engine.
+$script:LegacyEnginePath = $null
 function Get-LegacyEngine {
-    $name = Get-LegacyEngineName
-    if (-not $name) { return "" }
-    $cmd = Get-Command $name -ErrorAction SilentlyContinue
-    if ($cmd) { return $cmd.Source }
-    return ""
+    if ($env:EXAKIT_LEGACY_ENGINE) {
+        $cmd = Get-Command $env:EXAKIT_LEGACY_ENGINE -ErrorAction SilentlyContinue
+        if ($cmd) { return $cmd.Source }
+        return ""
+    }
+    if ($null -ne $script:LegacyEnginePath) { return $script:LegacyEnginePath }
+    $path = ""
+    $recorded = "" + (Get-ExakitManifestValue "runtime.engine")
+    if ($recorded) {
+        $cmd = Get-Command $recorded -ErrorAction SilentlyContinue
+        if ($cmd) { $path = $cmd.Source }
+    }
+    if (-not $path) {
+        $container = Get-LegacyContainer
+        if ($container) {
+            $timeout = 20
+            if ($env:EXAKIT_ENGINE_PROBE_TIMEOUT) { $timeout = [int]$env:EXAKIT_ENGINE_PROBE_TIMEOUT }
+            foreach ($try in @("docker", "podman")) {
+                $cmd = Get-Command $try -ErrorAction SilentlyContinue
+                if (-not $cmd) { continue }
+                # -f {{.Id}}: a container that is not there prints nothing on
+                # stdout, which is the only stream this reads back.
+                $out = Invoke-ExakitBounded -FilePath $cmd.Source -TimeoutSeconds $timeout `
+                    -Arguments @("container", "inspect", "-f", "{{.Id}}", $container)
+                if ($null -ne $out -and "$out".Trim()) { $path = $cmd.Source; break }
+            }
+        }
+    }
+    $script:LegacyEnginePath = $path
+    return $path
+}
+
+# Clear-LegacyEngine - drop the cached answer, for the tests that change what is
+# on PATH between scenarios. Twin of legacy_forget_engine.
+function Clear-LegacyEngine {
+    $script:LegacyEnginePath = $null
 }
 
 # Save-LegacyRecord - the old record, copied under legacy.* before the install

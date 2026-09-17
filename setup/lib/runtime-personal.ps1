@@ -202,7 +202,17 @@ function Test-PersonalTlsAnswers {
 # application that is not there. Twin of personal_foreign_db_hint.
 function Get-PersonalForeignDbHint {
     if (-not (Test-PersonalTlsAnswers)) { return "" }
-    return " It answers like an Exasol database this kit did not deploy. Windows and WSL share this port, so an Exasol Personal deployed inside WSL holds it here too: stop it there first (in that distro: exakit stop), then re-run."
+    # NAME WHAT IS ACTUALLY THERE. A recorded container of this machine's own
+    # previous kit is the commonest holder of this port, and telling that user
+    # to go and stop something in WSL sends them looking for a database that
+    # does not exist. The crossing is the road out of it. Twin of
+    # personal_foreign_db_hint.
+    if ((Get-Command Test-LegacyDbRecorded -ErrorAction SilentlyContinue) -and (Test-LegacyDbRecorded) -and
+        ((Get-LegacyContainerState) -eq "running")) {
+        $c = Get-LegacyContainer
+        return " It is the container database of your previous starter kit ($c), which this kit no longer manages. Stop it ($(Get-LegacyEngineName) stop $c) and re-run the installer, which then offers to copy its data across."
+    }
+    return " It answers like an Exasol database this kit did not deploy: stop that database first, then re-run. Windows and WSL share this port, so one deployed inside WSL holds it here too (stop it there with: exakit stop)."
 }
 
 # Get-PersonalLauncherState - the LAUNCHER'S OWN WORD for this deployment

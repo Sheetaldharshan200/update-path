@@ -183,6 +183,24 @@ recorded the version the kit pins: 0.13.0 in the manifest, 0.12.0 on disk. The
 version is compared now; only the kit's own path is replaced, a binary the user
 put elsewhere is left alone.
 
+**The crossing finds the container in whichever engine actually holds it.** The
+old kit ran the database under Docker when it was there and Podman otherwise,
+and wrote whichever it used into `runtime.engine`. A record without that key,
+or a machine where the user has since moved from one engine to the other, had
+the whole crossing declined - "the container engine this database needs is not
+on this machine any more" - while the container sat in the other engine, and
+the install then walked straight into the port it holds and stopped there. The
+recorded engine is still preferred and still costs nothing when it works; only
+when it cannot be run does the kit ask each engine on the machine whether it
+has that container, Docker first. The record and every message then name the
+engine actually in use.
+
+**A port held by your own previous kit says so.** The hint on a busy 8563 named
+WSL whatever was really there, which sent a Windows user with a local container
+looking for a database in a distro that did not have one. When the port is held
+by the recorded container, the message names it, the command that stops it, and
+the fact that re-running the installer then offers to copy its data across.
+
 **A freshly installed exapump that the machine will not let run yet is waited
 for, not blamed on the database.** Windows Defender and corporate endpoint
 agents hold a newly written, unsigned 20 MB executable open while they scan it,
