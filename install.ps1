@@ -6,7 +6,7 @@
 # via `irm | iex` (as a fetched string, never read from disk with -File), and
 # a BOM that survives into that string as a literal U+FEFF character breaks
 # PowerShell's '#' comment-line detection - the parser then tries to execute
-# the comment text itself as commands. (setup\setup-windows-docker.ps1 and
+# the comment text itself as commands. (setup\setup-windows.ps1 and
 # setup\exakit.ps1 are the opposite case: always read from disk via -File,
 # where a BOM is the correct fix for a different, real encoding bug - do not
 # "fix" those to match this file.)
@@ -17,8 +17,8 @@
 #   2. downloads the starter kit to ~\.exasol-starter-kit\kit (so you can
 #      read every script before or after it runs)
 #   3. shows the installation plan
-#   4. hands off to setup\setup-windows-docker.ps1, which installs the
-#      Exasol Nano database container, exapump (data loading CLI), and the
+#   4. hands off to setup\setup-windows.ps1, which installs the
+#      Exasol Personal local deployment, exapump (data loading CLI), and the
 #      MCP server - the same components the macOS/Linux/WSL path installs
 #
 # Options (environment variables):
@@ -41,6 +41,18 @@
 #                               notice that other exakit commands can show
 
 $ErrorActionPreference = "Stop"
+# EXIT WOULD CLOSE THE USER'S TERMINAL. The documented way to run this file is
+#   irm https://.../install.ps1 | iex
+# and `iex` runs it IN THE CALLER'S SESSION - so a top-level `exit` terminates
+# the PowerShell host, window and all. That took the preflight report off the
+# screen before it could be read, and took every failure message with it: the
+# trap prints the cause and then `exit 1` closed the window on top of it.
+#
+# So the installer stops by RETURNING, and reserves `exit` for the one context
+# where it means what it says: a real file invocation (powershell -File ...),
+# where $PSCommandPath is set. $LASTEXITCODE still carries the code either way,
+# so `irm ... | iex; $LASTEXITCODE` scripts the same as before.
+$ExakitRanAsFile = [bool]$PSCommandPath
 # Silence the progress stream: it hides the noisy download/extract progress
 # banners, and on Windows PowerShell 5.1 it makes Invoke-WebRequest below far
 # faster (a visible progress bar throttles it by an order of magnitude).
@@ -49,7 +61,7 @@ $ProgressPreference = "SilentlyContinue"
 # Which part of the install is running. The trap below is the last thing a
 # failed install prints, and its advice has to match the failure: "check your
 # network or proxy" is only ever true while something is being fetched. It used
-# to be printed unconditionally, so a stopped Docker Desktop or a machine under
+# to be printed unconditionally, so an unreachable engine or a machine under
 # the memory minimum - failures the line above had already named exactly - sent
 # the reader off to debug a proxy that was never involved.
 $InstallPhase = "requirements"
@@ -83,7 +95,9 @@ trap {
         Set-Content -Path (Join-Path $failHome ".last-failure") `
             -Value @($_.Exception.Message, $stamp) -Encoding UTF8 -ErrorAction SilentlyContinue
     } catch { }
-    exit 1
+    $global:LASTEXITCODE = 1
+    if ($ExakitRanAsFile) { exit 1 }
+    return
 }
 
 # Twin of Get-ExakitHomeBase in exakit-common.ps1: exakit resolves its home
@@ -116,6 +130,22 @@ if ($env:OS -notlike "*Windows*") {
     throw "This installer is for Windows. On macOS/Linux/WSL use install.sh."
 }
 
+# Exasol Personal is the database this kit installs. The HARDWARE is asked the
+# way Get-ExakitHostArch asks it - inlined, since no kit library is loaded yet -
+# because PROCESSOR_ARCHITECTURE reports the emulated x64 shell on ARM devices,
+# and the launcher publishes no Windows arm64 deployment.
+$HostIsAmd64 = $true
+try {
+    $cpu = (Get-CimInstance -ClassName Win32_Processor -ErrorAction Stop | Select-Object -First 1).Architecture
+    if ($cpu -eq 12 -or $cpu -eq 5) { $HostIsAmd64 = $false }
+} catch {
+    $p = if ($env:PROCESSOR_ARCHITEW6432) { $env:PROCESSOR_ARCHITEW6432 } else { $env:PROCESSOR_ARCHITECTURE }
+    if ($p -match 'ARM') { $HostIsAmd64 = $false }
+}
+if (-not $HostIsAmd64) {
+    throw "Exasol Personal supports macOS, native Linux and Windows x86_64 - it does not support Windows arm64, and this kit has no other database to offer. Nothing was installed."
+}
+
 # GROUP POLICY OUTRANKS -ExecutionPolicy Bypass, by design: on a machine where
 # MachinePolicy or UserPolicy pins the execution policy, the handoff below
 # (`powershell -ExecutionPolicy Bypass -File setup\...`) and every later
@@ -142,7 +172,7 @@ foreach ($gpoScope in @("MachinePolicy", "UserPolicy")) {
 # install.sh cannot do this: its check lives in setup\lib\detect.sh, inside the
 # kit it has to download first. Nothing these checks need is in the kit.
 #
-# This is a gate, not the check. Test-NanoRequirements still runs the real one
+# This is a gate, not the check. Test-PersonalRequirements still runs the real one
 # once setup starts (is the engine actually answering, every volume the install
 # writes to, the tight-disk advice) and it owns every message this gate
 # borrows: the wording is copied word for word so nobody meets two spellings of
@@ -150,53 +180,11 @@ foreach ($gpoScope in @("MachinePolicy", "UserPolicy")) {
 # determined passes, because a gate working from less information than the real
 # check must never be the thing that overrules it.
 
-# Get-ExakitDockerEvidence - is Docker Desktop on this machine at all? Cheap
-# evidence only, in the order Find-DockerCli (setup\lib\nano.ps1) looks: the
-# PATH lookup, then the two locations Docker Desktop's own installer uses - the
-# machine-wide one and the per-user "install for me only" one. The path probes
-# matter because Docker Desktop adds its bin directory to the MACHINE PATH at
-# install time, so an already-open terminal can have Docker installed and
-# simply not on $env:PATH. Whether the ENGINE answers is a different question
-# and belongs to Assert-NanoEngine, which asks it with the kit's library loaded.
-function Get-ExakitDockerEvidence {
-    if (Get-Command docker -ErrorAction SilentlyContinue) { return "docker on PATH" }
-    $candidates = @()
-    if ($env:ProgramFiles) { $candidates += (Join-Path $env:ProgramFiles "Docker\Docker\resources\bin\docker.exe") }
-    if ($env:LOCALAPPDATA) { $candidates += (Join-Path $env:LOCALAPPDATA "Programs\Docker\Docker\resources\bin\docker.exe") }
-    foreach ($candidate in $candidates) {
-        if (Test-Path $candidate) { return "docker.exe at $candidate" }
-    }
-    # Docker Desktop's WSL2 backend distro, read from the registry rather than
-    # by running wsl.exe: this shell can have no docker.exe anywhere while
-    # Docker Desktop is unmistakably installed, and Assert-NanoEngine has a
-    # precise message for exactly that machine. This gate must not overrule it
-    # with "install Docker Desktop".
-    try {
-        $lxssKey = "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Lxss"
-        if (Test-Path $lxssKey) {
-            foreach ($distro in (Get-ChildItem $lxssKey -ErrorAction SilentlyContinue)) {
-                $distroName = (Get-ItemProperty -Path $distro.PSPath -Name "DistributionName" -ErrorAction SilentlyContinue).DistributionName
-                if ($distroName -eq "docker-desktop" -or $distroName -eq "docker-desktop-data") {
-                    return "the Docker Desktop WSL backend distro is registered"
-                }
-            }
-        }
-    } catch { }
-    # A running Docker Desktop whose CLI this gate could not find is unusual,
-    # but it is not a machine to send off to install Docker Desktop.
-    try {
-        if (@(Get-Process -Name "Docker Desktop", "com.docker.backend" -ErrorAction SilentlyContinue).Count -gt 0) {
-            return "Docker Desktop is running"
-        }
-    } catch { }
-    return $null
-}
-
 # Get-ExakitTotalRamGb, Get-ExakitFreeGb - whole GB, or -1 when the answer
 # cannot be read at all. -1 means "unknown", and unknown always passes.
 #
 # Free disk goes through DriveInfo rather than the Win32_LogicalDisk query
-# nano.ps1 uses: this runs before anything else does, and it must not turn a
+# the kit uses: this runs before anything else does, and it must not turn a
 # stopped WMI service on a locked-down machine into a failed install.
 function Get-ExakitTotalRamGb {
     try { return [math]::Floor((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1GB) } catch { return -1 }
@@ -234,30 +222,24 @@ function Get-ExakitRequirementChecks {
     # covers there: memory and free disk, never the container runtime, because
     # there is nothing to force when the thing the database runs in is absent.
     $forced = ($env:EXAKIT_FORCE -eq "1")
-    $minRamGb = if ($env:EXAKIT_NANO_MIN_RAM_GB) { [int]$env:EXAKIT_NANO_MIN_RAM_GB } else { 4 }
-    $minSystemDiskGb = if ($env:EXAKIT_NANO_MIN_SYSTEM_DISK_GB) { [int]$env:EXAKIT_NANO_MIN_SYSTEM_DISK_GB } else { 5 }
+    $minRamGb = if ($env:EXAKIT_PERSONAL_MIN_RAM_GB) { [int]$env:EXAKIT_PERSONAL_MIN_RAM_GB } else { 8 }
+    $minSystemDiskGb = if ($env:EXAKIT_MIN_SYSTEM_DISK_GB) { [int]$env:EXAKIT_MIN_SYSTEM_DISK_GB } else { 5 }
     $checks = @()
 
     $checks += New-ExakitCheckResult -State "ok" -Text "Operating system: Windows"
 
-    # Architecture is reported, never a failure: exapump publishes Windows
-    # binaries for x86_64 only, and on Windows-on-ARM the database container
-    # itself is fully supported - the setup script names each step it skips.
-    if ($env:PROCESSOR_ARCHITECTURE -eq "AMD64") {
-        $checks += New-ExakitCheckResult -State "ok" -Text "CPU architecture: $env:PROCESSOR_ARCHITECTURE"
+    # Reported, not judged: Windows arm64 is already refused above, before this
+    # gate is ever built, so by here the only thing left to say is what it is.
+    $checks += New-ExakitCheckResult -State "ok" -Text "CPU architecture: $env:PROCESSOR_ARCHITECTURE"
+
+    # A missing Podman is not a failure: the Exasol launcher offers to install
+    # it itself (winget, possibly an administrator prompt), so failing the gate
+    # for it would demand a manual install the launcher makes unnecessary.
+    if (Get-Command podman -ErrorAction SilentlyContinue) {
+        $checks += New-ExakitCheckResult -State "ok" -Text "Podman: available (the Exasol Personal runtime deploys through it)"
     } else {
         $checks += New-ExakitCheckResult -State "note" `
-            -Text "CPU architecture: $env:PROCESSOR_ARCHITECTURE - the database installs and runs, but exapump, the sample data and the AI bridge are skipped (exapump ships Windows builds for x86_64 only)"
-    }
-
-    $dockerEvidence = Get-ExakitDockerEvidence
-    if ($dockerEvidence) {
-        $checks += New-ExakitCheckResult -State "ok" -Text "Container runtime: Docker Desktop found ($dockerEvidence)"
-    } else {
-        # Word for word what Assert-NanoEngine says for the same machine.
-        $checks += New-ExakitCheckResult -State "bad" `
-            -Text "No container runtime found. Install Docker Desktop (https://docs.docker.com/desktop/), then re-run." `
-            -Reason "No container runtime found. Install Docker Desktop (https://docs.docker.com/desktop/), then re-run."
+            -Text "Podman not found - the Exasol launcher will offer to install it (Windows Package Manager; may ask for administrator approval)"
     }
 
     $ramGb = Get-ExakitTotalRamGb
@@ -265,29 +247,29 @@ function Get-ExakitRequirementChecks {
         $checks += New-ExakitCheckResult -State "note" `
             -Text "Memory: could not be read here - the installer checks it again with the kit's own tools"
     } elseif ($ramGb -ge $minRamGb) {
-        $checks += New-ExakitCheckResult -State "ok" -Text "Memory: $ramGb GB (Exasol Nano needs $minRamGb+)"
+        $checks += New-ExakitCheckResult -State "ok" -Text "Memory: $ramGb GB (Exasol Personal needs $minRamGb+)"
     } elseif ($forced) {
         $checks += New-ExakitCheckResult -State "note" `
             -Text "Memory: $ramGb GB - below the $minRamGb GB minimum, continuing because EXAKIT_FORCE=1"
     } else {
         $checks += New-ExakitCheckResult -State "bad" `
-            -Text "Memory: $ramGb GB - Exasol Nano needs at least $minRamGb GB" `
+            -Text "Memory: $ramGb GB - Exasol Personal needs at least $minRamGb GB" `
             -Detail @(
-                "This machine is not compatible: Exasol Nano needs at least $minRamGb GB RAM and this machine has $ramGb GB.",
+                "This machine is not compatible: Exasol Personal needs at least $minRamGb GB RAM and this machine has $ramGb GB.",
                 "Nothing was installed. Re-run on a machine with $minRamGb+ GB RAM (or force at your own risk with EXAKIT_FORCE=1)."
             ) `
             -Reason "Insufficient memory: $ramGb GB."
     }
 
-    # The system drive, always: Windows headroom, Docker Desktop's own state,
-    # and %TEMP%, through which the image download is unpacked. Where Docker
+    # The system drive, always: Windows headroom, the engine's own state,
+    # and %TEMP%, through which the download is unpacked. Where that engine
     # actually keeps its images can be another volume entirely, and finding
     # that out means asking a running engine - so this gate holds the system
     # drive to the smaller headroom-only requirement and lets
-    # Test-NanoDiskSpace judge every volume properly once setup starts.
+    # the setup gate judge every volume properly once setup starts.
     $sysDrive = if ($env:SystemDrive) { $env:SystemDrive } else { "C:" }
     $sysRoot = "$sysDrive\"
-    $whatFor = "Windows itself, Docker Desktop's own state and the unpacking of the image download"
+    $whatFor = "Windows itself, the container engine's own state and the unpacking of the download"
     $freeGb = Get-ExakitFreeGb $sysRoot
     if ($freeGb -lt 0) {
         $checks += New-ExakitCheckResult -State "note" `
@@ -350,7 +332,10 @@ if ($env:EXAKIT_PREFLIGHT -eq "1") {
     # The exit code is the number of failures, exactly as install.sh's
     # preflight_report returns it, so a script can branch on it - and zero when
     # the only findings were notes, because a note is not a failure.
-    exit (Write-ExakitRequirementReport -Checks $RequirementChecks)
+    $preflightFailures = Write-ExakitRequirementReport -Checks $RequirementChecks
+    $global:LASTEXITCODE = $preflightFailures
+    if ($ExakitRanAsFile) { exit $preflightFailures }
+    return
 }
 
 foreach ($check in $RequirementChecks) {
@@ -514,7 +499,7 @@ if (Test-Path $uiLib) {
         . ([scriptblock]::Create($uiText))
         Write-ExakitInstallPlan `
             -Platform "windows ($env:PROCESSOR_ARCHITECTURE, $ramText)" `
-            -Database "Exasol Nano (container via Docker Desktop)" `
+            -Database "Exasol Personal (local deployment via Podman)" `
             -KitDir $KitDir -StateDir $ExakitHome
         $uiLoaded = $true
     } catch { $uiLoaded = $false }
@@ -528,27 +513,30 @@ if (-not $uiLoaded) {
 if ($env:EXAKIT_DRY_RUN -eq "1") {
     Write-Host "  * Dry run requested (EXAKIT_DRY_RUN=1) - nothing was installed." -ForegroundColor Blue
     Write-Host "    Inspect the scripts under $KitDir, then run:"
-    Write-Host "      powershell -File `"$KitDir\setup\setup-windows-docker.ps1`""
+    Write-Host "      powershell -File `"$KitDir\setup\setup-windows.ps1`""
     Write-Host ""
     return
 }
 
 # --- 4. hand off -----------------------------------------------------------------
 $InstallPhase = "setup"
-Write-Host "  * Starting setup: setup\setup-windows-docker.ps1" -ForegroundColor Blue
+Write-Host "  * Starting setup: setup\setup-windows.ps1" -ForegroundColor Blue
 Write-Host ""
 # We already showed the banner above; tell the setup script to skip its own so
 # the wordmark appears exactly once through the installer. A direct
-# `-File setup\setup-windows-docker.ps1` run (no installer) still shows it.
+# `-File setup\setup-windows.ps1` run (no installer) still shows it.
 $env:EXAKIT_BANNER_SHOWN = "1"
-& powershell -ExecutionPolicy Bypass -File (Join-Path $KitDir "setup\setup-windows-docker.ps1")
+& powershell -ExecutionPolicy Bypass -File (Join-Path $KitDir "setup\setup-windows.ps1")
 $setupExitCode = $LASTEXITCODE
 # Pass the code through; do NOT re-wrap it. Re-throwing it as "Setup failed
 # with exit code 1" made the trap above print that number as THE reason and
 # then append its network hypothesis, so the last two lines of every failed
 # Windows install talked over the named cause and remedy the setup script had
-# just printed one line earlier ("Docker is installed but not running. Start
-# Docker Desktop and re-run."). install.sh never had this problem: it execs its
+# just printed one line earlier. install.sh never had this problem: it execs its
 # setup script, so on macOS/Linux/WSL the real message IS the last line. This
 # is that same contract on Windows.
-if ($setupExitCode -ne 0) { exit $setupExitCode }
+if ($setupExitCode -ne 0) {
+    $global:LASTEXITCODE = $setupExitCode
+    if ($ExakitRanAsFile) { exit $setupExitCode }
+    return
+}

@@ -311,8 +311,25 @@ class AdditionalAdapterTests(unittest.TestCase):
         self.assertNotIn("exasol", payload.get("mcpServers", {}))
 
     def _env_without_overrides(self, home, path=""):
-        """An environment with NO config-path overrides: detection runs the real rule."""
-        return ExecutionEnvironment(os_name="darwin", home=home, env={"PATH": path}, cwd=home)
+        """An environment with NO config-path overrides: detection runs the real rule.
+
+        EXAKIT_MCP_APP_ROOTS IS STILL SET, and that is not an exception to the
+        "no overrides" above: it is the sandbox control, not a config path.
+        Detection on darwin counts an installed ``<name>.app`` as evidence, and
+        without this the probe reads the DEVELOPER'S OWN /Applications - so
+        `test_kit_only_config_is_not_evidence_of_the_client` failed on any
+        machine that happened to have Cursor installed, and passed everywhere
+        else. It was measuring the machine, not the rule. Pointed at an empty
+        directory, these tests answer the same way on every host.
+        """
+        app_roots = self._temp_dir / "no-applications"
+        app_roots.mkdir(parents=True, exist_ok=True)
+        return ExecutionEnvironment(
+            os_name="darwin",
+            home=home,
+            env={"PATH": path, "EXAKIT_MCP_APP_ROOTS": str(app_roots)},
+            cwd=home,
+        )
 
     def test_kit_only_config_is_not_evidence_of_the_client(self) -> None:
         """THE BUG: detection was 'the config file exists'. The kit writes that

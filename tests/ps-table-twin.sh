@@ -553,7 +553,7 @@ raw_home_hits() { # raw_home_hits <file>
         }
     ' "$1"
 }
-for ps_module in exakit-common.ps1 exapump.ps1 mcp.ps1 nano.ps1 pyexasol.ps1; do
+for ps_module in exakit-common.ps1 exapump.ps1 mcp.ps1 runtime-personal.ps1 pyexasol.ps1; do
     hits="$(raw_home_hits "$ROOT/setup/lib/$ps_module")"
     if [ -n "$hits" ]; then
         fail "setup/lib/$ps_module builds a path from \$HOME (lines: $hits) -- use Get-ExakitProfileHome"

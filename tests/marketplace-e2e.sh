@@ -281,7 +281,6 @@ say "9/9 uninstall sweeps the add-on"
     . "$ROOT/setup/lib/exasol-vscode.sh" >/dev/null 2>&1
     . "$ROOT/setup/lib/json-tables.sh" >/dev/null 2>&1
     # The database/MCP steps are stubbed: this sandbox never had either.
-    nano_teardown() { :; }
     personal_teardown() { :; }
     exakit_mcp_operation() { :; }
     exakit_uninstall_run 0 >/dev/null 2>&1
