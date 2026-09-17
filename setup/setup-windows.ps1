@@ -169,6 +169,15 @@ try {
     if ($exapumpSupported -and (Test-ExakitSoftFailed "exapump")) {
         Info "Skipping the sample data - it is loaded with exapump, which is not installed"
     } elseif ($exapumpSupported) {
+        # YOUR OWN DATA FIRST, THEN THE SAMPLE. The copy out of the old
+        # container needs three things this point in the run is the first to
+        # have: a database that is up, an exapump binary, and a profile
+        # pointing at the new database. It used to run at the very end, after
+        # every other step, which put a user's own tables last in a run that is
+        # mostly about them. Twin of the call in exakit_maybe_offer_data_load.
+        if (Get-Command Invoke-LegacyCrossingAfter -ErrorAction SilentlyContinue) {
+            Invoke-LegacyCrossingAfter
+        }
         [void](Invoke-ExakitBestEffort -Component "sample_data" -Repair "exakit data-load" `
             -Label "sample data" `
             -Warning "Sample data load did not finish cleanly." `

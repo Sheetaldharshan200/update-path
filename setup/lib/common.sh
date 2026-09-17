@@ -8835,6 +8835,16 @@ exakit_maybe_offer_data_load() {
     : "$_kit_root"
     command -v exakit_load_sample_data >/dev/null 2>&1 || return 0
 
+    # YOUR OWN DATA FIRST, THEN THE SAMPLE. The copy out of the old container
+    # needs three things this point in the run is the first to have: a database
+    # that is up, an exapump binary, and a profile pointing at the new database.
+    # It used to run at the very end, after the sample load and every other
+    # step, which put a user's own tables last in a run that is mostly about
+    # them. Tables that a bundled dataset would create are left in the copy
+    # rather than restored, so the load that follows cannot overwrite them --
+    # see legacy_import.
+    command -v legacy_crossing_after >/dev/null 2>&1 && legacy_crossing_after
+
     # EXAKIT_DATASETS names bundled datasets directly (csv of ids from
     # data/datasets/<id>/, e.g. "tpch,weather") so an agent-driven or scripted
     # install can pick an exact selection. Unknown ids warn and are skipped;
