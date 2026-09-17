@@ -106,9 +106,11 @@ fi
 # --- steps 3-6: exapump, MCP server, pyexasol, exakit helper (shared) ---------
 kit_shared_steps 3 6 "$SCRIPT_DIR" "$KIT_ROOT"
 
-# The other half of the crossing. Last, because it needs all three things the
-# steps above provide: a database that is up, an exapump binary, and a profile
-# pointing at the NEW database.
+# The other half of the crossing runs inside the shared steps, immediately
+# before the sample-data load (see exakit_maybe_offer_data_load): a user's own
+# tables come back before the kit's demo data, not after the whole install.
+# This call is the safety net for a run that skipped that point altogether, and
+# is a no-op once the restore has happened.
 if command -v legacy_crossing_after >/dev/null 2>&1; then legacy_crossing_after; fi
 
 exakit_finish

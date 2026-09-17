@@ -534,8 +534,21 @@ function Export-LegacyTables {
     $indexPath = Join-Path $Dir "index"
     Set-Content -Path $indexPath -Value @() -Encoding Ascii
     $ok = 0; $bad = 0; $n = 0
+    # A BAR, NOT A SPINNER PER TABLE. Copying a database out is the one long
+    # stretch of the crossing, and a spinner says only "still going"; the bar
+    # says how much of it is left, in the same shape the deploy and the dataset
+    # loads use. Start-ExakitProgress answers $false where it cannot draw (no
+    # terminal, or a table already owns the line), and the labels below then
+    # narrate nothing, exactly as before. Twin of legacy_export.
+    $total = @($Tables).Count
+    $live = $false
+    if ($total -gt 0) { $live = Start-ExakitProgress -Pct 0 -Ceiling 0 -Secs 1 -Phase "Copying $total table(s) out of the old database" }
     foreach ($t in $Tables) {
         $n++
+        if ($live) {
+            Set-ExakitProgress -Pct ([int](($n - 1) * 100 / $total)) -Ceiling ([int]($n * 100 / $total)) `
+                -Secs 4 -Phase "Copying out $t ($n of $total)"
+        }
         $dot = $t.IndexOf(".")
         if ($dot -lt 1) { continue }
         $schema = $t.Substring(0, $dot)
@@ -568,6 +581,10 @@ function Export-LegacyTables {
             $bad++
         }
     }
+    if ($live) {
+        Stop-ExakitProgress
+        Ok "Copied $ok of $total table(s) out"
+    }
     $script:ExakitActiveLabel = ""
     Set-ExakitManifestValue "legacy.exported" $ok
     if ($bad -gt 0) { Set-ExakitManifestValue "legacy.export_failed" $bad }
@@ -586,6 +603,25 @@ function Test-LegacyNewDbAnswers {
     return ((Invoke-LegacyQuery -Sql "SELECT 'EXAKIT_NEW_OK' AS P" -Profile $script:ExapumpProfile) -match "EXAKIT_NEW_OK")
 }
 
+# Test-LegacySampleTable <SCHEMA.TABLE> - would a bundled dataset create this
+# table? Then it is not restored.
+#
+# The unchanged sample tables never leave the old database at all (see
+# Split-LegacyTables). A CHANGED one does come across, and it used to be
+# restored after the sample load, where the "this table already exists" gate
+# kept the copy on disk instead of overwriting the kit's own. Restoring before
+# that load moves the collision: the dataset's CREATE OR REPLACE would land on
+# top of the user's rows minutes later. So the answer is the same either way -
+# the copy is kept, the table is not restored, and the message says where it is.
+# Twin of legacy_is_sample_table.
+function Test-LegacySampleTable {
+    param([Parameter(Mandatory)][string]$Qualified)
+    foreach ($row in @(Get-LegacySampleCatalog)) {
+        if ($row.Table -eq $Qualified) { return $true }
+    }
+    return $false
+}
+
 function Import-LegacyTables {
     param([string]$Dir)
     $indexPath = Join-Path $Dir "index"
@@ -596,6 +632,12 @@ function Import-LegacyTables {
     # 0, Left alone: <every table>" and recorded the restore as done.
     if (-not (Test-LegacyNewDbAnswers)) { return $false }
     $ok = 0; $skipped = 0; $bad = 0; $skippedNames = ""
+    # The same bar on the way back in; the total is what the index holds, so a
+    # copy that failed halfway still reports against what there is to restore.
+    $inTotal = @(Get-Content $indexPath -ErrorAction SilentlyContinue | Where-Object { $_ }).Count
+    $inN = 0
+    $inLive = $false
+    if ($inTotal -gt 0) { $inLive = Start-ExakitProgress -Pct 0 -Ceiling 0 -Secs 1 -Phase "Restoring $inTotal table(s) into the new database" }
     foreach ($line in (Get-Content $indexPath)) {
         if (-not $line) { continue }
         $parts = $line -split "`t", 4
@@ -606,6 +648,19 @@ function Import-LegacyTables {
         $path = Join-Path $Dir $file
         if (-not (Test-Path $path)) { continue }
         $target = '"' + $schema + '"."' + $table + '"'
+        $inN++
+        if ($inLive) {
+            Set-ExakitProgress -Pct ([int](($inN - 1) * 100 / $inTotal)) -Ceiling ([int]($inN * 100 / $inTotal)) `
+                -Secs 4 -Phase "Restoring $schema.$table ($inN of $inTotal)"
+        }
+        # A TABLE A BUNDLED DATASET WILL CREATE IS LEFT IN THE COPY - see
+        # Test-LegacySampleTable. The restore runs before the sample load now,
+        # so "it already exists" no longer catches this.
+        if (Test-LegacySampleTable -Qualified "$schema.$table") {
+            $skipped++
+            $skippedNames = "$skippedNames $schema.$table"
+            continue
+        }
         $script:ExakitActiveLabel = "Restoring $schema.$table"
         # CREATE SCHEMA is unconditional and harmless; CREATE TABLE is the test
         # for "does this already exist", so its failure is not an error here.
@@ -627,6 +682,7 @@ function Import-LegacyTables {
             $bad++
         }
     }
+    if ($inLive) { Stop-ExakitProgress }
     $script:ExakitActiveLabel = ""
     Set-ExakitManifestValue "legacy.restored" $ok
     if ($skipped -gt 0) { Set-ExakitManifestValue "legacy.restore_skipped" $skipped }
@@ -782,12 +838,21 @@ function Invoke-LegacyCrossingBefore {
     # Past all three gates: there is a real database with real tables in it,
     # and this is the one and only time the user is asked about it.
     Write-Host ""
-    Warn2 "This machine has a starter kit installation whose database runs in a container."
-    Info "This kit deploys Exasol Personal instead, so that container is not something it can manage."
-    if ($container) { Info "The old database is the container '$container' ($state)." }
-    Info "It holds $total table(s). Copying them takes a few minutes and changes nothing in the old database."
-    if ($sample -gt 0) { Write-LegacySampleNote -Own $count -Sample $sample }
-    Info "One caveat worth knowing: a text column that held an empty string arrives as NULL."
+    # ONE LINE, THEN THE QUESTION. This was six lines of explanation before a
+    # yes/no - what the kit no longer manages, what it deploys instead, what the
+    # copy costs, which tables are the kit's own, and a caveat about empty
+    # strings - all of it ahead of a decision that needs the name, the size and
+    # nothing else. What survives: the container, its state, and how much of the
+    # user's own data is in it. The caveat moves to the copy itself, where it is
+    # about to matter; the rest is in the docs. Twin of legacy_crossing_before.
+    $schemas = @($script:LegacyOwnTables | ForEach-Object { ("" + $_).Split(".")[0] } | Sort-Object -Unique).Count
+    $where = ""
+    if ($container) { $where = " in the container '$container' ($state)" }
+    $mine = "$count table(s)"
+    if ($schemas -gt 0) { $mine = "$mine in $schemas schema(s)" }
+    $rest = ""
+    if ($sample -gt 0) { $rest = " The other $sample is the kit's own $($script:LegacySampleIds) sample, which this install loads itself." }
+    Info "Found your previous starter kit's database${where}: $mine of your own.$rest"
 
     Select-LegacyChoice -TableCount $count -CanMigrate $can -Why $why
     Set-ExakitManifestValue "legacy.choice" $script:LegacyChoice
@@ -795,7 +860,9 @@ function Invoke-LegacyCrossingBefore {
     if ($sample -gt 0) { Set-ExakitManifestValue "legacy.sample_left_out" $script:LegacySampleIds }
 
     if ($script:LegacyChoice -eq "migrate") {
-        Info "Copying $count table(s) out of the old database"
+        # Said here, not before the question: it is about the copy that is
+        # starting, and it only matters to someone who asked for one.
+        Info "Copying now - nothing in the old database is changed. One thing to know: a text column that held an empty string arrives as NULL."
         if (Export-LegacyTables -Dir $script:LegacyExportDir -Tables @($script:LegacyOwnTables)) {
             Set-ExakitManifestValue "legacy.export_dir" $script:LegacyExportDir
             Ok "Your data is saved at $(Get-ExakitTilde $script:LegacyExportDir) - it goes into the new database at the end of this install"

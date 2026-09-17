@@ -545,8 +545,28 @@ legacy_export() {
     _lex_bad=0
     _lex_total=$#
     _lex_n=0
+    # A BAR, NOT A SPINNER PER TABLE. Copying a database out is the one long
+    # stretch of the crossing, and a spinner says only "still going"; the bar
+    # says how much of it is left, in the same shape the deploy and the dataset
+    # loads use. Live only on a real terminal: ui_progress_begin answers 0
+    # elsewhere and the labels below then narrate nothing, exactly as before.
+    # It owns the animation slot, so run_logged's own spinner nests into it.
+    _lex_state=""
+    _lex_live=0
+    if [ "$_lex_total" -gt 0 ]; then
+        _lex_state="$(mktemp "${TMPDIR:-/tmp}/exakit-legacy-out.XXXXXX" 2>/dev/null || true)"
+    fi
+    if [ -n "$_lex_state" ]; then
+        ui_progress_state "$_lex_state" 0 0 1 "Copying $_lex_total table(s) out of the old database"
+        ui_progress_begin "$_lex_state" "$(date +%s 2>/dev/null || echo 0)" && _lex_live=1
+    fi
     for _lex_t in "$@"; do
         _lex_n=$(( _lex_n + 1 ))
+        if [ "$_lex_live" = 1 ]; then
+            ui_progress_state "$_lex_state" \
+                $(( (_lex_n - 1) * 100 / _lex_total )) $(( _lex_n * 100 / _lex_total )) 4 \
+                "Copying out $_lex_t ($_lex_n of $_lex_total)"
+        fi
         _lex_schema="${_lex_t%%.*}"
         _lex_table="${_lex_t#*.}"
         # The file name is positional, not derived from the table name: a
@@ -579,6 +599,11 @@ legacy_export() {
             _lex_bad=$(( _lex_bad + 1 ))
         fi
     done
+    if [ "$_lex_live" = 1 ]; then
+        ui_progress_end
+        ok "Copied $_lex_ok of $_lex_total table(s) out"
+    fi
+    [ -n "$_lex_state" ] && rm -f "$_lex_state"
     EXAKIT_ACTIVE_LABEL=""
     manifest_set legacy.exported "$_lex_ok"
     [ "$_lex_bad" -gt 0 ] && manifest_set legacy.export_failed "$_lex_bad"
@@ -587,6 +612,23 @@ legacy_export() {
 
 # legacy_new_db_answers — a real query against the NEW database through the
 # kit's own profile: the gate in front of every restore.
+# legacy_is_sample_table <SCHEMA.TABLE> — would a bundled dataset create this
+# table? Then it is not restored.
+#
+# The unchanged sample tables never leave the old database at all (see
+# legacy_classify). A CHANGED one does come across, and it used to be restored
+# after the sample load, where the "this table already exists" gate kept the
+# copy on disk instead of overwriting the kit's own. Restoring before that load
+# moves the collision: the dataset's CREATE OR REPLACE would land on top of the
+# user's rows minutes later. So the answer is the same either way - the copy is
+# kept, the table is not restored, and the message says where it is - and now it
+# does not depend on which of the two ran first.
+legacy_is_sample_table() {
+    _list_is_st="$(legacy_sample_catalog 2>/dev/null || true)"
+    [ -n "$_list_is_st" ] || return 1
+    printf '%s\n' "$_list_is_st" | cut -d'|' -f1 | grep -qx "$1"
+}
+
 legacy_new_db_answers() {
     "$(exapump_cli)" sql -p "$EXAKIT_EXAPUMP_PROFILE" \
         "SELECT 'EXAKIT_NEW_OK' AS P" 2>/dev/null | grep -q 'EXAKIT_NEW_OK'
@@ -608,6 +650,19 @@ legacy_import() {
     legacy_new_db_answers || return 1
     _lim_ok=0; _lim_skipped=0; _lim_bad=0
     _lim_skipped_names=""
+    # The same bar on the way back in. The total is the index's line count, so
+    # a copy that failed halfway still reports against what there is to restore.
+    _lim_total="$(grep -c . "$_lim_dir/index" 2>/dev/null || echo 0)"
+    _lim_n=0
+    _lim_state=""
+    _lim_live=0
+    if [ "${_lim_total:-0}" -gt 0 ]; then
+        _lim_state="$(mktemp "${TMPDIR:-/tmp}/exakit-legacy-in.XXXXXX" 2>/dev/null || true)"
+    fi
+    if [ -n "$_lim_state" ]; then
+        ui_progress_state "$_lim_state" 0 0 1 "Restoring $_lim_total table(s) into the new database"
+        ui_progress_begin "$_lim_state" "$(date +%s 2>/dev/null || echo 0)" && _lim_live=1
+    fi
     while IFS="$(printf '\t')" read -r _lim_file _lim_schema _lim_table _lim_ddl; do
         [ -n "$_lim_file" ] || continue
         # A line with fewer than three fields names no table. Without this a
@@ -616,6 +671,24 @@ legacy_import() {
         [ -n "$_lim_schema" ] && [ -n "$_lim_table" ] || continue
         [ -f "$_lim_dir/$_lim_file" ] || continue
         _lim_target="\"$_lim_schema\".\"$_lim_table\""
+        _lim_n=$(( _lim_n + 1 ))
+        if [ "$_lim_live" = 1 ]; then
+            ui_progress_state "$_lim_state" \
+                $(( (_lim_n - 1) * 100 / _lim_total )) $(( _lim_n * 100 / _lim_total )) 4 \
+                "Restoring $_lim_schema.$_lim_table ($_lim_n of $_lim_total)"
+        fi
+        # A TABLE A BUNDLED DATASET WILL CREATE IS LEFT IN THE COPY. The
+        # restore runs before the sample load now, so "it already exists" no
+        # longer catches this: the dataset's CREATE OR REPLACE would land on
+        # top of these rows minutes later. The outcome is the one the old
+        # ordering gave - the copy is kept and named - and it no longer depends
+        # on which of the two ran first. (Unchanged sample tables never leave
+        # the old database at all; see legacy_classify.)
+        if legacy_is_sample_table "$_lim_schema.$_lim_table"; then
+            _lim_skipped=$(( _lim_skipped + 1 ))
+            _lim_skipped_names="$_lim_skipped_names $_lim_schema.$_lim_table"
+            continue
+        fi
         EXAKIT_ACTIVE_LABEL="Restoring $_lim_schema.$_lim_table"
         # CREATE SCHEMA is unconditional and harmless; CREATE TABLE is the test
         # for "does this already exist", so its failure is not an error here.
@@ -637,6 +710,10 @@ legacy_import() {
             _lim_bad=$(( _lim_bad + 1 ))
         fi
     done < "$_lim_dir/index"
+    if [ "$_lim_live" = 1 ]; then
+        ui_progress_end
+    fi
+    [ -n "$_lim_state" ] && rm -f "$_lim_state"
     EXAKIT_ACTIVE_LABEL=""
     manifest_set legacy.restored "$_lim_ok"
     [ "$_lim_skipped" -gt 0 ] && manifest_set legacy.restore_skipped "$_lim_skipped"
@@ -792,12 +869,21 @@ legacy_crossing_before() {
     # Past all three gates: there is a real database with real tables in it,
     # and this is the one and only time the user is asked about it.
     echo
-    warn "This machine has a starter kit installation whose database runs in a container."
-    info "This kit deploys Exasol Personal instead, so that container is not something it can manage."
-    [ -n "$_lcb_container" ] && info "The old database is the container '$_lcb_container' ($_lcb_state)."
-    info "It holds $_lcb_total table(s). Copying them takes a few minutes and changes nothing in the old database."
-    [ "$_lcb_sample" -gt 0 ] && legacy_sample_note "$_lcb_count" "$_lcb_sample"
-    info "One caveat worth knowing: a text column that held an empty string arrives as NULL."
+    # ONE LINE, THEN THE QUESTION. This was six lines of explanation before a
+    # yes/no - what the kit no longer manages, what it deploys instead, what
+    # the copy costs, which tables are the kit's own, and a caveat about empty
+    # strings - all of it ahead of a decision that needs the name, the size and
+    # nothing else. What survives: the container, its state, and how much of
+    # the user's own data is in it. The caveat moves to the copy itself, where
+    # it is about to matter; the rest is in the docs.
+    _lcb_schemas="$(printf '%s\n' "${EXAKIT_LEGACY_OWN_TABLES:-}" | sed -n 's/\..*$//p' | sort -u | grep -c . 2>/dev/null || echo 0)"
+    _lcb_where=""
+    [ -n "$_lcb_container" ] && _lcb_where=" in the container '$_lcb_container' ($_lcb_state)"
+    _lcb_mine="$_lcb_count table(s)"
+    [ "${_lcb_schemas:-0}" -gt 0 ] && _lcb_mine="$_lcb_mine in $_lcb_schemas schema(s)"
+    _lcb_rest=""
+    [ "$_lcb_sample" -gt 0 ] && _lcb_rest=" The other $_lcb_sample is the kit's own $EXAKIT_LEGACY_SAMPLE_IDS sample, which this install loads itself."
+    info "Found your previous starter kit's database$_lcb_where: $_lcb_mine of your own.$_lcb_rest"
 
     legacy_choose "$_lcb_count" "$_lcb_can" "$_lcb_why"
     manifest_set legacy.choice "$EXAKIT_LEGACY_CHOICE"
@@ -805,7 +891,9 @@ legacy_crossing_before() {
     [ "$_lcb_sample" -gt 0 ] && manifest_set legacy.sample_left_out "$EXAKIT_LEGACY_SAMPLE_IDS"
 
     if [ "$EXAKIT_LEGACY_CHOICE" = "migrate" ]; then
-        info "Copying $_lcb_count table(s) out of the old database"
+        # Said here, not before the question: it is about the copy that is
+        # starting, and it only matters to someone who asked for one.
+        info "Copying now - nothing in the old database is changed. One thing to know: a text column that held an empty string arrives as NULL."
         # ONE ARGUMENT PER LINE, NOT PER WORD. The list is newline-separated
         # because a schema or table name may contain a space ("My Schema" is
         # legal in Exasol), and the first version of this handed the list to

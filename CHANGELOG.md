@@ -195,6 +195,25 @@ when it cannot be run does the kit ask each engine on the machine whether it
 has that container, Docker first. The record and every message then name the
 engine actually in use.
 
+**Your own tables come back before the kit's sample data, and the copy has a
+progress bar.** The restore used to run last, after every step of the install,
+which put a user's own tables at the end of a run that is mostly about them; it
+now runs where it first can - a database that is up, an exapump binary and a
+profile pointing at the new database - immediately before the sample-data
+offer. A table a bundled dataset would create is left in the copy rather than
+restored, so the load that follows cannot overwrite it; that was already the
+outcome when the restore ran second, and it no longer depends on the order.
+Both the copy out and the copy back in now draw the same bar the deploy and the
+dataset loads use, naming the table and its position, instead of a spinner that
+only said "still going".
+
+**The question before it is one line.** Six lines of explanation stood between
+finding an old database and asking about it: what the kit no longer manages,
+what it deploys instead, what the copy costs, which tables are the kit's own,
+and a caveat about empty strings. What is left names the container, its state
+and how much of the user's own data is in there. The caveat is said with the
+copy, where it is about to matter.
+
 **A crossing that could not ask is no longer a crossing that was answered.**
 When the offer could not be made, the kit wrote `legacy.choice = skip` and
 closed the crossing for good - even when the reason was a condition rather than

@@ -112,6 +112,9 @@ kit_shared_steps 3 6 "$SCRIPT_DIR" "$KIT_ROOT"
 # The other half of the crossing. Last, because it needs all three things the
 # steps above provide: a database that is up, an exapump binary, and a profile
 # pointing at the NEW database.
+# Runs inside the shared steps now, right before the sample-data load; this is
+# the safety net for a run that never reached that point, and a no-op once the
+# restore has happened. See exakit_maybe_offer_data_load.
 if command -v legacy_crossing_after >/dev/null 2>&1; then legacy_crossing_after; fi
 
 exakit_finish

@@ -374,7 +374,7 @@ check "and the crossing is marked done" "true" \
 # THE BANNER IS BEHIND THE PROBE, not in front of it. A function that printed
 # first and probed second could not be silent, whatever the gates decided.
 _cb="$(sed -n '/^legacy_crossing_before()/,/^}/p' "$ROOT/setup/lib/legacy-crossing.sh")"
-_banner_at="$(printf '%s\n' "$_cb" | grep -n 'runs in a container' | head -1 | cut -d: -f1)"
+_banner_at="$(printf '%s\n' "$_cb" | grep -n 'Found your previous starter kit' | head -1 | cut -d: -f1)"
 _probe_at="$(printf '%s\n' "$_cb" | grep -n 'legacy_container_state' | head -1 | cut -d: -f1)"
 check "the probe runs before the banner" "yes" \
     "$([ -n "$_banner_at" ] && [ -n "$_probe_at" ] && [ "$_probe_at" -lt "$_banner_at" ] && echo yes || echo no)"

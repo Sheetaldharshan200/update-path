@@ -130,6 +130,11 @@ run() {
 }
 before() { run "$1" "${2:-}" 'legacy_crossing_before; echo "RC=$?"'; }    # the first half, with its exit code
 after()  { run "$1" "${2:-}" 'legacy_crossing_after; echo "RC=$?"'; }     # the second half
+# flat <output> - one line, single-spaced. The banner is a sentence and the UI
+# wraps it to the terminal width, so a phrase asserted whole can fall across the
+# fold; this is what the reader sees, with the fold taken out.
+flat() { printf '%s' "$1" | tr '\n' ' ' | tr -s ' '; }
+
 rc_of()  { printf '%s\n' "$1" | sed -n 's/^RC=\([0-9]*\)$/\1/p' | tail -1; }
 quiet()  { printf '%s\n' "$1" | grep -v '^RC=' | tr -d '[:space:]'; }     # everything but the exit code
 # mget <home> <dotted.key> — the record, printed as manifest_get prints it
@@ -227,7 +232,7 @@ check "...the removal command has nothing to name and says so" "1" \
 # for what it is.
 H="$WORK/unknown"; seed "$H"; fault "$H" engine.state unknown
 _o="$(before "$H" EXAKIT_LEGACY_DATA=skip)"; note_rc "$_o"
-has "an unparseable state still leads to the offer" "runs in a container" "$_o"
+has "an unparseable state still leads to the offer" "Found your previous starter kit" "$_o"
 has "...and the banner shows the state honestly" "(unknown)" "$_o"
 
 # An engine that refuses `inspect -f` but answers a plain `inspect` (too old
@@ -547,7 +552,12 @@ echo "the whole road, end to end:"
 H="$WORK/e2e-migrate"; seed "$H"
 _o="$(before "$H" EXAKIT_LEGACY_DATA=migrate)"; note_rc "$_o"
 has "the banner names the container and its state" "container 'exasol-nano' (running)" "$_o"
-has "...the table count" "It holds 3 table(s)" "$_o"
+# ONE LINE, NOT SIX: the name, the state, and how much of the user's own data
+# is in there. What it no longer says before the question - what the kit does
+# not manage, what it deploys instead, what the copy costs, and the caveat
+# about empty strings - is either in the docs or said with the copy itself.
+has "...and how much of it is the user's own" "3 table(s) in 2 schema(s) of your own" "$(flat "$_o")"
+lacks "...without the paragraph that used to precede it" "runs in a container" "$_o"
 has "...and the one caveat CSV carries" "empty string arrives as NULL" "$_o"
 check "choice" "migrate" "$(mget "$H" legacy.choice)"
 check "crossed_from" "nano" "$(mget "$H" legacy.crossed_from)"
@@ -663,9 +673,10 @@ H="$WORK/sample"; seed "$H"
 printf 'S1.T1\nTPCH.NATION\nTPCH.REGION\n' > "$H/ctrl/db.tables"
 printf 'TPCH.NATION|24\nTPCH.REGION|5\n' > "$H/ctrl/db.rows"
 _o="$(before "$H" EXAKIT_LEGACY_DATA=migrate)"; note_rc "$_o"
-has "the banner counts every table"          "It holds 3 table(s)" "$_o"
-has "...says which belong to the kit"        "1 of them belong to the kit's bundled sample data (tpch)" "$_o"
-has "...and how many are the user's own"     "Your own: 2 table(s)" "$_o"
+has "the banner counts the user's own tables" "2 table(s) in 2 schema(s) of your own" "$(flat "$_o")"
+has "...and says the rest is the kit's"       "The other 1 is the kit's own tpch sample" "$(flat "$_o")"
+# The caveat belongs to the copy, not to the question before it.
+has "the caveat is said with the copy"        "an empty string arrives as NULL" "$_o"
 check "only the user's tables are copied out"        "2" "$(calls "$H" exapump | grep -c '^export')"
 # The export names its table as a quoted query, so that is what the log holds.
 check "the unchanged sample table is not"            "0" "$(calls "$H" exapump | grep '^export' | grep -c '"TPCH"."REGION"')"
