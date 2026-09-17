@@ -359,9 +359,19 @@ exapump_write_profile() {
     _ewp_profile="$1"; _ewp_host="$2"; _ewp_port="$3"; _ewp_user="$4"; _ewp_password="$5"
     require_python3
     mkdir -p "$(dirname "$EXAPUMP_CONFIG")"
-    run_python - "$EXAPUMP_CONFIG" "$_ewp_profile" "$_ewp_host" "$_ewp_port" "$_ewp_user" "$_ewp_password" <<'PY' || return 1
+    # The password travels in the ENVIRONMENT, never in argv. An argv is visible
+    # to every local user through `ps` for the life of the call; a child's
+    # environment is readable only by its owner and root. This is the same rule
+    # _exakit_run_exapump_sql states and follows -- it can hand its secret to
+    # stdin because its payload is SQL, while here stdin is already carrying the
+    # Python program (the `-`), so the environment is the way to keep the
+    # password off the process table.
+    EXAKIT_PROFILE_PASSWORD="$_ewp_password"
+    export EXAKIT_PROFILE_PASSWORD
+    run_python - "$EXAPUMP_CONFIG" "$_ewp_profile" "$_ewp_host" "$_ewp_port" "$_ewp_user" <<'PY'
 import os, re, sys
-path, profile, host, port, user, password = sys.argv[1:7]
+path, profile, host, port, user = sys.argv[1:6]
+password = os.environ["EXAKIT_PROFILE_PASSWORD"]
 try:
     with open(path) as f:
         content = f.read()
@@ -392,6 +402,12 @@ with open(tmp, "w") as f:
 os.chmod(tmp, 0o600)
 os.replace(tmp, path)
 PY
+    _ewp_rc=$?
+    # Unset on BOTH paths: an exported secret that outlives the call would be
+    # inherited by every later child in this run, which is the leak this change
+    # exists to close.
+    unset EXAKIT_PROFILE_PASSWORD
+    [ "$_ewp_rc" -eq 0 ] || return 1
     chmod 600 "$EXAPUMP_CONFIG"
 }
 
