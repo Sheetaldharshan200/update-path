@@ -36,6 +36,8 @@ What happens, in order:
 
 The launcher selects and remembers the database's port itself (8563 unless something else held it); `exakit info` shows the one in use, and every later command reads it back from the deployment.
 
+**Inside WSL**, one thing to know: Windows and the WSL distros share one network stack, so an Exasol Personal deployed on the Windows side holds port 8563 inside the distro as well. The kit never adopts a database it cannot authenticate to — it names it ("answers like an Exasol database this kit did not deploy") and asks you to stop it on the other side first (`exakit stop` in PowerShell), then re-run.
+
 ## Headless, over SSH
 
 The database and every add-on listen on `127.0.0.1` only, by design — that bind address is not configurable, and opening it is not the answer. To reach them from your laptop, forward the port over SSH (substitute the port `exakit info` shows):

@@ -121,8 +121,41 @@ later `exakit start` waited the full 150 s for a port the launcher would never
 bring back. Seen four times in one day, on WSL and on Windows. When the deploy
 command fails but the deployment exists, both halves now wait with the kit's
 own budget, and when the database answers they run the launcher's own `deploy`
-retry so its record agrees - and carry on either way with the database they can
-reach.
+retry so its record agrees.
+
+**"Answering" means a completed TLS handshake, never an open port.** Under
+rootless Podman the published port is pasta's from the moment the container
+starts: it accepts the TCP connection itself and resets it while the database
+behind it is still booting, which every client reports as `tls handshake eof`
+- the launcher's own 27-second budget ran out on exactly that, and the kit's
+port-open waits returned the instant the container started, declared the
+deployment "reachable" and let the next step's `SELECT 1` fail six times. Both
+halves now probe with a handshake (`openssl s_client` or python3's `ssl` on the
+sh side, `SslStream` on Windows; the self-signed certificate is accepted, not
+validated) in `personal_wait_ready`, the slow-first-boot recovery and the
+adoption check. The launcher's `deploy` retry is the ownership proof: when it
+fails after something answered, the recovery fails too, instead of carrying on
+with "the database it can reach".
+
+**A database the launcher does not own is never adopted.** Windows and WSL
+share one network stack, so an Exasol Personal deployed on either side holds
+port 8563 for both. The Windows installer saw "already running on 8563",
+adopted the WSL database, wrote a profile with its own launcher's password and
+watched exapump and pyexasol fail against it. Now: with a deployment of its
+own, the launcher's word outranks the port (`stopped` and `deployment_failed`
+are not running); with none, only a `SELECT 1` through the kit's own profile
+counts. A port that answers like Exasol but is not ours is named for what it
+is, with the WSL/Windows explanation and the remedy (stop it on the other side
+first). New suite: `tests/personal-readiness.sh`; the PowerShell twin's checks
+join `tests/runtime-personal-ps.ps1`.
+
+**A deployment the launcher records as failed is deployed again, not
+"started".** In `deployment_failed` the launcher's `start` and `stop` exit 0
+doing nothing, so the installer's reuse path reported "started" over a record
+that stayed failed, and `exakit start` said "Database started" and then waited
+its whole budget. Both now run the launcher's `deploy` retry for that state,
+then the kit's slow-first-boot budget and reconcile; only a database that
+never answers reaches the replace question.
 
 **Windows refuses a rootful default Podman machine before downloading
 anything.** Podman Desktop creates the default machine rootful, and a rootful

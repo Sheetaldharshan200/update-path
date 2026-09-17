@@ -1147,9 +1147,12 @@ check "a launcher that does not is left alone"      "" "$(_aa_probe start)"
 # status wrong on any deployment that chose another one, so every liveness read
 # goes through personal_db_port, which prefers the launcher's deployment.json.
 has "liveness reads the deployment's own port" \
-    'port_in_use "$(personal_db_port)" && personal_db_answers' "$RP_SH"
+    'port_in_use "$(personal_db_port)" || return 1' "$RP_SH"
 has "...status too" 'if port_in_use "$(personal_db_port)"; then' "$RP_SH"
-has "...and the readiness wait" 'if port_in_use "$(personal_db_port)" && \' "$RP_SH"
+# The readiness wait is a TLS handshake (an open port is pasta's, not the
+# database's), and the handshake probe asks the same deployment for its port.
+has "...and the readiness wait" 'if personal_tls_answers; then' "$RP_SH"
+has "...whose handshake probe reads it too" '_pta_port="$(personal_db_port)"' "$RP_SH"
 has "the port comes from the launcher's deployment.json" '"dbPort"' "$RP_SH"
 _p0="$WORK/p0"; mkdir -p "$_p0/deploy"
 printf '{"connection": {"host": "127.0.0.1", "dbPort": 8571, "username": "sys"}}\n' > "$_p0/deploy/deployment.json"
