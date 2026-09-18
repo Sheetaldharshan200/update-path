@@ -122,7 +122,11 @@ check "install.ps1 has no unguarded top-level exit" "0" "$_pse"
 grep -q 'ExakitRanAsFile = \[bool\]$PSCommandPath' "$ROOT/install.ps1" && \
     check "...it knows whether it was run as a file" present present || \
     check "...it knows whether it was run as a file" present MISSING
-check "...and every stop still reports a code" "3" \
+# One per stop that can happen while the body runs in the caller's session: the
+# preflight refusal, the download failure, the installer/kit mismatch, and the
+# setup script's own code. Raise this when a stop is added; never lower it by
+# dropping the assignment.
+check "...and every stop still reports a code" "4" \
     "$(grep -c 'global:LASTEXITCODE' "$ROOT/install.ps1")"
 grep -q 'Exasol Personal (local deployment via Podman)' "$ROOT/install.sh" && \
     check "install.sh routes personal-on-linux and names the plan" present present || \

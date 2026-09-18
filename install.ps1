@@ -520,6 +520,31 @@ if ($env:EXAKIT_DRY_RUN -eq "1") {
 
 # --- 4. hand off -----------------------------------------------------------------
 $InstallPhase = "setup"
+# THE INSTALLER AND THE KIT CAN COME FROM DIFFERENT PLACES. This file is fetched
+# by URL and run through `iex`; the KIT it unpacks comes from $Repo, which
+# defaults to the upstream repository whatever URL this file was read from. So
+# `irm https://.../<a fork>/install.ps1 | iex` installs a fork's installer over
+# the UPSTREAM kit, and when the two layouts differ the handoff below failed
+# with PowerShell's own "The argument ... does not exist" - a path, and no hint
+# that two repositories were in play. Two people hit exactly that.
+$setupScript = Join-Path $KitDir "setup\setup-windows.ps1"
+if (-not (Test-Path $setupScript)) {
+    Write-Host ""
+    Write-Host "  x This installer and the kit it downloaded do not match." -ForegroundColor Red
+    Write-Host "    The kit came from $Repo@$Ref and has no setup\setup-windows.ps1 in it."
+    Write-Host ""
+    Write-Host "    The installer is read from a URL, but the kit is taken from EXAKIT_REPO,"
+    Write-Host "    which is '$Repo' unless you say otherwise. If you fetched this installer"
+    Write-Host "    from a fork or a branch, name it for the kit as well:"
+    Write-Host ""
+    Write-Host "      `$env:EXAKIT_REPO = 'owner/name'; `$env:EXAKIT_REF = 'branch'" -ForegroundColor Cyan
+    Write-Host ""
+    Write-Host "    Nothing was installed. The download is at $KitDir."
+    Write-Host ""
+    if ($ExakitRanAsFile) { exit 1 }
+    $global:LASTEXITCODE = 1
+    return
+}
 Write-Host "  * Starting setup: setup\setup-windows.ps1" -ForegroundColor Blue
 Write-Host ""
 # We already showed the banner above; tell the setup script to skip its own so

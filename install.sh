@@ -229,6 +229,24 @@ main() {
     # When piped (curl | sh), stdin is the exhausted pipe. Reattach the
     # terminal when one is available so any interactive step (for example a
     # first-run license confirmation) can still read the keyboard.
+    # THE INSTALLER AND THE KIT CAN COME FROM DIFFERENT PLACES. This file is
+    # fetched by URL and piped to sh; the KIT it unpacks comes from $repo,
+    # which defaults to the upstream repository whatever URL this file was read
+    # from. So `curl .../<a fork>/install.sh | sh` installs a fork's installer
+    # over the UPSTREAM kit, and when the two layouts differ the handoff below
+    # died on "No such file or directory" - a path, and no hint that two
+    # repositories were in play. Twin of the same guard in install.ps1.
+    if [ ! -f "$kit_dir/$setup_script" ]; then
+        printf '\n'
+        say "The kit came from $EXAKIT_REPO@$EXAKIT_REF and has no $setup_script in it."
+        say "The installer is read from a URL, but the kit is taken from EXAKIT_REPO,"
+        say "which is '$EXAKIT_REPO' unless you say otherwise. If you fetched this"
+        say "installer from a fork or a branch, name it for the kit as well:"
+        say "  EXAKIT_REPO=owner/name EXAKIT_REF=branch curl -fsSL <url> | sh"
+        say "The download is at $kit_dir."
+        printf '\n'
+        fail "This installer and the kit it downloaded do not match. Nothing was installed."
+    fi
     _bootstrap_s=""
     [ -n "${EXAKIT_INSTALL_T0:-}" ] && _bootstrap_s=" ($(( $(date +%s) - EXAKIT_INSTALL_T0 ))s after start)"
     say "Starting setup: $setup_script$_bootstrap_s"
