@@ -363,7 +363,7 @@ function Get-JsonTablesVerifiedAsset {
     }
     $expected = Get-JsonTablesMirrorDigest -Asset $Asset
     if ($expected) {
-        $actual = (Get-FileHash -Algorithm SHA256 -Path $Destination).Hash.ToLower()
+        $actual = Get-ExakitSha256 $Destination
         if ($actual -ne $expected) {
             Remove-Item -Force -ErrorAction SilentlyContinue $Destination
             Warn2 "Checksum mismatch for $Asset (expected $expected, got $actual)"

@@ -243,7 +243,7 @@ function Install-ExasolVscode {
         # marketplace contract says nothing here may end the caller's run.
         $expected = Get-ExasolVscodeExpectedSha256 -Version $script:ExasolVscodeVersion
         if ($expected) {
-            $actual = (Get-FileHash -Algorithm SHA256 -Path $vsix).Hash.ToLower()
+            $actual = Get-ExakitSha256 $vsix
             if ($actual -ne $expected) {
                 Remove-Item -Force -ErrorAction SilentlyContinue $vsix
                 return (Write-ExasolVscodeNotInstalled "checksum mismatch for $asset (expected $expected, got $actual)")

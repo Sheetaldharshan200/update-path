@@ -1709,9 +1709,9 @@ function Get-ExakitBulkFolderPlan {
                 # Hash only what could actually match: same-size files are the
                 # only candidates, so a folder of differently sized exports is
                 # never read twice just to prove they differ.
-                if (-not $hash) { $hash = (Get-FileHash -Algorithm SHA256 -Path $full).Hash.ToLowerInvariant() }
+                if (-not $hash) { $hash = Get-ExakitSha256 $full }
                 if (-not $keptHashes[$i]) {
-                    $keptHashes[$i] = (Get-FileHash -Algorithm SHA256 -Path $keptPaths[$i]).Hash.ToLowerInvariant()
+                    $keptHashes[$i] = Get-ExakitSha256 $keptPaths[$i]
                 }
                 if ($keptHashes[$i] -eq $hash) {
                     $dupe = $keptPaths[$i]; $reason = "duplicate-content"; break
