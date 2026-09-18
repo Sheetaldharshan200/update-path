@@ -195,6 +195,19 @@ when it cannot be run does the kit ask each engine on the machine whether it
 has that container, Docker first. The record and every message then name the
 engine actually in use.
 
+**The question about your old database is asked where it belongs: after
+exapump, before the sample data.** It used to be the first thing an install
+said, before the kit had put a single file on the machine - a question about a
+database the user may have forgotten they had. It cannot simply be moved,
+because the old container publishes the port the new deployment is about to
+take: the only moment its tables can be read is before the install starts. So
+the first half now reads them out quietly into a directory under the kit's own
+home, says nothing but why the container is stopping, and records the counts;
+the second half, after exapump, names what was found in one line and asks. A
+"no" deletes the copy and leaves the old container exactly as it was. A run
+that comes back after dying between the two halves does not copy a second time,
+and a run that died after the answer finishes the restore without asking again.
+
 **Your own tables come back before the kit's sample data, and the copy has a
 progress bar.** The restore used to run last, after every step of the install,
 which put a user's own tables at the end of a run that is mostly about them; it

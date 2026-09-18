@@ -20,14 +20,21 @@
 # read while it is still up. That is why the crossing is in two halves with the
 # install between them:
 #
-#   legacy_crossing_before   ask, export, stop the container      (before step 1)
-#   ... the install runs: launcher, deployment, exapump, datasets ...
-#   legacy_crossing_after    restore into the new database        (after the kit steps)
+#   legacy_crossing_before   read the tables out, stop the container   (before step 1)
+#   ... the install runs: launcher, deployment, exapump ...
+#   legacy_crossing_after    ask, restore into the new database        (before the sample data)
 #
-# The second half runs last on purpose. It needs three things the install itself
-# provides: a database that is up, an exapump binary, and a connection profile
-# pointing at the NEW database. Anything earlier and it would be writing into
-# the database it just came from.
+# THE COPY IS MADE BEFORE THE QUESTION, which is the one thing here that looks
+# backwards and is not. The container can only be read while it holds the port,
+# and it holds the port only until the deployment takes it - so the first half
+# is the only moment the data can be reached at all. Asking there meant asking
+# before the kit had installed a single thing, about a database the user may
+# have forgotten they had. So the tables are read out silently into a directory
+# under the kit's own home, and the question waits for the place it belongs:
+# after exapump, before the sample data, where a database is up, an exapump
+# binary exists and the profile points at the NEW database. A "no" there
+# deletes the copy; nothing in the old container is changed either way, and no
+# data leaves this machine.
 #
 # WHAT IS NEVER DONE: the old container and its data volume are not deleted, on
 # either answer. A migration that has just copied data out is exactly the wrong
@@ -883,74 +890,134 @@ legacy_crossing_before() {
     [ "${_lcb_schemas:-0}" -gt 0 ] && _lcb_mine="$_lcb_mine in $_lcb_schemas schema(s)"
     _lcb_rest=""
     [ "$_lcb_sample" -gt 0 ] && _lcb_rest=" The other $_lcb_sample is the kit's own $EXAKIT_LEGACY_SAMPLE_IDS sample, which this install loads itself."
-    info "Found your previous starter kit's database$_lcb_where: $_lcb_mine of your own.$_lcb_rest"
-
-    legacy_choose "$_lcb_count" "$_lcb_can" "$_lcb_why"
-    manifest_set legacy.choice "$EXAKIT_LEGACY_CHOICE"
+    # THE COPY IS MADE HERE, THE QUESTION IS ASKED LATER. This is the only
+    # moment the old container can be read at all: it publishes the port, and
+    # the deployment that is about to be installed needs that same port, so
+    # from the next step onwards the container is stopped. Asking here meant
+    # asking before the kit had installed a single thing - the first words of
+    # the run, about a database the user may have forgotten they had.
+    #
+    # So the tables are read out now, into a 700 directory under the kit's own
+    # home, and nothing is said about it; the question goes where it belongs,
+    # after exapump and before the sample data (legacy_crossing_after), and a
+    # "no" there deletes the copy. Nothing in the old container is changed
+    # either way, and no data leaves this machine.
     manifest_set legacy.crossed_from "$_lcb_type"
+    manifest_set legacy.tables_total "$_lcb_total"
+    manifest_set legacy.tables_own "$_lcb_count"
+    manifest_set legacy.tables_sample "$_lcb_sample"
+    manifest_set legacy.container_state "$_lcb_state"
     [ "$_lcb_sample" -gt 0 ] && manifest_set legacy.sample_left_out "$EXAKIT_LEGACY_SAMPLE_IDS"
 
-    if [ "$EXAKIT_LEGACY_CHOICE" = "migrate" ]; then
-        # Said here, not before the question: it is about the copy that is
-        # starting, and it only matters to someone who asked for one.
-        info "Copying now - nothing in the old database is changed. One thing to know: a text column that held an empty string arrives as NULL."
-        # ONE ARGUMENT PER LINE, NOT PER WORD. The list is newline-separated
-        # because a schema or table name may contain a space ("My Schema" is
-        # legal in Exasol), and the first version of this handed the list to
-        # legacy_export unquoted with the default IFS - so "My Schema.T" arrived
-        # as two tables, "My" and "Schema.T", neither of which exists. Splitting
-        # on newline alone keeps each name whole; -f keeps a name with a * or ?
-        # in it from being expanded against the current directory.
-        _lcb_ifs="$IFS"; IFS='
+    # A COPY THAT IS ALREADY THERE IS NOT MADE AGAIN. A run that died between
+    # the two halves comes back through here, and re-reading a database that
+    # has not changed only overwrites a good copy with a second one - and, on a
+    # resume, the container may no longer be able to answer at all. The waiting
+    # copy is what the second half asks about.
+    if [ -s "$EXAKIT_LEGACY_EXPORT_DIR/index" ] &&        [ -z "$(manifest_get legacy.restored 2>/dev/null || true)" ]; then
+        _exakit_log_file "INFO  legacy crossing: a copy is already waiting at $EXAKIT_LEGACY_EXPORT_DIR" 2>/dev/null || true
+        manifest_set legacy.export_dir "$EXAKIT_LEGACY_EXPORT_DIR"
+        legacy_stop_container || true
+        return 0
+    fi
+
+    # ONE ARGUMENT PER LINE, NOT PER WORD. The list is newline-separated
+    # because a schema or table name may contain a space ("My Schema" is legal
+    # in Exasol), and the first version of this handed the list to
+    # legacy_export unquoted with the default IFS - so "My Schema.T" arrived as
+    # two tables, "My" and "Schema.T", neither of which exists. Splitting on
+    # newline alone keeps each name whole; -f keeps a name with a * or ? in it
+    # from being expanded against the current directory.
+    _lcb_ifs="$IFS"; IFS='
 '
-        set -f
-        # shellcheck disable=SC2086
-        legacy_export "$EXAKIT_LEGACY_EXPORT_DIR" $EXAKIT_LEGACY_OWN_TABLES
-        _lcb_exported=$?
-        set +f
-        IFS="$_lcb_ifs"
-        if [ "$_lcb_exported" -eq 0 ]; then
-            manifest_set legacy.export_dir "$EXAKIT_LEGACY_EXPORT_DIR"
-            ok "Your data is saved at $(ui_tilde "$EXAKIT_LEGACY_EXPORT_DIR") — it goes into the new database at the end of this install"
-        else
-            warn "Nothing could be copied out. The old database is untouched; nothing is lost."
-            EXAKIT_LEGACY_CHOICE="skip"
-            manifest_set legacy.choice "skip"
-        fi
+    set -f
+    # shellcheck disable=SC2086
+    legacy_export "$EXAKIT_LEGACY_EXPORT_DIR" $EXAKIT_LEGACY_OWN_TABLES
+    _lcb_exported=$?
+    set +f
+    IFS="$_lcb_ifs"
+    if [ "$_lcb_exported" -eq 0 ]; then
+        manifest_set legacy.export_dir "$EXAKIT_LEGACY_EXPORT_DIR"
+    else
+        # Nothing could be read. There is nothing to offer later, and saying so
+        # here would be the first line of the install, so it goes to the log;
+        # the old container is left exactly as it was.
+        # A CONDITION, NOT AN ANSWER. Recording "skip" here would put words in
+        # the user's mouth and close the crossing for good; the reason is kept
+        # and the question stays open, exactly as it does for an engine that
+        # could not be found. `exakit migrate docker-nano` is the road once the
+        # deployment holds the port.
+        _exakit_log_file "WARN  legacy crossing: nothing could be copied out of $_lcb_container" 2>/dev/null || true
+        manifest_set legacy.offer_blocked "nothing could be copied out of the old database"
     fi
 
-    # BOTH answers stop the container: it is holding the port the new
-    # deployment needs. Stopped, not removed — the data volume stays.
     legacy_stop_container || true
-
-    if [ "$EXAKIT_LEGACY_CHOICE" = "skip" ]; then
-        info "The old database is left exactly as it was, stopped, with its data."
-        info "To copy it into the new database later: exakit migrate docker-nano"
-        _lcb_rm="$(legacy_remove_command 2>/dev/null || true)"
-        [ -n "$_lcb_rm" ] && info "When you no longer want it: $_lcb_rm"
-    fi
-    # The question has now been asked. It is never asked again on this machine,
-    # whatever happens to the rest of this run.
-    manifest_set legacy.crossing_done true
     echo
     return 0
 }
 
 # legacy_crossing_after — the second half: the saved tables into the database
 # this install just deployed. Reports what landed and what did not.
+# legacy_crossing_after — THE QUESTION AND THE RESTORE, in the one place that
+# can hold both: after exapump, before the sample data. The copy already exists
+# (legacy_crossing_before read it out while the container still had the port),
+# so this asks about something real and a "no" deletes it.
 legacy_crossing_after() {
     _lca_dir="$(manifest_get legacy.export_dir 2>/dev/null || true)"
     [ -n "$_lca_dir" ] || return 0
     [ -s "$_lca_dir/index" ] || return 0
     [ "$(manifest_get legacy.restored 2>/dev/null || true)" = "" ] || return 0
 
-    echo
-    info "Restoring your data into the new database"
+    _lca_choice="$(manifest_get legacy.choice 2>/dev/null || true)"
+    if [ -z "$_lca_choice" ]; then
+        _lca_own="$(manifest_get legacy.tables_own 2>/dev/null || true)"
+        _lca_sample="$(manifest_get legacy.tables_sample 2>/dev/null || true)"
+        _lca_container="$(legacy_container)"
+        # NOT the state it had when it was read: by the time this asks, the
+        # container has been stopped so the deployment could take the port, and
+        # printing "(running)" here said the opposite of what was true.
+        # The schemas of the copy itself: column 2 of the index, which is what
+        # was actually read out, not what the old database happened to hold.
+        _lca_schemas="$(cut -f2 "$_lca_dir/index" 2>/dev/null | sort -u | grep -c . || echo 0)"
+        _lca_where=""
+        [ -n "$_lca_container" ] && _lca_where=" in the container '$_lca_container' (stopped for this install)"
+        _lca_mine="${_lca_own:-0} table(s)"
+        [ "${_lca_schemas:-0}" -gt 0 ] && _lca_mine="$_lca_mine in $_lca_schemas schema(s)"
+        _lca_rest=""
+        if [ "${_lca_sample:-0}" -gt 0 ]; then
+            _lca_ids="$(manifest_get legacy.sample_left_out 2>/dev/null || true)"
+            _lca_rest=" The other ${_lca_sample} is the kit's own ${_lca_ids} sample, which this install loads itself."
+        fi
+        echo
+        info "Found your previous starter kit's database$_lca_where: $_lca_mine of your own.$_lca_rest"
+        legacy_choose "${_lca_own:-0}" yes ""
+        manifest_set legacy.choice "$EXAKIT_LEGACY_CHOICE"
+        if [ "$EXAKIT_LEGACY_CHOICE" != "migrate" ]; then
+            # A NO DELETES THE COPY. It was made without asking, so it does not
+            # outlive the answer - and the old container still holds the
+            # original, untouched.
+            rm -rf "$_lca_dir" 2>/dev/null || true
+            manifest_set legacy.export_dir ""
+            manifest_set legacy.crossing_done true
+            info "The old database is left exactly as it was, stopped, with its data."
+            info "To copy it into the new database later: exakit migrate docker-nano"
+            _lca_rm="$(legacy_remove_command 2>/dev/null || true)"
+            [ -n "$_lca_rm" ] && info "When you no longer want it: $_lca_rm"
+            echo
+            return 0
+        fi
+        info "Nothing in the old database is changed. One thing to know: a text column that held an empty string arrives as NULL."
+    else
+        echo
+        info "Restoring your data into the new database"
+    fi
+
     legacy_import "$_lca_dir" || {
         warn "Your data could not be restored. The copy is kept at $(ui_tilde "$_lca_dir")."
         return 0
     }
     legacy_report_restore "$_lca_dir" "this install had already created them" || true
+    manifest_set legacy.crossing_done true
     echo
     return 0
 }
