@@ -178,7 +178,7 @@ function Get-ExasolSchedulerVerifiedAsset {
         Warn2 "No checksum is available for $Asset; refusing an unverified artifact. Usually the release is still publishing or the GitHub API was unreachable - retry with: exakit update exasol-scheduler. Add its digest to versions.json (components.exasol-scheduler.sha256.<platform>) or, at your own risk, override with EXAKIT_ALLOW_UNVERIFIED_EXASOL_SCHEDULER=1."
         return $false
     }
-    $actual = (Get-FileHash -Algorithm SHA256 -Path $Destination).Hash.ToLower()
+    $actual = Get-ExakitSha256 $Destination
     if ($actual -ne $expected) {
         Remove-Item -Force -ErrorAction SilentlyContinue $Destination
         Warn2 "Checksum mismatch for $Asset (expected $expected, got $actual)"

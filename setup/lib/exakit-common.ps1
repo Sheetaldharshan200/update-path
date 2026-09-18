@@ -2805,6 +2805,10 @@ function Get-ExakitNoticeSignature {
     foreach ($file in @($script:ManifestPath, $script:VersionsCachePath, $baked)) {
         if ($file -and (Test-Path $file)) {
             try {
+                # Left on the cmdlet on purpose, unlike Get-ExakitSha256: this
+                # is a cache key for the update notice, the catch below already
+                # degrades to "" when it cannot be computed, and nothing is
+                # trusted on the strength of it.
                 $parts += (Get-FileHash -Path $file -Algorithm MD5 -ErrorAction Stop).Hash
             } catch {
                 $parts += ""
@@ -3496,9 +3500,34 @@ function Get-ExakitFile {
     }
 }
 
+# Get-ExakitSha256 - the digest of a file, without depending on a cmdlet that
+# may not load.
+#
+# Get-FileHash lives in Microsoft.PowerShell.Utility and arrives through module
+# auto-loading, which is not guaranteed on a managed machine: with a
+# OneDrive-redirected Documents folder at the head of $env:PSModulePath, an
+# `exakit update` died here with "The term 'Get-FileHash' is not recognized" -
+# after downloading the binary, at the moment it was about to be verified. A
+# checksum is the one step that must never be skipped because a cmdlet went
+# missing, so the .NET class behind it is the fallback: it is part of the
+# runtime itself and cannot fail to load.
 function Get-ExakitSha256 {
     param([Parameter(Mandatory)][string]$Path)
-    return (Get-FileHash -Path $Path -Algorithm SHA256).Hash.ToLowerInvariant()
+    if (Get-Command Get-FileHash -ErrorAction SilentlyContinue) {
+        return (Get-FileHash -Path $Path -Algorithm SHA256).Hash.ToLowerInvariant()
+    }
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $stream = [System.IO.File]::OpenRead($Path)
+        try {
+            $bytes = $sha.ComputeHash($stream)
+        } finally {
+            $stream.Dispose()
+        }
+    } finally {
+        $sha.Dispose()
+    }
+    return ([System.BitConverter]::ToString($bytes) -replace '-', '').ToLowerInvariant()
 }
 
 function ConvertTo-UpperInvariantString {

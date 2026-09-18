@@ -168,6 +168,23 @@ $doc = Parse-Json "mcp-doctor --json (live install)" $r.Out
 if ($doc) { Check "mcp-doctor --json agrees: installing, installed, exit 3" ($doc.status -eq "installing" -and $doc.installed -eq $true -and $r.Code -eq 3) "status=$($doc.status) installed=$($doc.installed) exit=$($r.Code)" }
 Remove-Item -Path $script:InstallLockPath -Force
 
+# --- a checksum does not depend on a cmdlet that may not load ----------------
+# Get-FileHash arrives through module auto-loading, which is not guaranteed on
+# a managed machine: with a OneDrive-redirected Documents folder at the head of
+# $env:PSModulePath, an `exakit update` died with "The term 'Get-FileHash' is
+# not recognized" - after downloading the binary, at the moment it was about to
+# be verified. The .NET fallback must give the same answer, byte for byte.
+$probe = Join-Path ([System.IO.Path]::GetTempPath()) ("exakit-hash-" + [guid]::NewGuid().ToString("N") + ".bin")
+[System.IO.File]::WriteAllBytes($probe, [byte[]](1..255))
+$viaCmdlet = Get-ExakitSha256 $probe
+# Shadowing the lookup the helper uses is what a machine whose module never
+# loads looks like from inside the function.
+function Get-Command { param([Parameter(ValueFromRemainingArguments = $true)]$Rest) return $null }
+$viaFallback = Get-ExakitSha256 $probe
+Remove-Item -Force $probe -ErrorAction SilentlyContinue
+Check "the digest is a sha256" ($viaCmdlet -match '^[0-9a-f]{64}$') "got $viaCmdlet"
+Check "and the fallback agrees with the cmdlet" ($viaFallback -eq $viaCmdlet) "cmdlet=$viaCmdlet fallback=$viaFallback"
+
 Remove-Item -Recurse -Force -Path $kitHome -ErrorAction SilentlyContinue
 Write-Host ""
 Write-Host "$($script:PASS) passed, $($script:FAIL) failed"

@@ -248,6 +248,16 @@ looking for a database in a distro that did not have one. When the port is held
 by the recorded container, the message names it, the command that stops it, and
 the fact that re-running the installer then offers to copy its data across.
 
+**A checksum no longer depends on a cmdlet that may not load.** `Get-FileHash`
+comes from `Microsoft.PowerShell.Utility` through module auto-loading, and on a
+machine whose `$env:PSModulePath` starts with a OneDrive-redirected Documents
+folder that can fail: `exakit update` died with "The term 'Get-FileHash' is not
+recognized" - after downloading the binary, at the moment it was about to be
+verified. Every SHA-256 in the Windows half now goes through one helper that
+falls back to the .NET class behind the cmdlet, which is part of the runtime
+and cannot fail to load. The digests are identical, and the suite proves it by
+hiding the cmdlet.
+
 **A freshly installed exapump that the machine will not let run yet is waited
 for, not blamed on the database.** Windows Defender and corporate endpoint
 agents hold a newly written, unsigned 20 MB executable open while they scan it,
