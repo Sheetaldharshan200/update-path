@@ -76,5 +76,24 @@ do
     fi
 done
 
+# --- the installer and the kit can come from different places ----------------
+# install.sh / install.ps1 are read from a URL, but the KIT they unpack comes
+# from EXAKIT_REPO, which defaults to the upstream repository whatever URL the
+# installer was read from. Fetching a fork's installer therefore installs the
+# UPSTREAM kit, and when the two layouts differ the handoff used to die on the
+# shell's own "does not exist" - a path, with no hint that two repositories
+# were in play. Two people hit exactly that in one morning.
+for _guard in install.sh install.ps1; do
+    _body="$(cat "$ROOT/$_guard")"
+    case "$_body" in
+        *"do not match"*) pass "$_guard names the mismatch instead of a bare path" ;;
+        *) fail "$_guard still lets the handoff fail on a missing setup script" ;;
+    esac
+    case "$_body" in
+        *EXAKIT_REPO*EXAKIT_REF*) pass "$_guard names the two variables that fix it" ;;
+        *) fail "$_guard does not say how to point the kit at the same place" ;;
+    esac
+done
+
 printf '\n%d checks, %d failed\n' "$checks" "$fails"
 [ "$fails" -eq 0 ]

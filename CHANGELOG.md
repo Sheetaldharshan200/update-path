@@ -248,6 +248,17 @@ looking for a database in a distro that did not have one. When the port is held
 by the recorded container, the message names it, the command that stops it, and
 the fact that re-running the installer then offers to copy its data across.
 
+**An installer and a kit from different repositories say so.** Both installers
+are read from a URL, but the kit they unpack comes from `EXAKIT_REPO`, which is
+the upstream repository whatever URL the installer itself was read from. So
+fetching a fork's `install.ps1` installs the *upstream* kit, and when the two
+layouts differ the handoff died on the shell's own "The argument ... does not
+exist" - a path, with no hint that two repositories were in play. Two people
+hit exactly that in one morning. Both halves now check for the setup script
+before handing off and name what happened: which repository and ref the kit
+came from, and the two variables that point it at the same place as the
+installer.
+
 **A checksum no longer depends on a cmdlet that may not load.** `Get-FileHash`
 comes from `Microsoft.PowerShell.Utility` through module auto-loading, and on a
 machine whose `$env:PSModulePath` starts with a OneDrive-redirected Documents
