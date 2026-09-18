@@ -351,7 +351,7 @@ The rest of this document is for whoever adds an add-on.
 | Registry + menu + offer + generic arms | `setup/lib/common.sh` (marketplace block) | `setup/lib/exakit-common.ps1` (marketplace block), registry arms in `setup/exakit.ps1` |
 | The add-on itself | `setup/lib/<id>.sh` | `setup/lib/<id>.ps1` |
 | CLI entry point | `setup/exakit` (`cmd_marketplace`) | `setup/exakit.ps1` (`Invoke-CmdMarketplace`) |
-| Closing offer call | `setup/setup-macos.sh`, `setup/setup-wsl.sh` | `setup/setup-windows-docker.ps1` |
+| Closing offer call | `setup/setup-macos.sh`, `setup/setup-linux.sh` | `setup/setup-windows.ps1` |
 
 Every registry function — version block, env override, fallback, upstream
 lookup, installed probe, update targets and dispatch — resolves a registered

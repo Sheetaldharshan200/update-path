@@ -64,11 +64,11 @@ has "the twin narrows it too" 'Get-McpClientStates' "$(sed -n '/EXAKIT_MCP_CLIEN
 has "AGENTS.md defines all" "every client detected on this machine" "$(cat "$ROOT/AGENTS.md")"
 
 echo "2. the exakit command exists before step 1, and status says installing:"
-for _f in setup/setup-macos.sh setup/setup-wsl.sh; do
+for _f in setup/setup-macos.sh setup/setup-linux.sh; do
     _early="$(grep -n 'exakit_install_helper_early\|begin_step launcher' "$ROOT/$_f" | head -2 | cut -d: -f2 | tr '\n' ' ')"
     has "$_f installs the helper before the launcher step" "exakit_install_helper_early" "$(printf '%s' "$_early" | awk '{print $1}')"
 done
-has "the Windows installer writes the shim early too" 'Set-ExakitCmdShim -PsTarget $earlyPs1' "$(cat "$ROOT/setup/setup-windows-docker.ps1")"
+has "the Windows installer writes the shim early too" 'Set-ExakitCmdShim -PsTarget $earlyPs1' "$(cat "$ROOT/setup/setup-windows.ps1")"
 mkdir -p "$WORK/kitsrc"; printf '#!/bin/sh\necho stub\n' > "$WORK/kitsrc/exakit"
 ( exakit_install_helper_early "$WORK/kitsrc" >/dev/null 2>&1 )
 check "the helper is installed executable" "yes" "$( [ -x "$EXAKIT_BIN_DIR/exakit" ] && echo yes || echo no )"
@@ -343,12 +343,15 @@ check "...exit 4" "4" "$(EXAKIT_HOME="$WORK/nowhere" bash "$CLI" status --json >
 check "the prose form exits 4 too" "4" "$(EXAKIT_HOME="$WORK/nowhere" bash "$CLI" status >/dev/null 2>&1; echo $?)"
 
 echo "R4-4. unsupported and one-column files are refused or flagged before the loader:"
-has "the loader refuses .txt and unknown kinds before running" 'unknown:*|csv:*.txt)' "$(cat "$ROOT/setup/lib/exapump.sh")"
+has "the loader refuses unknown kinds before running" 'case "$_llf_kind" in' "$(cat "$ROOT/setup/lib/exapump.sh")"
+has "...and a .txt/.tsv by name, with the rename that loads it" '_exakit_csv_extension_refused "$_path"' "$(cat "$ROOT/setup/lib/exapump.sh")"
 has "...as bad input, not a failed step" "_llf_refuse \"Cannot load '" "$(cat "$ROOT/setup/lib/exapump.sh")"
 has "a missing file without a TTY is bad input too" '_llf_refuse "File not found or empty' "$(cat "$ROOT/setup/lib/exapump.sh")"
 has "the data-load menu turns the refusal into exit 2" '_local_status" -eq 3' "$(cat "$ROOT/setup/lib/exapump.sh")"
 has "the installer does not book it as a failed step" 'The local file was refused' "$(cat "$ROOT/setup/lib/common.sh")"
-has "a ';' header is called out" "would load it as ONE column" "$(cat "$ROOT/setup/lib/exapump.sh")"
+# A ';' header used to be WARNED about; it is now read and passed on as
+# exapump's own --delimiter, the file itself untouched.
+has "a ';' header is passed on as exapump's own delimiter" '--delimiter "$_upl_delim"' "$(cat "$ROOT/setup/lib/exapump.sh")"
 has "the PowerShell twin refuses the same files" 'llfKind -eq "unknown"' "$(cat "$ROOT/setup/lib/exapump.ps1")"
 
 echo "R4-5. service logs are created owner-only before launchd opens them:"
@@ -357,7 +360,7 @@ has "the log is created 0600 before launchctl load" 'chmod 600 "$EXAKIT_LOG_DIR/
 echo "R4-6. the installer records where the bootstrap time went:"
 has "install.sh stamps its start" 'EXAKIT_INSTALL_T0="$(date +%s)"' "$(cat "$ROOT/install.sh")"
 has "setup logs the elapsed bootstrap" 'after the installer began' "$(cat "$ROOT/setup/setup-macos.sh")"
-has "...on the WSL path too" 'after the installer began' "$(cat "$ROOT/setup/setup-wsl.sh")"
+has "...on the WSL path too" 'after the installer began' "$(cat "$ROOT/setup/setup-linux.sh")"
 
 # --- Round 5 (agent-operability audit, round 2 of the 0.2.4 series) ---------
 #

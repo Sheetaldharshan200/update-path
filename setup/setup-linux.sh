@@ -1,12 +1,15 @@
 #!/usr/bin/env bash
-# setup-wsl.sh — Exasol Personal Local Starter Kit, Linux and WSL path.
+# setup-linux.sh — Exasol Personal Local Starter Kit, Linux path.
 #
-# Installs and connects: Exasol Nano (container, Docker preferred with Podman
-# fallback), exapump, the Exasol MCP server, and pyexasol. Prints connection
-# details when done.
+# Installs and connects the database, exapump, the Exasol MCP server, and
+# pyexasol. Prints connection details when done. The database is an Exasol
+# Personal local deployment, run by the Exasol launcher through Podman.
+#
+# Also the WSL path: a WSL2 distro is Linux to the launcher, so install.sh
+# routes it here and the Podman check below is the one that applies.
 #
 # Usually launched by install.sh, but runs standalone from a checkout too:
-#   bash setup/setup-wsl.sh
+#   bash setup/setup-linux.sh
 #
 # Safe to re-run: completed steps are skipped, failed steps are retried.
 
@@ -20,7 +23,7 @@ KIT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 # Core libraries must exist; a truncated/partial download otherwise collapses
 # into a wall of "command not found". die() isn't defined until common.sh
 # loads, so report with a plain printf.
-for _lib in common.sh detect.sh runtime-nano.sh; do
+for _lib in common.sh detect.sh runtime-personal.sh; do
     [ -f "$LIB_DIR/$_lib" ] || {
         printf '\033[1;31m  ✗\033[0m Kit file missing: %s — the download looks incomplete. Re-run the installer.\n' "$LIB_DIR/$_lib" >&2
         exit 1
@@ -28,7 +31,8 @@ for _lib in common.sh detect.sh runtime-nano.sh; do
 done
 . "$LIB_DIR/common.sh"
 . "$LIB_DIR/detect.sh"
-. "$LIB_DIR/runtime-nano.sh"
+. "$LIB_DIR/runtime-personal.sh"
+if [ -f "$LIB_DIR/legacy-crossing.sh" ]; then . "$LIB_DIR/legacy-crossing.sh" || die "Could not load $LIB_DIR/legacy-crossing.sh (corrupted kit copy? re-download and re-run)"; fi
 # Optional modules: a missing file legitimately skips its step, but a file
 # that FAILS to load (e.g. CRLF-corrupted copy whose syntax breaks bash) must
 # fail loudly - otherwise the step silently reports "not part of this
@@ -62,38 +66,50 @@ _kit_version="$(exakit_kit_version_at "$KIT_ROOT" 2>/dev/null || true)"
 [ -n "$_kit_version" ] && manifest_set kit.version "$_kit_version"
 exakit_resolve_install_versions
 
+# --- step 0: an installation this kit cannot manage -------------------------
+# An older kit could put the database in a container. This asks what to do with
+# it, copies the data out while it is still readable, and stops it so the new
+# deployment can have the port. A machine with no such installation - which is
+# every fresh one - passes straight through.
+if command -v legacy_crossing_before >/dev/null 2>&1; then legacy_crossing_before; fi
+
 # --- step 1: requirements ---------------------------------------------------
 EXAKIT_CURRENT_STEP="requirements"
-nano_check_requirements
+personal_check_requirements
 
-# --- step 2: the Runtime image ----------------------------------------------
-# Its own step, matching the macOS shape and heading. What it fetches is the
-# Nano image rather than a native launcher, so the lines UNDER the heading name
-# the image - the two platforms install different things through the same step.
+# --- step 1: the Exasol launcher ---------------------------------------------
+# Its own step, matching the macOS shape and heading.
 if begin_step launcher "Step 1/6  Exasol launcher"; then
-    nano_pull_image
+    personal_install_launcher
     mark_step launcher
 fi
 
 # --- step 3: local deployment ------------------------------------------------
 if begin_step runtime "Step 2/6  Local database deployment"; then
-    nano_install
+    personal_deploy_local
     mark_step runtime
 else
-    if [ "$(nano_status)" != "running" ]; then
-        info "Runtime marked done but not running — starting it"
-        nano_install
-        # Same as the macOS resume: nano_install registers `volume rm` as its
-        # undo, and with no mark_step here it would stay armed. Worse than the
-        # macOS case, because that volume is armed whenever the CONTAINER is
-        # missing even if the volume already held data -- so the rollback could
-        # delete data this run never created.
+    # The resume arms: redeploy what is gone (disarming the destroy the deploy
+    # registers, since there is no mark_step here to do it), start what is
+    # merely stopped - every later step talks SQL to the database.
+    if ! personal_deployment_exists; then
+        info "Deployment marked done but not reachable — redeploying"
+        personal_deploy_local
         rollback_clear
+    elif ! personal_deployment_running; then
+        info "Database is deployed but not running — starting it"
+        personal_start
+        personal_wait_ready
     fi
 fi
 
 # --- steps 3-6: exapump, MCP server, pyexasol, exakit helper (shared) ---------
 kit_shared_steps 3 6 "$SCRIPT_DIR" "$KIT_ROOT"
+
+# The other half of the crossing. Last, because it needs all three things the
+# steps above provide: a database that is up, an exapump binary, and a profile
+# pointing at the NEW database.
+if command -v legacy_crossing_after >/dev/null 2>&1; then legacy_crossing_after; fi
 
 exakit_finish
 connection_summary

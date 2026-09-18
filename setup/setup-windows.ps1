@@ -1,10 +1,16 @@
-# setup-windows-docker.ps1 - Exasol Personal Local Starter Kit, Windows path.
+# setup-windows.ps1 - Exasol Personal Local Starter Kit, Windows path.
 #
-# Installs and connects: Exasol Nano (container via Docker Desktop), exapump,
-# the Exasol MCP server, and pyexasol. Prints connection details when done.
+# (Renamed during the runtime migration: the Windows database is an Exasol
+# Personal deployment now, and the file that installs it is named for the
+# platform rather than for an engine it does not use.)
+#
+# Installs and connects the database, exapump, the Exasol MCP server, and
+# pyexasol. Prints connection details when done. The database is an Exasol
+# Personal local deployment running through host Podman; the launcher installs
+# Podman itself through winget when it is missing.
 #
 # Usually launched by install.ps1, but runs standalone from a checkout too:
-#   powershell -ExecutionPolicy Bypass -File setup\setup-windows-docker.ps1
+#   powershell -ExecutionPolicy Bypass -File setup\setup-windows.ps1
 #
 # Safe to re-run: completed steps are skipped, failed steps are retried.
 
@@ -15,7 +21,9 @@ $LibDir = Join-Path $ScriptDir "lib"
 $KitRoot = Split-Path -Parent $ScriptDir
 
 . (Join-Path $LibDir "exakit-common.ps1")
-. (Join-Path $LibDir "nano.ps1")
+. (Join-Path $LibDir "runtime-personal.ps1")
+$legacyModule = Join-Path $LibDir "legacy-crossing.ps1"
+if (Test-Path $legacyModule) { . $legacyModule }
 . (Join-Path $LibDir "exapump.ps1")
 . (Join-Path $LibDir "mcp.ps1")
 . (Join-Path $LibDir "pyexasol.ps1")
@@ -65,25 +73,42 @@ try {
     # One setup run at a time; the lock's pid is how `exakit status` tells a live
     # install from one that crashed. Twin of exakit_enable_failure_handling.
     Enter-ExakitInstallLock
-    # --- step 1: requirements ------------------------------------------------
-    Test-NanoRequirements
 
-    # --- step 2: Nano container -----------------------------------------------
-    # Its own step, matching the macOS shape and heading. What it fetches is the
-    # Nano image rather than a native launcher, so the lines UNDER the heading
-    # name the image - the two platforms install different things through the
-    # same step. Twin of the same split in setup-wsl.sh.
+    # --- step 0: an installation this kit cannot manage ----------------------
+    # An older kit could put the database in a container. This asks what to do
+    # with it, copies the data out while it is still readable, and stops it so
+    # the new deployment can have the port. A machine with no such installation
+    # - which is every fresh one - passes straight through.
+    if (Get-Command Invoke-LegacyCrossingBefore -ErrorAction SilentlyContinue) {
+        Invoke-LegacyCrossingBefore
+    }
+
+    # --- step 1: requirements ------------------------------------------------
+    Test-PersonalRequirements
+
+    # --- step 2: the launcher --------------------------------------------------
+    # Its own step, matching the macOS shape and heading. Twin of the same
+    # split in setup-macos.sh and setup-linux.sh.
     if (Begin-ExakitStep "launcher" "Step 1/6  Exasol launcher") {
-        Install-NanoImage
+        Install-PersonalLauncher
         Set-ExakitStepDone "launcher"
     }
 
     if (Begin-ExakitStep "runtime" "Step 2/6  Local database deployment") {
-        Install-Nano
+        Install-PersonalDeployment
         Set-ExakitStepDone "runtime"
-    } elseif ((Get-NanoStatus) -ne "running") {
-        Info "Runtime marked done but not running - starting it"
-        Install-Nano
+    } else {
+        # The resume arms every setup carries: redeploy what is gone, start what
+        # is merely stopped - every later step talks SQL to the database.
+        # Twin of setup-macos.sh / setup-linux.sh.
+        if (-not (Test-PersonalDeploymentExists)) {
+            Info "Deployment marked done but not reachable - redeploying"
+            Install-PersonalDeployment
+        } elseif (-not (Test-PersonalDeploymentRunning)) {
+            Info "Database is deployed but not running - starting it"
+            Start-Personal
+            Wait-PersonalReady
+        }
     }
 
     # exapump publishes Windows binaries for x86_64 only. On other
@@ -101,7 +126,7 @@ try {
     if (-not $exapumpSupported) {
         Warn2 "exapump publishes Windows builds for x86_64 only (this machine's hardware is $(Get-ExakitHostArch))."
         Info "Skipping exapump, the sample data and the whole AI bridge (MCP server and clients) - the read-only database user the bridge connects as is provisioned through exapump, so the bridge cannot be built without it."
-        Info "The database container itself is fully supported. Details: quickstarts/windows-docker.md"
+        Info "The database container itself is fully supported. Details: quickstarts/windows.md"
     }
 
     # --- step 3: exapump (data loading CLI) ------------------------------------
@@ -286,7 +311,7 @@ try {
         # `exakit help <topic>` resolves through the repo-root lookup, which
         # PREFERS this staged copy. Omitting it did not fall back to the
         # checkout, it shadowed it: on every installed kit `exakit help mcp`,
-        # `exapump`, `nano`, `pyexasol`, `exakit` and all three add-ons answered
+        # `exapump`, `personal`, `pyexasol`, `exakit` and all add-ons answered
         # "No help entry for ...".
         #
         # It also silently broke the marketplace. An add-on's description falls
@@ -310,6 +335,13 @@ try {
     # (Write-ExakitSoftFailures) are printed after the connection panel at the
     # very end of the run - not here, in the middle of the step output where
     # the connection details would push them off the screen.
+
+    # The other half of the crossing. Last, because it needs all three things
+    # the steps above provide: a database that is up, an exapump binary, and a
+    # profile pointing at the NEW database.
+    if (Get-Command Invoke-LegacyCrossingAfter -ErrorAction SilentlyContinue) {
+        Invoke-LegacyCrossingAfter
+    }
 
     Show-ExakitConnectionSummary
     # Only when the kit version moved during this run, and never able to fail it:

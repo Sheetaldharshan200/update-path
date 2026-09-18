@@ -111,19 +111,6 @@ jobs:
                   return None
               return base + (0 if re.search(r"[-+]", version.strip()) else 1,)
 
-          def nano_key(version):
-              """Ordering key for exasol/nano tags.
-
-              Its release number lives in the -nano.N suffix, and that suffix is
-              part of a STABLE tag here -- not a prerelease marker. Ranking it as
-              one made an unchanged tag look like a bump, so nano gets its own key
-              and every number in the tag is compared.
-              """
-              match = re.match(r"^(\d{4})\.(\d+)\.(\d+)-nano\.(\d+)$", version.strip())
-              if not match:
-                  return None
-              return tuple(int(part) for part in match.groups())
-
           def pick(candidates, current, label, keyfn):
               """The highest candidate that genuinely beats current, or None."""
               current_key = keyfn(current)
@@ -142,30 +129,6 @@ jobs:
               if not winners:
                   return None
               return max(winners)[1]
-
-          # --- nano: a plain, multi-arch container tag --------------------------
-          nano = components.get("nano") or {}
-          if nano.get("version"):
-              image = nano.get("image", "exasol/nano")
-              body, reason = fetch("https://hub.docker.com/v2/repositories/%s/tags"
-                                   "?page_size=100&ordering=last_updated" % image)
-              if body is None:
-                  notes.append("- `nano`: Docker Hub did not answer (%s), left alone" % reason)
-              else:
-                  shape = re.compile(r"^\d{4}\.\d+\.\d+-nano\.\d+$")
-                  candidates = []
-                  for result in body.get("results") or []:
-                      name = result.get("name", "")
-                      if not shape.match(name):
-                          continue        # dev builds, arch suffixes, .run assets, latest
-                      arches = {i.get("architecture") for i in result.get("images") or []
-                                if i.get("os") == "linux"}
-                      if {"amd64", "arm64"} <= arches:
-                          candidates.append(name)
-                  winner = pick(candidates, nano["version"], "nano", nano_key)
-                  if winner:
-                      bumped["nano"] = (nano["version"], winner)
-                      nano["version"] = winner
 
           # --- personal: a stable GitHub release tag ----------------------------
           personal = components.get("personal") or {}
@@ -307,10 +270,7 @@ jobs:
           COUPLED = {
               "personal": [
                   ("setup/lib/common.sh", "bash", "EXAKIT_PERSONAL_VERSION_FALLBACK"),
-              ],
-              "nano": [
-                  ("setup/lib/common.sh", "bash", "EXAKIT_NANO_TAG_FALLBACK"),
-                  ("setup/lib/exakit-common.ps1", "pwsh", "NanoTagFallback"),
+                  ("setup/lib/runtime-personal.ps1", "pwsh", "PersonalVersionFallback"),
               ],
               "exapump": [
                   ("setup/lib/common.sh", "bash", "EXAKIT_EXAPUMP_VERSION_FALLBACK"),

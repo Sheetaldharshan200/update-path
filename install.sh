@@ -144,8 +144,13 @@ main() {
             else
                 platform="linux"
             fi
-            target="Exasol Nano (container: Docker preferred, Podman fallback)"
-            setup_script="setup/setup-wsl.sh"
+            # WSL takes the Linux road, because to the launcher it IS Linux: a
+            # WSL2 distro runs a real kernel on AMD64, the launcher ships a
+            # Linux build, and its Linux local runtime wants one thing, a podman
+            # on PATH. setup-linux.sh then checks that and says so before
+            # anything is downloaded.
+            target="Exasol Personal (local deployment via Podman)"
+            setup_script="setup/setup-linux.sh"
             ;;
         *)
             fail "Unsupported platform: $os. On Windows, run install.ps1 in PowerShell."
@@ -224,14 +229,9 @@ main() {
     # When piped (curl | sh), stdin is the exhausted pipe. Reattach the
     # terminal when one is available so any interactive step (for example a
     # first-run license confirmation) can still read the keyboard.
-    # Name the platform, not just the script: setup-wsl.sh also serves native
-    # Linux, and a Linux user reading "setup-wsl" wonders if WSL is required.
     _bootstrap_s=""
     [ -n "${EXAKIT_INSTALL_T0:-}" ] && _bootstrap_s=" ($(( $(date +%s) - EXAKIT_INSTALL_T0 ))s after start)"
-    case "$setup_script" in
-        */setup-wsl.sh) say "Starting setup: $setup_script (shared Linux / WSL setup)$_bootstrap_s" ;;
-        *)              say "Starting setup: $setup_script$_bootstrap_s" ;;
-    esac
+    say "Starting setup: $setup_script$_bootstrap_s"
     printf '\n'
     # We already showed the banner above; tell the setup script to skip its
     # own so the wordmark appears exactly once through the installer. A direct

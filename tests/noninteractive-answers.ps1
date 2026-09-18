@@ -56,7 +56,7 @@ try {
     Check "an unrecognised value answers nothing" "" $vague
     Remove-Item Env:EXAKIT_CONFIRM_RUNTIME_UPDATE -ErrorAction SilentlyContinue
     Check "-Yes opts in for one run" "yes" (Get-ExakitRuntimeUpdatePreanswer -AssumeYes $true)
-    Check "the major version is read the same way" "2026" (Get-ExakitMajorVersion "2026.2.0-nano.2")
+    Check "the major version is read the same way" "2026" (Get-ExakitMajorVersion "2026.2.0")
 
     Write-Host "EXAKIT_MCP_CLIENTS - client selection parses names, 'all', and numbers:"
     # "claude" (or 1) expands to both Claude surfaces (desktop app + Claude Code

@@ -47,6 +47,7 @@
       "commands": [
         "preflight",
         "repair-runtime",
+        "migrate",
         "uninstall"
       ]
     },
@@ -165,7 +166,7 @@
       "command": "data-load",
       "options": "[--force | -Force] [<file-or-folder>]",
       "summary": "Load sample data, one file, or a whole folder.",
-      "description": "Opens the data-loading menu: bundled datasets (tpch, energy, weather) or your own data. Name a path to skip the menu. A FILE asks the same two things whatever its kind - the file, then SCHEMA.TABLE - and JSON is shredded into tables by an engine the kit installs for you. A FOLDER is a bulk load: every CSV / Parquet / JSON file at its top level, one table each named after the file, asking for the schema once. Subfolders are not scanned, files of other kinds are ignored, and duplicates - byte-identical files, or two names that resolve to the same table - are skipped with the reason. --force reloads bundled datasets instead of skipping what is already there. JSON is macOS, Linux and WSL only; on Windows a folder's JSON files are listed as skipped. Unattended, EXAKIT_DATASETS=tpch,energy,weather loads only what is not loaded yet and exits 0 when everything named is already there.",
+      "description": "Opens the data-loading menu: bundled datasets (tpch, energy, weather) or your own data. Name a path to skip the menu. A FILE asks the same two things whatever its kind - the file, then SCHEMA.TABLE - and JSON is shredded into tables by an engine the kit installs for you. A FOLDER is a bulk load: every CSV / Parquet / JSON (.json, .geojson) file at its top level, one table each named after the file, asking for the schema once. Files go to the loader as they are - a ';'-separated CSV with its delimiter, a header with no rows skipped by name, a tabular .txt or .tsv listed with the rename to .csv that exapump needs. Subfolders are not scanned, files of other kinds are ignored, and duplicates - byte-identical files, or two names that resolve to the same table - are skipped with the reason. --force reloads bundled datasets instead of skipping what is already there. JSON is macOS, Linux and WSL only; on Windows a folder's JSON files are listed as skipped. Unattended, EXAKIT_DATASETS=tpch,energy,weather loads only what is not loaded yet and exits 0 when everything named is already there.",
       "environment": [
         "EXAKIT_DATASETS=tpch,energy,weather names exactly which bundled datasets to load",
         "EXAKIT_DATA_FILE=/path/file.json or /path/folder answers the local-data question, so a run without a terminal loads that file or folder",
@@ -280,7 +281,7 @@
     },
     {
       "command": "update",
-      "options": "[all|runtime|exakit|exapump|mcp|pyexasol|skills|<add-on>|nano|personal]",
+      "options": "[all|runtime|exakit|exapump|mcp|pyexasol|skills|<add-on>|personal]",
       "summary": "Apply the updates that are waiting.",
       "description": "Applies the quick components (kit scripts, exapump, MCP server, pyexasol, the AI skills, installed add-ons) in seconds. A newer skill set published by the maintainers is fetched and installed here too, with no kit release needed. A database change stops the database, so it is only applied for an answer the run was actually given: on a terminal you are asked, and an unattended run defers it with the exact command. Your data is kept either way. An unknown option or target is refused (exit 2) and records nothing.",
       "environment": [
@@ -310,6 +311,31 @@
         "0": "your database was rebuilt",
         "2": "bad input",
         "3": "the rebuild did not finish",
+        "4": "not installed",
+        "5": "declined - not confirmed, nothing was changed"
+      }
+    },
+    {
+      "command": "migrate",
+      "options": "docker-nano [--container NAME] [--engine docker|podman] [--dsn HOST:PORT] [--user USER] [--password-file PATH] [--yes] [--json]",
+      "summary": "Copy an older kit's container database into this one.",
+      "description": "The installer asks about a container database from an older kit exactly once. This is for the machine that answered skip and wants the data after all, and for a container the installer never saw - made by hand with docker run exasol/nano, or by the upstream kit. Every non-system table is copied out while the container runs and restored into the running deployment with its column types preserved; the kit's own bundled sample data (tpch, energy, weather) is left out when it is unchanged, because the kit loads it itself (exakit data-load). When the container publishes the deployment's port, the database is stopped for the copy out and started again before the copy in; a container on another port costs no downtime. Nothing in the container is changed or removed. What is not named on the command line comes from the record the installer kept, then from the old install's own record, then from the machine (which engine knows the container, which port it publishes), then from an older kit's defaults (container exasol-nano, user sys). --json prints one object on stdout: ok, status (done | nothing | declined | failed | partial), container, engine, dsn, copied_out, restored, left_alone, failed, sample_left_out, reason, remedy.",
+      "warning": "The password never goes on the command line (there is no --password): pass a file with --password-file, set EXAKIT_LEGACY_PASSWORD for a scripted run, or answer the prompt on a terminal. A text column that held an empty string arrives as NULL.",
+      "environment": [
+        "EXAKIT_LEGACY_PASSWORD=... the old database's password for a scripted run (a file via --password-file is preferred)",
+        "EXAKIT_LEGACY_READY_TIMEOUT=n seconds to wait for a container this command had to start (120)"
+      ],
+      "examples": [
+        "exakit migrate docker-nano",
+        "exakit migrate docker-nano --container exasol-nano --engine docker",
+        "exakit migrate docker-nano --password-file ~/nano_sys_password --yes",
+        "exakit migrate docker-nano --json --yes"
+      ],
+      "exit_codes": {
+        "0": "done, or nothing of yours to copy",
+        "1": "the copy did not finish - the reason and where the copies are kept are printed",
+        "2": "bad input",
+        "3": "no deployment to copy into, or no exapump to copy with",
         "4": "not installed",
         "5": "declined - not confirmed, nothing was changed"
       }
@@ -402,11 +428,11 @@
     },
     {
       "name": "EXAKIT_REUSE_DB",
-      "effect": "1 adopts an existing database (default), 0 destroys it and deploys fresh. Both runtimes: on the container path 0 removes the Nano container and its data volume, which is the database."
+      "effect": "1 adopts an existing database (default), 0 destroys it and deploys fresh - 0 removes the local deployment and all its data."
     },
     {
       "name": "EXAKIT_DB_PORT",
-      "effect": "Alternate database port (Linux and Windows container path only)."
+      "effect": "Alternate database port. The launcher selects and remembers the deployment's own port; exakit info shows the one in use."
     },
     {
       "name": "EXAKIT_VERSION_POLICY",
@@ -423,12 +449,12 @@
   ],
   "troubleshooting": [
     {
-      "symptom": "Docker is installed but not running",
-      "remedy": "Start Docker Desktop or run: podman machine start - then re-run the installer."
+      "symptom": "Podman is installed but not running",
+      "remedy": "Run: podman machine start - then re-run the installer."
     },
     {
       "symptom": "Port 8563 is already in use",
-      "remedy": "Stop the other app, or re-run with EXAKIT_DB_PORT=8564 (Linux and Windows)."
+      "remedy": "Stop the other app, or re-run with EXAKIT_DB_PORT=8564."
     },
     {
       "symptom": "Setup failed mid-way",
@@ -452,7 +478,6 @@
     "mcp",
     "pyexasol",
     "personal",
-    "nano",
     "dash-server",
     "json-tables",
     "exasol-vscode"

@@ -4,7 +4,7 @@
 # exapump, the MCP server and pyexasol all install through exakit_soft_step, so
 # any of them can be missing from an install that "finished". The install-time
 # report (exakit_print_soft_failures) prints once, from setup-macos.sh /
-# setup-wsl.sh, and is long gone by the time anyone types `exakit status`.
+# setup-linux.sh, and is long gone by the time anyone types `exakit status`.
 #
 # The status screen used to hardcode a single pyexasol check. A failed exapump
 # was then visible only as an absence from the steps_completed array, which is
@@ -258,12 +258,12 @@ EOF
 #
 #    EXAKIT_QUIET_DETAIL is forced on here because that is the whole fault: the
 #    bracket that routes path spam to the logfile also routed away every line
-#    that named the database, the container, the volume and the add-ons -- and
+#    that named the database, the kit home and the add-ons -- and
 #    step 5 of the same function deletes that logfile. An unquieted run would
 #    print those lines from info() and pass this for the wrong reason.
 un_out="$(common_sh '
-manifest_get() { case "$1" in runtime.type) printf "nano\n" ;; *) return 1 ;; esac; }
-nano_teardown() { return 0; }
+manifest_get() { case "$1" in runtime.type) printf "personal\n" ;; *) return 1 ;; esac; }
+personal_teardown() { return 0; }
 exakit_mcp_operation() { return 0; }
 : > "$EXAKIT_BIN_DIR/exakit"
 EXAKIT_QUIET_DETAIL=1
@@ -277,8 +277,7 @@ while IFS='|' read -r what needle; do
         fail "a quiet uninstall does not name $what (no '$needle' on screen)"
     fi
 done <<'EOF'
-the container it removed|exasol-nano
-the data volume it removed|exasol-nano-data
+the database it removed|Database removed
 the kit home it removed|Kit home removed
 the AI clients it edited|MCP entry removed
 that the lines on screen are the only record|whole record of this uninstall
@@ -295,11 +294,6 @@ if has "$ps_un" "OkStep"; then
     pass "the PowerShell uninstall promotes a record line through OkStep"
 else
     fail "the PowerShell uninstall still names nothing it removed (no OkStep in it)"
-fi
-if has "$ps_un" 'NanoContainer' && has "$ps_un" 'NanoVolume'; then
-    pass "the PowerShell uninstall names the container and the volume"
-else
-    fail "the PowerShell uninstall does not name the container and the volume"
 fi
 
 # 8. ONE failure, ONE remedy. The wrapper used to print a generic "retry with:
@@ -386,8 +380,8 @@ done
 # 12. The Windows kit home comes from the local profile, not from $HOME.
 #
 #     PowerShell's $HOME is the account's home-directory attribute, which on a
-#     domain machine is H:\ or \\server\share\user -- Docker cannot bind-mount
-#     either, so the install could not run at all.
+#     domain machine is H:\ or \\server\share\user -- neither can be
+#     bind-mounted, so the install could not run at all.
 head="$(code_only "$(tr -d '\r' < "$ROOT/setup/lib/exakit-common.ps1" | sed -n '1,200p')")"
 if has "$head" 'USERPROFILE'; then
     pass "the Windows kit home prefers the local user profile"
@@ -490,7 +484,7 @@ fi
 # 16. Write-ExakitError exists, and is not gated.
 #
 #     It was named in the note on ExakitQuietDetail and called from six places
-#     (five in nano.ps1, one in mcp.ps1) while no function of that name existed
+#     while no function of that name existed
 #     anywhere in the tree - so every one of those calls was a
 #     CommandNotFoundException, on exactly the error paths they were written to
 #     improve. Counted rather than merely looked for: a guard that stops having

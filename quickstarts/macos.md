@@ -1,6 +1,6 @@
 # Quickstart: macOS
 
-Gets you from a bare Mac to a local Exasol database with an AI assistant connected. On macOS the database runs in a lightweight VM that Exasol Personal manages for you — no Docker, and nothing for you to configure.
+Gets you from a bare Mac to a local Exasol database with an AI assistant connected. On macOS the database runs in a lightweight VM that Exasol Personal manages for you — nothing to install first, and nothing for you to configure.
 
 ## What you need
 
