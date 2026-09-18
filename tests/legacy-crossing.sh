@@ -371,18 +371,24 @@ has "...on the Windows side too"   "no offer made" "$(cat "$ROOT/setup/lib/legac
 check "and the crossing is marked done" "true" \
     "$(run "$H8" absent 'legacy_crossing_before >/dev/null 2>&1; manifest_get legacy.crossing_done' | tail -1)"
 
-# THE BANNER IS BEHIND THE PROBE, not in front of it. A function that printed
-# first and probed second could not be silent, whatever the gates decided.
+# THE QUESTION IS IN THE OTHER HALF. The first half says nothing about the old
+# database at all: it reads the tables out while the container still holds the
+# port, and the question waits for the half that runs after exapump, where a
+# copy already exists to ask about.
 _cb="$(sed -n '/^legacy_crossing_before()/,/^}/p' "$ROOT/setup/lib/legacy-crossing.sh")"
-_banner_at="$(printf '%s\n' "$_cb" | grep -n 'Found your previous starter kit' | head -1 | cut -d: -f1)"
-_probe_at="$(printf '%s\n' "$_cb" | grep -n 'legacy_container_state' | head -1 | cut -d: -f1)"
-check "the probe runs before the banner" "yes" \
-    "$([ -n "$_banner_at" ] && [ -n "$_probe_at" ] && [ "$_probe_at" -lt "$_banner_at" ] && echo yes || echo no)"
-# And the offer is made only once the tables have been COUNTED: a database with
-# no tables in it is not something to interrupt an install for.
-_count_at="$(printf '%s\n' "$_cb" | grep -n '_lcb_count=' | head -1 | cut -d: -f1)"
-check "and the table count too" "yes" \
-    "$([ -n "$_count_at" ] && [ "$_count_at" -lt "$_banner_at" ] && echo yes || echo no)"
+_ca="$(sed -n '/^legacy_crossing_after()/,/^}/p' "$ROOT/setup/lib/legacy-crossing.sh")"
+lacks "the first half never asks"     "legacy_choose" "$_cb"
+lacks "...and never announces"        "Found your previous starter kit" "$_cb"
+has   "the second half asks"          "legacy_choose" "$_ca"
+has   "...after saying what it found" "Found your previous starter kit" "$_ca"
+_banner_at="$(printf '%s\n' "$_ca" | grep -n 'Found your previous starter kit' | head -1 | cut -d: -f1)"
+_choose_at="$(printf '%s\n' "$_ca" | grep -n 'legacy_choose' | head -1 | cut -d: -f1)"
+check "and says what it found before it asks" "yes" \
+    "$([ -n "$_banner_at" ] && [ -n "$_choose_at" ] && [ "$_banner_at" -lt "$_choose_at" ] && echo yes || echo no)"
+# The counts the question quotes are read in the first half, where the database
+# could still be reached, and carried across in the record.
+has "the counts are recorded for it" "manifest_set legacy.tables_own" "$_cb"
+has "...and read back to ask with"   "legacy.tables_own" "$_ca"
 
 # Once asked, marked - so the next install of any kind never reconsiders it.
 has "a crossing that was offered is marked done" "manifest_set legacy.crossing_done true" \

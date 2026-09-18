@@ -852,58 +852,124 @@ function Invoke-LegacyCrossingBefore {
     if ($schemas -gt 0) { $mine = "$mine in $schemas schema(s)" }
     $rest = ""
     if ($sample -gt 0) { $rest = " The other $sample is the kit's own $($script:LegacySampleIds) sample, which this install loads itself." }
-    Info "Found your previous starter kit's database${where}: $mine of your own.$rest"
-
-    Select-LegacyChoice -TableCount $count -CanMigrate $can -Why $why
-    Set-ExakitManifestValue "legacy.choice" $script:LegacyChoice
+    # THE COPY IS MADE HERE, THE QUESTION IS ASKED LATER. This is the only
+    # moment the old container can be read at all: it publishes the port, and
+    # the deployment that is about to be installed needs that same port, so
+    # from the next step onwards the container is stopped. Asking here meant
+    # asking before the kit had installed a single thing - the first words of
+    # the run, about a database the user may have forgotten they had.
+    #
+    # So the tables are read out now, into a directory under the kit's own
+    # home, and nothing is said about it; the question goes where it belongs,
+    # after exapump and before the sample data (Invoke-LegacyCrossingAfter),
+    # and a "no" there deletes the copy. Nothing in the old container is
+    # changed either way, and no data leaves this machine. Twin of
+    # legacy_crossing_before.
     Set-ExakitManifestValue "legacy.crossed_from" $type
+    Set-ExakitManifestValue "legacy.tables_total" $total
+    Set-ExakitManifestValue "legacy.tables_own" $count
+    Set-ExakitManifestValue "legacy.tables_sample" $sample
+    Set-ExakitManifestValue "legacy.container_state" $state
     if ($sample -gt 0) { Set-ExakitManifestValue "legacy.sample_left_out" $script:LegacySampleIds }
 
-    if ($script:LegacyChoice -eq "migrate") {
-        # Said here, not before the question: it is about the copy that is
-        # starting, and it only matters to someone who asked for one.
-        Info "Copying now - nothing in the old database is changed. One thing to know: a text column that held an empty string arrives as NULL."
-        if (Export-LegacyTables -Dir $script:LegacyExportDir -Tables @($script:LegacyOwnTables)) {
-            Set-ExakitManifestValue "legacy.export_dir" $script:LegacyExportDir
-            Ok "Your data is saved at $(Get-ExakitTilde $script:LegacyExportDir) - it goes into the new database at the end of this install"
-        } else {
-            Warn2 "Nothing could be copied out. The old database is untouched; nothing is lost."
-            $script:LegacyChoice = "skip"
-            Set-ExakitManifestValue "legacy.choice" "skip"
-        }
+    # A COPY THAT IS ALREADY THERE IS NOT MADE AGAIN. A run that died between
+    # the two halves comes back through here, and re-reading a database that has
+    # not changed only overwrites a good copy with a second one - and, on a
+    # resume, the container may no longer be able to answer at all. The waiting
+    # copy is what the second half asks about. Twin of legacy_crossing_before.
+    $waiting = Join-Path $script:LegacyExportDir "index"
+    if ((Test-Path $waiting) -and ((Get-Item $waiting).Length -gt 0) -and
+        ("" + (Get-ExakitManifestValue "legacy.restored") -eq "")) {
+        Write-ExakitLog "INFO" "legacy crossing: a copy is already waiting at $($script:LegacyExportDir)"
+        Set-ExakitManifestValue "legacy.export_dir" $script:LegacyExportDir
+        [void](Stop-LegacyContainer)
+        Write-Host ""
+        return
     }
 
-    # BOTH answers stop the container: it is holding the port the new
-    # deployment needs. Stopped, not removed - the data volume stays.
+    if (Export-LegacyTables -Dir $script:LegacyExportDir -Tables @($script:LegacyOwnTables)) {
+        Set-ExakitManifestValue "legacy.export_dir" $script:LegacyExportDir
+    } else {
+        # Nothing could be read. There is nothing to offer later, and saying so
+        # here would be the first line of the install, so it goes to the log;
+        # the old container is left exactly as it was.
+        # A CONDITION, NOT AN ANSWER. Recording "skip" here would put words in
+        # the user's mouth and close the crossing for good; the reason is kept
+        # and the question stays open, exactly as it does for an engine that
+        # could not be found. Twin of legacy_crossing_before.
+        Write-ExakitLog "WARN" "legacy crossing: nothing could be copied out of $container"
+        Set-ExakitManifestValue "legacy.offer_blocked" "nothing could be copied out of the old database"
+    }
+
     [void](Stop-LegacyContainer)
-
-    if ($script:LegacyChoice -eq "skip") {
-        Info "The old database is left exactly as it was, stopped, with its data."
-        Info "To copy it into the new database later: exakit migrate docker-nano"
-        $rm = Get-LegacyRemoveCommand
-        if ($rm) { Info "When you no longer want it: $rm" }
-    }
-    # The question has now been asked. It is never asked again on this machine,
-    # whatever happens to the rest of this run.
-    Set-ExakitManifestValue "legacy.crossing_done" $true
     Write-Host ""
 }
 
-# The second half: the saved tables into the database this install just
-# deployed. Reports what landed and what did not.
+# Invoke-LegacyCrossingAfter - THE QUESTION AND THE RESTORE, in the one place
+# that can hold both: after exapump, before the sample data. The copy already
+# exists (Invoke-LegacyCrossingBefore read it out while the container still had
+# the port), so this asks about something real and a "no" deletes it. Twin of
+# legacy_crossing_after.
 function Invoke-LegacyCrossingAfter {
     $dir = "" + (Get-ExakitManifestValue "legacy.export_dir")
     if (-not $dir) { return }
-    if (-not (Test-Path (Join-Path $dir "index"))) { return }
+    $indexPath = Join-Path $dir "index"
+    if (-not (Test-Path $indexPath)) { return }
     if ("" + (Get-ExakitManifestValue "legacy.restored") -ne "") { return }
 
-    Write-Host ""
-    Info "Restoring your data into the new database"
+    $choice = "" + (Get-ExakitManifestValue "legacy.choice")
+    if (-not $choice) {
+        $own = "" + (Get-ExakitManifestValue "legacy.tables_own")
+        $sample = "" + (Get-ExakitManifestValue "legacy.tables_sample")
+        $container = Get-LegacyContainer
+        # NOT the state it had when it was read: by the time this asks, the
+        # container has been stopped so the deployment could take the port, and
+        # printing "(running)" here said the opposite of what was true.
+        # The schemas of the copy itself: column 2 of the index, which is what
+        # was actually read out, not what the old database happened to hold.
+        $schemas = @(Get-Content $indexPath -ErrorAction SilentlyContinue |
+            Where-Object { $_ } |
+            ForEach-Object { ("" + $_).Split("`t")[1] } |
+            Sort-Object -Unique).Count
+        $where = ""
+        if ($container) { $where = " in the container '$container' (stopped for this install)" }
+        $mine = "$own table(s)"
+        if ($schemas -gt 0) { $mine = "$mine in $schemas schema(s)" }
+        $rest = ""
+        if ([int]("0" + $sample) -gt 0) {
+            $ids = "" + (Get-ExakitManifestValue "legacy.sample_left_out")
+            $rest = " The other $sample is the kit's own $ids sample, which this install loads itself."
+        }
+        Write-Host ""
+        Info "Found your previous starter kit's database${where}: $mine of your own.$rest"
+        Select-LegacyChoice -TableCount ([int]("0" + $own)) -CanMigrate $true -Why ""
+        Set-ExakitManifestValue "legacy.choice" $script:LegacyChoice
+        if ($script:LegacyChoice -ne "migrate") {
+            # A NO DELETES THE COPY. It was made without asking, so it does not
+            # outlive the answer - and the old container still holds the
+            # original, untouched.
+            Remove-Item -Recurse -Force $dir -ErrorAction SilentlyContinue
+            Set-ExakitManifestValue "legacy.export_dir" ""
+            Set-ExakitManifestValue "legacy.crossing_done" $true
+            Info "The old database is left exactly as it was, stopped, with its data."
+            Info "To copy it into the new database later: exakit migrate docker-nano"
+            $rm = Get-LegacyRemoveCommand
+            if ($rm) { Info "When you no longer want it: $rm" }
+            Write-Host ""
+            return
+        }
+        Info "Nothing in the old database is changed. One thing to know: a text column that held an empty string arrives as NULL."
+    } else {
+        Write-Host ""
+        Info "Restoring your data into the new database"
+    }
+
     if (-not (Import-LegacyTables -Dir $dir)) {
         Warn2 "Your data could not be restored. The copy is kept at $(Get-ExakitTilde $dir)."
         return
     }
     [void](Write-LegacyRestoreReport -Dir $dir -Why "this install had already created them")
+    Set-ExakitManifestValue "legacy.crossing_done" $true
     Write-Host ""
 }
 

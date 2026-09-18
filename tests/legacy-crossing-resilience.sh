@@ -199,14 +199,16 @@ H="$WORK/nostop"; seed "$H"; fault "$H" engine.stop_rc 1
 _o="$(before "$H" EXAKIT_LEGACY_DATA=skip)"; note_rc "$_o"
 check "a stop that fails does not fail the crossing" "0" "$(rc_of "$_o")"
 has "...it warns the port may still be held" "may find its port busy" "$_o"
-check "...and the question is still settled" "true" "$(mget "$H" legacy.crossing_done)"
+# The first half settles nothing: it copies and stops, and the question is
+# the second half's. A stop that failed changes neither.
+check "...and the question is still the second half's" "" "$(mget "$H" legacy.crossing_done)"
 check "...with the container NOT recorded as stopped" "" "$(mget "$H" legacy.container_stopped)"
 
 # The same refusal on the MIGRATE path: the copy is already safe on disk, so
 # the warning is the only consequence.
 H="$WORK/nostop-migrate"; seed "$H"; fault "$H" engine.stop_rc 1
-_o="$(before "$H" EXAKIT_LEGACY_DATA=migrate)"; note_rc "$_o"
-has "on migrate too, the copy lands" "Your data is saved" "$_o"
+_o="$(before "$H")"; note_rc "$_o"
+check "the copy lands even so" "3" "$(mget "$H" legacy.exported)"
 has "...and the stop failure is named" "may find its port busy" "$_o"
 check "...with the export still recorded" "3" "$(mget "$H" legacy.exported)"
 
@@ -232,8 +234,12 @@ check "...the removal command has nothing to name and says so" "1" \
 # for what it is.
 H="$WORK/unknown"; seed "$H"; fault "$H" engine.state unknown
 _o="$(before "$H" EXAKIT_LEGACY_DATA=skip)"; note_rc "$_o"
-has "an unparseable state still leads to the offer" "Found your previous starter kit" "$_o"
-has "...and the banner shows the state honestly" "(unknown)" "$_o"
+check "an unparseable state still leads to the copy" "3" "$(mget "$H" legacy.exported)"
+# ONE call, not two: the first answers the question and the second would find
+# it already answered.
+_o2="$(after "$H" EXAKIT_LEGACY_DATA=skip)"
+has "...and the offer that follows it" "Found your previous starter kit" "$_o2"
+has "...naming the state it is in by then" "stopped for this install" "$_o2"
 
 # An engine that refuses `inspect -f` but answers a plain `inspect` (too old
 # for the template flag): the container exists, its state cannot be read, and
@@ -300,7 +306,7 @@ check "...then stopped again, holding nothing" "1" "$(calls "$H" engine | grep -
 # ask, and the crossing proceeds as if it had answered on the first.
 H="$WORK/late"; seed "$H"; fault "$H" db.answer_after 2
 _o="$(before "$H" EXAKIT_LEGACY_DATA=migrate)"; note_rc "$_o"
-has "a database that answers late is still copied" "Your data is saved" "$_o"
+check "a database that answers late is still copied" "3" "$(mget "$H" legacy.exported)"
 check "...all three tables" "3" "$(mget "$H" legacy.exported)"
 
 # A database with nothing in it. Nothing to offer; nothing said.
@@ -330,26 +336,29 @@ echo "copying out tolerates partial failure:"
 H="$WORK/partial"; seed "$H"; fault "$H" export.fail "S1.T2"
 _o="$(before "$H" EXAKIT_LEGACY_DATA=migrate)"; note_rc "$_o"
 has "a table that will not copy is named" "Could not copy S1.T2" "$_o"
-has "...and the run still saves the rest" "Your data is saved" "$_o"
+check "...and the run still saves the rest" "$H/migration" "$(mget "$H" legacy.export_dir)"
 check "two of three exported" "2" "$(mget "$H" legacy.exported)"
 check "...one recorded as failed" "1" "$(mget "$H" legacy.export_failed)"
 check "the failed table is not in the index" "0" "$(grep -c 'S1	T2' "$H/migration/index")"
 check "...and its partial file is gone" "no" "$([ -e "$H/migration/t2.csv" ] && echo yes || echo no)"
 check "the files that landed are the positional ones" "t1.csv t3.csv" "$(cd "$H/migration" && ls t*.csv | tr '\n' ' ' | sed 's/ $//')"
-check "the choice stays migrate" "migrate" "$(mget "$H" legacy.choice)"
+check "the answer is still the user's to give" "" "$(mget "$H" legacy.choice)"
 
 # EVERY table refuses. Nothing is lost - the old database is untouched - and
 # the crossing downgrades itself to skip, saying so, with no export_dir left
 # behind for the second half to trip on.
 H="$WORK/allfail"; seed "$H"; printf 'S1.T1\nS1.T2\nS2.T3\n' > "$H/ctrl/export.fail"
 _o="$(before "$H" EXAKIT_LEGACY_DATA=migrate)"; note_rc "$_o"
-has "when nothing copies, it says so" "Nothing could be copied out" "$_o"
-has "...and that nothing is lost" "nothing is lost" "$_o"
-check "the choice is downgraded to skip" "skip" "$(mget "$H" legacy.choice)"
+# NOT A WORD ON SCREEN, AND NOT AN ANSWER EITHER. This is the first thing the
+# install does; a copy that could not be made is a condition to record, not a
+# decision to announce or to make for the user.
+lacks "when nothing copies, nothing is announced" "Found your previous" "$_o"
+has "...the reason is kept" "nothing could be copied out" "$(mget "$H" legacy.offer_blocked)"
+check "...and no answer is invented" "" "$(mget "$H" legacy.choice)"
 check "...no export_dir is recorded" "" "$(mget "$H" legacy.export_dir)"
 check "...zero exported, three failed" "0/3" "$(mget "$H" legacy.exported)/$(mget "$H" legacy.export_failed)"
-has "...and the removal command is offered, as on any skip" "rm -f exasol-nano" "$_o"
-_o2="$(after "$H")"
+check "...and the crossing is not closed" "" "$(mget "$H" legacy.crossing_done)"
+_o2="$(after "$H" EXAKIT_LEGACY_DATA=migrate)"
 check "the second half then has nothing to do" "" "$(quiet "$_o2")"
 
 # The column catalogue has nothing for one table (a view, a table dropped
@@ -360,7 +369,7 @@ _o="$(before "$H" EXAKIT_LEGACY_DATA=migrate)"; note_rc "$_o"
 check "a table with no column catalogue still exports" "3" "$(mget "$H" legacy.exported)"
 check "...its index line ends in an empty ddl" "1" "$(awk -F'\t' '$3 == "T2" && $4 == ""' "$H/migration/index" | wc -l | tr -d ' ')"
 check "...while the catalogued one carries its types" "1" "$(awk -F'\t' '$3 == "T1" && $4 ~ /DECIMAL\(18,0\)/' "$H/migration/index" | wc -l | tr -d ' ')"
-_o2="$(after "$H")"
+_o2="$(after "$H" EXAKIT_LEGACY_DATA=migrate)"
 check "the restore then uploads it without a CREATE TABLE" "0" "$(calls "$H" exapump | grep -c 'CREATE TABLE "S1"."T2"')"
 check "...and counts it restored" "3" "$(mget "$H" legacy.restored)"
 
@@ -368,8 +377,8 @@ check "...and counts it restored" "3" "$(mget "$H" legacy.restored)"
 # before any table, which is the "nothing could be copied" road.
 H="$WORK/nodir"; seed "$H"; : > "$H/migration"
 _o="$(before "$H" EXAKIT_LEGACY_DATA=migrate)"; note_rc "$_o"
-has "an unwritable export directory is survived" "Nothing could be copied out" "$_o"
-check "...and reads as skip" "skip" "$(mget "$H" legacy.choice)"
+check "an unwritable export directory is survived" "0" "$(rc_of "$_o")"
+has "...with the reason kept" "nothing could be copied out" "$(mget "$H" legacy.offer_blocked)"
 check "...with the install unblocked" "0" "$(rc_of "$_o")"
 
 # The DDL builder on its own: types carried, identifiers quoted, a table with
@@ -405,7 +414,7 @@ echo "restoring tolerates partial failure and heals what it can:"
 H="$WORK/mixed"; seed "$H"
 _o="$(before "$H" EXAKIT_LEGACY_DATA=migrate)"; note_rc "$_o"
 fault "$H" import.exists "S1.T2"; fault "$H" upload.fail "S2.T3"
-_o2="$(after "$H")"
+_o2="$(after "$H" EXAKIT_LEGACY_DATA=migrate)"
 check "one restored" "1" "$(mget "$H" legacy.restored)"
 check "one left alone" "1" "$(mget "$H" legacy.restore_skipped)"
 check "one failed" "1" "$(mget "$H" legacy.restore_failed)"
@@ -423,7 +432,7 @@ check "the second half returns cleanly" "0" "$(rc_of "$_o2")"
 # Everything lands: the copy is declared expendable and the old container is
 # named as still holding the original.
 H="$WORK/clean"; seed "$H"
-_o="$(before "$H" EXAKIT_LEGACY_DATA=migrate)"; note_rc "$_o"; _o2="$(after "$H")"
+_o="$(before "$H" EXAKIT_LEGACY_DATA=migrate)"; note_rc "$_o"; _o2="$(after "$H" EXAKIT_LEGACY_DATA=migrate)"
 has "a clean restore says the copy can go" "no longer needed" "$_o2"
 has "...and that the original is still in the container" "still holds the original" "$_o2"
 has "...with the exact removal command" "rm -f exasol-nano && fakeengine volume rm exasol-nano-data" "$_o2"
@@ -433,7 +442,7 @@ check "...none skipped, none failed" "/" "$(mget "$H" legacy.restore_skipped)/$(
 # The second half is IDEMPOTENT: a re-run after a completed restore does
 # nothing - not one more upload - because the record says it is done.
 _uploads_before="$(calls "$H" exapump | grep -c '^upload')"
-_o3="$(after "$H")"
+_o3="$(after "$H" EXAKIT_LEGACY_DATA=migrate)"
 check "a second run of the restore is silent" "" "$(quiet "$_o3")"
 check "...and issues no further uploads" "$_uploads_before" "$(calls "$H" exapump | grep -c '^upload')"
 
@@ -443,7 +452,7 @@ check "...and issues no further uploads" "$_uploads_before" "$(calls "$H" exapum
 H="$WORK/gonefile"; seed "$H"
 _o="$(before "$H" EXAKIT_LEGACY_DATA=migrate)"; note_rc "$_o"
 rm -f "$H/migration/t2.csv"
-_o2="$(after "$H")"
+_o2="$(after "$H" EXAKIT_LEGACY_DATA=migrate)"
 check "a missing file is skipped, the rest restored" "2" "$(mget "$H" legacy.restored)"
 check "...and not counted as a failure" "" "$(mget "$H" legacy.restore_failed)"
 check "...no upload was attempted for it" "0" "$(calls "$H" exapump | grep '^upload' | grep -c 't2.csv')"
@@ -453,7 +462,7 @@ check "...no upload was attempted for it" "0" "$(calls "$H" exapump | grep '^upl
 H="$WORK/noschema"; seed "$H"
 _o="$(before "$H" EXAKIT_LEGACY_DATA=migrate)"; note_rc "$_o"
 fault "$H" import.schema_rc 1
-_o2="$(after "$H")"
+_o2="$(after "$H" EXAKIT_LEGACY_DATA=migrate)"
 check "a failed CREATE SCHEMA does not stop the restore" "3" "$(mget "$H" legacy.restored)"
 
 # The index has blank lines and a line with too few fields (a hand edit, a
@@ -463,7 +472,7 @@ H="$WORK/badindex"; seed "$H"
 _o="$(before "$H" EXAKIT_LEGACY_DATA=migrate)"; note_rc "$_o"
 { printf '\n\nnot-a-real-line\n'; cat "$H/migration/index"; printf '\n'; } > "$H/migration/index.new"
 mv "$H/migration/index.new" "$H/migration/index"
-_o2="$(after "$H")"
+_o2="$(after "$H" EXAKIT_LEGACY_DATA=migrate)"
 check "blank and malformed index lines are stepped over" "3" "$(mget "$H" legacy.restored)"
 check "...with nothing counted as failed" "" "$(mget "$H" legacy.restore_failed)"
 
@@ -472,14 +481,14 @@ check "...with nothing counted as failed" "" "$(mget "$H" legacy.restore_failed)
 H="$WORK/emptyindex"; seed "$H"
 run "$H" "" 'manifest_set legacy.export_dir "$EXAKIT_HOME/migration"' >/dev/null
 mkdir -p "$H/migration"; : > "$H/migration/index"
-_o2="$(after "$H")"
+_o2="$(after "$H" EXAKIT_LEGACY_DATA=migrate)"
 check "an empty index restores nothing, silently" "" "$(quiet "$_o2")"
 check "...and returns cleanly" "0" "$(rc_of "$_o2")"
 
 # The whole export directory is gone (the user deleted it). Same answer.
 H="$WORK/gonedir"; seed "$H"
 run "$H" "" 'manifest_set legacy.export_dir "$EXAKIT_HOME/migration"' >/dev/null
-_o2="$(after "$H")"
+_o2="$(after "$H" EXAKIT_LEGACY_DATA=migrate)"
 check "a deleted export directory is survived" "" "$(quiet "$_o2")"
 
 # legacy_import on a directory with no index at all: the honest non-zero.
@@ -488,7 +497,7 @@ check "the importer refuses a directory with no index" "1" "$(run "$H" "" 'legac
 # ...and the second half turns that into a kept copy, not a crash.
 run "$H" "" 'manifest_set legacy.export_dir "$EXAKIT_HOME/migration"' >/dev/null
 printf 'x\n' > "$H/migration/index"; : > "$H/migration/x"      # an index with a row, no file
-_o2="$(after "$H")"
+_o2="$(after "$H" EXAKIT_LEGACY_DATA=migrate)"
 check "a restore that lands nothing keeps the copy" "0" "$(mget "$H" legacy.restored)"
 check "...and returns cleanly" "0" "$(rc_of "$_o2")"
 
@@ -513,11 +522,12 @@ PY
 _stops_before="$(calls "$H" engine | grep -c '^stop ')"
 _exports_before="$(calls "$H" exapump | grep -c '^export')"
 _o2="$(before "$H")"; note_rc "$_o2"
-check "the resumed first half says nothing" "" "$(quiet "$_o2")"
-check "...asks no question (the record already answers)" "migrate" "$(mget "$H" legacy.choice)"
+check "the resumed first half stops the container and says that" "1"     "$(printf '%s
+' "$_o2" | grep -c 'Stopping the old database container')"
+check "...and still asks nothing itself" "" "$(mget "$H" legacy.choice)"
 check "...copies nothing twice" "$_exports_before" "$(calls "$H" exapump | grep -c '^export')"
 check "...but does stop the container it left running" "$(( _stops_before + 1 ))" "$(calls "$H" engine | grep -c '^stop ')"
-_o3="$(after "$H")"
+_o3="$(after "$H" EXAKIT_LEGACY_DATA=migrate)"
 has "and the second half restores the first half's copy" "Restored 3 table(s)" "$_o3"
 
 # The run died AFTER crossing_done but before the deployment recorded itself
@@ -540,7 +550,7 @@ H="$WORK/personal"; SEED_TYPE=personal seed "$H"
 _o="$(before "$H")"; note_rc "$_o"
 check "a Personal install passes straight through" "" "$(quiet "$_o")"
 check "...touching neither stub" "/" "$(calls "$H" engine)/$(calls "$H" exapump)"
-_o2="$(after "$H")"
+_o2="$(after "$H" EXAKIT_LEGACY_DATA=migrate)"
 check "...and so does the second half" "" "$(quiet "$_o2")"
 
 # =============================================================================
@@ -550,24 +560,35 @@ echo "the whole road, end to end:"
 # MIGRATE, container running. Every record the two halves leave, and the exact
 # sequence of verbs the engine saw.
 H="$WORK/e2e-migrate"; seed "$H"
-_o="$(before "$H" EXAKIT_LEGACY_DATA=migrate)"; note_rc "$_o"
-has "the banner names the container and its state" "container 'exasol-nano' (running)" "$_o"
-# ONE LINE, NOT SIX: the name, the state, and how much of the user's own data
-# is in there. What it no longer says before the question - what the kit does
-# not manage, what it deploys instead, what the copy costs, and the caveat
-# about empty strings - is either in the docs or said with the copy itself.
-has "...and how much of it is the user's own" "3 table(s) in 2 schema(s) of your own" "$(flat "$_o")"
-lacks "...without the paragraph that used to precede it" "runs in a container" "$_o"
-has "...and the one caveat CSV carries" "empty string arrives as NULL" "$_o"
-check "choice" "migrate" "$(mget "$H" legacy.choice)"
+# THE FIRST HALF SAYS NOTHING AND ASKS NOTHING. It is the only moment the old
+# container can be read - it holds the port the deployment is about to take -
+# so the tables come out here, quietly, and the question waits for the half
+# that runs after exapump.
+_o="$(before "$H")"; note_rc "$_o"
+check "the first half says one thing: why the container stopped" "1"     "$(printf '%s
+' "$_o" | grep -c 'Stopping the old database container')"
+lacks "...and nothing about a copy or a question" "Found your previous" "$_o"
+check "...and records no answer on the user's behalf" "" "$(mget "$H" legacy.choice)"
+check "...and does not close the crossing" "" "$(mget "$H" legacy.crossing_done)"
 check "crossed_from" "nano" "$(mget "$H" legacy.crossed_from)"
 check "export_dir" "$H/migration" "$(mget "$H" legacy.export_dir)"
 check "exported" "3" "$(mget "$H" legacy.exported)"
 check "container_stopped" "true" "$(mget "$H" legacy.container_stopped)"
-check "crossing_done" "true" "$(mget "$H" legacy.crossing_done)"
+check "the counts are kept for the question" "3" "$(mget "$H" legacy.tables_own)"
 check "the engine saw inspect, then inspect, then stop - and nothing else" "container container stop" "$(verbs "$H")"
 check "every export went through the LEGACY profile" "3" "$(calls "$H" exapump | grep '^export' | grep -c -- '-p starter-kit-legacy')"
-_o2="$(after "$H")"
+# THE SECOND HALF ASKS, THEN RESTORES.
+_o2="$(after "$H" EXAKIT_LEGACY_DATA=migrate)"
+has "the banner names the container" "container 'exasol-nano'" "$_o2"
+# ONE LINE, NOT SIX: the name, the state it is in by now, and how much of the
+# user's own data is in there. What it no longer says - what the kit does not
+# manage, what it deploys instead, what the copy costs - is in the docs.
+has "...and how much of it is the user's own" "3 table(s) in 2 schema(s) of your own" "$(flat "$_o2")"
+lacks "...without the paragraph that used to precede it" "runs in a container" "$_o2"
+has "...and the state it is in when asked" "stopped for this install" "$_o2"
+has "...and the one caveat CSV carries" "empty string arrives as NULL" "$_o2"
+check "choice" "migrate" "$(mget "$H" legacy.choice)"
+check "crossing_done" "true" "$(mget "$H" legacy.crossing_done)"
 has "the second half restores" "Restored 3 table(s)" "$_o2"
 check "every upload went through the KIT's profile" "3" "$(calls "$H" exapump | grep '^upload' | grep -c -- '-p starter-kit ')"
 check "...into the new database, never the old" "0" "$(calls "$H" exapump | grep '^upload' | grep -c -- 'starter-kit-legacy')"
@@ -578,22 +599,27 @@ check "and a later install asks nothing again" "" "$(quiet "$_o3")"
 
 # MIGRATE, container stopped: it is started for the copy and stopped after.
 H="$WORK/e2e-stopped"; seed "$H"; fault "$H" engine.state stopped
-_o="$(before "$H" EXAKIT_LEGACY_DATA=migrate)"; note_rc "$_o"
-has "a stopped container is copied too" "Your data is saved" "$_o"
-has "...and the banner reports the state it found" "(stopped)" "$_o"
+_o="$(before "$H")"; note_rc "$_o"
+check "a stopped container is copied too" "3" "$(mget "$H" legacy.exported)"
+lacks "...saying nothing about it" "Found your previous" "$_o"
 check "the engine saw a start before the stop" "yes" \
     "$(calls "$H" engine | awk '$1=="start"{s=NR} $1=="stop"{t=NR} END{ print (s && t && s < t) ? "yes" : "no" }')"
 
 # SKIP: no copy, container stopped, removal command printed, nothing deleted.
 H="$WORK/e2e-skip"; seed "$H"
-_o="$(before "$H" EXAKIT_LEGACY_DATA=skip)"; note_rc "$_o"
-has "skip leaves the old database alone, and says so" "left exactly as it was, stopped, with its data" "$_o"
-has "...with the command that removes it when wanted" "fakeengine rm -f exasol-nano && fakeengine volume rm exasol-nano-data" "$_o"
-check "no export was issued" "0" "$(calls "$H" exapump | grep -c '^export')"
+_o="$(before "$H")"; note_rc "$_o"
 check "the container was stopped" "1" "$(calls "$H" engine | grep -c '^stop ')"
+_o2="$(after "$H" EXAKIT_LEGACY_DATA=skip)"
+has "skip leaves the old database alone, and says so" "left exactly as it was, stopped, with its data" "$_o2"
+has "...with the command that removes it when wanted" "fakeengine rm -f exasol-nano && fakeengine volume rm exasol-nano-data" "$_o2"
 check "and the crossing is done" "true" "$(mget "$H" legacy.crossing_done)"
-_o2="$(after "$H")"
-check "the second half has nothing to restore" "" "$(quiet "$_o2")"
+check "nothing was restored" "" "$(mget "$H" legacy.restored)"
+# A NO DELETES THE COPY: it was made without asking, so it does not outlive
+# the answer. The old container still holds the original.
+check "the copy is gone" "no" "$([ -f "$H/migration/index" ] && echo yes || echo no)"
+check "...and the record no longer points at one" "" "$(mget "$H" legacy.export_dir)"
+_o3="$(after "$H")"
+check "a later run has nothing to restore" "" "$(quiet "$_o3")"
 
 # =============================================================================
 echo
@@ -672,7 +698,8 @@ echo "the kit's own sample data is left out of the copy:"
 H="$WORK/sample"; seed "$H"
 printf 'S1.T1\nTPCH.NATION\nTPCH.REGION\n' > "$H/ctrl/db.tables"
 printf 'TPCH.NATION|24\nTPCH.REGION|5\n' > "$H/ctrl/db.rows"
-_o="$(before "$H" EXAKIT_LEGACY_DATA=migrate)"; note_rc "$_o"
+_o="$(before "$H")"; note_rc "$_o"
+_o="$(after "$H" EXAKIT_LEGACY_DATA=migrate)"
 has "the banner counts the user's own tables" "2 table(s) in 2 schema(s) of your own" "$(flat "$_o")"
 has "...and says the rest is the kit's"       "The other 1 is the kit's own tpch sample" "$(flat "$_o")"
 # The caveat belongs to the copy, not to the question before it.
@@ -717,7 +744,8 @@ lacks "...and nothing is called the kit's"           "bundled sample data" "$_o"
 
 # The skip road now names the later route.
 H="$WORK/skip-later"; seed "$H"
-_o="$(before "$H" EXAKIT_LEGACY_DATA=skip)"; note_rc "$_o"
+_o="$(before "$H")"; note_rc "$_o"
+_o="$(after "$H" EXAKIT_LEGACY_DATA=skip)"
 has "skip names the command that copies it later" "exakit migrate docker-nano" "$_o"
 
 # =============================================================================
@@ -940,8 +968,8 @@ check "...no upload was attempted"                        "0" "$(calls "$H" exap
 check "...and the record does not say restored"           "" "$(mget "$H" legacy.restored)"
 # The install's own second half, same fault: the copy waits for the next run.
 H="$WORK/after-newdb-silent"; seed "$H"; fault "$H" newdb.answers no
-_o="$(before "$H" EXAKIT_LEGACY_DATA=migrate)"; note_rc "$_o"
-_o2="$(after "$H")"
+_o="$(before "$H")"; note_rc "$_o"
+_o2="$(after "$H" EXAKIT_LEGACY_DATA=migrate)"
 has "the install's restore says the copy is kept"         "could not be restored. The copy is kept" "$_o2"
 check "...and leaves the restore unrecorded for a re-run" "" "$(mget "$H" legacy.restored)"
 fault "$H" newdb.answers yes
