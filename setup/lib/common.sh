@@ -6352,6 +6352,9 @@ exakit_on_failure() {
     # first, so a failure mid-animation never leaves a stuck/invisible cursor.
     ui_spin_end 2>/dev/null || true
     ui_restore_cursor
+    # Same reason as the sweep below: a background prefetch is this run's
+    # process, and a run that is ending does not get to leave one downloading.
+    if command -v mcp_prefetch_stop >/dev/null 2>&1; then mcp_prefetch_stop 2>/dev/null || true; fi
     exakit_sweep_sensitive_tmp     # never leave credential temp files behind
     [ $_status -eq 0 ] && return 0
     # Same "card" shape as die(): prominent ✗ header, dim gutter details.
@@ -6429,6 +6432,9 @@ exakit_enable_failure_handling() {
 # Call at the very end of a successful run.
 exakit_finish() {
     trap - EXIT
+    # A prefetch that never got collected (the MCP step was skipped, or the run
+    # is ending early) must not outlive the installer. No-op when there is none.
+    if command -v mcp_prefetch_stop >/dev/null 2>&1; then mcp_prefetch_stop || true; fi
     rollback_discard
     exakit_release_lock
     EXAKIT_CURRENT_STEP=""
@@ -9654,6 +9660,14 @@ kit_shared_steps() {
         # and the closing summary said nothing (wrong). Record it so the user
         # leaves knowing the database is empty and which command fills it.
         exakit_clear_failure_note
+        # THE BRIDGE'S DOWNLOAD STARTS HERE, not two steps later. Priming the
+        # MCP package is a network download and an unpack; the load below is a
+        # local database reading local files. Neither needs the other, so the
+        # download runs underneath the load and the AI bridge step collects a
+        # finished one. See mcp_prefetch_begin.
+        if command -v mcp_prefetch_begin >/dev/null 2>&1; then
+            mcp_prefetch_begin || true
+        fi
         if ! exakit_maybe_offer_data_load "$_kit_root"; then
             exakit_record_soft_failure sample_data "exakit data-load" \
                 "$(exakit_take_failure_note)" "sample data"

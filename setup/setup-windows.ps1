@@ -181,6 +181,14 @@ try {
         if (Get-Command Invoke-LegacyCrossingAfter -ErrorAction SilentlyContinue) {
             Invoke-LegacyCrossingAfter
         }
+        # THE BRIDGE'S DOWNLOAD STARTS HERE, not two steps later. Priming the
+        # MCP package is a network download and an unpack; the load below is a
+        # local database reading local files. Neither needs the other, so the
+        # download runs underneath the load and Step 4 collects a finished one.
+        # See Start-ExakitMcpPrefetch. Twin of the same call in kit_shared_steps.
+        if (Get-Command Start-ExakitMcpPrefetch -ErrorAction SilentlyContinue) {
+            try { Start-ExakitMcpPrefetch } catch { }
+        }
         [void](Invoke-ExakitBestEffort -Component "sample_data" -Repair "exakit data-load" `
             -Label "sample data" `
             -Warning "Sample data load did not finish cleanly." `
@@ -438,5 +446,11 @@ try {
     # stops it on the path it owns; this covers every other way out, including
     # the ones nobody has thought of yet.
     try { Stop-ExakitAnimation } catch { }
+    # A prefetch that never got collected (the MCP step was skipped, or the run
+    # is ending early) must not outlive the installer. This finally is the one
+    # place every exit passes through. Twin of the same call in exakit_finish.
+    if (Get-Command Stop-ExakitMcpPrefetch -ErrorAction SilentlyContinue) {
+        try { Stop-ExakitMcpPrefetch } catch { }
+    }
     Exit-ExakitInstallLock
 }
