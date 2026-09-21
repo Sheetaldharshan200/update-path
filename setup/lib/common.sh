@@ -71,11 +71,15 @@ EXAKIT_PYEXASOL_VERSION="${EXAKIT_PYEXASOL_VERSION:-}"
 # possible (offline install, API rate limit, private mirror). Successful latest
 # resolutions are recorded in the manifest so later updates compare against the
 # version that was actually installed.
-# 2.3.0-rc3 DELIBERATELY, and only until 2.3.0 final publishes: the flipped
-# Linux and Windows defaults need a launcher that HAS local deployments there,
-# which no 2.2 release does. Moving to final is this constant plus
-# components.personal.version in versions.json, together in one commit.
-EXAKIT_PERSONAL_VERSION_FALLBACK="${EXAKIT_PERSONAL_VERSION_FALLBACK:-2.3.0-rc3}"
+# A RELEASE CANDIDATE, and candidates are deleted. rc2 and rc3 were both
+# removed upstream while pinned here, and the second one reached a user as a
+# 404 mid-install with the launcher half-downloaded. So this constant and
+# components.personal.version in versions.json move together, and they move to
+# a release that still exists - check before pinning, not after.
+# A candidate at all, rather than 2.2: the flipped Linux and Windows defaults
+# need a launcher that HAS local deployments there, which no 2.2 release does.
+# Both go to 2.3.0 final the day it publishes.
+EXAKIT_PERSONAL_VERSION_FALLBACK="${EXAKIT_PERSONAL_VERSION_FALLBACK:-2.3.0-rc6}"
 EXAKIT_EXAPUMP_VERSION_FALLBACK="${EXAKIT_EXAPUMP_VERSION_FALLBACK:-0.13.0}"
 EXAKIT_MCP_VERSION_FALLBACK="${EXAKIT_MCP_VERSION_FALLBACK:-2.2.0}"
 EXAKIT_PYEXASOL_VERSION_FALLBACK="${EXAKIT_PYEXASOL_VERSION_FALLBACK:-2.4.1}"
