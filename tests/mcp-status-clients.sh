@@ -310,5 +310,41 @@ case "$MCP_PS" in
     *) fail "the twin leaves the reader with no next step" ;;
 esac
 
+
+# ---------------------------------------------------------------------------
+# ZERO OF ZERO IS NOT SUCCESS.
+#
+# The client menu counts "pending" rows - clients installed but not connected -
+# and when there are none it reports that everything is already wired up. On a
+# machine with no AI client on it at all every row is "not installed", the
+# pending count is also zero, and a fresh Windows install was told "All AI
+# clients found on this machine are already connected over MCP" over configs
+# the kit had never touched. The two cases have to be told apart before that
+# line is printed.
+# ---------------------------------------------------------------------------
+MCP_SH_SRC="$(cat "$ROOT/setup/lib/common.sh")"
+MCP_PS_SRC="$(cat "$ROOT/setup/lib/mcp.ps1")"
+for _half in sh ps; do
+    case "$_half" in
+        sh) _src="$MCP_SH_SRC"; _name="the shell half" ;;
+        *)  _src="$MCP_PS_SRC"; _name="the PowerShell twin" ;;
+    esac
+    case "$_src" in
+        *"No AI client was found on this machine"*)
+            pass "$_name says so when nothing is installed" ;;
+        *) fail "$_name still claims every client is connected when none exists" ;;
+    esac
+    case "$_src" in
+        *"_connected_count"*|*'$connectedCount'*)
+            pass "$_name counts what is actually connected, not just what is pending" ;;
+        *) fail "$_name decides the message from the pending count alone" ;;
+    esac
+    case "$_src" in
+        *"exakit mcp-setup'."*|*"exakit mcp-setup'.\""*)
+            pass "$_name names the command that connects one later" ;;
+        *) fail "$_name leaves the reader with no next step" ;;
+    esac
+done
+
 printf '\n%d checks, %d failed\n' "$checks" "$fails"
 [ "$fails" -eq 0 ]

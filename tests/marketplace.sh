@@ -1961,7 +1961,35 @@ COMMON_PS_D="$(cat "$ROOT/setup/lib/exakit-common.ps1")"
 has   "the shell defers under a table"  "_exakit_defer_under_addon_table" "$COMMON_D"
 check "...from both printers"           "2" \
     "$(printf '%s\n' "$COMMON_D" | grep -c 'if _exakit_defer_under_addon_table')"
-has   "Warn2 defers too"                'if ($script:ExakitAddonTableLive) {' "$COMMON_PS_D"
+has   "Warn2 defers too"                'if (Test-ExakitAddonNarrationLive) {' "$COMMON_PS_D"
+
+# THE FALLBACK BAR WAS NOT A TABLE, AND THAT WAS THE WHOLE BUG. Where the table
+# cannot be drawn the narration falls back to a one-line progress bar, which
+# owns its line the way the table owns its frame - but only the table counted,
+# so on that path a warning printed the instant it happened, beside a bar still
+# being redrawn. It ran off the right edge, wrapped, and pushed the bar down:
+# one add-on's single bar arrived on screen as three broken rows with
+# half-sentences bleeding between them. Both halves now defer for either.
+has   "the shell knows the bar owns the screen too" \
+    "_exakit_addon_narration_live" "$COMMON_D"
+has   "...and raises the flag around the fallback bar" \
+    "EXAKIT_ADDON_BAR_LIVE=1" "$COMMON_D"
+check "...and lowers it again wherever that bar ends" "2" \
+    "$(printf '%s\n' "$COMMON_D" | grep -c 'EXAKIT_ADDON_BAR_LIVE=0')"
+has   "the deferral gate asks the shared question" \
+    "_exakit_addon_narration_live || return 1" "$COMMON_D"
+has   "the twin has the same predicate" \
+    'return ($script:ExakitAddonTableLive -or $script:ExakitAddonBarLive)' "$COMMON_PS_D"
+has   "...raised around its fallback bar" \
+    '$script:ExakitAddonBarLive = $true' "$COMMON_PS_D"
+check "...and lowered on both ends of the loop" "2" \
+    "$(printf '%s\n' "$COMMON_PS_D" | grep -cE '^ +\$script:ExakitAddonBarLive = \$false$')"
+# Warn2, Write-ExakitError and Write-ExakitAddonNote: every printer that can
+# land on the bar's line, not just the one that always knew about the table.
+check "all three printers ask the shared question" "3" \
+    "$(printf '%s\n' "$COMMON_PS_D" | grep -c 'if (Test-ExakitAddonNarrationLive) {')"
+has   "the shell's table predicate says table, not bar" \
+    "_exakit_addon_table_live() {" "$COMMON_D"
 check "...and so does the error printer" "2" \
     "$(printf '%s\n' "$COMMON_PS_D" | grep -c 'Kind = "warn"; Text = $Msg')"
 # The log still gets every line: deferring must never mean losing.
@@ -2107,6 +2135,75 @@ check "with no record at all it falls back to the plain default" "5100" "$(_dsp_
 has "a successful start records the port it bound" \
     'manifest_set components.dash_server.port "$EXAKIT_DASH_SERVER_PORT" 2>/dev/null' \
     "$(cat "$ROOT/setup/lib/dash-server.sh")"
+
+# THE WINDOWS LAUNCHER HAD NONE OF THIS, and that is why it drifted: every
+# check above exercises the sh launcher by running it, and cmd cannot be run
+# here, so the .cmd twin went untested and quietly stopped reading argv at all.
+# The kit starts it as `dash-server.cmd --host 127.0.0.1 --port <n>` and then
+# waits on <n>; with argv unread, the wrapper's own pre-flight probed whatever
+# its manifest scan turned up and could answer "already running" about a port
+# nobody had asked about, while the kit reported "did not answer on 5100".
+# Read from the generator's source, which is the closest this host can get to
+# running cmd.
+_dsw="$(cat "$ROOT/setup/lib/dash-server.ps1")"
+echo "the Windows dash-server launcher resolves the port the same way:"
+has "it walks argv for --port before anything else" \
+    'if /i `"%~1`"==`"--port`" goto exakit_ds_argv_want' "$_dsw"
+has "...and understands --port=N too" \
+    'if `"%EXAKIT_DS_ARG:~0,7%`"==`"--port=`" goto exakit_ds_argv_eq' "$_dsw"
+check "the argv walk runs before the manifest is consulted" "yes" \
+    "$(printf '%s' "$_dsw" | awk '/exakit_ds_argv_done/{a=NR} /EXAKIT_DS_MANIFEST=%USERPROFILE%/{if(a&&NR>a){print "yes";exit}}' | head -1)"
+has "the manifest scan takes the FIRST port key, not the last" \
+    'do if not defined EXAKIT_DS_PORT set `"EXAKIT_DS_PORT=%%P`"' "$_dsw"
+has "a non-numeric value is discarded rather than bound" \
+    'for /f `"delims=0123456789`" %%R in' "$_dsw"
+# `shift` does not touch %*, so walking argv must not cost the server its
+# arguments - the kit's --host and --port still have to reach it.
+has "the whole command line still reaches the server after the walk" \
+    '`"$exe`" %*' "$_dsw"
+# Same rule as the sh launcher: the probe and the bind carry no port of their
+# own, only the one resolved above.
+check "no literal port in its probe or its bind" "0" \
+    "$(printf '%s' "$_dsw" | grep -cE '127\.0\.0\.1:[0-9]+/mcp|DASH_SERVER_PORT=[0-9]+`')"
+
+echo "a dash-server that does not come up says why:"
+# "see the log" IS NOT A DIAGNOSIS - and on the Windows half the named log had
+# nothing in it, because the validation probe was started with no redirection
+# at all. Both halves now redirect to their own file and put the reason on
+# screen. The extractor is exercised for real: a traceback must yield its
+# exception, not its first frame.
+_dsr="$WORK/dsreason"; mkdir -p "$_dsr"
+printf 'Serving on http://127.0.0.1:5100\nTraceback (most recent call last):\n  File "x.py", line 1\nOSError: [Errno 98] Address already in use\n' > "$_dsr/trace.log"
+printf 'dash-server is already running: http://127.0.0.1:8563 (MCP: /mcp)\n' > "$_dsr/wrongport.log"
+: > "$_dsr/empty.log"
+check "a traceback yields its exception, not its first frame" \
+    "OSError: [Errno 98] Address already in use" "$(_dash_server_failure_reason "$_dsr/trace.log")"
+check "a launcher that mis-resolved the port is quoted verbatim" \
+    "dash-server is already running: http://127.0.0.1:8563 (MCP: /mcp)" \
+    "$(_dash_server_failure_reason "$_dsr/wrongport.log")"
+check "an empty log yields nothing, so the caller falls back" "" \
+    "$(_dash_server_failure_reason "$_dsr/empty.log")"
+check "a log that is not there yields nothing either" "" \
+    "$(_dash_server_failure_reason "$_dsr/absent.log")"
+has "the validation probe redirects somewhere it can read back" \
+    'dash-server-validate.log' "$(cat "$ROOT/setup/lib/dash-server.sh")"
+has "...and so does the Windows twin, which redirected nowhere at all" \
+    'dash-server-validate.log' "$_dsw"
+has "the Windows twin has the same extractor" \
+    'function Get-DashServerFailureReason' "$_dsw"
+
+echo "dbt-exasol is graded on its connection, not on the machine's git:"
+# `dbt debug` folds a `git --help` check into the same pass/fail as the
+# connection test, and without git it raises BEFORE the connection is tried.
+# Windows ships no git, so every fresh Windows install reported "dbt could not
+# connect to the database" about a database dbt never opened, while the same
+# kit passed on every developer machine. `--connection` is dbt's own flag for
+# this. Verified against dbt 1.12.5: no git -> `debug` exits 2, `debug
+# --connection` exits 0 with "Connection test: [OK connection ok]".
+has "the shell half asks dbt for the connection alone" \
+    'exakit_run_bounded 60 "$_ddo_dbt" debug --connection' "$(cat "$ROOT/setup/lib/dbt-exasol.sh")"
+has "the Windows twin asks the same question" \
+    'Invoke-ExakitLogged $exe "debug" "--connection"' "$(cat "$ROOT/setup/lib/dbt-exasol.ps1")"
 
 echo "passed: $PASS, failed: $FAIL"
 [ "$FAIL" -eq 0 ]
