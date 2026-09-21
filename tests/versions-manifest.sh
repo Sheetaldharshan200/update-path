@@ -273,6 +273,27 @@ check "cached value is used" "$V_CACHED_EXAPUMP" "$( exakit_versions_value compo
 printf 'corrupted by hand\n' > "$EXAKIT_VERSIONS_CACHE"
 check "unreadable cache falls back to the kit copy" "baked" "$( exakit_versions_source )"
 check "kit copy answers again" "$V_BAKED_EXAPUMP" "$( exakit_versions_value components.exapump.version )"
+# A CACHE OLDER THAN THE KIT MUST NOT DOWNGRADE IT. Reported from a Windows
+# machine: a cache left by an earlier kit advertised launcher 2.2.0, the fetch
+# could not reach the network, and the cache stood - so the installer fetched
+# 2.2.0, a launcher with no Windows local deployment in it. Podman is the
+# launcher's job and only from 2.3.0, so nothing installed it, and the run died
+# on the launcher's own gate ("local deployments are only supported on macOS
+# Apple Silicon"). The cache is a memo about what was current last time; it
+# cannot outrank the document that travelled with the code now running.
+fixture_doc "a cache from an older kit" "$EXAKIT_VERSIONS_CACHE" \
+    "updated=2026-08-01" "components.personal.version=0.0.0-older-kit"
+check "a cache older than the kit copy is refused" "baked" "$( exakit_versions_source )"
+check "...and the kit's own launcher version is used" \
+    "$(shipped components.personal.version)" "$( exakit_versions_value components.personal.version )"
+# The narrow rule, both other ways round: only a PROVABLY older cache loses.
+fixture_doc "a cache from a newer kit" "$EXAKIT_VERSIONS_CACHE" \
+    "updated=2099-01-01" "components.personal.version=0.0.0-newer-kit"
+check "a newer cache still wins" "cache" "$( exakit_versions_source )"
+check "...and its value is used" "0.0.0-newer-kit" "$( exakit_versions_value components.personal.version )"
+fixture_doc "a cache with no date at all" "$EXAKIT_VERSIONS_CACHE" \
+    "updated=" "components.personal.version=0.0.0-undated"
+check "an undated cache is not assumed old" "cache" "$( exakit_versions_source )"
 rm -f "$EXAKIT_VERSIONS_CACHE"
 no_doc="$( exakit_repo_root() { return 1; }
            printf '%s ' "$(exakit_versions_source)"

@@ -76,10 +76,14 @@ EXAKIT_PYEXASOL_VERSION="${EXAKIT_PYEXASOL_VERSION:-}"
 # 404 mid-install with the launcher half-downloaded. So this constant and
 # components.personal.version in versions.json move together, and they move to
 # a release that still exists - check before pinning, not after.
-# A candidate at all, rather than 2.2: the flipped Linux and Windows defaults
-# need a launcher that HAS local deployments there, which no 2.2 release does.
-# Both go to 2.3.0 final the day it publishes.
-EXAKIT_PERSONAL_VERSION_FALLBACK="${EXAKIT_PERSONAL_VERSION_FALLBACK:-2.3.0-rc6}"
+# 2.3.0 FINAL since 2026-09-21, so no candidate is pinned here any more - the
+# two deletions above were both candidates, and a published release is not
+# removed the same way. Verified before pinning, as the note above demands:
+# v2.3.0 on exasol/exasol-personal is published, not a draft, not a
+# prerelease, and carries every asset this kit fetches - the macOS and Linux
+# arm64/x86_64 tarballs, the Windows x86_64 zip, and
+# exasol-personal_2.3.0_checksums.txt.
+EXAKIT_PERSONAL_VERSION_FALLBACK="${EXAKIT_PERSONAL_VERSION_FALLBACK:-2.3.0}"
 EXAKIT_EXAPUMP_VERSION_FALLBACK="${EXAKIT_EXAPUMP_VERSION_FALLBACK:-0.13.0}"
 EXAKIT_MCP_VERSION_FALLBACK="${EXAKIT_MCP_VERSION_FALLBACK:-2.2.0}"
 EXAKIT_PYEXASOL_VERSION_FALLBACK="${EXAKIT_PYEXASOL_VERSION_FALLBACK:-2.4.1}"
@@ -2208,6 +2212,40 @@ exakit_versions_update_cache() {
     return 0
 }
 
+# _exakit_versions_cache_outranks_baked — is the CACHE actually newer than the
+# manifest that shipped inside this kit?
+#
+# IT USED TO WIN UNCONDITIONALLY, and that reached a user as a failed Windows
+# install. Their machine had a cache left by an older kit advertising launcher
+# 2.2.0; the fetch could not reach the network, so the cache stood, and the
+# installer downloaded 2.2.0 — a launcher with no Windows local deployment in
+# it at all. Podman was therefore never installed (that is the launcher's job,
+# and only from 2.3.0), and the run died on the launcher's own gate: "local
+# deployments are only supported on macOS Apple Silicon (current platform:
+# windows/amd64)". The kit had done exactly what it was told by a memo about
+# what was current the LAST time some other kit ran.
+#
+# The cache exists to pick up releases newer than the one this kit shipped
+# with, so it keeps precedence in every case but one: it loses when it can be
+# PROVEN OLDER than the kit's own copy. Same date still wins (a fetch usually
+# returns the document this kit shipped with, and a same-day republish must
+# still be picked up), and so does a date that cannot be read on either side.
+# Only a cache that demonstrably predates the running kit is refused, because
+# only that one can downgrade it. Dates are the manifest's own "updated"
+# field, ISO YYYY-MM-DD, so a string compare is a date compare.
+# Twin of Test-ExakitVersionsCacheOutranksBaked.
+_exakit_versions_cache_outranks_baked() {
+    _vcb_cache="$1"; _vcb_baked="$2"
+    [ -n "$_vcb_baked" ] && [ -f "$_vcb_baked" ] || return 0
+    _vcb_bdate="$(exakit_versions_value updated "$_vcb_baked" 2>/dev/null || true)"
+    [ -n "$_vcb_bdate" ] || return 0
+    _vcb_cdate="$(exakit_versions_value updated "$_vcb_cache" 2>/dev/null || true)"
+    [ -n "$_vcb_cdate" ] || return 0
+    # Older than the kit being installed, and only then, the cache is refused.
+    [ "$_vcb_cdate" \< "$_vcb_bdate" ] && return 1
+    return 0
+}
+
 # exakit_versions_resolve_doc — pick the document to read and remember it in
 # _EXAKIT_VERSIONS_DOC/_SOURCE. Callers that read several values should call
 # this once first: command substitutions inherit the memo, so the validation
@@ -2216,12 +2254,13 @@ exakit_versions_resolve_doc() {
     [ -n "$_EXAKIT_VERSIONS_DOC" ] && return 0
     # The cache is written only after validation, but anything under the kit
     # home can be edited by hand — re-check before trusting it.
-    if [ -f "$EXAKIT_VERSIONS_CACHE" ] && exakit_versions_validate "$EXAKIT_VERSIONS_CACHE"; then
+    _vr_baked="$(exakit_versions_baked_doc 2>/dev/null || true)"
+    if [ -f "$EXAKIT_VERSIONS_CACHE" ] && exakit_versions_validate "$EXAKIT_VERSIONS_CACHE" &&
+       _exakit_versions_cache_outranks_baked "$EXAKIT_VERSIONS_CACHE" "$_vr_baked"; then
         _EXAKIT_VERSIONS_DOC="$EXAKIT_VERSIONS_CACHE"
         [ -n "$_EXAKIT_VERSIONS_SOURCE" ] || _EXAKIT_VERSIONS_SOURCE="cache"
         return 0
     fi
-    _vr_baked="$(exakit_versions_baked_doc 2>/dev/null || true)"
     if [ -n "$_vr_baked" ] && exakit_versions_validate "$_vr_baked"; then
         _EXAKIT_VERSIONS_DOC="$_vr_baked"
         _EXAKIT_VERSIONS_SOURCE="baked"

@@ -2382,6 +2382,39 @@ function Update-ExakitVersionsCache {
     return 0
 }
 
+# Test-ExakitVersionsCacheOutranksBaked - is the CACHE actually newer than the
+# manifest that shipped inside this kit?
+#
+# IT USED TO WIN UNCONDITIONALLY, and that reached a user as a failed Windows
+# install. Their machine had a cache left by an older kit advertising launcher
+# 2.2.0; the fetch could not reach the network, so the cache stood, and the
+# installer downloaded 2.2.0 - a launcher with no Windows local deployment in
+# it at all. Podman was therefore never installed (that is the launcher's job,
+# and only from 2.3.0), and the run died on the launcher's own gate: "local
+# deployments are only supported on macOS Apple Silicon (current platform:
+# windows/amd64)". The kit had done exactly what it was told by a memo about
+# what was current the LAST time some other kit ran.
+#
+# The cache exists to pick up releases newer than the one this kit shipped
+# with, so it keeps precedence in every case but one: it loses when it can be
+# PROVEN OLDER than the kit's own copy. Same date still wins (a fetch usually
+# returns the document this kit shipped with, and a same-day republish must
+# still be picked up), and so does a date that cannot be read on either side.
+# Only a cache that demonstrably predates the running kit is refused, because
+# only that one can downgrade it. Dates are the manifest's own "updated"
+# field, ISO YYYY-MM-DD, so a string compare is a date compare.
+# Twin of _exakit_versions_cache_outranks_baked.
+function Test-ExakitVersionsCacheOutranksBaked {
+    param([string]$CachePath, [string]$BakedPath)
+    if (-not $BakedPath -or -not (Test-Path $BakedPath)) { return $true }
+    $bakedDate = "" + (Get-ExakitVersionsValue -Path "updated" -DocPath $BakedPath)
+    if (-not $bakedDate) { return $true }
+    $cacheDate = "" + (Get-ExakitVersionsValue -Path "updated" -DocPath $CachePath)
+    if (-not $cacheDate) { return $true }
+    # Older than the kit being installed, and only then, the cache is refused.
+    return ([string]::CompareOrdinal($cacheDate, $bakedDate) -ge 0)
+}
+
 # Resolve-ExakitVersionsDoc - pick the document to read and remember it, so the
 # validation gate runs once per command instead of once per lookup. Returns the
 # path, or $null when only the compiled-in fallbacks are left.
@@ -2389,12 +2422,13 @@ function Resolve-ExakitVersionsDoc {
     if ($script:VersionsDocPath) { return $script:VersionsDocPath }
     # The cache is written only after validation, but anything under the kit
     # home can be edited by hand - re-check before trusting it.
-    if ((Test-Path $script:VersionsCachePath) -and ((Test-ExakitVersionsDoc -Path $script:VersionsCachePath) -eq 0)) {
+    $baked = Get-ExakitVersionsBakedPath
+    if ((Test-Path $script:VersionsCachePath) -and ((Test-ExakitVersionsDoc -Path $script:VersionsCachePath) -eq 0) -and
+        (Test-ExakitVersionsCacheOutranksBaked -CachePath $script:VersionsCachePath -BakedPath $baked)) {
         $script:VersionsDocPath = $script:VersionsCachePath
         if (-not $script:VersionsSource) { $script:VersionsSource = "cache" }
         return $script:VersionsDocPath
     }
-    $baked = Get-ExakitVersionsBakedPath
     if ($baked -and (Test-ExakitVersionsDoc -Path $baked) -eq 0) {
         $script:VersionsDocPath = $baked
         $script:VersionsSource = "baked"
