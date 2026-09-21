@@ -654,5 +654,41 @@ has "...and warns with it"              'warn "$_ss_label did not finish' "$COMM
 has "...and records it for the summary" 'exakit_take_failure_note)" "$_ss_label"' "$COMMON_SRC"
 lacks "no caller leaves it to the raw id" 'exakit_soft_step mcp "exakit update" _exakit_install_mcp' "$COMMON_SRC"
 
+
+echo
+echo "the MCP package download overlaps the data load:"
+# THE TWO STEPS NEED NOTHING FROM EACH OTHER, and run back to back they cost
+# the sum of their times. On a fresh Windows install that sum was ~5 minutes -
+# 131s loading, 166s on the bridge - and almost all of the bridge is uv
+# materialising the server's environment (12,099 files, 207MB). That is work a
+# machine can do while its database is busy elsewhere. Measured on macOS with a
+# cold uv cache and a 20s stand-in load: 38s serial, 21s overlapped, same
+# verdict from mcp_install either way.
+MCP_SH_ALL="$(cat "$ROOT/setup/lib/mcp.sh")"
+MCP_PS_ALL="$(cat "$ROOT/setup/lib/mcp.ps1")"
+has "the shell half can start it early"   "mcp_prefetch_begin() {"      "$MCP_SH_ALL"
+has "...and stop it"                      "mcp_prefetch_stop() {"       "$MCP_SH_ALL"
+has "the twin can start it early"         "function Start-ExakitMcpPrefetch" "$MCP_PS_ALL"
+has "...and stop it"                      "function Stop-ExakitMcpPrefetch"  "$MCP_PS_ALL"
+has "...and collect it"                   "function Receive-ExakitMcpPrefetch" "$MCP_PS_ALL"
+# Started BEFORE the load, or it overlaps nothing.
+COMMON_LOAD="$(cat "$ROOT/setup/lib/common.sh")"
+check "the shell starts it before the load runs" "yes" \
+    "$(printf '%s\n' "$COMMON_LOAD" | awk '/mcp_prefetch_begin/{a=NR} /exakit_maybe_offer_data_load "\$_kit_root"/{if(a&&NR>a){print "yes";exit}}' | head -1)"
+WIN_SETUP="$(cat "$ROOT/setup/setup-windows.ps1")"
+check "the twin starts it before the load runs" "yes" \
+    "$(printf '%s\n' "$WIN_SETUP" | awk '/Start-ExakitMcpPrefetch/{a=NR} /Request-ExakitDataLoadOffer/{if(a&&NR>a){print "yes";exit}}' | head -1)"
+# Collected by the step that needs it, with the inline prime still there for a
+# run where no prefetch happened - that fallback is what keeps this optional.
+has "the shell collects it in mcp_install"  'wait "$EXAKIT_MCP_PREFETCH_PID"' "$MCP_INSTALL_SH"
+has "...and still primes inline without one" 'uvx "${EXAKIT_MCP_PACKAGE}@${EXAKIT_MCP_VERSION}" --help 2>&1' "$MCP_INSTALL_SH"
+has "the twin collects it in Install-Mcp"    'Receive-ExakitMcpPrefetch' "$MCP_INSTALL_PS"
+has "...and still primes inline without one" 'Get-UvxPath) "$($script:McpPackage)@$($script:McpVersion)" "--help"' "$MCP_INSTALL_PS"
+# A background download must not outlive the installer, on ANY way out.
+has "the shell stops it when the run ends"   "mcp_prefetch_stop" "$COMMON_LOAD"
+check "...on both the clean and the failing path" "2" \
+    "$(printf '%s\n' "$COMMON_LOAD" | grep -c 'mcp_prefetch_stop')"
+has "the twin stops it in the finally"       "Stop-ExakitMcpPrefetch" "$WIN_SETUP"
+
 printf '\n%s: %d passed, %d failed\n' "$(basename "$0")" "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

@@ -96,6 +96,47 @@ mcp_uv_install() {
 # "ready to run via uvx", the handshake bullet and its tick were one fact:
 # the server is cached and answers. mcp_validate prints the merged line; the
 # phases live on the spinner instead. ⇄ twin: Install-Mcp in mcp.ps1.
+# mcp_prefetch_begin — start the MCP package download NOW, in the background,
+# so it overlaps the data load instead of queueing behind it.
+#
+# THE TWO STEPS NEED NOTHING FROM EACH OTHER. Priming the package is a download
+# and an unpack; the data load is a local database talking to local files.
+# Run one after the other they cost the sum of their times, and on Windows that
+# sum was ~5 minutes of a fresh install (131s loading, 166s on the bridge).
+# The prime is the bigger half and almost all of it is uv materialising the
+# server's environment — 12,099 files and 207MB, measured — which is exactly
+# the work a machine can do while its database is busy elsewhere.
+#
+# Best-effort by construction: no uv, no network, or a kit where the MCP step
+# never runs, and this returns having done nothing. mcp_install then primes
+# inline exactly as it always did, so the only thing that can be lost is the
+# saving.
+mcp_prefetch_begin() {
+    [ "${EXAKIT_MCP_PREFETCH:-1}" = "1" ] || return 0
+    [ -n "${EXAKIT_MCP_PREFETCH_PID:-}" ] && return 0
+    mcp_uv_install >/dev/null 2>&1 || return 0
+    command -v uvx >/dev/null 2>&1 || return 0
+    EXAKIT_MCP_PREFETCH_LOG="$(mktemp "${TMPDIR:-/tmp}/exakit-mcp-prefetch.XXXXXX" 2>/dev/null)" || return 0
+    # Its own file, not the install log: this writes while the data load is
+    # writing too, and two appenders interleave into nonsense. It is folded
+    # into the install log when mcp_install collects it.
+    ( uvx "${EXAKIT_MCP_PACKAGE}@${EXAKIT_MCP_VERSION}" --help >"$EXAKIT_MCP_PREFETCH_LOG" 2>&1 ) &
+    EXAKIT_MCP_PREFETCH_PID=$!
+    _exakit_log_file "INFO  MCP package prefetch started in the background (pid $EXAKIT_MCP_PREFETCH_PID)"
+    return 0
+}
+
+# mcp_prefetch_stop — leave no orphan behind when the install dies early.
+mcp_prefetch_stop() {
+    [ -n "${EXAKIT_MCP_PREFETCH_PID:-}" ] || return 0
+    kill "$EXAKIT_MCP_PREFETCH_PID" 2>/dev/null
+    wait "$EXAKIT_MCP_PREFETCH_PID" 2>/dev/null
+    rm -f "${EXAKIT_MCP_PREFETCH_LOG:-}" 2>/dev/null
+    EXAKIT_MCP_PREFETCH_PID=""
+    EXAKIT_MCP_PREFETCH_LOG=""
+    return 0
+}
+
 mcp_install() {
     EXAKIT_MCP_STEP_T0="$(date +%s 2>/dev/null || echo 0)"
     mcp_uv_install
@@ -108,8 +149,20 @@ mcp_install() {
     # when the run never reached the package (uvx resolution/network failure).
     _exakit_log_file "CMD   uvx ${EXAKIT_MCP_PACKAGE}@${EXAKIT_MCP_VERSION} --help"
     ui_spin_begin "${EXAKIT_ACTIVE_LABEL:-working}"
-    _prime_out="$(uvx "${EXAKIT_MCP_PACKAGE}@${EXAKIT_MCP_VERSION}" --help 2>&1)"
-    _prime_rc=$?
+    if [ -n "${EXAKIT_MCP_PREFETCH_PID:-}" ]; then
+        # Started before the data load (mcp_prefetch_begin). On a machine that
+        # took longer to load than to download, this has already finished and
+        # the wait returns at once - which is the whole point.
+        wait "$EXAKIT_MCP_PREFETCH_PID" 2>/dev/null
+        _prime_rc=$?
+        _prime_out="$(cat "$EXAKIT_MCP_PREFETCH_LOG" 2>/dev/null)"
+        rm -f "$EXAKIT_MCP_PREFETCH_LOG" 2>/dev/null
+        EXAKIT_MCP_PREFETCH_PID=""
+        EXAKIT_MCP_PREFETCH_LOG=""
+    else
+        _prime_out="$(uvx "${EXAKIT_MCP_PACKAGE}@${EXAKIT_MCP_VERSION}" --help 2>&1)"
+        _prime_rc=$?
+    fi
     ui_spin_end
     [ -n "${EXAKIT_LOG_FILE:-}" ] && printf '%s\n' "$_prime_out" >> "$EXAKIT_LOG_FILE"
     if [ "$_prime_rc" -eq 0 ] || printf '%s' "$_prime_out" | grep -qiE 'usage:|insufficient database connection|exasol[./]ai[./]mcp|site-packages/exasol'; then
