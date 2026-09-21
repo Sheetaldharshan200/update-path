@@ -279,6 +279,39 @@ port_in_use() {
 #   - cgroups v2. The container is started with --pids-limit and --shm-size,
 #     and rootless Podman refuses resource limits on a cgroups-v1 host.
 # Neither applies to root, or to macOS (where Podman runs in its own VM).
+# detect_rootless_podman_gap_kind — the SAME finding as the sentence below, as
+# one word a caller can branch on: subid | uidmap | cgroups | (empty).
+#
+# Two functions rather than one because the two callers want different things.
+# The preflight wants a sentence to show a reader. The installer wants to know
+# whether it can fix the thing itself, and only two of the three are fixable at
+# all: a missing sub-id range and a missing uidmap package are both one command,
+# while cgroups v2 needs a reboot or a boot flag and no process can grant it.
+detect_rootless_podman_gap_kind() {
+    [ "$(detect_os)" != "macos" ] || return 1
+    [ "$(id -u 2>/dev/null || echo 0)" != "0" ] || return 1
+    _drpk_user="$(id -un 2>/dev/null || printf '%s' "${USER:-}")"
+    [ -n "$_drpk_user" ] || return 1
+    for _drpk_file in /etc/subuid /etc/subgid; do
+        [ -r "$_drpk_file" ] || continue
+        if ! grep -q "^${_drpk_user}:" "$_drpk_file" 2>/dev/null; then
+            printf 'subid\n'
+            return 0
+        fi
+    done
+    # newuidmap is the setuid helper that USES those ranges. Present ranges with
+    # no helper fails just as hard, and later, inside a container start.
+    if ! command -v newuidmap >/dev/null 2>&1; then
+        printf 'uidmap\n'
+        return 0
+    fi
+    if [ ! -f /sys/fs/cgroup/cgroup.controllers ]; then
+        printf 'cgroups\n'
+        return 0
+    fi
+    return 1
+}
+
 detect_rootless_podman_gap() {
     [ "$(detect_os)" != "macos" ] || return 1
     [ "$(id -u 2>/dev/null || echo 0)" != "0" ] || return 1

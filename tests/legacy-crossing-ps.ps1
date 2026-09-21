@@ -115,6 +115,10 @@ $script:allEngine = @(); $script:allExapump = @(); $script:screens = @()
 function Seed {
     param([string]$Type = "nano", [switch]$NoPassword, [switch]$EmptyPassword, [switch]$NoDsn,
           [switch]$NoContainer, [switch]$NoVolume, [string]$Engine = "fakeengine")
+    # The module memoises the engine it resolved, and every scenario here runs
+    # in ONE PowerShell process: without this, a record seeded now is still
+    # answered by the engine the record before it cached.
+    Reset-LegacyEngineCache
     Remove-Item -Recurse -Force $env:EXAKIT_HOME -ErrorAction SilentlyContinue
     $ctrl = Join-Path $env:EXAKIT_HOME "ctrl"
     New-Item -ItemType Directory -Force -Path (Join-Path $env:EXAKIT_HOME "credentials"), $ctrl, $env:EXAKIT_BIN_DIR | Out-Null
