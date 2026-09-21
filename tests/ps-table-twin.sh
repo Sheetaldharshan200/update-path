@@ -566,5 +566,44 @@ has "the agent home is the same resolver"     'return (Get-ExakitProfileHome)' "
 has "the exapump profile follows it"          'Join-Path (Get-ExakitProfileHome) ".exapump\config.toml"' "$PUMP_PS1"
 has "so does uv's installer directory"        'Join-Path (Get-ExakitProfileHome) ".local\bin\uv.exe"' "$COMMON_PS1"
 
+
+printf '\n== the step narration is the same on every platform ==\n'
+
+# WHY THIS SECTION EXISTS. A macOS install narrates each step on one line; the
+# same install on Windows printed the download line, the checksum verdict and
+# the unpack line underneath it. Both halves have the same four "Checksum
+# verified" call sites, correctly mirrored - the difference was never the
+# message, it was WHEN detail is silenced.
+#
+# The shell asks one question: is stdout a terminal. PowerShell asked whether
+# ANSI rendering is available, which is a different question and is FALSE on a
+# console without virtual-terminal support, under NO_COLOR, and under
+# EXAKIT_NO_FANCY=1 - every one of them still a terminal. So the same install
+# was quiet on macOS and verbose on a Windows console that merely lacked
+# colour.
+COMMON_PS="$ROOT/setup/lib/exakit-common.ps1"
+RTP_PS="$ROOT/setup/lib/runtime-personal.ps1"
+_PS_ALL="$(mktemp)"; cat "$ROOT"/setup/lib/*.ps1 "$ROOT"/setup/*.ps1 > "$_PS_ALL" 2>/dev/null
+
+has "PowerShell has the shell's terminal test" "function Test-ExakitStdoutIsTerminal" "$COMMON_PS"
+has "...and it asks about stdout, as [ -t 1 ] does" "IsOutputRedirected" "$COMMON_PS"
+lacks "no quiet bracket is gated on fancy rendering any more" \
+    'if ($script:UiFancy) { $script:ExakitQuietDetail = $true }' "$_PS_ALL"
+
+# The two steps a user sees first. Both were unbracketed on Windows, which is
+# where the checksum line came from.
+has "the launcher step silences its detail"   '$prevQuiet = $script:ExakitQuietDetail' "$RTP_PS"
+has "...and restores that flag again"         '$script:ExakitQuietDetail = $prevQuiet' "$RTP_PS"
+has "the deploy step silences its detail too" '$prevDeployQuiet = $script:ExakitQuietDetail' "$RTP_PS"
+has "...and restores that one too"            '$script:ExakitQuietDetail = $prevDeployQuiet' "$RTP_PS"
+
+# EVERY bracket must be balanced. A leaked flag does not print too much, it
+# prints too LITTLE - it silences every step after the one that leaked, which
+# is the harder failure to notice.
+_ps_on="$(grep -cF 'ExakitQuietDetail = $true' "$_PS_ALL" || true)"
+_ps_off="$(grep -cE 'ExakitQuietDetail = \$[A-Za-z]*[Pp]rev[A-Za-z]*' "$_PS_ALL" || true)"
+check "every quiet bracket is closed again" "$_ps_on" "$_ps_off"
+rm -f "$_PS_ALL"
+
 printf '\n%d checks, %d failed\n' "$checks" "$fails"
 [ "$fails" -eq 0 ]

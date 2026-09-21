@@ -521,7 +521,7 @@ function Assert-McpReadonlyPosture {
 function Set-McpReadonlyAccess {
     $cmraPrevQuiet = $script:ExakitQuietDetail
     $cmraT0 = Get-Date
-    if ($script:UiFancy) { $script:ExakitQuietDetail = $true }
+    if (Test-ExakitStdoutIsTerminal) { $script:ExakitQuietDetail = $true }
     # try/finally, not a plain restore at the end: every Fail in this
     # function throws, the MCP step is a SOFT step, and a caught throw
     # would leave ExakitQuietDetail set - silencing every step after it.
@@ -1584,7 +1584,7 @@ function Invoke-McpOperation {
     # the logfile keeps the record; redirected there is no spinner, so the line
     # stays and nothing is lost.
     $mcpPrevQuiet = $script:ExakitQuietDetail
-    if ($script:UiFancy) { $script:ExakitQuietDetail = $true }
+    if (Test-ExakitStdoutIsTerminal) { $script:ExakitQuietDetail = $true }
     Info "Running MCP $Operation"
     Start-ExakitSpinner "Running MCP $Operation"
     try {

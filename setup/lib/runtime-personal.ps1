@@ -435,6 +435,15 @@ function Install-PersonalLauncher {
     $tmpDir = Join-Path ([System.IO.Path]::GetTempPath()) "exakit-personal-$([guid]::NewGuid().ToString('N'))"
     New-Item -ItemType Directory -Force -Path $tmpDir | Out-Null
 
+    # ONE LINE FOR THIS STEP, as on every other platform. The step label is
+    # already animated and re-labelled per phase, so the download line, the
+    # checksum verdict and the unpack line underneath were the second telling -
+    # and they were the visible difference between a Windows install and a
+    # macOS one. Piped or redirected, the detail stays, exactly as the shell
+    # side behaves. Twin of the bracket in personal_install_launcher.
+    $prevQuiet = $script:ExakitQuietDetail
+    if (Test-ExakitStdoutIsTerminal) { $script:ExakitQuietDetail = $true }
+
     try {
         $script:ExakitActiveLabel = "Downloading Exasol launcher v$version"
         Info "Downloading Exasol launcher v$version ($asset)"
@@ -467,6 +476,10 @@ function Install-PersonalLauncher {
         Move-Item -Force $extracted.FullName $script:PersonalBinPath
         OkStep "Exasol launcher v$version installed to $(Get-ExakitTilde $script:PersonalBinPath)"
     } finally {
+        # The flag is restored in the SAME finally that cleans the temp dir:
+        # a leaked quiet flag silences every step after this one, and a Fail
+        # inside the try is the path that would leak it.
+        $script:ExakitQuietDetail = $prevQuiet
         Remove-Item -Recurse -Force $tmpDir -ErrorAction SilentlyContinue
     }
 }
@@ -608,6 +621,18 @@ function Install-PersonalDeployment {
         Fail "Port $(Get-PersonalDbPort) is in use by a process that is not a reachable Exasol Personal deployment.$(Get-PersonalForeignDbHint) Stop that application and re-run (EXAKIT_DB_PORT does not choose the port of a personal deployment)."
     }
 
+    # The progress bar narrates the deploy and the spinner narrates the health
+    # probe, so the info/ok pairs underneath are the second telling. Twin of the
+    # bracket in personal_deploy_local.
+    $prevDeployQuiet = $script:ExakitQuietDetail
+    if (Test-ExakitStdoutIsTerminal) { $script:ExakitQuietDetail = $true }
+
+    # try/finally, not a plain restore at the end: Fail throws, this runs
+    # inside a step that can be soft, and a caught throw would leave the flag
+    # set and silence every step after it. Same shape mcp.ps1 uses, for the
+    # same reason.
+    try {
+
     Info "Exasol Personal is free to use and ships under Exasol's own licence terms, not the kit's MIT licence. The launcher shows them below."
     Info "Deploying Exasol Personal locally - the database runs through Podman's default machine, which the launcher prepares (and installs Podman if needed; that may ask for administrator approval)"
 
@@ -626,6 +651,9 @@ function Install-PersonalDeployment {
     }
 
     Wait-PersonalReady
+    } finally {
+        $script:ExakitQuietDetail = $prevDeployQuiet
+    }
     Ok "Exasol Personal deployed and answering on 127.0.0.1:$(Get-PersonalDbPort)"
     Set-PersonalManifest "healthy"
 }

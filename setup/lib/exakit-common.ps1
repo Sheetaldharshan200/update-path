@@ -1001,6 +1001,24 @@ function Invoke-ExakitLogged {
 # when it is false, and the runtime update offer in setup/exakit.ps1 refuses to
 # stop a database when it is false. Twin of bash's `[ -t 0 ]` test in
 # exakit_offer_runtime_update.
+# Test-ExakitStdoutIsTerminal - the PowerShell answer to the shell's `[ -t 1 ]`.
+#
+# The step brackets that silence per-step chatter are gated on this, and they
+# used to be gated on $script:UiFancy instead. Those are different questions.
+# UiFancy asks whether ANSI rendering is available, so it is FALSE on a console
+# without virtual-terminal support, under NO_COLOR, and under EXAKIT_NO_FANCY=1
+# - all of which are still terminals. The shell asks only whether stdout is a
+# terminal. So the same install narrated itself in one line per step on macOS
+# and in nine on a Windows console that merely lacked colour, checksum lines
+# and all.
+#
+# Do NOT reach for Test-ExakitInteractive here: that asks about stdin (is
+# someone there to answer a prompt), which is a different question again and
+# is false in exactly the piped install where the shell side stays verbose.
+function Test-ExakitStdoutIsTerminal {
+    try { return (-not [Console]::IsOutputRedirected) } catch { return $false }
+}
+
 function Test-ExakitInteractive {
     if (-not [Environment]::UserInteractive) { return $false }
     if ([Console]::IsInputRedirected) { return $false }
