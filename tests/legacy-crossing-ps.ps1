@@ -58,10 +58,26 @@ function New-StubWrapper([string]$Name, [string]$Target) {
             "exit /b %ERRORLEVEL%")
     } else {
         $path = Join-Path $stub $Name
+        # THE INTERPRETER AND THE SCRIPT ARE BOTH BAKED IN, so the wrapper needs
+        # nothing on PATH but the shell itself. It used to locate its own
+        # directory with `dirname "$0"` - an EXTERNAL binary, in /usr/bin - and
+        # the PATH filter below drops any directory that holds a container
+        # engine. On ubuntu-latest docker lives in /usr/bin, so that filter
+        # amputated /usr/bin and took dirname (and every other coreutil) with
+        # it. Every stub call then died with
+        #     stub/exapump: 2: dirname: not found
+        # and the suite reported thirty-odd assertion failures about container
+        # states and table lists - none of which were about the module. macOS
+        # keeps docker outside /usr/bin, so it was green there and on Windows.
+        # The stub directory is known right here; there is nothing to look up.
         $pwsh = (Get-Process -Id $PID).Path
+        if (-not $pwsh) { $pwsh = Join-Path $PSHOME "pwsh" }
+        if (-not $pwsh -or -not (Test-Path $pwsh)) {
+            throw "cannot resolve the running pwsh to build the $Name stub - it would be written unrunnable and every check below would fail for the wrong reason"
+        }
         Set-Content -Path $path -Value @(
             "#!/bin/sh",
-            "exec `"$pwsh`" -NoProfile -File `"`$(dirname `"`$0`")/$Target`" `"`$@`"")
+            "exec `"$pwsh`" -NoProfile -File `"$stub/$Target`" `"`$@`"")
         chmod +x $path
     }
     return $path
