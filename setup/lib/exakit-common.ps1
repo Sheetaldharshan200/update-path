@@ -1015,6 +1015,48 @@ function Invoke-ExakitLogged {
 # Do NOT reach for Test-ExakitInteractive here: that asks about stdin (is
 # someone there to answer a prompt), which is a different question again and
 # is false in exactly the piped install where the shell side stays verbose.
+# Get-ExakitForeignKitRepo <installing-repo> - the owner/repo of a DIFFERENT
+# starter kit already installed here, or "".
+#
+# A machine can only hold one starter kit: both put their command in the same
+# bin directory, their staged copy at ~\.exasol-starter-kit\kit, and their
+# state in the same manifest. Installing this kit over the official one at
+# exasol-labs/exasol-personal-local-starterkit is a REPLACEMENT, and saying so
+# is the difference between a takeover and a silent surprise.
+#
+# The repo is compared, never the ref: the same kit at another tag is an update.
+# A checkout: source is a local working tree and is nobody's repo.
+# Twin of exakit_foreign_kit_repo.
+function Get-ExakitForeignKitRepo {
+    param([string]$Installing)
+    if (-not $Installing) { return "" }
+    $src = "" + (Get-ExakitManifestValue "kit.source")
+    if (-not $src) { return "" }
+    if ($src -like "checkout:*") { return "" }
+    $repo = ($src -split "@")[0]
+    if (-not $repo) { return "" }
+    if ($repo -eq (($Installing -split "@")[0])) { return "" }
+    return $repo
+}
+
+# Show-ExakitKitTakeover <installing-repo> - say once, before any step, that
+# this run replaces a different kit, and be specific about what survives.
+#
+# WHAT IS REPLACED IS THE TOOLING, NOT THE DATA. Both kits deploy the same
+# Exasol Personal, so there is nothing to migrate and nothing to delete. An
+# install command that quietly destroyed a database would be indefensible, and
+# a reader of this line knows which of the two things happened.
+# Twin of exakit_announce_kit_takeover.
+function Show-ExakitKitTakeover {
+    param([string]$Installing)
+    $repo = Get-ExakitForeignKitRepo -Installing $Installing
+    if (-not $repo) { return }
+    Warn2 "A different Exasol starter kit is installed here: $repo"
+    Info "This run replaces its tooling - the exakit command, the kit copy, the AI skills - with this one's."
+    Info "Your database, its credentials and the deployment itself are not touched."
+    Set-ExakitManifestValue "kit.replaced" $repo
+}
+
 function Test-ExakitStdoutIsTerminal {
     try { return (-not [Console]::IsOutputRedirected) } catch { return $false }
 }

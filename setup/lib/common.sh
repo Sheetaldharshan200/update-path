@@ -2972,6 +2972,47 @@ PY
     printf '%s\n' "$_imv_pins"
 }
 
+# exakit_foreign_kit_repo <installing-repo> — the owner/repo of a DIFFERENT
+# starter kit already installed here, or empty.
+#
+# A machine can only hold one starter kit: both put their command at
+# ~/.local/bin/exakit, their staged copy at ~/.exasol-starter-kit/kit, and
+# their state in the same manifest. So installing this kit over the official
+# one at exasol-labs/exasol-personal-local-starterkit is a REPLACEMENT, and
+# saying so is the difference between a takeover and a silent surprise.
+#
+# The repo is compared, never the ref: the same kit at a different tag or
+# branch is an update, not a replacement. A checkout: source (a local install
+# from a working tree) is nobody's repo and is left alone.
+exakit_foreign_kit_repo() {
+    _fkr_installing="${1:-}"
+    [ -n "$_fkr_installing" ] || return 1
+    _fkr_src="$(manifest_get kit.source 2>/dev/null || true)"
+    [ -n "$_fkr_src" ] || return 1
+    case "$_fkr_src" in checkout:*) return 1 ;; esac
+    _fkr_repo="${_fkr_src%@*}"
+    [ -n "$_fkr_repo" ] || return 1
+    [ "$_fkr_repo" != "${_fkr_installing%@*}" ] || return 1
+    printf '%s\n' "$_fkr_repo"
+}
+
+# exakit_announce_kit_takeover <installing-repo> — say once, before any step,
+# that this run replaces a different kit, and be specific about what survives.
+#
+# WHAT IS REPLACED IS THE TOOLING, NOT THE DATA. The database, its credentials
+# and the deployment the launcher owns are untouched: both kits deploy the same
+# Exasol Personal, so there is nothing to migrate and nothing to delete. An
+# install command that quietly destroyed a database would be indefensible, and
+# a user who reads this line knows which of those two things happened.
+exakit_announce_kit_takeover() {
+    _akt_repo="$(exakit_foreign_kit_repo "${1:-}" 2>/dev/null || true)"
+    [ -n "$_akt_repo" ] || return 0
+    warn "A different Exasol starter kit is installed here: $_akt_repo"
+    info "This run replaces its tooling - the exakit command, the kit copy, the AI skills - with this one's."
+    info "Your database, its credentials and the deployment itself are not touched."
+    manifest_set kit.replaced "$_akt_repo" 2>/dev/null || true
+}
+
 exakit_component_current() {
     case "$1" in
         exakit)
@@ -9583,6 +9624,21 @@ kit_shared_steps() {
             :   # already in place; nothing to copy
         else
             mkdir -p "$EXAKIT_HOME/kit/setup" || die "Could not create $EXAKIT_HOME/kit/setup."
+            # CLEAR WHAT WE ARE ABOUT TO REPLACE. cp -R merges, it does not
+            # mirror, so a module the new kit DELETED goes on living in the
+            # staged copy - and the staged copy is what an installed exakit
+            # sources. Installing this kit over the official one left its
+            # runtime-nano.sh, nano.ps1 and catalog.tsv sitting in lib/, three
+            # files this kit removed on purpose. Same hazard, smaller, on any
+            # update that drops a file.
+            #
+            # Only the subtrees re-copied below, and only in the branch that
+            # already established this is not the kit home itself.
+            for _kss_stale in "$EXAKIT_HOME/kit/setup/lib" "$EXAKIT_HOME/kit/setup/help" \
+                              "$EXAKIT_HOME/kit/mcp" "$EXAKIT_HOME/kit/sql" \
+                              "$EXAKIT_HOME/kit/skills"; do
+                rm -rf "$_kss_stale"
+            done
             cp -R "$_script_dir/lib" "$EXAKIT_HOME/kit/setup/" \
                 || die "Could not copy the kit library to $EXAKIT_HOME/kit/setup."
             # Copy the assets exakit needs after the checkout is gone: the mcp/

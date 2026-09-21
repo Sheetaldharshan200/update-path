@@ -160,9 +160,14 @@ grep -q 'Exasol Personal (local deployment via Podman)' "$ROOT/install.ps1" && \
 # NO RUNTIME DISPATCH ANYWHERE. There is one runtime, so an installer or setup
 # script that still branches on a runtime name is carrying a road to somewhere
 # that no longer exists.
+# COMMENTS ARE NOT DISPATCH. The grep read whole files, so a comment that
+# merely NAMES the old runtime's files - saying they are the leftovers an
+# install over another kit has to clear - counted as a road to it. Strip the
+# comments and the check tests what runs, which is what it always meant to.
 _rd=0
 for _f in install.sh install.ps1 setup/setup-macos.sh setup/setup-linux.sh setup/setup-windows.ps1; do
-    grep -qiE 'nano|EXAKIT_RUNTIME=|RuntimeChoice' "$ROOT/$_f" && _rd=$((_rd + 1))
+    sed -e 's/[[:space:]]*#.*$//' "$ROOT/$_f" \
+        | grep -qiE 'nano|EXAKIT_RUNTIME=|RuntimeChoice' && _rd=$((_rd + 1))
 done
 check "no installer or setup script dispatches on a runtime name" "0" "$_rd"
 
