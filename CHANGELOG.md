@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+**Exasol Personal is pinned to 2.3.0** (was 2.3.0-rc6): the final release
+published on 2026-09-21, so the kit no longer ships a pin on a release
+candidate. Candidates were the reason the comment on the fallback demands a
+check before pinning — rc2 and rc3 were both deleted upstream while pinned
+here, and rc3 reached a user as a 404 with the launcher half-downloaded. The
+v2.3.0 tag was verified before this bump: published, not a draft, not a
+prerelease, and carrying every asset the kit fetches (macOS and Linux
+arm64/x86_64 tarballs, the Windows x86_64 zip, and the checksums file).
+versions.json and both built-in fallbacks move together, as that comment
+requires.
+
 **Exasol Personal is the kit's only database runtime.** The container runtime
 (Exasol Nano) and every road to it are gone: `setup/lib/runtime-nano.sh`,
 `setup/lib/runtime-nano.ps1`, `setup/help/nano.json`, the `components.nano`
