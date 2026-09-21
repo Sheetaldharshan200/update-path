@@ -1036,6 +1036,16 @@ function Get-ExakitForeignKitRepo {
     $repo = ($src -split "@")[0]
     if (-not $repo) { return "" }
     if ($repo -eq (($Installing -split "@")[0])) { return "" }
+    # A RECORD IS NOT AN INSTALLATION. The manifest can outlive the kit that
+    # wrote it - an interrupted uninstall, or one whose Windows half cleans up
+    # differently - leaving kit.source with nothing behind it. Announcing a
+    # takeover then tells a user their old kit is still installed just after
+    # they finished removing it. Corroborate with the command it installed or
+    # the kit copy it staged; neither means the record is a leftover.
+    # Twin of exakit_foreign_kit_repo.
+    $cmd = Join-Path $script:BinDir "exakit.cmd"
+    $kit = Join-Path $script:ExakitHome "kit"
+    if (-not (Test-Path $cmd) -and -not (Test-Path $kit)) { return "" }
     return $repo
 }
 

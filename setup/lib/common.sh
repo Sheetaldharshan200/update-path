@@ -2993,6 +2993,17 @@ exakit_foreign_kit_repo() {
     _fkr_repo="${_fkr_src%@*}"
     [ -n "$_fkr_repo" ] || return 1
     [ "$_fkr_repo" != "${_fkr_installing%@*}" ] || return 1
+    # A RECORD IS NOT AN INSTALLATION. The manifest can outlive the kit that
+    # wrote it: an uninstall that is interrupted, one that cannot reach a file,
+    # or a kit whose Windows half cleans up differently, all leave kit.source
+    # sitting there with nothing behind it. Announcing a takeover then is worse
+    # than saying nothing - it tells a user their old kit is still installed
+    # when they have just finished removing it, and they have no way to argue.
+    #
+    # So the record has to be corroborated: the command it installed, or the
+    # kit copy it staged. Either one is proof something is still there; neither
+    # means the record is a leftover and is treated as one.
+    [ -x "$EXAKIT_BIN_DIR/exakit" ] || [ -d "$EXAKIT_HOME/kit" ] || return 1
     printf '%s\n' "$_fkr_repo"
 }
 

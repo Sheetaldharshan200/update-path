@@ -33,7 +33,10 @@ seed() { # seed <kit.source>
     printf '%s\n' "$_s_home"
 }
 ask() { # ask <kit.source-installed> <repo-being-installed> <expression>
-    EXAKIT_HOME="$(seed "$1")" ROOT="$ROOT" INSTALLING="$2" bash -c '
+    # seed a kit copy alongside the record: these cases are about WHICH kit is
+    # installed, not about whether one is, which the section below covers.
+    _a_home="$(seed "$1")"; mkdir -p "$_a_home/kit"
+    EXAKIT_HOME="$_a_home" EXAKIT_BIN_DIR="$_a_home/bin" ROOT="$ROOT" INSTALLING="$2" bash -c '
         . "$ROOT/setup/lib/common.sh" 2>/dev/null
         '"$3"'' </dev/null 2>&1 | sed -e 's/\x1b\[[0-9;]*[A-Za-z]//g'
 }
@@ -48,6 +51,37 @@ check "a checkout install is not foreign" "none" \
     "$(ask "checkout:/some/path" "$OURS@main" 'exakit_foreign_kit_repo "$INSTALLING" || echo none')"
 check "no record at all is not foreign" "none" \
     "$(ask "" "$OURS@main" 'exakit_foreign_kit_repo "$INSTALLING" || echo none')"
+
+echo
+echo "a record left behind by an uninstall is not an installation:"
+# THE BUG THIS EXISTS FOR. An uninstall that is interrupted, cannot reach a
+# file, or whose Windows half cleans up differently, leaves kit.source sitting
+# in the manifest with nothing behind it. Trusting that record told a user their
+# old kit was still installed immediately after they had removed it - and left
+# them no way to argue with it. The record has to be corroborated by something
+# the kit actually put on disk.
+_bare="$(seed "$OFFICIAL@0.1.0")"          # a manifest, and nothing else
+check "a bare record claims nothing" "none" \
+    "$(EXAKIT_HOME="$_bare" EXAKIT_BIN_DIR="$_bare/bin" ROOT="$ROOT" INSTALLING="$OURS@main" bash -c '
+        . "$ROOT/setup/lib/common.sh" 2>/dev/null
+        exakit_foreign_kit_repo "$INSTALLING" || echo none' </dev/null 2>&1)"
+check "...and nothing is announced either" "" \
+    "$(EXAKIT_HOME="$_bare" EXAKIT_BIN_DIR="$_bare/bin" ROOT="$ROOT" INSTALLING="$OURS@main" bash -c '
+        . "$ROOT/setup/lib/common.sh" 2>/dev/null
+        exakit_announce_kit_takeover "$INSTALLING"' </dev/null 2>&1 | tr -d '[:space:]')"
+# The staged kit copy is proof enough on its own...
+mkdir -p "$_bare/kit"
+check "a staged kit copy is corroboration" "$OFFICIAL" \
+    "$(EXAKIT_HOME="$_bare" EXAKIT_BIN_DIR="$_bare/bin" ROOT="$ROOT" INSTALLING="$OURS@main" bash -c '
+        . "$ROOT/setup/lib/common.sh" 2>/dev/null
+        exakit_foreign_kit_repo "$INSTALLING" || echo none' </dev/null 2>&1)"
+# ...and so is the command it installed, on its own.
+_bare2="$(seed "$OFFICIAL@0.1.0")"; mkdir -p "$_bare2/bin"
+printf '#!/bin/sh\nexit 0\n' > "$_bare2/bin/exakit"; chmod +x "$_bare2/bin/exakit"
+check "an installed exakit command is too" "$OFFICIAL" \
+    "$(EXAKIT_HOME="$_bare2" EXAKIT_BIN_DIR="$_bare2/bin" ROOT="$ROOT" INSTALLING="$OURS@main" bash -c '
+        . "$ROOT/setup/lib/common.sh" 2>/dev/null
+        exakit_foreign_kit_repo "$INSTALLING" || echo none' </dev/null 2>&1)"
 
 echo
 echo "the replacement is announced, and scoped out loud:"
