@@ -6495,6 +6495,13 @@ exakit_repo_root() {
         printf '%s\n' "$_repo_root"
         return 0
     fi
+    # When this finds nothing the callers print "Could not find the MCP package
+    # source ..." and stop, and until now that was the whole record: the screen did
+    # not say where it looked and neither did the log, so a report of it from a
+    # machine nobody can reach was not something that could be diagnosed. The
+    # failure is rare enough to be worth one log line and quiet enough not to earn
+    # a second line on screen.
+    _exakit_log_file "WARN  no mcp/ under $EXAKIT_HOME/kit or $_repo_root"
     return 1
 }
 

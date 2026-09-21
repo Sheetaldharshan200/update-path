@@ -3719,6 +3719,14 @@ function Get-ExakitRepoRoot {
     $commonDir = Split-Path -Parent $PSCommandPath
     $repoRoot = (Resolve-Path (Join-Path $commonDir "..\..")).Path
     if (Test-Path (Join-Path $repoRoot "mcp")) { return $repoRoot }
+    # When this finds nothing the callers print "Could not find the MCP package
+    # source ..." and stop, and until now that was the whole record: the screen did
+    # not say where it looked and neither did the log, so a report of it from a
+    # machine nobody can reach was not something that could be diagnosed. The
+    # failure is rare enough to be worth one log line and quiet enough not to earn
+    # a second line on screen.
+    # Twin of the same line in exakit_repo_root.
+    Write-ExakitLog "WARN" "no mcp/ under $kitCopy or $repoRoot"
     return $null
 }
 
