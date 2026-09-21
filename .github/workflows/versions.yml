@@ -483,7 +483,8 @@ jobs:
       # It ends by measuring how much of the module it walked, and that floor
       # is a gate.
       - run: bash tests/legacy-crossing-resilience.sh
-      - run: bash tests/kit-upgrade.sh
+      - run: bash tests/podman-rootless-selfheal.sh
+      - run: bash tests/windows-rootful-podman.sh
       - run: bash tests/skills.sh
       - run: bash tests/agent-operability.sh
       # The MCP subsystem's own tests were never wired in, so nothing in CI

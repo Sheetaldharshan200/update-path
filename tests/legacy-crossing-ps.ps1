@@ -68,7 +68,24 @@ function New-StubWrapper([string]$Name, [string]$Target) {
 }
 [void](New-StubWrapper "fakeengine" "fault-engine.ps1")
 $env:EXAKIT_EXAPUMP_BIN = New-StubWrapper "exapump" "fault-exapump.ps1"
-$env:PATH = "$stub" + [IO.Path]::PathSeparator + $env:PATH
+# A PATH WITH NO REAL CONTAINER ENGINE ON IT. The crossing no longer trusts the
+# recorded engine name alone: when that one cannot be run it asks whichever
+# engine on this machine actually holds the container, docker before podman. On
+# a developer laptop or a CI runner - both of which have a real docker - that
+# turned every "the recorded engine is gone" scenario into "some other engine
+# answered", and the suite started describing the machine it ran on instead of
+# the module. Drop the directories that hold one, keep everything else, so the
+# stub below is the only engine reachable.
+$_lcEnginePath = @()
+foreach ($dir in ($env:PATH -split [IO.Path]::PathSeparator)) {
+    if (-not $dir) { continue }
+    $hasEngine = $false
+    foreach ($exe in @("docker", "podman", "docker.exe", "podman.exe")) {
+        if (Test-Path (Join-Path $dir $exe)) { $hasEngine = $true; break }
+    }
+    if (-not $hasEngine) { $_lcEnginePath += $dir }
+}
+$env:PATH = (@($stub) + $_lcEnginePath) -join [IO.Path]::PathSeparator
 
 # --- line coverage, by breakpoint --------------------------------------------
 # Every line of the module that can hold a statement gets a breakpoint whose
@@ -115,6 +132,10 @@ $script:allEngine = @(); $script:allExapump = @(); $script:screens = @()
 function Seed {
     param([string]$Type = "nano", [switch]$NoPassword, [switch]$EmptyPassword, [switch]$NoDsn,
           [switch]$NoContainer, [switch]$NoVolume, [string]$Engine = "fakeengine")
+    # The module memoises the engine it resolved, and every scenario here runs
+    # in ONE PowerShell process: without this, a record seeded now is still
+    # answered by the engine the record before it cached.
+    Reset-LegacyEngineCache
     Remove-Item -Recurse -Force $env:EXAKIT_HOME -ErrorAction SilentlyContinue
     $ctrl = Join-Path $env:EXAKIT_HOME "ctrl"
     New-Item -ItemType Directory -Force -Path (Join-Path $env:EXAKIT_HOME "credentials"), $ctrl, $env:EXAKIT_BIN_DIR | Out-Null
@@ -336,7 +357,13 @@ Check "...nothing asked of the engine" 0 @(Calls "engine").Count
 Seed; Set-ExakitManifestValue "legacy.crossing_done" $true
 $s = Screen { Invoke-LegacyCrossingBefore }
 Check "a crossing already done: nothing said" "" $s.Trim()
-Check "...and no probe at all" 0 @(Calls "engine").Count
+# NOT "no probe at all" any more, and deliberately so. The container publishes
+# the port the new deployment needs, so a crossing that is over must still take
+# it out of the way - without that the install died on "port 8563 is in use" on
+# every later run. It says nothing while doing it; the engine log is where the
+# work shows. The sh twin pins the same behaviour on its own gate.
+Check "...but the port is still freed" "stop" \
+    (@(Calls "engine") | Where-Object { $_ -like "stop *" } | ForEach-Object { "stop" } | Select-Object -First 1)
 Seed; Fault "engine.state" "absent"
 $s = Screen { Invoke-LegacyCrossingBefore }
 Check "a container that is gone: nothing said" "" $s.Trim()

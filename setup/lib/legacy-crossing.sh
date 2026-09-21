@@ -140,6 +140,14 @@ legacy_engine_name() {
 # the order the old kit preferred. Probed once per run; each probe is a process
 # start.
 _EXAKIT_LEGACY_ENGINE_PATH=""
+
+# legacy_engine_cache_reset — forget the resolved engine. Twin of
+# Reset-LegacyEngineCache; see the note there. Each scenario of the shell suite
+# runs in its own subshell, so nothing here needs it yet, and a caller that
+# resolves twice across two different records does.
+legacy_engine_cache_reset() {
+    _EXAKIT_LEGACY_ENGINE_PATH=""
+}
 _EXAKIT_LEGACY_ENGINE_PROBED=0
 legacy_engine() {
     if [ -n "${EXAKIT_LEGACY_ENGINE:-}" ]; then
