@@ -27,6 +27,114 @@ EXAKIT_PERSONAL_DEPLOY_DIR="${EXAKIT_PERSONAL_DEPLOY_DIR:-$HOME/.exasol/personal
 # facts — they act on "this will/won't work and why".)
 EXAKIT_PERSONAL_COMFORT_RAM_GB="${EXAKIT_PERSONAL_COMFORT_RAM_GB:-12}"
 EXAKIT_PERSONAL_COMFORT_DISK_GB="${EXAKIT_PERSONAL_COMFORT_DISK_GB:-40}"
+# personal_heal_rootless_podman — fix what stops rootless Podman, instead of
+# printing a command and walking away.
+#
+# THE KIT HAS NEVER RUN sudo, AND THIS IS THE ONE PLACE IT ASKS TO. Everything
+# else it installs goes under ~/.local and ~/.exasol-starter-kit, which is why
+# it needs no privilege at all. A rootless Podman gap is the exception: the
+# sub-id ranges live in /etc/subuid and /etc/subgid and the uidmap helper is a
+# system package, so there is no unprivileged fix to reach for. The old
+# behaviour was to print the command in red and leave; the deploy then failed
+# minutes later, inside a container start, with an error naming neither Podman
+# nor the missing range.
+#
+# So: ask, run it, verify it, and say plainly what happened either way.
+#
+# CONSENT IS EXPLICIT AND NEVER ASSUMED. An interactive run is asked and
+# defaults to yes, because it is the fix the reader came for. A run with no
+# terminal is NOT: it must set EXAKIT_PODMAN_SELFHEAL=1 to opt in. A scripted
+# install that silently edits /etc on a machine nobody is watching is not a
+# self-heal, it is a surprise - and the kit's whole posture is that it does not
+# touch anything outside the user's home without being told to.
+#
+# Never fatal. Podman can work in shapes this does not model, so a declined
+# offer, a missing sudo, or a fix that does not take all leave the install to
+# carry on and let the deploy be the judge.
+personal_heal_rootless_podman() {
+    _phr_kind="$(detect_rootless_podman_gap_kind 2>/dev/null || true)"
+    [ -n "$_phr_kind" ] || return 0
+
+    _phr_user="$(id -un 2>/dev/null || printf '%s' "${USER:-}")"
+    _phr_why="$(detect_rootless_podman_gap 2>/dev/null || true)"
+
+    case "$_phr_kind" in
+        cgroups)
+            # No process can turn this on. Say so, and say it in the words of
+            # the platform the reader is actually on.
+            warn "Rootless Podman: ${_phr_why}"
+            return 0
+            ;;
+        subid)
+            _phr_fix="usermod --add-subuids 100000-165535 --add-subgids 100000-165535 $_phr_user"
+            _phr_what="add a user-namespace range for $_phr_user"
+            ;;
+        uidmap)
+            _phr_fix="$(_personal_uidmap_install_cmd)"
+            _phr_what="install the uidmap package rootless Podman needs"
+            [ -n "$_phr_fix" ] || { warn "Rootless Podman: ${_phr_why}"; return 0; }
+            ;;
+        *) return 0 ;;
+    esac
+
+    warn "Rootless Podman is not ready: ${_phr_why}"
+
+    if ! command -v sudo >/dev/null 2>&1; then
+        info "The kit can fix this, but 'sudo' is not on PATH. Run this as root, then re-run the installer:"
+        info "  $_phr_fix"
+        return 0
+    fi
+
+    # A terminal may be asked; a scripted run must have said so in advance.
+    if [ -n "$(_exakit_prompt_tty)" ]; then
+        confirm_env EXAKIT_PODMAN_SELFHEAL "Let the kit $_phr_what? It runs one sudo command and will ask for your password" y || {
+            info "Not changed. To do it yourself:  sudo $_phr_fix"
+            return 0
+        }
+    else
+        case "${EXAKIT_PODMAN_SELFHEAL:-}" in
+            1|y|Y|yes|YES|Yes) : ;;
+            *)
+                info "The kit can fix this for you, but it edits system files, so an unattended run has to opt in:"
+                info "  EXAKIT_PODMAN_SELFHEAL=1  (or run it yourself: sudo $_phr_fix)"
+                return 0
+                ;;
+        esac
+    fi
+
+    info "Running: sudo $_phr_fix"
+    # shellcheck disable=SC2086
+    if ! sudo $_phr_fix; then
+        warn "That did not go through. Run it yourself and re-run the installer:  sudo $_phr_fix"
+        return 0
+    fi
+
+    # The ranges only take effect for Podman after it rebuilds its user
+    # namespace, and a machine that has already run Podman keeps the old one.
+    if [ "$_phr_kind" = subid ] && command -v podman >/dev/null 2>&1; then
+        podman system migrate >/dev/null 2>&1 || true
+    fi
+
+    # VERIFY, never assume: usermod can succeed and still leave the gap when a
+    # distribution manages its ranges somewhere else entirely.
+    if [ -n "$(detect_rootless_podman_gap_kind 2>/dev/null || true)" ]; then
+        warn "Rootless Podman still looks incomplete after the fix - carrying on, and the deploy will say if it matters."
+        return 0
+    fi
+    ok "Rootless Podman is ready ($_phr_what)"
+}
+
+# _personal_uidmap_install_cmd — the install command for THIS distribution, or
+# empty when its package manager is not one the kit knows. Named separately so
+# the heal above reads as one decision.
+_personal_uidmap_install_cmd() {
+    if command -v apt-get >/dev/null 2>&1; then printf 'apt-get install -y uidmap\n'; return 0; fi
+    if command -v dnf     >/dev/null 2>&1; then printf 'dnf install -y shadow-utils\n'; return 0; fi
+    if command -v zypper  >/dev/null 2>&1; then printf 'zypper install -y shadow\n'; return 0; fi
+    if command -v pacman  >/dev/null 2>&1; then printf 'pacman -S --noconfirm shadow\n'; return 0; fi
+    return 1
+}
+
 personal_check_requirements() {
     _pcr_os="$(detect_os)"
     case "$_pcr_os" in
@@ -68,13 +176,14 @@ personal_check_requirements() {
                 info "Install it with your package manager (e.g. 'sudo apt-get install -y podman' or 'sudo dnf install -y podman'), then re-run."
                 die "Podman is required for the Exasol Personal runtime on Linux."
             fi
-            # Rootless podman maps your uid into the container through
-            # newuidmap/newgidmap (the uidmap package). A warning rather than a
-            # refusal: some distros ship the setuid helpers elsewhere, and a
-            # hard gate here would block a machine that works.
-            if [ "$_pcr_os" = wsl ] && ! command -v newuidmap >/dev/null 2>&1; then
-                warn "'newuidmap' is not on PATH - rootless Podman needs it and fails at container start without it. If the deployment fails later, install it: sudo apt-get install -y uidmap"
-            fi
+            # ROOTLESS IS CHECKED HERE, AND FIXED HERE. Nothing used to look
+            # at it on the install path at all: the preflight knew, printed a
+            # red line, and the installer went on to deploy anyway - so the
+            # first a user heard of a missing sub-id range was a container
+            # start failing minutes later, naming neither Podman nor the range.
+            # Same place as the podman check above, so it happens before
+            # anything is downloaded.
+            personal_heal_rootless_podman
             ;;
         *)
             error "Exasol Personal supports macOS, Linux (native or WSL) and Windows x86_64 - it does not support $_pcr_os."

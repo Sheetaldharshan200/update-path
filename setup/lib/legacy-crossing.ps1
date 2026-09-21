@@ -128,6 +128,26 @@ function Get-LegacyEngineName {
 # order the old kit preferred. Probed once per run; each probe is a process
 # start. Twin of legacy_engine.
 $script:LegacyEnginePath = $null
+
+# Reset-LegacyEngineCache - forget the resolved engine.
+#
+# The memo below is right for a real run: one process, one manifest, and each
+# probe is a process start worth avoiding. It is wrong the moment the manifest
+# it was resolved FROM is replaced underneath it, which is exactly what a test
+# harness does - every scenario seeds a new record in the SAME PowerShell
+# process. Without this, a scenario that removes the engine from the record was
+# still answered by the engine the previous scenario had cached: the container
+# read "running" through a launcher the test had just taken away, and every
+# assertion after it fell over in turn.
+#
+# The shell twin needs no such call at the moment because each of its scenarios
+# runs in its own subshell, where the memo cannot outlive the record. It has one
+# anyway, so the two halves stay the same shape and a future in-process caller
+# on either side has the same escape.
+function Reset-LegacyEngineCache {
+    $script:LegacyEnginePath = $null
+}
+
 function Get-LegacyEngine {
     if ($env:EXAKIT_LEGACY_ENGINE) {
         $cmd = Get-Command $env:EXAKIT_LEGACY_ENGINE -ErrorAction SilentlyContinue

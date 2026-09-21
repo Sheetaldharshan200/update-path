@@ -1303,7 +1303,16 @@ _p2gate() { # _p2gate <os> <with-podman:0|1> -> last die/ok marker
         detect_free_disk_gb() { echo 100; }
         EXAKIT_BIN_DIR="$1"
         EXAKIT_PERSONAL_DEPLOY_DIR="$1/no-deployment"
-        eval "$(sed -n "/^EXAKIT_PERSONAL_PORT=/,/^}/p" "$0/setup/lib/runtime-personal.sh")"
+        # BY NAME, not by position. This used to read "from the first constant
+        # to the first closing brace", which silently stopped defining the gate
+        # the moment a new function was added ANYWHERE above it - the checks
+        # then compared against an empty string and blamed the gate. The
+        # constants and the function under test are now each asked for by name.
+        eval "$(sed -n "/^EXAKIT_PERSONAL_/p" "$0/setup/lib/runtime-personal.sh" | grep -v "()")"
+        eval "$(sed -n "/^personal_check_requirements()/,/^}/p" "$0/setup/lib/runtime-personal.sh")"
+        # The rootless heal is a different subject with its own suite; here it
+        # must only not be missing.
+        personal_heal_rootless_podman() { :; }
         unset EXAKIT_DB_PORT
         personal_check_requirements 2>/dev/null' "$ROOT" "$_pg_bin" 2>/dev/null | tail -1
 }
