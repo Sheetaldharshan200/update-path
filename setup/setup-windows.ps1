@@ -416,5 +416,12 @@ try {
     Exit-ExakitInstallLock
     exit 1
 } finally {
+    # STOP ANIMATING BEFORE ANYTHING ELSE. The spinner runs in its own runspace,
+    # and a live runspace keeps Windows PowerShell 5.1 from terminating - so a
+    # run that ended while one was spinning printed its last line and then sat
+    # there, which reads as a hang rather than as a finished install. Fail()
+    # stops it on the path it owns; this covers every other way out, including
+    # the ones nobody has thought of yet.
+    try { Stop-ExakitAnimation } catch { }
     Exit-ExakitInstallLock
 }
