@@ -1388,7 +1388,20 @@ function Invoke-McpSetup {
         & $addRow "Continue" (& $stateOf "continue") @("continue")
         $pendingCount = 0
         foreach ($ids in $menuIds) { if (@($ids).Count -gt 0) { $pendingCount++ } }
+        $connectedCount = 0
+        foreach ($note in $menuNotes) { if ($note -eq "already connected") { $connectedCount++ } }
         if ($pendingCount -eq 0) {
+            # NOTHING CONNECTED IS NOT EVERYTHING CONNECTED. Every row can be
+            # "not installed" - a fresh machine with no AI client on it at all -
+            # and the claim below was printed for that case too, telling the
+            # reader their clients were wired up over MCP when the kit had not
+            # touched a single config. Zero of zero is not success; say which
+            # of the two happened. Twin of the same branch in exakit_mcp_setup.
+            if ($connectedCount -eq 0) {
+                Info "No AI client was found on this machine, so there is nothing to connect yet."
+                Info "Install one (Claude, Codex, Cursor, Copilot, Gemini CLI, OpenCode, Continue) and run 'exakit mcp-setup'."
+                return $true
+            }
             Ok "All AI clients found on this machine are already connected over MCP."
             Info "Check them with 'exakit mcp-status'; new clients appear here once installed."
             return $true

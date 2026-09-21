@@ -587,8 +587,16 @@ dash_server_validate() {
         return 0
     fi
 
+    # ITS OWN FILE, not the whole install log: the failure line below is read
+    # back out of it, and an install log carries a hundred other commands'
+    # output to mistake for this server's. Separate from dash-server.log so it
+    # cannot collide with a server still holding that handle. Twin of $probeLog
+    # in Test-DashServer.
+    _dsv_log="$EXAKIT_LOG_DIR/dash-server-validate.log"
+    mkdir -p "$EXAKIT_LOG_DIR" 2>/dev/null || true
+    : > "$_dsv_log" 2>/dev/null || _dsv_log=""
     "$EXAKIT_DASH_SERVER_BIN" --host 127.0.0.1 --port "$EXAKIT_DASH_SERVER_PORT" \
-        >> "${EXAKIT_LOG_FILE:-/dev/null}" 2>&1 &
+        >> "${_dsv_log:-${EXAKIT_LOG_FILE:-/dev/null}}" 2>&1 &
     _dsv_pid=$!
     # Out of the job table right away, or bash announces "Terminated" over the
     # user-facing output when the probe server is killed below.
@@ -629,10 +637,42 @@ dash_server_validate() {
         manifest_set components.dash_server.validated true
         _dash_server_print_usage
     else
-        warn "dash-server did not answer on port $EXAKIT_DASH_SERVER_PORT (see log). Recorded validated=false; retry with: exakit update"
+        _dsv_why="$(_dash_server_failure_reason "$_dsv_log")"
+        if [ -n "$_dsv_why" ]; then
+            warn "dash-server did not answer on port $EXAKIT_DASH_SERVER_PORT — $_dsv_why. Recorded validated=false; retry with: exakit update"
+        else
+            warn "dash-server did not answer on port $EXAKIT_DASH_SERVER_PORT within ${_dsv_waited}s. Recorded validated=false; retry with: exakit update"
+        fi
         manifest_set components.dash_server.validated false
     fi
     return 0
+}
+
+# _dash_server_failure_reason <log> [log...] — the line from a start log that
+# says WHY the server is not answering, ready to put on screen.
+#
+# "see the log" IS NOT A DIAGNOSIS. A failed start printed a port and a file
+# path and stopped there, so the only way to learn what happened was to open a
+# file in the middle of an install. The reason is one line; it belongs on
+# screen. Twin of Get-DashServerFailureReason.
+_dash_server_failure_reason() {
+    _dsfr_lines=""
+    for _dsfr_log in "$@"; do
+        [ -n "$_dsfr_log" ] && [ -r "$_dsfr_log" ] || continue
+        _dsfr_lines="$_dsfr_lines
+$(tail -n 40 "$_dsfr_log" 2>/dev/null | grep -v '^[[:space:]]*$')"
+    done
+    [ -n "$(printf '%s' "$_dsfr_lines" | tr -d '[:space:]')" ] || return 0
+    # A traceback says what went wrong on its LAST line, not its first, and the
+    # frames between are noise here. Prefer the deepest error line; fall back to
+    # whatever the server said last.
+    _dsfr_reason="$(printf '%s\n' "$_dsfr_lines" | grep -E 'Error|Exception|error:|ERROR|Errno|refused|denied|in use|already running' | tail -1)"
+    [ -n "$_dsfr_reason" ] || _dsfr_reason="$(printf '%s\n' "$_dsfr_lines" | tail -1)"
+    _dsfr_reason="$(printf '%s' "$_dsfr_reason" | tr -s '[:space:]' ' ' | sed 's/^ //; s/ $//')"
+    if [ "${#_dsfr_reason}" -gt 150 ]; then
+        _dsfr_reason="$(printf '%s' "$_dsfr_reason" | cut -c1-147)..."
+    fi
+    printf '%s' "$_dsfr_reason"
 }
 
 # _dash_server_http_answers — one bounded probe of the control plane. Any HTTP
@@ -821,7 +861,12 @@ dash_server_start() {
         sleep 2
         _dss_waited=$((_dss_waited + 2))
     done
-    warn "dash-server did not answer on port $EXAKIT_DASH_SERVER_PORT — see $(ui_tilde "$EXAKIT_DASH_SERVER_LOG")"
+    _dss_why="$(_dash_server_failure_reason "$EXAKIT_DASH_SERVER_LOG")"
+    if [ -n "$_dss_why" ]; then
+        warn "dash-server did not answer on port $EXAKIT_DASH_SERVER_PORT — $_dss_why"
+    else
+        warn "dash-server did not answer on port $EXAKIT_DASH_SERVER_PORT within ${_dss_waited}s — see $(ui_tilde "$EXAKIT_DASH_SERVER_LOG")"
+    fi
     return 1
 }
 

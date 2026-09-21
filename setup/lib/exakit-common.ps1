@@ -428,7 +428,14 @@ function Warn2([string]$Msg) {
     # Write-ExakitAddonNote already defers for this, but every add-on module calls
     # Warn2 directly - 29 sites across three modules - so deferring HERE fixes all
     # of them, and any future one, instead of asking each to remember.
-    if ($script:ExakitAddonTableLive) {
+    # THE FALLBACK BAR COUNTS TOO. Where the table cannot be drawn the add-on
+    # narration falls back to a one-line progress bar, and that bar owns its
+    # line exactly the way the table owns its frame: a warning printed beside
+    # one still being redrawn runs off the right edge, wraps, and pushes the
+    # bar down - which is how one add-on's single bar came out as three broken
+    # rows with half-sentences bleeding between them. Test-ExakitAddonNarrationLive
+    # is true for either.
+    if (Test-ExakitAddonNarrationLive) {
         $script:ExakitAddonNotes += @{ Kind = "warn"; Text = $Msg }
         Write-ExakitLog "WARN" $Msg
         return
@@ -460,7 +467,7 @@ function Warn2([string]$Msg) {
 function Write-ExakitError([string]$Msg) {
     # Same reason as Warn2 above: ungated by the quiet flag, so it is one of the
     # two printers that can land inside a live add-on table.
-    if ($script:ExakitAddonTableLive) {
+    if (Test-ExakitAddonNarrationLive) {
         $script:ExakitAddonNotes += @{ Kind = "warn"; Text = $Msg }
         Write-ExakitLog "ERROR" $Msg
         return
@@ -3763,6 +3770,14 @@ function Get-ExakitRepoRoot {
     $commonDir = Split-Path -Parent $PSCommandPath
     $repoRoot = (Resolve-Path (Join-Path $commonDir "..\..")).Path
     if (Test-Path (Join-Path $repoRoot "mcp")) { return $repoRoot }
+    # When this finds nothing the callers print "Could not find the MCP package
+    # source ..." and stop, and until now that was the whole record: the screen did
+    # not say where it looked and neither did the log, so a report of it from a
+    # machine nobody can reach was not something that could be diagnosed. The
+    # failure is rare enough to be worth one log line and quiet enough not to earn
+    # a second line on screen.
+    # Twin of the same line in exakit_repo_root.
+    Write-ExakitLog "WARN" "no mcp/ under $kitCopy or $repoRoot"
     return $null
 }
 
@@ -5185,10 +5200,24 @@ function Get-ExakitAddonTableCell {
 # repainted lands INSIDE the box, so while the table is live nothing speaks
 # except the table. With no table it is said where it stands, exactly as before.
 # Twin of _exakit_addon_note in common.sh.
+# True while EITHER add-on narration owns the screen: the live table, or the
+# one-line bar it falls back to.
+#
+# THE BAR COUNTED FOR NOTHING BEFORE, and that is what a Windows install looked
+# like. With no table, a warning was printed the instant it happened - beside a
+# progress bar that was still being redrawn. The note ran off the right edge,
+# wrapped, and pushed the bar onto a new line, so one add-on's single bar came
+# out as three broken rows with half-sentences bleeding between them. The table
+# path had been thought about; the fallback had not.
+$script:ExakitAddonBarLive = $false
+function Test-ExakitAddonNarrationLive {
+    return ($script:ExakitAddonTableLive -or $script:ExakitAddonBarLive)
+}
+
 function Write-ExakitAddonNote {
     param([string]$Kind = "info", [string]$Text = "")
     if (-not $Text) { return }
-    if ($script:ExakitAddonTableLive) {
+    if (Test-ExakitAddonNarrationLive) {
         $script:ExakitAddonNotes += @{ Kind = $Kind; Text = $Text }
         return
     }
@@ -5288,6 +5317,7 @@ function Invoke-ExakitMarketplaceApply {
             # guard in Start-ExakitProgress) - and the Stop-ExakitProgress below
             # gives that reference back rather than tearing the table down.
             [void](Start-ExakitProgress -Pct 0 -Ceiling 65 -Secs 40 -Phase "$id - installing")
+            $script:ExakitAddonBarLive = $true
             $installed = & $addon.InstallFn
         } catch {
             Write-ExakitAddonNote "warn" "$id installer reported: $_"
@@ -5326,6 +5356,7 @@ function Invoke-ExakitMarketplaceApply {
             # The add-on's own panel already carries an "Update  exakit update
             # <id>" row, so the result line does not repeat it twice.
             Stop-ExakitProgress
+            $script:ExakitAddonBarLive = $false
             $script:ExakitQuietDetail = $prevQuiet
             $script:ExakitActiveLabel = $prevLabel
             # SummaryFn is OPTIONAL: the one fact worth carrying out of an
@@ -5349,6 +5380,7 @@ function Invoke-ExakitMarketplaceApply {
             }
         } else {
             Stop-ExakitProgress
+            $script:ExakitAddonBarLive = $false
             $script:ExakitQuietDetail = $prevQuiet
             $script:ExakitActiveLabel = $prevLabel
             if ($script:ExakitAddonTableRow -gt 0) {

@@ -318,7 +318,11 @@ heading() {
 # which is why they are the two that reach the frame.
 # twins: Warn2 and Write-ExakitError in exakit-common.ps1.
 _exakit_defer_under_addon_table() {
-    [ "${EXAKIT_ADDON_TABLE_LIVE:-0}" = 1 ] || return 1
+    # THE FALLBACK BAR COUNTS TOO — see _exakit_addon_narration_live. A warning
+    # printed beside a one-line bar that is still being redrawn wraps and pushes
+    # the bar down, which is how one add-on's single bar came out as three
+    # broken rows. Twin of Test-ExakitAddonNarrationLive in Warn2.
+    _exakit_addon_narration_live || return 1
     EXAKIT_ADDON_NOTES="${EXAKIT_ADDON_NOTES}warn|$1
 "
     return 0
@@ -3637,11 +3641,26 @@ EXAKIT_ADDON_TABLE_ROW_SKIP=0
 # Said once the table has stopped redrawing — see _exakit_addon_note.
 EXAKIT_ADDON_NOTES=""
 
-# _exakit_addon_bar_live — is a table painting this install? True means the
+# _exakit_addon_table_live — is a table painting this install? True means the
 # one-line progress bar must keep its hands off the UI layer's single animation
 # slot; the table owns it.
-_exakit_addon_bar_live() {
+# _exakit_addon_table_live — the live add-on TABLE is on screen and redrawing.
+# (It was called _exakit_addon_bar_live, which is what it never tested: with a
+# real bar flag beside it now, that name was a trap.)
+_exakit_addon_table_live() {
     [ "${EXAKIT_ADDON_TABLE_LIVE:-0}" = 1 ]
+}
+
+# _exakit_addon_narration_live — true while EITHER narration owns the screen:
+# the live table, or the one-line bar it falls back to.
+#
+# The bar counted for nothing before, and a note printed beside one that is
+# still being redrawn runs off the right edge, wraps, and pushes the bar to a
+# new line - so one add-on's single bar comes out as three broken rows. The
+# table path had been thought about; the fallback had not. Twin of
+# Test-ExakitAddonNarrationLive.
+_exakit_addon_narration_live() {
+    _exakit_addon_table_live || [ "${EXAKIT_ADDON_BAR_LIVE:-0}" = 1 ]
 }
 
 # _exakit_addon_note <info|warn> <text> — something the reader must see, said
@@ -3649,7 +3668,7 @@ _exakit_addon_bar_live() {
 # repainted lands INSIDE the box, so while the table is live nothing speaks
 # except the table. With no table it is said where it stands, exactly as before.
 _exakit_addon_note() {
-    if _exakit_addon_bar_live; then
+    if _exakit_addon_narration_live; then
         EXAKIT_ADDON_NOTES="${EXAKIT_ADDON_NOTES}$1|$2
 "
         return 0
@@ -3880,12 +3899,12 @@ _exakit_marketplace_install_one() {
         # the cursor, and the ui_progress_end below would kill the TABLE's
         # animator instead of a bar of its own -- mid-frame, which leaves half a
         # table on screen with the finished one printed under it.
-        _exakit_addon_bar_live || ui_progress_begin "$_mi_state" "$_mi_t0" || true
+        _exakit_addon_table_live || { ui_progress_begin "$_mi_state" "$_mi_t0" || true; EXAKIT_ADDON_BAR_LIVE=1; }
     fi
     "$_mi_install"
     _mi_rc=$?
     if [ "$_mi_rc" -ne 0 ]; then
-        _exakit_addon_bar_live || ui_progress_end
+        _exakit_addon_table_live || { ui_progress_end; EXAKIT_ADDON_BAR_LIVE=0; }
         [ -n "$_mi_state" ] && rm -f "$_mi_state"
         EXAKIT_QUIET_DETAIL="$_mi_prev_quiet"
         EXAKIT_ACTIVE_LABEL="$_mi_prev_label"
@@ -3917,7 +3936,7 @@ _exakit_marketplace_install_one() {
         "$_mi_start" >/dev/null 2>&1 || \
             _exakit_addon_note warn "$1 installed but did not start — start it with: exakit start"
     fi
-    _exakit_addon_bar_live || ui_progress_end
+    _exakit_addon_table_live || { ui_progress_end; EXAKIT_ADDON_BAR_LIVE=0; }
     [ -n "$_mi_state" ] && rm -f "$_mi_state"
     EXAKIT_QUIET_DETAIL="$_mi_prev_quiet"
     EXAKIT_ACTIVE_LABEL="$_mi_prev_label"
@@ -4392,12 +4411,12 @@ _exakit_marketplace_apply() {
     # EXAKIT_QUIET_DETAIL routes them to the logfile instead, which is what it is
     # for; install_one saves and restores it, so nesting is already handled.
     _mp_prev_quiet="${EXAKIT_QUIET_DETAIL:-0}"
-    _exakit_addon_bar_live && EXAKIT_QUIET_DETAIL=1
+    _exakit_addon_table_live && EXAKIT_QUIET_DETAIL=1
     for _mp_id in $(printf '%s' "$1" | tr ',' ' '); do
         # Which row this add-on owns, if a table is on screen. Empty means there
         # is none and the single-line bar takes over, unchanged.
         EXAKIT_ADDON_TABLE_ROW=""
-        if _exakit_addon_bar_live; then
+        if _exakit_addon_table_live; then
             EXAKIT_ADDON_TABLE_ROW="$(_exakit_addon_table_row "$_mp_id")"
             [ "$EXAKIT_ADDON_TABLE_ROW" = "0" ] && EXAKIT_ADDON_TABLE_ROW=""
         fi
@@ -4446,7 +4465,7 @@ _exakit_marketplace_apply() {
     done
     # The table stops redrawing BEFORE anything is said over it, and only then is
     # what was collected on the way said.
-    if _exakit_addon_bar_live; then
+    if _exakit_addon_table_live; then
         ui_table_end "$EXAKIT_ADDON_TABLE_STATE"
         EXAKIT_ADDON_TABLE_LIVE=0
     fi
@@ -6570,6 +6589,13 @@ exakit_repo_root() {
         printf '%s\n' "$_repo_root"
         return 0
     fi
+    # When this finds nothing the callers print "Could not find the MCP package
+    # source ..." and stop, and until now that was the whole record: the screen did
+    # not say where it looked and neither did the log, so a report of it from a
+    # machine nobody can reach was not something that could be diagnosed. The
+    # failure is rare enough to be worth one log line and quiet enough not to earn
+    # a second line on screen.
+    _exakit_log_file "WARN  no mcp/ under $EXAKIT_HOME/kit or $_repo_root"
     return 1
 }
 
@@ -8552,6 +8578,7 @@ EOF
         _menu_ids=()
         _menu_notes=()
         _pending_count=0
+        _connected_count=0
         # _exakit_mcp_menu_row <label> <state> <ids_csv> — one client row:
         # pending rows carry their ids and are selectable; connected and missing
         # rows carry no id and a note saying why, which is what makes them a
@@ -8563,7 +8590,10 @@ EOF
                     _menu_ids+=("$3"); _menu_notes+=("")
                     _pending_count=$((_pending_count + 1))
                     ;;
-                connected) _menu_ids+=(""); _menu_notes+=("already connected") ;;
+                connected)
+                    _menu_ids+=(""); _menu_notes+=("already connected")
+                    _connected_count=$((_connected_count + 1))
+                    ;;
                 *)         _menu_ids+=(""); _menu_notes+=("not installed") ;;
             esac
         }
@@ -8580,6 +8610,17 @@ EOF
         _exakit_mcp_menu_row "OpenCode" "$_opencode_state" "opencode"
         _exakit_mcp_menu_row "Continue" "$_continue_state" "continue"
         if [ "$_pending_count" -eq 0 ]; then
+            # NOTHING CONNECTED IS NOT EVERYTHING CONNECTED. Every row can be
+            # "not installed" - a fresh machine with no AI client on it at all -
+            # and the claim below was printed for that case too, telling the
+            # reader their clients were wired up over MCP when the kit had not
+            # touched a single config. Zero of zero is not success; say which
+            # of the two happened.
+            if [ "$_connected_count" -eq 0 ]; then
+                info "No AI client was found on this machine, so there is nothing to connect yet."
+                info "Install one (Claude, Codex, Cursor, Copilot, Gemini CLI, OpenCode, Continue) and run 'exakit mcp-setup'."
+                return 0
+            fi
             ok "All AI clients found on this machine are already connected over MCP."
             info "Check them with 'exakit mcp-status'; new clients appear here once installed."
             return 0
