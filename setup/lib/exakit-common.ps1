@@ -1015,19 +1015,19 @@ function Invoke-ExakitLogged {
 # Do NOT reach for Test-ExakitInteractive here: that asks about stdin (is
 # someone there to answer a prompt), which is a different question again and
 # is false in exactly the piped install where the shell side stays verbose.
-# Get-ExakitForeignKitRepo <installing-repo> - the owner/repo of a DIFFERENT
-# starter kit already installed here, or "".
+# Get-ExakitPreviousKitRepo <installing-repo> - the owner/repo of a starter kit
+# already installed here that this run is moving on FROM, or "".
 #
-# A machine can only hold one starter kit: both put their command in the same
-# bin directory, their staged copy at ~\.exasol-starter-kit\kit, and their
-# state in the same manifest. Installing this kit over the official one at
-# exasol-labs/exasol-personal-local-starterkit is a REPLACEMENT, and saying so
-# is the difference between a takeover and a silent surprise.
+# THIS IS AN UPGRADE, NOT A TAKEOVER. Same product, same machine, same place:
+# both kits put their command in the same bin directory, their staged copy at
+# ~\.exasol-starter-kit\kit, and their state in the same manifest. This repo is
+# where the kit is developed and exasol-labs/exasol-personal-local-starterkit is
+# where it is published, so a machine holding the published one is simply behind.
 #
-# The repo is compared, never the ref: the same kit at another tag is an update.
-# A checkout: source is a local working tree and is nobody's repo.
-# Twin of exakit_foreign_kit_repo.
-function Get-ExakitForeignKitRepo {
+# The repo is compared, never the ref: the same repo at another tag is the
+# ordinary update. A checkout: source is a local working tree.
+# Twin of exakit_previous_kit_repo.
+function Get-ExakitPreviousKitRepo {
     param([string]$Installing)
     if (-not $Installing) { return "" }
     $src = "" + (Get-ExakitManifestValue "kit.source")
@@ -1042,29 +1042,28 @@ function Get-ExakitForeignKitRepo {
     # takeover then tells a user their old kit is still installed just after
     # they finished removing it. Corroborate with the command it installed or
     # the kit copy it staged; neither means the record is a leftover.
-    # Twin of exakit_foreign_kit_repo.
+    # Twin of exakit_previous_kit_repo.
     $cmd = Join-Path $script:BinDir "exakit.cmd"
     $kit = Join-Path $script:ExakitHome "kit"
     if (-not (Test-Path $cmd) -and -not (Test-Path $kit)) { return "" }
     return $repo
 }
 
-# Show-ExakitKitTakeover <installing-repo> - say once, before any step, that
-# this run replaces a different kit, and be specific about what survives.
+# Show-ExakitKitUpgrade <installing-repo> - say once, before any step, which
+# installation this run is updating, and what it keeps.
 #
-# WHAT IS REPLACED IS THE TOOLING, NOT THE DATA. Both kits deploy the same
-# Exasol Personal, so there is nothing to migrate and nothing to delete. An
-# install command that quietly destroyed a database would be indefensible, and
-# a reader of this line knows which of the two things happened.
-# Twin of exakit_announce_kit_takeover.
-function Show-ExakitKitTakeover {
+# INFO, NOT A WARNING. Nothing is wrong here: it is the same product moving
+# forward, and a red line would tell a reader their machine had a problem it
+# does not have. What changes is the tooling; the database, its credentials and
+# the deployment are kept, and saying so is the point.
+# Twin of exakit_announce_kit_upgrade.
+function Show-ExakitKitUpgrade {
     param([string]$Installing)
-    $repo = Get-ExakitForeignKitRepo -Installing $Installing
+    $repo = Get-ExakitPreviousKitRepo -Installing $Installing
     if (-not $repo) { return }
-    Warn2 "A different Exasol starter kit is installed here: $repo"
-    Info "This run replaces its tooling - the exakit command, the kit copy, the AI skills - with this one's."
-    Info "Your database, its credentials and the deployment itself are not touched."
-    Set-ExakitManifestValue "kit.replaced" $repo
+    Info "Updating the starter kit already installed here (from $repo)."
+    Info "The exakit command, the kit copy and the AI skills are replaced; your database, its credentials and the deployment are kept."
+    Set-ExakitManifestValue "kit.updated_from" $repo
 }
 
 function Test-ExakitStdoutIsTerminal {

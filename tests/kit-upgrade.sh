@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# kit-takeover.sh — installing this kit over a DIFFERENT starter kit.
+# kit-upgrade.sh — installing this kit over a DIFFERENT starter kit.
 #
 # A machine can only hold one: both kits put their command in the same bin
 # directory, their staged copy at ~/.exasol-starter-kit/kit, and their state in
@@ -13,7 +13,7 @@
 # deployment are the user's, both kits deploy the same Exasol Personal, and an
 # install command that quietly destroyed a database would be indefensible.
 #
-#   bash tests/kit-takeover.sh
+#   bash tests/kit-upgrade.sh
 set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PASS=0; FAIL=0
@@ -43,14 +43,14 @@ ask() { # ask <kit.source-installed> <repo-being-installed> <expression>
 
 echo "a different kit is recognised, an update is not:"
 check "the official kit is foreign" "$OFFICIAL" \
-    "$(ask "$OFFICIAL@0.1.0" "$OURS@main" 'exakit_foreign_kit_repo "$INSTALLING" || echo none')"
+    "$(ask "$OFFICIAL@0.1.0" "$OURS@main" 'exakit_previous_kit_repo "$INSTALLING" || echo none')"
 check "the same repo at another tag is not" "none" \
-    "$(ask "$OURS@0.2.0" "$OURS@main" 'exakit_foreign_kit_repo "$INSTALLING" || echo none')"
+    "$(ask "$OURS@0.2.0" "$OURS@main" 'exakit_previous_kit_repo "$INSTALLING" || echo none')"
 # A local working-tree install belongs to nobody, so it is never called foreign.
 check "a checkout install is not foreign" "none" \
-    "$(ask "checkout:/some/path" "$OURS@main" 'exakit_foreign_kit_repo "$INSTALLING" || echo none')"
+    "$(ask "checkout:/some/path" "$OURS@main" 'exakit_previous_kit_repo "$INSTALLING" || echo none')"
 check "no record at all is not foreign" "none" \
-    "$(ask "" "$OURS@main" 'exakit_foreign_kit_repo "$INSTALLING" || echo none')"
+    "$(ask "" "$OURS@main" 'exakit_previous_kit_repo "$INSTALLING" || echo none')"
 
 echo
 echo "a record left behind by an uninstall is not an installation:"
@@ -64,34 +64,40 @@ _bare="$(seed "$OFFICIAL@0.1.0")"          # a manifest, and nothing else
 check "a bare record claims nothing" "none" \
     "$(EXAKIT_HOME="$_bare" EXAKIT_BIN_DIR="$_bare/bin" ROOT="$ROOT" INSTALLING="$OURS@main" bash -c '
         . "$ROOT/setup/lib/common.sh" 2>/dev/null
-        exakit_foreign_kit_repo "$INSTALLING" || echo none' </dev/null 2>&1)"
+        exakit_previous_kit_repo "$INSTALLING" || echo none' </dev/null 2>&1)"
 check "...and nothing is announced either" "" \
     "$(EXAKIT_HOME="$_bare" EXAKIT_BIN_DIR="$_bare/bin" ROOT="$ROOT" INSTALLING="$OURS@main" bash -c '
         . "$ROOT/setup/lib/common.sh" 2>/dev/null
-        exakit_announce_kit_takeover "$INSTALLING"' </dev/null 2>&1 | tr -d '[:space:]')"
+        exakit_announce_kit_upgrade "$INSTALLING"' </dev/null 2>&1 | tr -d '[:space:]')"
 # The staged kit copy is proof enough on its own...
 mkdir -p "$_bare/kit"
 check "a staged kit copy is corroboration" "$OFFICIAL" \
     "$(EXAKIT_HOME="$_bare" EXAKIT_BIN_DIR="$_bare/bin" ROOT="$ROOT" INSTALLING="$OURS@main" bash -c '
         . "$ROOT/setup/lib/common.sh" 2>/dev/null
-        exakit_foreign_kit_repo "$INSTALLING" || echo none' </dev/null 2>&1)"
+        exakit_previous_kit_repo "$INSTALLING" || echo none' </dev/null 2>&1)"
 # ...and so is the command it installed, on its own.
 _bare2="$(seed "$OFFICIAL@0.1.0")"; mkdir -p "$_bare2/bin"
 printf '#!/bin/sh\nexit 0\n' > "$_bare2/bin/exakit"; chmod +x "$_bare2/bin/exakit"
 check "an installed exakit command is too" "$OFFICIAL" \
     "$(EXAKIT_HOME="$_bare2" EXAKIT_BIN_DIR="$_bare2/bin" ROOT="$ROOT" INSTALLING="$OURS@main" bash -c '
         . "$ROOT/setup/lib/common.sh" 2>/dev/null
-        exakit_foreign_kit_repo "$INSTALLING" || echo none' </dev/null 2>&1)"
+        exakit_previous_kit_repo "$INSTALLING" || echo none' </dev/null 2>&1)"
 
 echo
-echo "the replacement is announced, and scoped out loud:"
-OUT="$(ask "$OFFICIAL@0.1.0" "$OURS@main" 'exakit_announce_kit_takeover "$INSTALLING"')"
+echo "the update is announced as an update, and scoped out loud:"
+OUT="$(ask "$OFFICIAL@0.1.0" "$OURS@main" 'exakit_announce_kit_upgrade "$INSTALLING"')"
 has "the other kit is named"              "$OFFICIAL" "$OUT"
-has "...and the tooling is what changes"  "replaces its tooling" "$OUT"
-has "...and the data is said to be safe"  "are not touched" "$OUT"
+has "...and the tooling is what changes"  "are replaced" "$OUT"
+has "...and the data is said to be kept"  "the deployment are kept" "$OUT"
 # Silence on a plain update: this line is for a takeover, not for every install.
-OUT2="$(ask "$OURS@0.2.0" "$OURS@main" 'exakit_announce_kit_takeover "$INSTALLING"')"
+OUT2="$(ask "$OURS@0.2.0" "$OURS@main" 'exakit_announce_kit_upgrade "$INSTALLING"')"
 check "an update says nothing" "" "$(printf '%s' "$OUT2" | tr -d '[:space:]')"
+# SAME PRODUCT, NOT A RIVAL. This repo is where the kit is developed and the
+# exasol-labs one is where it is published, so a machine holding the published
+# kit is behind, not wrong - and a line calling it "a different kit" told the
+# reader they had a problem they do not have.
+lacks "it never calls the other kit a different one" "A different Exasol starter kit" "$OUT"
+has   "it reads as an update"                       "Updating the starter kit" "$OUT"
 
 echo
 echo "a module the new kit deleted does not survive the replacement:"
@@ -117,7 +123,7 @@ has "the shell half clears the staged subtrees" 'rm -rf "$_kss_stale"' "$KSS"
 has "...before the library is copied over"      'cp -R "$_script_dir/lib"' "$KSS"
 WIN="$(cat "$ROOT/setup/setup-windows.ps1")"
 has "the Windows half clears them too"          'Remove-Item -Recurse -Force $stale' "$WIN"
-has "...and announces the takeover first"       "Show-ExakitKitTakeover" "$WIN"
+has "...and announces the takeover first"       "Show-ExakitKitUpgrade" "$WIN"
 lacks "neither half removes the kit home itself" 'rm -rf "$EXAKIT_HOME"' "$KSS"
 
 echo
@@ -125,9 +131,44 @@ echo "both setup scripts ask before they overwrite the evidence:"
 for _s in setup-macos.sh setup-linux.sh; do
     _body="$(cat "$ROOT/setup/$_s")"
     _before="$(printf '%s\n' "$_body" | sed -n '1,/manifest_set kit.source/p')"
-    has "$_s announces before recording" "exakit_announce_kit_takeover" "$_before"
+    has "$_s announces before recording" "exakit_announce_kit_upgrade" "$_before"
 done
 
 echo
-echo "kit-takeover.sh: $PASS passed, $FAIL failed"
+echo "a re-run updates the components, it does not just skip them:"
+# THE HALF THAT MATTERED MOST. A step tick means "this was installed", never
+# "this is current", so re-running the installer over an older installation
+# skipped every step whose artifact was on disk - and the run finished having
+# updated the kit and nothing else. exapump, the MCP server and pyexasol all
+# stayed where the previous kit left them, and the kit then disagreed with its
+# own components.
+drift() { # drift <step> <installed> <advertised>
+    ROOT="$ROOT" S="$1" HAVE="$2" WANT="$3" bash -c '
+        . "$ROOT/setup/lib/common.sh" 2>/dev/null
+        EXAKIT_EXAPUMP_VERSION="$WANT"; EXAKIT_MCP_VERSION="$WANT"
+        EXAKIT_PYEXASOL_VERSION="$WANT"; EXAKIT_PERSONAL_VERSION="$WANT"
+        exakit_component_current() { [ -n "$HAVE" ] && printf "%s\n" "$HAVE"; }
+        step_version_drift "$S" || echo none' </dev/null 2>&1
+}
+has   "a component behind is picked up"   "and this kit installs 0.14.0" "$(drift exapump 0.13.0 0.14.0)"
+check "...and the same version is not"    "none" "$(drift exapump 0.14.0 0.14.0)"
+# An installer is no place to argue with a machine that is ahead of it: a
+# manifest can advertise an older set than the one already installed.
+check "...nor is a component ahead"       "none" "$(drift exapump 0.15.0 0.14.0)"
+check "an unknown version is left alone"  "none" "$(drift exapump unknown 0.14.0)"
+check "a component with no version is too" "none" "$(drift exapump "" 0.14.0)"
+# The deployment is a thing, not a version, and the helper refreshes by content.
+check "the runtime step has no version to drift" "none" "$(drift runtime 1 2)"
+for _c in mcp pyexasol launcher; do
+    has "$_c drifts on its own version" "and this kit installs 9.9.9" "$(drift "$_c" 1.0.0 9.9.9)"
+done
+# And the gate itself asks the version question BEFORE the artifact one: a
+# component that is merely behind is present on disk, so an artifact check
+# would skip it every time.
+_BS="$(awk '/^begin_step\(\)/,/^}$/' "$ROOT/setup/lib/common.sh")"
+has "begin_step asks about drift"          'step_version_drift "$1"' "$_BS"
+has "...before it asks about the artifact" 'elif [ "$(step_artifact_state "$1")" = "missing" ]' "$_BS"
+
+echo
+echo "kit-upgrade.sh: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

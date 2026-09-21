@@ -47,8 +47,8 @@ Set-ExakitManifestValue "os" "windows"
 Set-ExakitManifestValue "arch" $env:PROCESSOR_ARCHITECTURE
 $kitSource = if ($env:EXAKIT_KIT_SOURCE) { $env:EXAKIT_KIT_SOURCE } else { "checkout:$KitRoot" }
 # BEFORE kit.source is overwritten, because overwriting it is what erases the
-# evidence that a different kit was ever here.
-Show-ExakitKitTakeover -Installing $env:EXAKIT_KIT_SOURCE
+# record of where this installation came from.
+Show-ExakitKitUpgrade -Installing $env:EXAKIT_KIT_SOURCE
 Set-ExakitManifestValue "kit.source" $kitSource
 # The kit's own version comes from the versions manifest shipping with THIS
 # tree, not from whatever copy an earlier install left under the kit home.
