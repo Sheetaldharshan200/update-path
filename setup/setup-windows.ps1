@@ -139,7 +139,7 @@ try {
         # merely answer SELECT 1. Twin of _exakit_install_exapump (common.sh).
         if (Invoke-ExakitSoftStep -Component "exapump" -Repair "exakit update" -Body {
                 $prevQuiet = $script:ExakitQuietDetail
-                if ($script:UiFancy) { $script:ExakitQuietDetail = $true }
+                if (Test-ExakitStdoutIsTerminal) { $script:ExakitQuietDetail = $true }
                 try {
                     Install-Exapump
                     New-ExapumpProfile
@@ -194,7 +194,7 @@ try {
                 # silence every step after it.
                 # Twin of _exakit_install_mcp (common.sh).
                 $prevQuiet = $script:ExakitQuietDetail
-                if ($script:UiFancy) { $script:ExakitQuietDetail = $true }
+                if (Test-ExakitStdoutIsTerminal) { $script:ExakitQuietDetail = $true }
                 try {
                     Install-Mcp
                     Test-McpServer
@@ -257,7 +257,7 @@ try {
         # covered it live. Twin of _exakit_install_pyexasol (common.sh).
         if (Invoke-ExakitSoftStep -Component "pyexasol" -Repair "exakit update" -Body {
                 $prevQuiet = $script:ExakitQuietDetail
-                if ($script:UiFancy) { $script:ExakitQuietDetail = $true }
+                if (Test-ExakitStdoutIsTerminal) { $script:ExakitQuietDetail = $true }
                 try {
                     if (-not (Install-Pyexasol)) { return $false }
                     Test-PyexasolConnection
