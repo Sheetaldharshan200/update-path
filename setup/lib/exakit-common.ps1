@@ -1015,6 +1015,57 @@ function Invoke-ExakitLogged {
 # Do NOT reach for Test-ExakitInteractive here: that asks about stdin (is
 # someone there to answer a prompt), which is a different question again and
 # is false in exactly the piped install where the shell side stays verbose.
+# Get-ExakitPreviousKitRepo <installing-repo> - the owner/repo of a starter kit
+# already installed here that this run is moving on FROM, or "".
+#
+# THIS IS AN UPGRADE, NOT A TAKEOVER. Same product, same machine, same place:
+# both kits put their command in the same bin directory, their staged copy at
+# ~\.exasol-starter-kit\kit, and their state in the same manifest. This repo is
+# where the kit is developed and exasol-labs/exasol-personal-local-starterkit is
+# where it is published, so a machine holding the published one is simply behind.
+#
+# The repo is compared, never the ref: the same repo at another tag is the
+# ordinary update. A checkout: source is a local working tree.
+# Twin of exakit_previous_kit_repo.
+function Get-ExakitPreviousKitRepo {
+    param([string]$Installing)
+    if (-not $Installing) { return "" }
+    $src = "" + (Get-ExakitManifestValue "kit.source")
+    if (-not $src) { return "" }
+    if ($src -like "checkout:*") { return "" }
+    $repo = ($src -split "@")[0]
+    if (-not $repo) { return "" }
+    if ($repo -eq (($Installing -split "@")[0])) { return "" }
+    # A RECORD IS NOT AN INSTALLATION. The manifest can outlive the kit that
+    # wrote it - an interrupted uninstall, or one whose Windows half cleans up
+    # differently - leaving kit.source with nothing behind it. Announcing a
+    # takeover then tells a user their old kit is still installed just after
+    # they finished removing it. Corroborate with the command it installed or
+    # the kit copy it staged; neither means the record is a leftover.
+    # Twin of exakit_previous_kit_repo.
+    $cmd = Join-Path $script:BinDir "exakit.cmd"
+    $kit = Join-Path $script:ExakitHome "kit"
+    if (-not (Test-Path $cmd) -and -not (Test-Path $kit)) { return "" }
+    return $repo
+}
+
+# Show-ExakitKitUpgrade <installing-repo> - say once, before any step, which
+# installation this run is updating, and what it keeps.
+#
+# INFO, NOT A WARNING. Nothing is wrong here: it is the same product moving
+# forward, and a red line would tell a reader their machine had a problem it
+# does not have. What changes is the tooling; the database, its credentials and
+# the deployment are kept, and saying so is the point.
+# Twin of exakit_announce_kit_upgrade.
+function Show-ExakitKitUpgrade {
+    param([string]$Installing)
+    $repo = Get-ExakitPreviousKitRepo -Installing $Installing
+    if (-not $repo) { return }
+    Info "Updating the starter kit already installed here (from $repo)."
+    Info "The exakit command, the kit copy and the AI skills are replaced; your database, its credentials and the deployment are kept."
+    Set-ExakitManifestValue "kit.updated_from" $repo
+}
+
 function Test-ExakitStdoutIsTerminal {
     try { return (-not [Console]::IsOutputRedirected) } catch { return $false }
 }

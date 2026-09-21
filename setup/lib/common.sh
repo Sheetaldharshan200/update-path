@@ -2972,6 +2972,61 @@ PY
     printf '%s\n' "$_imv_pins"
 }
 
+# exakit_previous_kit_repo <installing-repo> — the owner/repo of a starter kit
+# already installed here that this run is moving on FROM, or empty.
+#
+# THIS IS AN UPGRADE, NOT A TAKEOVER. Same product, same machine, same place:
+# both kits put their command at ~/.local/bin/exakit, their staged copy at
+# ~/.exasol-starter-kit/kit, and their state in the same manifest. This repo is
+# where the kit is developed and exasol-labs/exasol-personal-local-starterkit is
+# where it is published, so a machine holding the published one is simply behind
+# — and it is told that in the words of an update, not of a replacement.
+#
+# The repo is compared, never the ref: the same repo at another tag is the
+# ordinary update and needs no line at all. A checkout: source is a local
+# working tree and belongs to no repo.
+exakit_previous_kit_repo() {
+    _pkr_installing="${1:-}"
+    [ -n "$_pkr_installing" ] || return 1
+    _pkr_src="$(manifest_get kit.source 2>/dev/null || true)"
+    [ -n "$_pkr_src" ] || return 1
+    case "$_pkr_src" in checkout:*) return 1 ;; esac
+    _pkr_repo="${_pkr_src%@*}"
+    [ -n "$_pkr_repo" ] || return 1
+    [ "$_pkr_repo" != "${_pkr_installing%@*}" ] || return 1
+    # A RECORD IS NOT AN INSTALLATION. The manifest can outlive the kit that
+    # wrote it: an uninstall that is interrupted, one that cannot reach a file,
+    # or a kit whose Windows half cleans up differently, all leave kit.source
+    # sitting there with nothing behind it. Announcing a takeover then is worse
+    # than saying nothing - it tells a user their old kit is still installed
+    # when they have just finished removing it, and they have no way to argue.
+    #
+    # So the record has to be corroborated: the command it installed, or the
+    # kit copy it staged. Either one is proof something is still there; neither
+    # means the record is a leftover and is treated as one.
+    [ -x "$EXAKIT_BIN_DIR/exakit" ] || [ -d "$EXAKIT_HOME/kit" ] || return 1
+    printf '%s\n' "$_pkr_repo"
+}
+
+# exakit_announce_kit_upgrade <installing-repo> — say once, before any step,
+# which installation this run is updating, and what it keeps.
+#
+# INFO, NOT A WARNING. Nothing is wrong here and nothing is being taken over:
+# it is the same product moving forward, and a red line would tell a reader
+# their machine had a problem it does not have.
+#
+# WHAT CHANGES IS THE TOOLING. The database, its credentials and the deployment
+# the launcher owns are kept: both kits deploy the same Exasol Personal, so
+# there is nothing to migrate and nothing to delete. Saying so is the point —
+# an update that did not promise it would leave the reader guessing.
+exakit_announce_kit_upgrade() {
+    _aku_repo="$(exakit_previous_kit_repo "${1:-}" 2>/dev/null || true)"
+    [ -n "$_aku_repo" ] || return 0
+    info "Updating the starter kit already installed here (from $_aku_repo)."
+    info "The exakit command, the kit copy and the AI skills are replaced; your database, its credentials and the deployment are kept."
+    manifest_set kit.updated_from "$_aku_repo" 2>/dev/null || true
+}
+
 exakit_component_current() {
     case "$1" in
         exakit)
@@ -6149,6 +6204,38 @@ rollback_clear() {
 # announced and run again — that is what makes "re-running the installer is safe
 # and resumes" (AGENTS.md) true even after something removed an artifact from
 # under a completed install.
+# step_version_drift <step> — "installed X, this kit installs Y" when the
+# component a step owns is behind what this run advertises, else empty.
+#
+# WHY A COMPLETED STEP MAY STILL HAVE WORK. A step tick means "this was
+# installed", not "this is current". Re-running the installer over an older
+# installation therefore skipped every step whose artifact was present, and the
+# run finished having upgraded the kit and nothing else: exapump, the MCP
+# server and pyexasol all stayed where the previous kit had left them. The user
+# ran one command expecting an update and got a kit that now disagreed with its
+# own components.
+#
+# Only a component that is genuinely BEHIND counts. Equal versions skip as they
+# always did, and a component AHEAD of this kit is left alone rather than
+# downgraded - a manifest can advertise an older set than a machine already has,
+# and an installer is no place to argue about it.
+step_version_drift() {
+    case "$1" in
+        launcher) _svd_id=personal;  _svd_want="${EXAKIT_PERSONAL_VERSION:-}" ;;
+        exapump)  _svd_id=exapump;   _svd_want="${EXAKIT_EXAPUMP_VERSION:-}" ;;
+        mcp)      _svd_id=mcp;       _svd_want="${EXAKIT_MCP_VERSION:-}" ;;
+        pyexasol) _svd_id=pyexasol;  _svd_want="${EXAKIT_PYEXASOL_VERSION:-}" ;;
+        *) return 1 ;;
+    esac
+    [ -n "$_svd_want" ] || return 1
+    _svd_have="$(exakit_component_current "$_svd_id" 2>/dev/null || true)"
+    [ -n "$_svd_have" ] || return 1
+    [ "$_svd_have" != "unknown" ] || return 1
+    exakit_version_newer "$_svd_want" "$_svd_have" || return 1
+    printf '%s %s is installed and this kit installs %s — updating it\n' \
+        "$_svd_id" "$_svd_have" "$_svd_want"
+}
+
 begin_step() {
     EXAKIT_CURRENT_STEP="$1"
     EXAKIT_ACTIVE_LABEL="$2"     # spinner label for run_logged inside this step
@@ -6164,9 +6251,16 @@ begin_step() {
     # explanation than the generic "what it installed is missing".
     EXAKIT_STEP_RERUN_REASON=""
     if step_done "$1"; then
+        # A tick says "installed", not "current". Ask about the version before
+        # the artifact: a component that is merely BEHIND is present on disk,
+        # so the artifact check would happily skip it.
+        _bs_drift="$(step_version_drift "$1" 2>/dev/null || true)"
+        if [ -n "$_bs_drift" ]; then
+            EXAKIT_STEP_RERUN_REASON="$_bs_drift"
+            _bs_rerun=1
         # "unknown" (and "present") keep the manifest's answer: only a proven
         # "missing" is allowed to override the tick.
-        if [ "$(step_artifact_state "$1")" = "missing" ]; then
+        elif [ "$(step_artifact_state "$1")" = "missing" ]; then
             # Run the judgement AGAIN, in this shell, purely to recover
             # EXAKIT_STEP_RERUN_REASON: the call above is a command
             # substitution, so the variable it set died with the subshell and
@@ -9583,6 +9677,21 @@ kit_shared_steps() {
             :   # already in place; nothing to copy
         else
             mkdir -p "$EXAKIT_HOME/kit/setup" || die "Could not create $EXAKIT_HOME/kit/setup."
+            # CLEAR WHAT WE ARE ABOUT TO REPLACE. cp -R merges, it does not
+            # mirror, so a module the new kit DELETED goes on living in the
+            # staged copy - and the staged copy is what an installed exakit
+            # sources. Installing this kit over the official one left its
+            # runtime-nano.sh, nano.ps1 and catalog.tsv sitting in lib/, three
+            # files this kit removed on purpose. Same hazard, smaller, on any
+            # update that drops a file.
+            #
+            # Only the subtrees re-copied below, and only in the branch that
+            # already established this is not the kit home itself.
+            for _kss_stale in "$EXAKIT_HOME/kit/setup/lib" "$EXAKIT_HOME/kit/setup/help" \
+                              "$EXAKIT_HOME/kit/mcp" "$EXAKIT_HOME/kit/sql" \
+                              "$EXAKIT_HOME/kit/skills"; do
+                rm -rf "$_kss_stale"
+            done
             cp -R "$_script_dir/lib" "$EXAKIT_HOME/kit/setup/" \
                 || die "Could not copy the kit library to $EXAKIT_HOME/kit/setup."
             # Copy the assets exakit needs after the checkout is gone: the mcp/

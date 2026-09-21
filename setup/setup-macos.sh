@@ -52,6 +52,9 @@ exakit_install_helper_early "$SCRIPT_DIR"
 
 manifest_set os "$(detect_os)"
 manifest_set arch "$(detect_arch)"
+# BEFORE kit.source is overwritten, because overwriting it is what erases the
+# record of where this installation came from.
+exakit_announce_kit_upgrade "${EXAKIT_KIT_SOURCE:-}" || true
 manifest_set kit.source "${EXAKIT_KIT_SOURCE:-checkout:$KIT_ROOT}"
 # The kit's own version comes from the versions manifest shipping with THIS
 # tree, not from whatever copy an earlier install left under the kit home.

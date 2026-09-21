@@ -46,6 +46,9 @@ if ($env:EXAKIT_BANNER_SHOWN -ne "1") { Write-ExakitBanner "Personal Local Start
 Set-ExakitManifestValue "os" "windows"
 Set-ExakitManifestValue "arch" $env:PROCESSOR_ARCHITECTURE
 $kitSource = if ($env:EXAKIT_KIT_SOURCE) { $env:EXAKIT_KIT_SOURCE } else { "checkout:$KitRoot" }
+# BEFORE kit.source is overwritten, because overwriting it is what erases the
+# record of where this installation came from.
+Show-ExakitKitUpgrade -Installing $env:EXAKIT_KIT_SOURCE
 Set-ExakitManifestValue "kit.source" $kitSource
 # The kit's own version comes from the versions manifest shipping with THIS
 # tree, not from whatever copy an earlier install left under the kit home.
@@ -302,6 +305,18 @@ try {
         # ~\.exasol-starter-kit\kit and ran setup from there.
         $kitSetupDir = Join-Path $script:ExakitHome "kit\setup"
         New-Item -ItemType Directory -Force -Path $kitSetupDir | Out-Null
+        # CLEAR WHAT WE ARE ABOUT TO REPLACE. A copy merges, it does not mirror,
+        # so a module the new kit DELETED goes on living in the staged copy -
+        # and the staged copy is what an installed exakit loads. Installing over
+        # the official kit left its nano.ps1, runtime-nano.sh and catalog.tsv in
+        # lib\, three files this kit removed on purpose. Twin of the same clear
+        # in kit_shared_steps.
+        foreach ($stale in @(
+            (Join-Path $kitSetupDir "lib"), (Join-Path $kitSetupDir "help"),
+            (Join-Path $script:ExakitHome "kit\mcp"), (Join-Path $script:ExakitHome "kit\sql"),
+            (Join-Path $script:ExakitHome "kit\skills"))) {
+            Remove-Item -Recurse -Force $stale -ErrorAction SilentlyContinue
+        }
         Copy-ExakitAsset -Source $LibDir -Destination (Join-Path $kitSetupDir "lib")
         Copy-ExakitAsset -Source (Join-Path $ScriptDir "exakit.ps1") -Destination (Join-Path $kitSetupDir "exakit.ps1")
         # skills/ is not optional decoration: exakit skills, exakit
