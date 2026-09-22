@@ -6,7 +6,7 @@
   },
   "components": {
     "personal": {
-      "version": "2.3.0-rc3",
+      "version": "2.3.0",
       "severity": "normal"
     },
     "exapump": {
