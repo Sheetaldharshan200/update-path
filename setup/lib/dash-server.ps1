@@ -285,11 +285,61 @@ function Write-DashServerLauncher {
         # the kit uses - the kit's record, then the plain default - so there is
         # nothing left to disagree with. Twin of the same block in
         # dash_server_write_launcher (dash-server.sh), where argv is read too.
+        # RESOLVED IN THE SAME ORDER THE KIT USES, and the first of those
+        # orders is the one this side used to skip entirely:
+        #   1. --port on this command line  (how the kit and the boot entry call it)
+        #   2. components.dash_server.port in the manifest
+        #   3. 5100
+        # The kit starts the launcher as `dash-server.cmd --host 127.0.0.1
+        # --port <n>` and then waits on <n>. With argv unread, the wrapper's
+        # own pre-flight probed whatever the manifest scan turned up instead -
+        # so the "already running?" check and the kit could be looking at two
+        # different ports, and the answer to "did it come up on 5100" was
+        # decided by a port nobody had asked about. The shell twin
+        # (_dash_server_write_launcher) has always read argv first; this is
+        # that same walk in cmd.
+        #
+        # GOTOs, NOT PARENTHESISED IF-BLOCKS - same reason as the jump below:
+        # a ")" anywhere in a bracketed body closes it early. `shift` does not
+        # touch %*, so the whole command line still reaches the server.
         "set `"EXAKIT_DS_PORT=`""
+        "set `"EXAKIT_DS_WANT=`""
+        ":exakit_ds_argv"
+        "if `"%~1`"==`"`" goto exakit_ds_argv_done"
+        "if defined EXAKIT_DS_WANT goto exakit_ds_argv_take"
+        "if /i `"%~1`"==`"--port`" goto exakit_ds_argv_want"
+        "set `"EXAKIT_DS_ARG=%~1`""
+        "if `"%EXAKIT_DS_ARG:~0,7%`"==`"--port=`" goto exakit_ds_argv_eq"
+        "shift"
+        "goto exakit_ds_argv"
+        ":exakit_ds_argv_want"
+        "set `"EXAKIT_DS_WANT=1`""
+        "shift"
+        "goto exakit_ds_argv"
+        ":exakit_ds_argv_take"
+        "set `"EXAKIT_DS_PORT=%~1`""
+        "set `"EXAKIT_DS_WANT=`""
+        "shift"
+        "goto exakit_ds_argv"
+        ":exakit_ds_argv_eq"
+        "set `"EXAKIT_DS_PORT=%EXAKIT_DS_ARG:~7%`""
+        "shift"
+        "goto exakit_ds_argv"
+        ":exakit_ds_argv_done"
         "if not defined EXAKIT_HOME set `"EXAKIT_DS_MANIFEST=%USERPROFILE%\.exasol-starter-kit\manifest.json`""
         "if defined EXAKIT_HOME set `"EXAKIT_DS_MANIFEST=%EXAKIT_HOME%\manifest.json`""
-        "if exist `"%EXAKIT_DS_MANIFEST%`" for /f `"tokens=2 delims=:,`" %%P in ('findstr /r /c:`"\`"port\`"[ ]*:`" `"%EXAKIT_DS_MANIFEST%`"') do set `"EXAKIT_DS_PORT=%%P`""
+        # FIRST match, not last. `for /f ... do set` runs its body once per
+        # matching line and the last one wins, so the moment the manifest grows
+        # a second `"port"` key anywhere - the database's, say - the launcher
+        # would start binding it. `head -1` is what the shell twin does; this
+        # `if not defined` is head -1 in cmd.
+        "if exist `"%EXAKIT_DS_MANIFEST%`" if not defined EXAKIT_DS_PORT for /f `"tokens=2 delims=:,`" %%P in ('findstr /r /c:`"\`"port\`"[ ]*:`" `"%EXAKIT_DS_MANIFEST%`"') do if not defined EXAKIT_DS_PORT set `"EXAKIT_DS_PORT=%%P`""
         "for /f `"tokens=* delims= `" %%Q in (`"%EXAKIT_DS_PORT%`") do set `"EXAKIT_DS_PORT=%%Q`""
+        # Anything that is not all digits is not a port. A findstr that matched
+        # the wrong line, or a --port someone typed wrong, would otherwise be
+        # handed to the bind as-is. The shell twin's `case *[!0-9]*` in cmd:
+        # the for only yields a token when a non-digit is present.
+        "for /f `"delims=0123456789`" %%R in (`"%EXAKIT_DS_PORT%`") do set `"EXAKIT_DS_PORT=`""
         "if not defined EXAKIT_DS_PORT set `"EXAKIT_DS_PORT=5100`""
         "curl -s -o NUL -m 2 http://127.0.0.1:%EXAKIT_DS_PORT%/mcp >NUL 2>&1"
         "if errorlevel 1 goto exakit_dash_start"
@@ -408,10 +458,18 @@ function Test-DashServer {
     }
 
     $proc = $null
+    # ITS OWN FILE, and redirected at all. This probe used to start the server
+    # with no redirection whatsoever and then tell the reader to "see log" - a
+    # log this attempt had never written a byte to. Separate from
+    # dash-server.log so it cannot collide with a server that is still holding
+    # that handle, and so the reason below is this attempt's.
+    $probeLog = Join-Path $script:LogDir "dash-server-validate.log"
+    New-Item -ItemType Directory -Force -Path $script:LogDir | Out-Null
     try {
         $proc = Start-Process -FilePath (Get-DashServerLauncherPath) `
             -ArgumentList @("--host", "127.0.0.1", "--port", $script:DashServerPort) `
-            -WindowStyle Hidden -PassThru
+            -WindowStyle Hidden -PassThru `
+            -RedirectStandardOutput $probeLog -RedirectStandardError "$probeLog.err"
     } catch {
         Warn2 "dash-server could not be started for validation (see log). Recorded validated=false; retry with: exakit update"
         Set-ExakitManifestValue "components.dash_server.validated" $false
@@ -444,9 +502,50 @@ function Test-DashServer {
         Set-ExakitManifestValue "components.dash_server.validated" $true
         Write-DashServerUsagePanel
     } else {
-        Warn2 "dash-server did not answer on port $($script:DashServerPort) (see log). Recorded validated=false; retry with: exakit update"
+        $reason = Get-DashServerFailureReason $probeLog
+        if ($reason) {
+            Warn2 "dash-server did not answer on port $($script:DashServerPort) - $reason. Recorded validated=false; retry with: exakit update"
+        } else {
+            Warn2 "dash-server did not answer on port $($script:DashServerPort) within $waited s. Recorded validated=false; retry with: exakit update"
+        }
         Set-ExakitManifestValue "components.dash_server.validated" $false
     }
+}
+
+# Get-DashServerFailureReason - the line from a start log that says WHY the
+# server is not answering, ready to put on screen.
+#
+# "see the log" IS NOT A DIAGNOSIS. A failed start printed a port and a file
+# path and stopped there, so the only way to learn what happened was to open a
+# file in the middle of an install - and the validation attempt did not even
+# redirect its output, so for that half the named file held nothing from the
+# attempt being reported. The reason is one line; it belongs on screen.
+# Twin of _dash_server_failure_reason.
+function Get-DashServerFailureReason {
+    param([string]$Path)
+    $paths = @()
+    if ($Path) { $paths += $Path; $paths += "$Path.err" }
+    $lines = @()
+    foreach ($candidate in $paths) {
+        if (-not (Test-Path $candidate)) { continue }
+        try {
+            $lines += @(Get-Content -Path $candidate -Tail 40 -ErrorAction Stop |
+                        Where-Object { "$_".Trim() })
+        } catch { }
+    }
+    if ($lines.Count -eq 0) { return "" }
+    # A traceback says what went wrong on its LAST line, not its first, and the
+    # frames between are noise here. Prefer the deepest error line; fall back to
+    # whatever the server said last.
+    $reason = "$($lines[-1])".Trim()
+    foreach ($line in $lines) {
+        if ("$line" -match '(Error|Exception|error:|ERROR|Errno|refused|denied|in use|already running)') {
+            $reason = "$line".Trim()
+        }
+    }
+    $reason = ($reason -replace '\s+', ' ')
+    if ($reason.Length -gt 150) { $reason = $reason.Substring(0, 147) + "..." }
+    return $reason
 }
 
 # One bounded probe of the control plane. Any HTTP status counts: /mcp
@@ -747,7 +846,12 @@ function Start-DashServer {
         Start-Sleep -Seconds 2
         $waited += 2
     }
-    Warn2 "dash-server did not answer on port $($script:DashServerPort) - see $($script:DashServerLog)"
+    $reason = Get-DashServerFailureReason $script:DashServerLog
+    if ($reason) {
+        Warn2 "dash-server did not answer on port $($script:DashServerPort) - $reason"
+    } else {
+        Warn2 "dash-server did not answer on port $($script:DashServerPort) within $waited s - see $($script:DashServerLog)"
+    }
     return $false
 }
 

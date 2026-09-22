@@ -109,6 +109,80 @@ function Get-McpSslCertValidation {
 $script:McpLastRunFailed = $false
 $script:McpReadonlyPrivileges = @()
 
+# Start-ExakitMcpPrefetch - start the MCP package download NOW, in the
+# background, so it overlaps the data load instead of queueing behind it.
+#
+# THE TWO STEPS NEED NOTHING FROM EACH OTHER. Priming the package is a download
+# and an unpack; the data load is a local database talking to local files. Run
+# one after the other they cost the sum of their times, and on a fresh Windows
+# install that sum was ~5 minutes: 131s loading, 166s on the bridge. The prime
+# is the bigger half and almost all of it is uv materialising the server's
+# environment - 12,099 files and 207MB, measured - which is exactly the work a
+# machine can do while its database is busy elsewhere. Windows pays most for
+# it, because Defender scans every one of those files as it lands.
+#
+# Best-effort by construction: no uv, or a kit where the MCP step never runs,
+# and this returns having done nothing. Install-Mcp then primes inline exactly
+# as it always did, so the only thing that can be lost is the saving.
+# Twin of mcp_prefetch_begin.
+$script:McpPrefetchProc = $null
+$script:McpPrefetchLog  = ""
+function Start-ExakitMcpPrefetch {
+    if ($env:EXAKIT_MCP_PREFETCH -eq "0") { return }
+    if ($script:McpPrefetchProc) { return }
+    try { [void](Install-ExakitUv) } catch { return }
+    $uvx = Get-UvxPath
+    if (-not $uvx) { return }
+    # Its own file, not the install log: this writes while the data load is
+    # writing too, and two appenders interleave into nonsense. It is folded
+    # into the install log when Install-Mcp collects it.
+    $log = Join-Path ([System.IO.Path]::GetTempPath()) ("exakit-mcp-prefetch-" + [guid]::NewGuid().ToString("N") + ".log")
+    try {
+        $script:McpPrefetchProc = Start-Process -FilePath $uvx `
+            -ArgumentList @("$($script:McpPackage)@$($script:McpVersion)", "--help") `
+            -WindowStyle Hidden -PassThru `
+            -RedirectStandardOutput $log -RedirectStandardError "$log.err"
+        $script:McpPrefetchLog = $log
+        Write-ExakitLog "INFO" "MCP package prefetch started in the background (pid $($script:McpPrefetchProc.Id))"
+    } catch {
+        $script:McpPrefetchProc = $null
+        $script:McpPrefetchLog = ""
+    }
+}
+
+# Stop-ExakitMcpPrefetch - leave no orphan behind when the install dies early.
+# Twin of mcp_prefetch_stop.
+function Stop-ExakitMcpPrefetch {
+    if (-not $script:McpPrefetchProc) { return }
+    try { if (-not $script:McpPrefetchProc.HasExited) { $script:McpPrefetchProc.Kill() } } catch { }
+    if ($script:McpPrefetchLog) {
+        Remove-Item -Force -ErrorAction SilentlyContinue $script:McpPrefetchLog, "$($script:McpPrefetchLog).err"
+    }
+    $script:McpPrefetchProc = $null
+    $script:McpPrefetchLog = ""
+}
+
+# Receive-ExakitMcpPrefetch - wait for the background prime and hand back what
+# it printed, or $null when there was no prefetch to collect.
+function Receive-ExakitMcpPrefetch {
+    if (-not $script:McpPrefetchProc) { return $null }
+    try { $script:McpPrefetchProc.WaitForExit() } catch { }
+    $text = ""
+    foreach ($f in @($script:McpPrefetchLog, "$($script:McpPrefetchLog).err")) {
+        if ($f -and (Test-Path $f)) {
+            $text += (Get-Content -Path $f -Raw -ErrorAction SilentlyContinue)
+        }
+    }
+    $code = 1
+    try { $code = $script:McpPrefetchProc.ExitCode } catch { }
+    if ($script:McpPrefetchLog) {
+        Remove-Item -Force -ErrorAction SilentlyContinue $script:McpPrefetchLog, "$($script:McpPrefetchLog).err"
+    }
+    $script:McpPrefetchProc = $null
+    $script:McpPrefetchLog = ""
+    return @{ Output = $text; ExitCode = $code }
+}
+
 function Install-Mcp {
     $script:McpStepT0 = Get-Date
     Install-ExakitUv | Out-Null
@@ -131,8 +205,17 @@ function Install-Mcp {
     Start-ExakitSpinner $script:ExakitActiveLabel
     try {
         $ErrorActionPreference = "Continue"
-        $primeOut = & (Get-UvxPath) "$($script:McpPackage)@$($script:McpVersion)" "--help" 2>&1 | Out-String
-        $primeCode = $LASTEXITCODE
+        # Started before the data load (Start-ExakitMcpPrefetch). On a machine
+        # that took longer to load than to download, this has already finished
+        # and the wait returns at once - which is the whole point.
+        $early = Receive-ExakitMcpPrefetch
+        if ($null -ne $early) {
+            $primeOut = $early.Output
+            $primeCode = $early.ExitCode
+        } else {
+            $primeOut = & (Get-UvxPath) "$($script:McpPackage)@$($script:McpVersion)" "--help" 2>&1 | Out-String
+            $primeCode = $LASTEXITCODE
+        }
     } catch {
         $primeOut = "$_"
     } finally {
@@ -521,7 +604,7 @@ function Assert-McpReadonlyPosture {
 function Set-McpReadonlyAccess {
     $cmraPrevQuiet = $script:ExakitQuietDetail
     $cmraT0 = Get-Date
-    if ($script:UiFancy) { $script:ExakitQuietDetail = $true }
+    if (Test-ExakitStdoutIsTerminal) { $script:ExakitQuietDetail = $true }
     # try/finally, not a plain restore at the end: every Fail in this
     # function throws, the MCP step is a SOFT step, and a caught throw
     # would leave ExakitQuietDetail set - silencing every step after it.
@@ -1388,7 +1471,20 @@ function Invoke-McpSetup {
         & $addRow "Continue" (& $stateOf "continue") @("continue")
         $pendingCount = 0
         foreach ($ids in $menuIds) { if (@($ids).Count -gt 0) { $pendingCount++ } }
+        $connectedCount = 0
+        foreach ($note in $menuNotes) { if ($note -eq "already connected") { $connectedCount++ } }
         if ($pendingCount -eq 0) {
+            # NOTHING CONNECTED IS NOT EVERYTHING CONNECTED. Every row can be
+            # "not installed" - a fresh machine with no AI client on it at all -
+            # and the claim below was printed for that case too, telling the
+            # reader their clients were wired up over MCP when the kit had not
+            # touched a single config. Zero of zero is not success; say which
+            # of the two happened. Twin of the same branch in exakit_mcp_setup.
+            if ($connectedCount -eq 0) {
+                Info "No AI client was found on this machine, so there is nothing to connect yet."
+                Info "Install one (Claude, Codex, Cursor, Copilot, Gemini CLI, OpenCode, Continue) and run 'exakit mcp-setup'."
+                return $true
+            }
             Ok "All AI clients found on this machine are already connected over MCP."
             Info "Check them with 'exakit mcp-status'; new clients appear here once installed."
             return $true
@@ -1584,7 +1680,7 @@ function Invoke-McpOperation {
     # the logfile keeps the record; redirected there is no spinner, so the line
     # stays and nothing is lost.
     $mcpPrevQuiet = $script:ExakitQuietDetail
-    if ($script:UiFancy) { $script:ExakitQuietDetail = $true }
+    if (Test-ExakitStdoutIsTerminal) { $script:ExakitQuietDetail = $true }
     Info "Running MCP $Operation"
     Start-ExakitSpinner "Running MCP $Operation"
     try {

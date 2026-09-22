@@ -20,11 +20,13 @@
 #     the flag is probed per subcommand exactly as the sh side does
 
 $script:PersonalRepo            = "exasol/exasol-personal"
-# 2.3.0-rc3 deliberately, until 2.3.0 final publishes - the flipped Windows
-# default needs a launcher with Windows local deployments, which no 2.2 release
-# has. Twin of EXAKIT_PERSONAL_VERSION_FALLBACK in common.sh; both move to
-# final together with components.personal.version.
-$script:PersonalVersionFallback = "2.3.0-rc3"
+# 2.3.0 FINAL since 2026-09-21. This was a release candidate, and candidates
+# get deleted: rc2 and rc3 were both removed upstream while pinned here, and
+# rc3 reached a user as a 404 mid-install. A published release is not removed
+# that way, so this is the first pin here that is not living on borrowed time.
+# Twin of EXAKIT_PERSONAL_VERSION_FALLBACK in common.sh; both move together,
+# and both were checked against the upstream release before being written.
+$script:PersonalVersionFallback = "2.3.0"
 $script:PersonalPort            = 8563
 $script:PersonalProbeTimeout    = if ($env:EXAKIT_PERSONAL_PROBE_TIMEOUT) { [int]$env:EXAKIT_PERSONAL_PROBE_TIMEOUT } else { 10 }
 $script:PersonalMinRamGb        = if ($env:EXAKIT_PERSONAL_MIN_RAM_GB)  { [int]$env:EXAKIT_PERSONAL_MIN_RAM_GB }  else { 8 }
@@ -403,6 +405,16 @@ function Test-PersonalRequirements {
     if ($podmanCmd -and $env:EXAKIT_FORCE -ne "1") {
         $rootful = ("" + (Invoke-ExakitBounded -FilePath $podmanCmd.Source -Arguments @("machine", "inspect", "--format", "{{.Rootful}}") -TimeoutSeconds 20)).Trim()
         if ($rootful -eq "true") {
+            # OFFER TO FIX IT, rather than hand over three commands and stop.
+            # Every new Windows install where Podman Desktop made the machine
+            # hits this, so "here is what to type" is the whole experience of
+            # the product for those users.
+            if (Repair-PersonalRootfulPodmanMachine) {
+                $rootful = ("" + (Invoke-ExakitBounded -FilePath $podmanCmd.Source -TimeoutSeconds 30 `
+                    -Arguments @("machine", "inspect", "--format", "{{.Rootful}}"))).Trim()
+            }
+        }
+        if ($rootful -eq "true") {
             Fail "Podman's default machine is rootful, and a database published from a rootful machine is not reachable from Windows (the port is an iptables rule inside the machine, which nothing forwards). Make it rootless first: podman machine stop; podman machine set --rootful=false; podman machine start - or remove it and let the launcher create one (podman machine rm podman-machine-default). Force past this check with EXAKIT_FORCE=1."
         }
     }
@@ -413,6 +425,68 @@ function Test-PersonalRequirements {
 # the release's checksums file, and place exasol.exe under the kit's bin dir. A
 # launcher already on PATH that knows the 'local' preset is kept as it always
 # was. Twin of personal_install_launcher.
+# Repair-PersonalRootfulPodmanMachine - switch Podman's default machine to
+# rootless, with consent. Returns $true when it believes it changed something.
+#
+# WHY THIS BLOCKS EVERY NEW WINDOWS INSTALL. Podman Desktop creates the default
+# machine ROOTFUL, and a rootful container publishes its port as an iptables
+# rule inside the machine - no listener, so nothing forwards it to Windows. The
+# database then answers inside the machine and never on 127.0.0.1:8563. The
+# check that catches it was right to exist and wrong to stop there: it printed
+# three commands and gave up, which is the entire experience of this product for
+# anyone whose machine Podman Desktop had already made.
+#
+# CONSENT IS EXPLICIT, because this is not ours to change quietly. The default
+# machine is shared host-wide: restarting it interrupts anything else using
+# Podman, and containers created under the rootful machine are not visible from
+# the rootless one afterwards. They are not deleted - the connection changes,
+# not the storage - but a reader has to be told before, not discover it after.
+# So a terminal is asked and defaults to yes; a run with no terminal must set
+# EXAKIT_PODMAN_SELFHEAL=1, the same opt-in the Linux rootless fix uses.
+function Repair-PersonalRootfulPodmanMachine {
+    $podman = Get-Command podman -ErrorAction SilentlyContinue
+    if (-not $podman) { return $false }
+
+    Warn2 "Podman's default machine is rootful, and a database published from one is not reachable from Windows."
+    $question = "Let the kit switch Podman's default machine to rootless? It stops and restarts the machine, and containers made under the rootful one will not be visible afterwards"
+
+    if (Test-ExakitInteractive) {
+        if (-not (Confirm-ExakitPrompt $question $true)) {
+            Info "Not changed."
+            return $false
+        }
+    } else {
+        switch ("" + $env:EXAKIT_PODMAN_SELFHEAL) {
+            { $_ -in @("1", "y", "yes", "Y", "YES", "Yes") } { }
+            default {
+                Info "The kit can switch it for you, but it restarts a machine shared with everything else"
+                Info "on this host, so an unattended run has to opt in:  EXAKIT_PODMAN_SELFHEAL=1"
+                return $false
+            }
+        }
+    }
+
+    # Stop, set, start - in that order, because set refuses on a running
+    # machine. A stop that fails because it was already stopped is not an
+    # error, so only the set and the start are judged.
+    Info "Switching Podman's default machine to rootless"
+    [void](Invoke-ExakitBounded -FilePath $podman.Source -Arguments @("machine", "stop") -TimeoutSeconds 120)
+    $set = Invoke-ExakitLogged $podman.Source "machine" "set" "--rootful=false"
+    if ($set -ne 0) {
+        Warn2 "Could not switch the machine to rootless (podman machine set exited $set)."
+        return $false
+    }
+    $start = Invoke-ExakitLogged $podman.Source "machine" "start"
+    if ($start -ne 0) {
+        # The setting took even though the start did not; say both, because the
+        # next run needs to know which half to retry.
+        Warn2 "The machine is set to rootless but would not start (podman machine start exited $start). Start it yourself: podman machine start"
+        return $false
+    }
+    Ok "Podman's default machine is rootless now"
+    return $true
+}
+
 function Install-PersonalLauncher {
     if ($env:EXAKIT_FORCE_COMPONENT_INSTALL -ne "1") {
         $existing = Get-Command exasol -ErrorAction SilentlyContinue
@@ -432,6 +506,15 @@ function Install-PersonalLauncher {
     $base = "https://github.com/$($script:PersonalRepo)/releases/download/v$version"
     $tmpDir = Join-Path ([System.IO.Path]::GetTempPath()) "exakit-personal-$([guid]::NewGuid().ToString('N'))"
     New-Item -ItemType Directory -Force -Path $tmpDir | Out-Null
+
+    # ONE LINE FOR THIS STEP, as on every other platform. The step label is
+    # already animated and re-labelled per phase, so the download line, the
+    # checksum verdict and the unpack line underneath were the second telling -
+    # and they were the visible difference between a Windows install and a
+    # macOS one. Piped or redirected, the detail stays, exactly as the shell
+    # side behaves. Twin of the bracket in personal_install_launcher.
+    $prevQuiet = $script:ExakitQuietDetail
+    if (Test-ExakitStdoutIsTerminal) { $script:ExakitQuietDetail = $true }
 
     try {
         $script:ExakitActiveLabel = "Downloading Exasol launcher v$version"
@@ -465,6 +548,10 @@ function Install-PersonalLauncher {
         Move-Item -Force $extracted.FullName $script:PersonalBinPath
         OkStep "Exasol launcher v$version installed to $(Get-ExakitTilde $script:PersonalBinPath)"
     } finally {
+        # The flag is restored in the SAME finally that cleans the temp dir:
+        # a leaked quiet flag silences every step after this one, and a Fail
+        # inside the try is the path that would leak it.
+        $script:ExakitQuietDetail = $prevQuiet
         Remove-Item -Recurse -Force $tmpDir -ErrorAction SilentlyContinue
     }
 }
@@ -606,6 +693,18 @@ function Install-PersonalDeployment {
         Fail "Port $(Get-PersonalDbPort) is in use by a process that is not a reachable Exasol Personal deployment.$(Get-PersonalForeignDbHint) Stop that application and re-run (EXAKIT_DB_PORT does not choose the port of a personal deployment)."
     }
 
+    # The progress bar narrates the deploy and the spinner narrates the health
+    # probe, so the info/ok pairs underneath are the second telling. Twin of the
+    # bracket in personal_deploy_local.
+    $prevDeployQuiet = $script:ExakitQuietDetail
+    if (Test-ExakitStdoutIsTerminal) { $script:ExakitQuietDetail = $true }
+
+    # try/finally, not a plain restore at the end: Fail throws, this runs
+    # inside a step that can be soft, and a caught throw would leave the flag
+    # set and silence every step after it. Same shape mcp.ps1 uses, for the
+    # same reason.
+    try {
+
     Info "Exasol Personal is free to use and ships under Exasol's own licence terms, not the kit's MIT licence. The launcher shows them below."
     Info "Deploying Exasol Personal locally - the database runs through Podman's default machine, which the launcher prepares (and installs Podman if needed; that may ask for administrator approval)"
 
@@ -624,6 +723,9 @@ function Install-PersonalDeployment {
     }
 
     Wait-PersonalReady
+    } finally {
+        $script:ExakitQuietDetail = $prevDeployQuiet
+    }
     Ok "Exasol Personal deployed and answering on 127.0.0.1:$(Get-PersonalDbPort)"
     Set-PersonalManifest "healthy"
 }

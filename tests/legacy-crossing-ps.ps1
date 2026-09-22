@@ -58,17 +58,50 @@ function New-StubWrapper([string]$Name, [string]$Target) {
             "exit /b %ERRORLEVEL%")
     } else {
         $path = Join-Path $stub $Name
+        # THE INTERPRETER AND THE SCRIPT ARE BOTH BAKED IN, so the wrapper needs
+        # nothing on PATH but the shell itself. It used to locate its own
+        # directory with `dirname "$0"` - an EXTERNAL binary, in /usr/bin - and
+        # the PATH filter below drops any directory that holds a container
+        # engine. On ubuntu-latest docker lives in /usr/bin, so that filter
+        # amputated /usr/bin and took dirname (and every other coreutil) with
+        # it. Every stub call then died with
+        #     stub/exapump: 2: dirname: not found
+        # and the suite reported thirty-odd assertion failures about container
+        # states and table lists - none of which were about the module. macOS
+        # keeps docker outside /usr/bin, so it was green there and on Windows.
+        # The stub directory is known right here; there is nothing to look up.
         $pwsh = (Get-Process -Id $PID).Path
+        if (-not $pwsh) { $pwsh = Join-Path $PSHOME "pwsh" }
+        if (-not $pwsh -or -not (Test-Path $pwsh)) {
+            throw "cannot resolve the running pwsh to build the $Name stub - it would be written unrunnable and every check below would fail for the wrong reason"
+        }
         Set-Content -Path $path -Value @(
             "#!/bin/sh",
-            "exec `"$pwsh`" -NoProfile -File `"`$(dirname `"`$0`")/$Target`" `"`$@`"")
+            "exec `"$pwsh`" -NoProfile -File `"$stub/$Target`" `"`$@`"")
         chmod +x $path
     }
     return $path
 }
 [void](New-StubWrapper "fakeengine" "fault-engine.ps1")
 $env:EXAKIT_EXAPUMP_BIN = New-StubWrapper "exapump" "fault-exapump.ps1"
-$env:PATH = "$stub" + [IO.Path]::PathSeparator + $env:PATH
+# A PATH WITH NO REAL CONTAINER ENGINE ON IT. The crossing no longer trusts the
+# recorded engine name alone: when that one cannot be run it asks whichever
+# engine on this machine actually holds the container, docker before podman. On
+# a developer laptop or a CI runner - both of which have a real docker - that
+# turned every "the recorded engine is gone" scenario into "some other engine
+# answered", and the suite started describing the machine it ran on instead of
+# the module. Drop the directories that hold one, keep everything else, so the
+# stub below is the only engine reachable.
+$_lcEnginePath = @()
+foreach ($dir in ($env:PATH -split [IO.Path]::PathSeparator)) {
+    if (-not $dir) { continue }
+    $hasEngine = $false
+    foreach ($exe in @("docker", "podman", "docker.exe", "podman.exe")) {
+        if (Test-Path (Join-Path $dir $exe)) { $hasEngine = $true; break }
+    }
+    if (-not $hasEngine) { $_lcEnginePath += $dir }
+}
+$env:PATH = (@($stub) + $_lcEnginePath) -join [IO.Path]::PathSeparator
 
 # --- line coverage, by breakpoint --------------------------------------------
 # Every line of the module that can hold a statement gets a breakpoint whose
@@ -115,6 +148,10 @@ $script:allEngine = @(); $script:allExapump = @(); $script:screens = @()
 function Seed {
     param([string]$Type = "nano", [switch]$NoPassword, [switch]$EmptyPassword, [switch]$NoDsn,
           [switch]$NoContainer, [switch]$NoVolume, [string]$Engine = "fakeengine")
+    # The module memoises the engine it resolved, and every scenario here runs
+    # in ONE PowerShell process: without this, a record seeded now is still
+    # answered by the engine the record before it cached.
+    Reset-LegacyEngineCache
     Remove-Item -Recurse -Force $env:EXAKIT_HOME -ErrorAction SilentlyContinue
     $ctrl = Join-Path $env:EXAKIT_HOME "ctrl"
     New-Item -ItemType Directory -Force -Path (Join-Path $env:EXAKIT_HOME "credentials"), $ctrl, $env:EXAKIT_BIN_DIR | Out-Null
@@ -336,7 +373,18 @@ Check "...nothing asked of the engine" 0 @(Calls "engine").Count
 Seed; Set-ExakitManifestValue "legacy.crossing_done" $true
 $s = Screen { Invoke-LegacyCrossingBefore }
 Check "a crossing already done: nothing said" "" $s.Trim()
-Check "...and no probe at all" 0 @(Calls "engine").Count
+# NOT "no probe at all" any more, and deliberately so. The container publishes
+# the port the new deployment needs, so a crossing that is over must still take
+# it out of the way - without that the install died on "port 8563 is in use" on
+# every later run. It says nothing while doing it; the engine log is where the
+# work shows. The sh twin pins the same behaviour on its own gate.
+# One line, and no "\": that is a SHELL continuation, and PowerShell does not
+# have it. Written this way the "\" was simply the third argument, so this
+# asserted "stop" against a backslash and failed on every run since it landed,
+# while the line below it ran as a statement of its own and printed to the
+# screen. Backtick is PowerShell's continuation; one line needs neither.
+$freedPort = @(Calls "engine") | Where-Object { $_ -like "stop *" } | ForEach-Object { "stop" } | Select-Object -First 1
+Check "...but the port is still freed" "stop" $freedPort
 Seed; Fault "engine.state" "absent"
 $s = Screen { Invoke-LegacyCrossingBefore }
 Check "a container that is gone: nothing said" "" $s.Trim()
@@ -345,7 +393,13 @@ Check "...as skip" "skip" (MGet "legacy.choice")
 Seed -Engine "no-such-engine"
 $s = Screen { Invoke-LegacyCrossingBefore }
 Check "a recorded engine that is gone: nothing said" "" $s.Trim()
-Check "...settled as skip" "skip" (MGet "legacy.choice")
+# RETRYABLE, NOT SETTLED. An engine that is missing today may be installed
+# tomorrow, so this records WHY it could not ask and leaves the crossing open -
+# it does not quietly write "skip" over a database it never reached. The sh
+# twin pins the same three facts on its own retry branch.
+Check "...records why it could not ask" "the container engine this database needs is not on this machine any more" (MGet "legacy.offer_blocked")
+Check "...and chooses nothing" "" (MGet "legacy.choice")
+Check "...leaving the crossing open for the next run" "" (MGet "legacy.crossing_done")
 Seed
 $realExapump = $env:EXAKIT_EXAPUMP_BIN; $env:EXAKIT_EXAPUMP_BIN = Join-Path $env:EXAKIT_HOME "no-such-exapump"
 $s = Screen { Invoke-LegacyCrossingBefore }
@@ -374,7 +428,8 @@ Check "...within the configured budget" $true (((Get-Date) - $t0).TotalSeconds -
 Check "...and the container it started is stopped again" 1 @((Calls "engine") | Where-Object { $_ -like "stop *" }).Count
 Seed; Fault "db.answer_after" "2"; $env:EXAKIT_LEGACY_DATA = "migrate"
 $s = Screen { Invoke-LegacyCrossingBefore }
-Has "a database that answers late is still copied" "Your data is saved" $s
+$s2 = Screen { Invoke-LegacyCrossingAfter }
+Has "a database that answers late is still copied" "Restored 3 table(s)" $s2
 Check "...all three tables" "3" (MGet "legacy.exported")
 Remove-Item Env:EXAKIT_LEGACY_DATA
 Seed; Set-ExakitManifestValue "legacy.choice" "migrate"
@@ -386,20 +441,31 @@ Remember
 
 Write-Host ""
 Write-Host "the whole road, end to end:"
+# THE QUESTION IS IN THE OTHER HALF, and so is everything that follows from
+# it. The first half reads the tables out while the container still holds the
+# port and says only what it does to the machine; the banner, the question, and
+# the choice it settles belong to the half that runs after exapump, where a
+# copy already exists to ask about. The sh twin's "the first half never asks"
+# block pins the same split on that side. These checks used to read the whole
+# crossing off the first half, which is why every one of them went red the day
+# the question moved.
 Seed; $env:EXAKIT_LEGACY_DATA = "migrate"
 $s = Screen { Invoke-LegacyCrossingBefore }
-Has "the banner names the container and its state" "container 'exasol-nano' (running)" $s
-Has "...and the table count" "It holds 3 table(s)" $s
-Has "...and the CSV caveat" "empty string arrives as NULL" $s
-Check "choice" "migrate" (MGet "legacy.choice")
+Check "the first half says only what it is doing to the machine" "" (
+    ($s -split "`n" | Where-Object { $_.Trim() -and $_ -notlike "*Stopping the old database container*" }) -join "")
+Check "...and settles nothing on its own" "/" ((MGet "legacy.choice") + "/" + (MGet "legacy.crossing_done"))
+Check "...but the copy is already made" "3" (MGet "legacy.exported")
 Check "crossed_from" "nano" (MGet "legacy.crossed_from")
 Check "export_dir" $script:LegacyExportDir (MGet "legacy.export_dir")
-Check "exported" "3" (MGet "legacy.exported")
 Check "container_stopped" "True" (MGet "legacy.container_stopped")
-Check "crossing_done" "True" (MGet "legacy.crossing_done")
 Check "the engine saw inspect, inspect, stop - nothing else" "container container stop" (Verbs)
 Check "every export used the LEGACY profile" 3 @((Calls "exapump") | Where-Object { $_ -like "export -p starter-kit-legacy *" }).Count
 $s2 = Screen { Invoke-LegacyCrossingAfter }
+Has "the banner names the container and the state it left it in" "container 'exasol-nano' (stopped for this install)" $s2
+Has "...and the count that is the user's own" "3 table(s) in 2 schema(s) of your own" $s2
+Has "...and the CSV caveat" "empty string arrives as NULL" $s2
+Check "choice" "migrate" (MGet "legacy.choice")
+Check "crossing_done" "True" (MGet "legacy.crossing_done")
 Has "the second half restores" "Restored 3 table(s)" $s2
 Has "...and declares the copy expendable" "no longer needed" $s2
 Has "...naming the original's home" "still holds the original" $s2
@@ -414,27 +480,38 @@ Check "and a later install asks nothing again" "" $s4.Trim()
 Remember
 Seed; Fault "engine.state" "stopped"; $env:EXAKIT_LEGACY_DATA = "migrate"
 $s = Screen { Invoke-LegacyCrossingBefore }
-Has "a stopped container is copied too" "(stopped)" $s
+Check "a stopped container is copied too" "3" (MGet "legacy.exported")
 Check "...started, then stopped - inspect before each" "container start container stop" (Verbs)
 Remember
 Seed; $env:EXAKIT_LEGACY_DATA = "skip"
 $s = Screen { Invoke-LegacyCrossingBefore }
-Has "skip leaves the old database alone, and says so" "left exactly as it was, stopped, with its data" $s
-Has "...with the removal command" "fakeengine rm -f exasol-nano; fakeengine volume rm exasol-nano-data" $s
-Check "no export was issued" 0 @((Calls "exapump") | Where-Object { $_ -like "export *" }).Count
+# THE COPY IS MADE BEFORE THE QUESTION IS ASKED, because it can only be made
+# while the old container still holds the port - so "skip" is not "do not
+# copy", it is "do not restore". Asserting zero exports here was asserting the
+# order the kit deliberately stopped using.
+Check "the copy is taken out anyway, while the port is still there" 3 @((Calls "exapump") | Where-Object { $_ -like "export *" }).Count
 Check "the container was stopped" 1 @((Calls "engine") | Where-Object { $_ -like "stop *" }).Count
 $s2 = Screen { Invoke-LegacyCrossingAfter }
-Check "the second half has nothing to restore" "" $s2.Trim()
+Has "skip leaves the old database alone, and says so" "left exactly as it was, stopped, with its data" $s2
+Has "...naming the command that copies it later" "exakit migrate docker-nano" $s2
+Has "...and the removal command" "fakeengine rm -f exasol-nano; fakeengine volume rm exasol-nano-data" $s2
+Check "...and nothing is uploaded into the new database" 0 @((Calls "exapump") | Where-Object { $_ -like "upload *" }).Count
+Check "...with skip recorded and the crossing closed" "skip/True" ((MGet "legacy.choice") + "/" + (MGet "legacy.crossing_done"))
 Remember
 Seed; $env:EXAKIT_LEGACY_DATA = "migrate"; Set-Content -Path (Join-Path $env:EXAKIT_FAULT_DIR "export.fail") -Value "S1.T1`nS1.T2`nS2.T3"
 $s = Screen { Invoke-LegacyCrossingBefore }
-Has "when nothing copies, it says so" "Nothing could be copied out" $s
-Check "...and downgrades to skip" "skip" (MGet "legacy.choice")
+Has "when a table will not copy, that table is named" "Could not copy S1.T1 out of the old database" $s
+# RETRYABLE, like the missing engine above: an export that failed today is not
+# an answer, so nothing is chosen and the crossing stays open.
+Check "...and when none of them copy, it records why" "nothing could be copied out of the old database" (MGet "legacy.offer_blocked")
+Check "...chooses nothing" "" (MGet "legacy.choice")
+Check "...leaves the crossing open" "" (MGet "legacy.crossing_done")
 Check "...leaving no export_dir" "" (MGet "legacy.export_dir")
 Remember
 Seed; $env:EXAKIT_LEGACY_DATA = "migrate"; Fault "engine.stop_rc" "1"
 $s = Screen { Invoke-LegacyCrossingBefore }
 Has "a stop the engine refuses is warned about on the migrate road" "may find its port busy" $s
+[void](Screen { Invoke-LegacyCrossingAfter })
 Check "...and the crossing is still done" "True" (MGet "legacy.crossing_done")
 Remember
 Seed; $env:EXAKIT_LEGACY_DATA = "migrate"
@@ -458,9 +535,10 @@ Seed; $env:EXAKIT_LEGACY_DATA = "migrate"
 Set-Content -Path (Join-Path $env:EXAKIT_FAULT_DIR "db.tables") -Value "S1.T1`nTPCH.NATION`nTPCH.REGION"
 Set-Content -Path (Join-Path $env:EXAKIT_FAULT_DIR "db.rows") -Value "TPCH.NATION|24`nTPCH.REGION|5"
 $s = Screen { Invoke-LegacyCrossingBefore }
-Has "the banner counts every table" "It holds 3 table(s)" $s
-Has "...says which belong to the kit" "1 of them belong to the kit's bundled sample data (tpch)" $s
-Has "...and how many are the user's own" "Your own: 2 table(s)" $s
+$s2 = Screen { Invoke-LegacyCrossingAfter }
+Has "the banner counts what is the user's own" "2 table(s) in 2 schema(s) of your own" $s2
+Has "...and says the rest is the kit's" "The other 1 is the kit's own tpch sample" $s2
+Has "...and that this install loads it itself" "which this install loads itself" $s2
 Check "only the user's tables are copied out" 2 @((Calls "exapump") | Where-Object { $_ -like "export *" }).Count
 # The export names its table as a quoted query, so that is what the log holds.
 Check "the unchanged sample table is not" 0 @((Calls "exapump") | Where-Object { $_ -like "export *" -and $_ -like '*"TPCH"."REGION"*' }).Count
@@ -490,7 +568,8 @@ Check "an unknown row count keeps the table in the copy" 1 @((Calls "exapump") |
 Lacks "...and nothing is called the kit's" "bundled sample data" $s
 Remember
 Seed; $env:EXAKIT_LEGACY_DATA = "skip"
-$s = Screen { Invoke-LegacyCrossingBefore }
+[void](Screen { Invoke-LegacyCrossingBefore })
+$s = Screen { Invoke-LegacyCrossingAfter }
 Has "skip names the command that copies it later" "exakit migrate docker-nano" $s
 Remember
 Remove-Item Env:EXAKIT_LEGACY_DATA

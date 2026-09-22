@@ -437,8 +437,11 @@ UI_TABLE_LINES=0
 # orphaning a live step spinner, which then printed its own line forever and left
 # the cursor mid-row for the frame that followed. The PowerShell twin has always
 # refused to start a second one.
-has "the table stops a live animation first" '_ui_step_stop_spinner' \
-    "$(sed -n '/^ui_table_begin() {/,/printf .\\033\[?25l./p' "$ROOT/setup/lib/ui.sh")"
+# Assigned first: a sed range with a `{` in an address is brace-expanded by
+# bash 3.2 in argument position. This one survives only because its addresses
+# carry no quotes - the next edit would not. See tests/bash32-guard.sh.
+_table_begin_sh="$(sed -n '/^ui_table_begin() {/,/printf .\\033\[?25l./p' "$ROOT/setup/lib/ui.sh")"
+has "the table stops a live animation first" '_ui_step_stop_spinner' "$_table_begin_sh"
 
 # Everything above reads the state file or a captured string, and neither can see
 # the bug that shipped twice: the table STACKED. The first stack was an animator

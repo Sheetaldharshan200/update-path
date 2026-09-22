@@ -304,7 +304,25 @@ EXAKIT_DBT_PROBE_EOF
         export DBT_ENV_SECRET_EXASOL_PASSWORD
         DBT_PROFILES_DIR="$EXAKIT_DBT_EXASOL_HOME"
         export DBT_PROFILES_DIR
-        exakit_run_bounded 60 "$_ddo_dbt" debug
+        # `dbt debug` GRADES THE MACHINE, NOT THE CONNECTION. Its "Required
+        # dependencies" check runs `git --help` and folds the result into the same
+        # pass/fail as the connection test - and on a machine with no git on PATH it
+        # does not merely fail, it raises before the connection is ever tried:
+        #
+        #     Required dependencies:
+        #     [ERROR]: Encountered an error:
+        #     Got a non-zero returncode running: ['git', '--help']
+        #
+        # Windows ships no git; macOS and Linux effectively always have one. So every
+        # fresh Windows install reported "dbt-exasol is installed, but dbt could not
+        # connect to the database" over a database dbt had never been asked about,
+        # while the same kit passed on every developer machine. `--connection` is
+        # dbt's own flag for exactly this - "test the connection to the target
+        # database independent of dependency checks" - and it still loads the profile
+        # and the project, which are the parts that belong to this probe. Verified
+        # against dbt 1.12.5: without git `debug` exits 2 and `debug --connection`
+        # exits 0 with "Connection test: [OK connection ok]".
+        exakit_run_bounded 60 "$_ddo_dbt" debug --connection
     ) >> "${EXAKIT_LOG_FILE:-/dev/null}" 2>&1
     _ddo_rc=$?
     rm -rf "$_ddo_tmp"

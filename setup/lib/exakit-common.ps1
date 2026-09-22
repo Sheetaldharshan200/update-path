@@ -428,7 +428,14 @@ function Warn2([string]$Msg) {
     # Write-ExakitAddonNote already defers for this, but every add-on module calls
     # Warn2 directly - 29 sites across three modules - so deferring HERE fixes all
     # of them, and any future one, instead of asking each to remember.
-    if ($script:ExakitAddonTableLive) {
+    # THE FALLBACK BAR COUNTS TOO. Where the table cannot be drawn the add-on
+    # narration falls back to a one-line progress bar, and that bar owns its
+    # line exactly the way the table owns its frame: a warning printed beside
+    # one still being redrawn runs off the right edge, wraps, and pushes the
+    # bar down - which is how one add-on's single bar came out as three broken
+    # rows with half-sentences bleeding between them. Test-ExakitAddonNarrationLive
+    # is true for either.
+    if (Test-ExakitAddonNarrationLive) {
         $script:ExakitAddonNotes += @{ Kind = "warn"; Text = $Msg }
         Write-ExakitLog "WARN" $Msg
         return
@@ -460,7 +467,7 @@ function Warn2([string]$Msg) {
 function Write-ExakitError([string]$Msg) {
     # Same reason as Warn2 above: ungated by the quiet flag, so it is one of the
     # two printers that can land inside a live add-on table.
-    if ($script:ExakitAddonTableLive) {
+    if (Test-ExakitAddonNarrationLive) {
         $script:ExakitAddonNotes += @{ Kind = "warn"; Text = $Msg }
         Write-ExakitLog "ERROR" $Msg
         return
@@ -1001,6 +1008,75 @@ function Invoke-ExakitLogged {
 # when it is false, and the runtime update offer in setup/exakit.ps1 refuses to
 # stop a database when it is false. Twin of bash's `[ -t 0 ]` test in
 # exakit_offer_runtime_update.
+# Test-ExakitStdoutIsTerminal - the PowerShell answer to the shell's `[ -t 1 ]`.
+#
+# The step brackets that silence per-step chatter are gated on this, and they
+# used to be gated on $script:UiFancy instead. Those are different questions.
+# UiFancy asks whether ANSI rendering is available, so it is FALSE on a console
+# without virtual-terminal support, under NO_COLOR, and under EXAKIT_NO_FANCY=1
+# - all of which are still terminals. The shell asks only whether stdout is a
+# terminal. So the same install narrated itself in one line per step on macOS
+# and in nine on a Windows console that merely lacked colour, checksum lines
+# and all.
+#
+# Do NOT reach for Test-ExakitInteractive here: that asks about stdin (is
+# someone there to answer a prompt), which is a different question again and
+# is false in exactly the piped install where the shell side stays verbose.
+# Get-ExakitPreviousKitRepo <installing-repo> - the owner/repo of a starter kit
+# already installed here that this run is moving on FROM, or "".
+#
+# THIS IS AN UPGRADE, NOT A TAKEOVER. Same product, same machine, same place:
+# both kits put their command in the same bin directory, their staged copy at
+# ~\.exasol-starter-kit\kit, and their state in the same manifest. This repo is
+# where the kit is developed and exasol-labs/exasol-personal-local-starterkit is
+# where it is published, so a machine holding the published one is simply behind.
+#
+# The repo is compared, never the ref: the same repo at another tag is the
+# ordinary update. A checkout: source is a local working tree.
+# Twin of exakit_previous_kit_repo.
+function Get-ExakitPreviousKitRepo {
+    param([string]$Installing)
+    if (-not $Installing) { return "" }
+    $src = "" + (Get-ExakitManifestValue "kit.source")
+    if (-not $src) { return "" }
+    if ($src -like "checkout:*") { return "" }
+    $repo = ($src -split "@")[0]
+    if (-not $repo) { return "" }
+    if ($repo -eq (($Installing -split "@")[0])) { return "" }
+    # A RECORD IS NOT AN INSTALLATION. The manifest can outlive the kit that
+    # wrote it - an interrupted uninstall, or one whose Windows half cleans up
+    # differently - leaving kit.source with nothing behind it. Announcing a
+    # takeover then tells a user their old kit is still installed just after
+    # they finished removing it. Corroborate with the command it installed or
+    # the kit copy it staged; neither means the record is a leftover.
+    # Twin of exakit_previous_kit_repo.
+    $cmd = Join-Path $script:BinDir "exakit.cmd"
+    $kit = Join-Path $script:ExakitHome "kit"
+    if (-not (Test-Path $cmd) -and -not (Test-Path $kit)) { return "" }
+    return $repo
+}
+
+# Show-ExakitKitUpgrade <installing-repo> - say once, before any step, which
+# installation this run is updating, and what it keeps.
+#
+# INFO, NOT A WARNING. Nothing is wrong here: it is the same product moving
+# forward, and a red line would tell a reader their machine had a problem it
+# does not have. What changes is the tooling; the database, its credentials and
+# the deployment are kept, and saying so is the point.
+# Twin of exakit_announce_kit_upgrade.
+function Show-ExakitKitUpgrade {
+    param([string]$Installing)
+    $repo = Get-ExakitPreviousKitRepo -Installing $Installing
+    if (-not $repo) { return }
+    Info "Updating the starter kit already installed here (from $repo)."
+    Info "The exakit command, the kit copy and the AI skills are replaced; your database, its credentials and the deployment are kept."
+    Set-ExakitManifestValue "kit.updated_from" $repo
+}
+
+function Test-ExakitStdoutIsTerminal {
+    try { return (-not [Console]::IsOutputRedirected) } catch { return $false }
+}
+
 function Test-ExakitInteractive {
     if (-not [Environment]::UserInteractive) { return $false }
     if ([Console]::IsInputRedirected) { return $false }
@@ -2306,6 +2382,39 @@ function Update-ExakitVersionsCache {
     return 0
 }
 
+# Test-ExakitVersionsCacheOutranksBaked - is the CACHE actually newer than the
+# manifest that shipped inside this kit?
+#
+# IT USED TO WIN UNCONDITIONALLY, and that reached a user as a failed Windows
+# install. Their machine had a cache left by an older kit advertising launcher
+# 2.2.0; the fetch could not reach the network, so the cache stood, and the
+# installer downloaded 2.2.0 - a launcher with no Windows local deployment in
+# it at all. Podman was therefore never installed (that is the launcher's job,
+# and only from 2.3.0), and the run died on the launcher's own gate: "local
+# deployments are only supported on macOS Apple Silicon (current platform:
+# windows/amd64)". The kit had done exactly what it was told by a memo about
+# what was current the LAST time some other kit ran.
+#
+# The cache exists to pick up releases newer than the one this kit shipped
+# with, so it keeps precedence in every case but one: it loses when it can be
+# PROVEN OLDER than the kit's own copy. Same date still wins (a fetch usually
+# returns the document this kit shipped with, and a same-day republish must
+# still be picked up), and so does a date that cannot be read on either side.
+# Only a cache that demonstrably predates the running kit is refused, because
+# only that one can downgrade it. Dates are the manifest's own "updated"
+# field, ISO YYYY-MM-DD, so a string compare is a date compare.
+# Twin of _exakit_versions_cache_outranks_baked.
+function Test-ExakitVersionsCacheOutranksBaked {
+    param([string]$CachePath, [string]$BakedPath)
+    if (-not $BakedPath -or -not (Test-Path $BakedPath)) { return $true }
+    $bakedDate = "" + (Get-ExakitVersionsValue -Path "updated" -DocPath $BakedPath)
+    if (-not $bakedDate) { return $true }
+    $cacheDate = "" + (Get-ExakitVersionsValue -Path "updated" -DocPath $CachePath)
+    if (-not $cacheDate) { return $true }
+    # Older than the kit being installed, and only then, the cache is refused.
+    return ([string]::CompareOrdinal($cacheDate, $bakedDate) -ge 0)
+}
+
 # Resolve-ExakitVersionsDoc - pick the document to read and remember it, so the
 # validation gate runs once per command instead of once per lookup. Returns the
 # path, or $null when only the compiled-in fallbacks are left.
@@ -2313,12 +2422,13 @@ function Resolve-ExakitVersionsDoc {
     if ($script:VersionsDocPath) { return $script:VersionsDocPath }
     # The cache is written only after validation, but anything under the kit
     # home can be edited by hand - re-check before trusting it.
-    if ((Test-Path $script:VersionsCachePath) -and ((Test-ExakitVersionsDoc -Path $script:VersionsCachePath) -eq 0)) {
+    $baked = Get-ExakitVersionsBakedPath
+    if ((Test-Path $script:VersionsCachePath) -and ((Test-ExakitVersionsDoc -Path $script:VersionsCachePath) -eq 0) -and
+        (Test-ExakitVersionsCacheOutranksBaked -CachePath $script:VersionsCachePath -BakedPath $baked)) {
         $script:VersionsDocPath = $script:VersionsCachePath
         if (-not $script:VersionsSource) { $script:VersionsSource = "cache" }
         return $script:VersionsDocPath
     }
-    $baked = Get-ExakitVersionsBakedPath
     if ($baked -and (Test-ExakitVersionsDoc -Path $baked) -eq 0) {
         $script:VersionsDocPath = $baked
         $script:VersionsSource = "baked"
@@ -3694,6 +3804,14 @@ function Get-ExakitRepoRoot {
     $commonDir = Split-Path -Parent $PSCommandPath
     $repoRoot = (Resolve-Path (Join-Path $commonDir "..\..")).Path
     if (Test-Path (Join-Path $repoRoot "mcp")) { return $repoRoot }
+    # When this finds nothing the callers print "Could not find the MCP package
+    # source ..." and stop, and until now that was the whole record: the screen did
+    # not say where it looked and neither did the log, so a report of it from a
+    # machine nobody can reach was not something that could be diagnosed. The
+    # failure is rare enough to be worth one log line and quiet enough not to earn
+    # a second line on screen.
+    # Twin of the same line in exakit_repo_root.
+    Write-ExakitLog "WARN" "no mcp/ under $kitCopy or $repoRoot"
     return $null
 }
 
@@ -5116,10 +5234,24 @@ function Get-ExakitAddonTableCell {
 # repainted lands INSIDE the box, so while the table is live nothing speaks
 # except the table. With no table it is said where it stands, exactly as before.
 # Twin of _exakit_addon_note in common.sh.
+# True while EITHER add-on narration owns the screen: the live table, or the
+# one-line bar it falls back to.
+#
+# THE BAR COUNTED FOR NOTHING BEFORE, and that is what a Windows install looked
+# like. With no table, a warning was printed the instant it happened - beside a
+# progress bar that was still being redrawn. The note ran off the right edge,
+# wrapped, and pushed the bar onto a new line, so one add-on's single bar came
+# out as three broken rows with half-sentences bleeding between them. The table
+# path had been thought about; the fallback had not.
+$script:ExakitAddonBarLive = $false
+function Test-ExakitAddonNarrationLive {
+    return ($script:ExakitAddonTableLive -or $script:ExakitAddonBarLive)
+}
+
 function Write-ExakitAddonNote {
     param([string]$Kind = "info", [string]$Text = "")
     if (-not $Text) { return }
-    if ($script:ExakitAddonTableLive) {
+    if (Test-ExakitAddonNarrationLive) {
         $script:ExakitAddonNotes += @{ Kind = $Kind; Text = $Text }
         return
     }
@@ -5219,6 +5351,7 @@ function Invoke-ExakitMarketplaceApply {
             # guard in Start-ExakitProgress) - and the Stop-ExakitProgress below
             # gives that reference back rather than tearing the table down.
             [void](Start-ExakitProgress -Pct 0 -Ceiling 65 -Secs 40 -Phase "$id - installing")
+            $script:ExakitAddonBarLive = $true
             $installed = & $addon.InstallFn
         } catch {
             Write-ExakitAddonNote "warn" "$id installer reported: $_"
@@ -5257,6 +5390,7 @@ function Invoke-ExakitMarketplaceApply {
             # The add-on's own panel already carries an "Update  exakit update
             # <id>" row, so the result line does not repeat it twice.
             Stop-ExakitProgress
+            $script:ExakitAddonBarLive = $false
             $script:ExakitQuietDetail = $prevQuiet
             $script:ExakitActiveLabel = $prevLabel
             # SummaryFn is OPTIONAL: the one fact worth carrying out of an
@@ -5280,6 +5414,7 @@ function Invoke-ExakitMarketplaceApply {
             }
         } else {
             Stop-ExakitProgress
+            $script:ExakitAddonBarLive = $false
             $script:ExakitQuietDetail = $prevQuiet
             $script:ExakitActiveLabel = $prevLabel
             if ($script:ExakitAddonTableRow -gt 0) {

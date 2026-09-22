@@ -583,7 +583,12 @@ has "the declined path returns a distinct non-zero code" "return 5" "$_rr_declin
 lacks "...and no longer returns 0" "return 0" "$_rr_decline"
 has "repair-runtime takes --json" '"Unknown option '"'"'$_rr_arg'"'"' for repair-runtime (supported: --yes, --json)."' "$_rr"
 has "...and the declined answer is machine-readable" '"status": "declined"' "$_rr"
-has "the twin exits 5 too" "exit 5" "$(sed -n '/^function Invoke-CmdRepairRuntime {/,/^}/p' "$ROOT/setup/exakit.ps1")"
+# Assigned first: a sed range with a `{` in it is brace-expanded by bash 3.2
+# when it sits in argument position. See the note in tests/legacy-crossing.sh
+# and the guard in tests/bash32-guard.sh. This one survives today only because
+# its start address happens to carry no quotes; the next edit would not.
+_cmd_repair_ps="$(sed -n '/^function Invoke-CmdRepairRuntime {/,/^}/p' "$ROOT/setup/exakit.ps1")"
+has "the twin exits 5 too" "exit 5" "$_cmd_repair_ps"
 has "...and answers --json" 'status = "declined"' "$_ps"
 check "the help document names exit 5" "declined" \
     "$(python3 -c 'import json; d=json.load(open("'"$ROOT"'/setup/help/exakit.json")); print([c for c in d["commands"] if c["command"]=="repair-runtime"][0]["exit_codes"]["5"].split(" -")[0])')"

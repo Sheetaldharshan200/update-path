@@ -71,11 +71,19 @@ EXAKIT_PYEXASOL_VERSION="${EXAKIT_PYEXASOL_VERSION:-}"
 # possible (offline install, API rate limit, private mirror). Successful latest
 # resolutions are recorded in the manifest so later updates compare against the
 # version that was actually installed.
-# 2.3.0-rc3 DELIBERATELY, and only until 2.3.0 final publishes: the flipped
-# Linux and Windows defaults need a launcher that HAS local deployments there,
-# which no 2.2 release does. Moving to final is this constant plus
-# components.personal.version in versions.json, together in one commit.
-EXAKIT_PERSONAL_VERSION_FALLBACK="${EXAKIT_PERSONAL_VERSION_FALLBACK:-2.3.0-rc3}"
+# A RELEASE CANDIDATE, and candidates are deleted. rc2 and rc3 were both
+# removed upstream while pinned here, and the second one reached a user as a
+# 404 mid-install with the launcher half-downloaded. So this constant and
+# components.personal.version in versions.json move together, and they move to
+# a release that still exists - check before pinning, not after.
+# 2.3.0 FINAL since 2026-09-21, so no candidate is pinned here any more - the
+# two deletions above were both candidates, and a published release is not
+# removed the same way. Verified before pinning, as the note above demands:
+# v2.3.0 on exasol/exasol-personal is published, not a draft, not a
+# prerelease, and carries every asset this kit fetches - the macOS and Linux
+# arm64/x86_64 tarballs, the Windows x86_64 zip, and
+# exasol-personal_2.3.0_checksums.txt.
+EXAKIT_PERSONAL_VERSION_FALLBACK="${EXAKIT_PERSONAL_VERSION_FALLBACK:-2.3.0}"
 EXAKIT_EXAPUMP_VERSION_FALLBACK="${EXAKIT_EXAPUMP_VERSION_FALLBACK:-0.13.0}"
 EXAKIT_MCP_VERSION_FALLBACK="${EXAKIT_MCP_VERSION_FALLBACK:-2.2.0}"
 EXAKIT_PYEXASOL_VERSION_FALLBACK="${EXAKIT_PYEXASOL_VERSION_FALLBACK:-2.4.1}"
@@ -314,7 +322,11 @@ heading() {
 # which is why they are the two that reach the frame.
 # twins: Warn2 and Write-ExakitError in exakit-common.ps1.
 _exakit_defer_under_addon_table() {
-    [ "${EXAKIT_ADDON_TABLE_LIVE:-0}" = 1 ] || return 1
+    # THE FALLBACK BAR COUNTS TOO — see _exakit_addon_narration_live. A warning
+    # printed beside a one-line bar that is still being redrawn wraps and pushes
+    # the bar down, which is how one add-on's single bar came out as three
+    # broken rows. Twin of Test-ExakitAddonNarrationLive in Warn2.
+    _exakit_addon_narration_live || return 1
     EXAKIT_ADDON_NOTES="${EXAKIT_ADDON_NOTES}warn|$1
 "
     return 0
@@ -2200,6 +2212,40 @@ exakit_versions_update_cache() {
     return 0
 }
 
+# _exakit_versions_cache_outranks_baked — is the CACHE actually newer than the
+# manifest that shipped inside this kit?
+#
+# IT USED TO WIN UNCONDITIONALLY, and that reached a user as a failed Windows
+# install. Their machine had a cache left by an older kit advertising launcher
+# 2.2.0; the fetch could not reach the network, so the cache stood, and the
+# installer downloaded 2.2.0 — a launcher with no Windows local deployment in
+# it at all. Podman was therefore never installed (that is the launcher's job,
+# and only from 2.3.0), and the run died on the launcher's own gate: "local
+# deployments are only supported on macOS Apple Silicon (current platform:
+# windows/amd64)". The kit had done exactly what it was told by a memo about
+# what was current the LAST time some other kit ran.
+#
+# The cache exists to pick up releases newer than the one this kit shipped
+# with, so it keeps precedence in every case but one: it loses when it can be
+# PROVEN OLDER than the kit's own copy. Same date still wins (a fetch usually
+# returns the document this kit shipped with, and a same-day republish must
+# still be picked up), and so does a date that cannot be read on either side.
+# Only a cache that demonstrably predates the running kit is refused, because
+# only that one can downgrade it. Dates are the manifest's own "updated"
+# field, ISO YYYY-MM-DD, so a string compare is a date compare.
+# Twin of Test-ExakitVersionsCacheOutranksBaked.
+_exakit_versions_cache_outranks_baked() {
+    _vcb_cache="$1"; _vcb_baked="$2"
+    [ -n "$_vcb_baked" ] && [ -f "$_vcb_baked" ] || return 0
+    _vcb_bdate="$(exakit_versions_value updated "$_vcb_baked" 2>/dev/null || true)"
+    [ -n "$_vcb_bdate" ] || return 0
+    _vcb_cdate="$(exakit_versions_value updated "$_vcb_cache" 2>/dev/null || true)"
+    [ -n "$_vcb_cdate" ] || return 0
+    # Older than the kit being installed, and only then, the cache is refused.
+    [ "$_vcb_cdate" \< "$_vcb_bdate" ] && return 1
+    return 0
+}
+
 # exakit_versions_resolve_doc — pick the document to read and remember it in
 # _EXAKIT_VERSIONS_DOC/_SOURCE. Callers that read several values should call
 # this once first: command substitutions inherit the memo, so the validation
@@ -2208,12 +2254,13 @@ exakit_versions_resolve_doc() {
     [ -n "$_EXAKIT_VERSIONS_DOC" ] && return 0
     # The cache is written only after validation, but anything under the kit
     # home can be edited by hand — re-check before trusting it.
-    if [ -f "$EXAKIT_VERSIONS_CACHE" ] && exakit_versions_validate "$EXAKIT_VERSIONS_CACHE"; then
+    _vr_baked="$(exakit_versions_baked_doc 2>/dev/null || true)"
+    if [ -f "$EXAKIT_VERSIONS_CACHE" ] && exakit_versions_validate "$EXAKIT_VERSIONS_CACHE" &&
+       _exakit_versions_cache_outranks_baked "$EXAKIT_VERSIONS_CACHE" "$_vr_baked"; then
         _EXAKIT_VERSIONS_DOC="$EXAKIT_VERSIONS_CACHE"
         [ -n "$_EXAKIT_VERSIONS_SOURCE" ] || _EXAKIT_VERSIONS_SOURCE="cache"
         return 0
     fi
-    _vr_baked="$(exakit_versions_baked_doc 2>/dev/null || true)"
     if [ -n "$_vr_baked" ] && exakit_versions_validate "$_vr_baked"; then
         _EXAKIT_VERSIONS_DOC="$_vr_baked"
         _EXAKIT_VERSIONS_SOURCE="baked"
@@ -2968,6 +3015,61 @@ PY
     printf '%s\n' "$_imv_pins"
 }
 
+# exakit_previous_kit_repo <installing-repo> — the owner/repo of a starter kit
+# already installed here that this run is moving on FROM, or empty.
+#
+# THIS IS AN UPGRADE, NOT A TAKEOVER. Same product, same machine, same place:
+# both kits put their command at ~/.local/bin/exakit, their staged copy at
+# ~/.exasol-starter-kit/kit, and their state in the same manifest. This repo is
+# where the kit is developed and exasol-labs/exasol-personal-local-starterkit is
+# where it is published, so a machine holding the published one is simply behind
+# — and it is told that in the words of an update, not of a replacement.
+#
+# The repo is compared, never the ref: the same repo at another tag is the
+# ordinary update and needs no line at all. A checkout: source is a local
+# working tree and belongs to no repo.
+exakit_previous_kit_repo() {
+    _pkr_installing="${1:-}"
+    [ -n "$_pkr_installing" ] || return 1
+    _pkr_src="$(manifest_get kit.source 2>/dev/null || true)"
+    [ -n "$_pkr_src" ] || return 1
+    case "$_pkr_src" in checkout:*) return 1 ;; esac
+    _pkr_repo="${_pkr_src%@*}"
+    [ -n "$_pkr_repo" ] || return 1
+    [ "$_pkr_repo" != "${_pkr_installing%@*}" ] || return 1
+    # A RECORD IS NOT AN INSTALLATION. The manifest can outlive the kit that
+    # wrote it: an uninstall that is interrupted, one that cannot reach a file,
+    # or a kit whose Windows half cleans up differently, all leave kit.source
+    # sitting there with nothing behind it. Announcing a takeover then is worse
+    # than saying nothing - it tells a user their old kit is still installed
+    # when they have just finished removing it, and they have no way to argue.
+    #
+    # So the record has to be corroborated: the command it installed, or the
+    # kit copy it staged. Either one is proof something is still there; neither
+    # means the record is a leftover and is treated as one.
+    [ -x "$EXAKIT_BIN_DIR/exakit" ] || [ -d "$EXAKIT_HOME/kit" ] || return 1
+    printf '%s\n' "$_pkr_repo"
+}
+
+# exakit_announce_kit_upgrade <installing-repo> — say once, before any step,
+# which installation this run is updating, and what it keeps.
+#
+# INFO, NOT A WARNING. Nothing is wrong here and nothing is being taken over:
+# it is the same product moving forward, and a red line would tell a reader
+# their machine had a problem it does not have.
+#
+# WHAT CHANGES IS THE TOOLING. The database, its credentials and the deployment
+# the launcher owns are kept: both kits deploy the same Exasol Personal, so
+# there is nothing to migrate and nothing to delete. Saying so is the point —
+# an update that did not promise it would leave the reader guessing.
+exakit_announce_kit_upgrade() {
+    _aku_repo="$(exakit_previous_kit_repo "${1:-}" 2>/dev/null || true)"
+    [ -n "$_aku_repo" ] || return 0
+    info "Updating the starter kit already installed here (from $_aku_repo)."
+    info "The exakit command, the kit copy and the AI skills are replaced; your database, its credentials and the deployment are kept."
+    manifest_set kit.updated_from "$_aku_repo" 2>/dev/null || true
+}
+
 exakit_component_current() {
     case "$1" in
         exakit)
@@ -3578,11 +3680,26 @@ EXAKIT_ADDON_TABLE_ROW_SKIP=0
 # Said once the table has stopped redrawing — see _exakit_addon_note.
 EXAKIT_ADDON_NOTES=""
 
-# _exakit_addon_bar_live — is a table painting this install? True means the
+# _exakit_addon_table_live — is a table painting this install? True means the
 # one-line progress bar must keep its hands off the UI layer's single animation
 # slot; the table owns it.
-_exakit_addon_bar_live() {
+# _exakit_addon_table_live — the live add-on TABLE is on screen and redrawing.
+# (It was called _exakit_addon_bar_live, which is what it never tested: with a
+# real bar flag beside it now, that name was a trap.)
+_exakit_addon_table_live() {
     [ "${EXAKIT_ADDON_TABLE_LIVE:-0}" = 1 ]
+}
+
+# _exakit_addon_narration_live — true while EITHER narration owns the screen:
+# the live table, or the one-line bar it falls back to.
+#
+# The bar counted for nothing before, and a note printed beside one that is
+# still being redrawn runs off the right edge, wraps, and pushes the bar to a
+# new line - so one add-on's single bar comes out as three broken rows. The
+# table path had been thought about; the fallback had not. Twin of
+# Test-ExakitAddonNarrationLive.
+_exakit_addon_narration_live() {
+    _exakit_addon_table_live || [ "${EXAKIT_ADDON_BAR_LIVE:-0}" = 1 ]
 }
 
 # _exakit_addon_note <info|warn> <text> — something the reader must see, said
@@ -3590,7 +3707,7 @@ _exakit_addon_bar_live() {
 # repainted lands INSIDE the box, so while the table is live nothing speaks
 # except the table. With no table it is said where it stands, exactly as before.
 _exakit_addon_note() {
-    if _exakit_addon_bar_live; then
+    if _exakit_addon_narration_live; then
         EXAKIT_ADDON_NOTES="${EXAKIT_ADDON_NOTES}$1|$2
 "
         return 0
@@ -3821,12 +3938,12 @@ _exakit_marketplace_install_one() {
         # the cursor, and the ui_progress_end below would kill the TABLE's
         # animator instead of a bar of its own -- mid-frame, which leaves half a
         # table on screen with the finished one printed under it.
-        _exakit_addon_bar_live || ui_progress_begin "$_mi_state" "$_mi_t0" || true
+        _exakit_addon_table_live || { ui_progress_begin "$_mi_state" "$_mi_t0" || true; EXAKIT_ADDON_BAR_LIVE=1; }
     fi
     "$_mi_install"
     _mi_rc=$?
     if [ "$_mi_rc" -ne 0 ]; then
-        _exakit_addon_bar_live || ui_progress_end
+        _exakit_addon_table_live || { ui_progress_end; EXAKIT_ADDON_BAR_LIVE=0; }
         [ -n "$_mi_state" ] && rm -f "$_mi_state"
         EXAKIT_QUIET_DETAIL="$_mi_prev_quiet"
         EXAKIT_ACTIVE_LABEL="$_mi_prev_label"
@@ -3858,7 +3975,7 @@ _exakit_marketplace_install_one() {
         "$_mi_start" >/dev/null 2>&1 || \
             _exakit_addon_note warn "$1 installed but did not start — start it with: exakit start"
     fi
-    _exakit_addon_bar_live || ui_progress_end
+    _exakit_addon_table_live || { ui_progress_end; EXAKIT_ADDON_BAR_LIVE=0; }
     [ -n "$_mi_state" ] && rm -f "$_mi_state"
     EXAKIT_QUIET_DETAIL="$_mi_prev_quiet"
     EXAKIT_ACTIVE_LABEL="$_mi_prev_label"
@@ -4333,12 +4450,12 @@ _exakit_marketplace_apply() {
     # EXAKIT_QUIET_DETAIL routes them to the logfile instead, which is what it is
     # for; install_one saves and restores it, so nesting is already handled.
     _mp_prev_quiet="${EXAKIT_QUIET_DETAIL:-0}"
-    _exakit_addon_bar_live && EXAKIT_QUIET_DETAIL=1
+    _exakit_addon_table_live && EXAKIT_QUIET_DETAIL=1
     for _mp_id in $(printf '%s' "$1" | tr ',' ' '); do
         # Which row this add-on owns, if a table is on screen. Empty means there
         # is none and the single-line bar takes over, unchanged.
         EXAKIT_ADDON_TABLE_ROW=""
-        if _exakit_addon_bar_live; then
+        if _exakit_addon_table_live; then
             EXAKIT_ADDON_TABLE_ROW="$(_exakit_addon_table_row "$_mp_id")"
             [ "$EXAKIT_ADDON_TABLE_ROW" = "0" ] && EXAKIT_ADDON_TABLE_ROW=""
         fi
@@ -4387,7 +4504,7 @@ _exakit_marketplace_apply() {
     done
     # The table stops redrawing BEFORE anything is said over it, and only then is
     # what was collected on the way said.
-    if _exakit_addon_bar_live; then
+    if _exakit_addon_table_live; then
         ui_table_end "$EXAKIT_ADDON_TABLE_STATE"
         EXAKIT_ADDON_TABLE_LIVE=0
     fi
@@ -6145,6 +6262,38 @@ rollback_clear() {
 # announced and run again — that is what makes "re-running the installer is safe
 # and resumes" (AGENTS.md) true even after something removed an artifact from
 # under a completed install.
+# step_version_drift <step> — "installed X, this kit installs Y" when the
+# component a step owns is behind what this run advertises, else empty.
+#
+# WHY A COMPLETED STEP MAY STILL HAVE WORK. A step tick means "this was
+# installed", not "this is current". Re-running the installer over an older
+# installation therefore skipped every step whose artifact was present, and the
+# run finished having upgraded the kit and nothing else: exapump, the MCP
+# server and pyexasol all stayed where the previous kit had left them. The user
+# ran one command expecting an update and got a kit that now disagreed with its
+# own components.
+#
+# Only a component that is genuinely BEHIND counts. Equal versions skip as they
+# always did, and a component AHEAD of this kit is left alone rather than
+# downgraded - a manifest can advertise an older set than a machine already has,
+# and an installer is no place to argue about it.
+step_version_drift() {
+    case "$1" in
+        launcher) _svd_id=personal;  _svd_want="${EXAKIT_PERSONAL_VERSION:-}" ;;
+        exapump)  _svd_id=exapump;   _svd_want="${EXAKIT_EXAPUMP_VERSION:-}" ;;
+        mcp)      _svd_id=mcp;       _svd_want="${EXAKIT_MCP_VERSION:-}" ;;
+        pyexasol) _svd_id=pyexasol;  _svd_want="${EXAKIT_PYEXASOL_VERSION:-}" ;;
+        *) return 1 ;;
+    esac
+    [ -n "$_svd_want" ] || return 1
+    _svd_have="$(exakit_component_current "$_svd_id" 2>/dev/null || true)"
+    [ -n "$_svd_have" ] || return 1
+    [ "$_svd_have" != "unknown" ] || return 1
+    exakit_version_newer "$_svd_want" "$_svd_have" || return 1
+    printf '%s %s is installed and this kit installs %s — updating it\n' \
+        "$_svd_id" "$_svd_have" "$_svd_want"
+}
+
 begin_step() {
     EXAKIT_CURRENT_STEP="$1"
     EXAKIT_ACTIVE_LABEL="$2"     # spinner label for run_logged inside this step
@@ -6160,9 +6309,16 @@ begin_step() {
     # explanation than the generic "what it installed is missing".
     EXAKIT_STEP_RERUN_REASON=""
     if step_done "$1"; then
+        # A tick says "installed", not "current". Ask about the version before
+        # the artifact: a component that is merely BEHIND is present on disk,
+        # so the artifact check would happily skip it.
+        _bs_drift="$(step_version_drift "$1" 2>/dev/null || true)"
+        if [ -n "$_bs_drift" ]; then
+            EXAKIT_STEP_RERUN_REASON="$_bs_drift"
+            _bs_rerun=1
         # "unknown" (and "present") keep the manifest's answer: only a proven
         # "missing" is allowed to override the tick.
-        if [ "$(step_artifact_state "$1")" = "missing" ]; then
+        elif [ "$(step_artifact_state "$1")" = "missing" ]; then
             # Run the judgement AGAIN, in this shell, purely to recover
             # EXAKIT_STEP_RERUN_REASON: the call above is a command
             # substitution, so the variable it set died with the subshell and
@@ -6196,6 +6352,9 @@ exakit_on_failure() {
     # first, so a failure mid-animation never leaves a stuck/invisible cursor.
     ui_spin_end 2>/dev/null || true
     ui_restore_cursor
+    # Same reason as the sweep below: a background prefetch is this run's
+    # process, and a run that is ending does not get to leave one downloading.
+    if command -v mcp_prefetch_stop >/dev/null 2>&1; then mcp_prefetch_stop 2>/dev/null || true; fi
     exakit_sweep_sensitive_tmp     # never leave credential temp files behind
     [ $_status -eq 0 ] && return 0
     # Same "card" shape as die(): prominent ✗ header, dim gutter details.
@@ -6273,6 +6432,9 @@ exakit_enable_failure_handling() {
 # Call at the very end of a successful run.
 exakit_finish() {
     trap - EXIT
+    # A prefetch that never got collected (the MCP step was skipped, or the run
+    # is ending early) must not outlive the installer. No-op when there is none.
+    if command -v mcp_prefetch_stop >/dev/null 2>&1; then mcp_prefetch_stop || true; fi
     rollback_discard
     exakit_release_lock
     EXAKIT_CURRENT_STEP=""
@@ -6472,6 +6634,13 @@ exakit_repo_root() {
         printf '%s\n' "$_repo_root"
         return 0
     fi
+    # When this finds nothing the callers print "Could not find the MCP package
+    # source ..." and stop, and until now that was the whole record: the screen did
+    # not say where it looked and neither did the log, so a report of it from a
+    # machine nobody can reach was not something that could be diagnosed. The
+    # failure is rare enough to be worth one log line and quiet enough not to earn
+    # a second line on screen.
+    _exakit_log_file "WARN  no mcp/ under $EXAKIT_HOME/kit or $_repo_root"
     return 1
 }
 
@@ -8454,6 +8623,7 @@ EOF
         _menu_ids=()
         _menu_notes=()
         _pending_count=0
+        _connected_count=0
         # _exakit_mcp_menu_row <label> <state> <ids_csv> — one client row:
         # pending rows carry their ids and are selectable; connected and missing
         # rows carry no id and a note saying why, which is what makes them a
@@ -8465,7 +8635,10 @@ EOF
                     _menu_ids+=("$3"); _menu_notes+=("")
                     _pending_count=$((_pending_count + 1))
                     ;;
-                connected) _menu_ids+=(""); _menu_notes+=("already connected") ;;
+                connected)
+                    _menu_ids+=(""); _menu_notes+=("already connected")
+                    _connected_count=$((_connected_count + 1))
+                    ;;
                 *)         _menu_ids+=(""); _menu_notes+=("not installed") ;;
             esac
         }
@@ -8482,6 +8655,17 @@ EOF
         _exakit_mcp_menu_row "OpenCode" "$_opencode_state" "opencode"
         _exakit_mcp_menu_row "Continue" "$_continue_state" "continue"
         if [ "$_pending_count" -eq 0 ]; then
+            # NOTHING CONNECTED IS NOT EVERYTHING CONNECTED. Every row can be
+            # "not installed" - a fresh machine with no AI client on it at all -
+            # and the claim below was printed for that case too, telling the
+            # reader their clients were wired up over MCP when the kit had not
+            # touched a single config. Zero of zero is not success; say which
+            # of the two happened.
+            if [ "$_connected_count" -eq 0 ]; then
+                info "No AI client was found on this machine, so there is nothing to connect yet."
+                info "Install one (Claude, Codex, Cursor, Copilot, Gemini CLI, OpenCode, Continue) and run 'exakit mcp-setup'."
+                return 0
+            fi
             ok "All AI clients found on this machine are already connected over MCP."
             info "Check them with 'exakit mcp-status'; new clients appear here once installed."
             return 0
@@ -9476,6 +9660,14 @@ kit_shared_steps() {
         # and the closing summary said nothing (wrong). Record it so the user
         # leaves knowing the database is empty and which command fills it.
         exakit_clear_failure_note
+        # THE BRIDGE'S DOWNLOAD STARTS HERE, not two steps later. Priming the
+        # MCP package is a network download and an unpack; the load below is a
+        # local database reading local files. Neither needs the other, so the
+        # download runs underneath the load and the AI bridge step collects a
+        # finished one. See mcp_prefetch_begin.
+        if command -v mcp_prefetch_begin >/dev/null 2>&1; then
+            mcp_prefetch_begin || true
+        fi
         if ! exakit_maybe_offer_data_load "$_kit_root"; then
             exakit_record_soft_failure sample_data "exakit data-load" \
                 "$(exakit_take_failure_note)" "sample data"
@@ -9579,6 +9771,21 @@ kit_shared_steps() {
             :   # already in place; nothing to copy
         else
             mkdir -p "$EXAKIT_HOME/kit/setup" || die "Could not create $EXAKIT_HOME/kit/setup."
+            # CLEAR WHAT WE ARE ABOUT TO REPLACE. cp -R merges, it does not
+            # mirror, so a module the new kit DELETED goes on living in the
+            # staged copy - and the staged copy is what an installed exakit
+            # sources. Installing this kit over the official one left its
+            # runtime-nano.sh, nano.ps1 and catalog.tsv sitting in lib/, three
+            # files this kit removed on purpose. Same hazard, smaller, on any
+            # update that drops a file.
+            #
+            # Only the subtrees re-copied below, and only in the branch that
+            # already established this is not the kit home itself.
+            for _kss_stale in "$EXAKIT_HOME/kit/setup/lib" "$EXAKIT_HOME/kit/setup/help" \
+                              "$EXAKIT_HOME/kit/mcp" "$EXAKIT_HOME/kit/sql" \
+                              "$EXAKIT_HOME/kit/skills"; do
+                rm -rf "$_kss_stale"
+            done
             cp -R "$_script_dir/lib" "$EXAKIT_HOME/kit/setup/" \
                 || die "Could not copy the kit library to $EXAKIT_HOME/kit/setup."
             # Copy the assets exakit needs after the checkout is gone: the mcp/

@@ -46,6 +46,9 @@ if ($env:EXAKIT_BANNER_SHOWN -ne "1") { Write-ExakitBanner "Personal Local Start
 Set-ExakitManifestValue "os" "windows"
 Set-ExakitManifestValue "arch" $env:PROCESSOR_ARCHITECTURE
 $kitSource = if ($env:EXAKIT_KIT_SOURCE) { $env:EXAKIT_KIT_SOURCE } else { "checkout:$KitRoot" }
+# BEFORE kit.source is overwritten, because overwriting it is what erases the
+# record of where this installation came from.
+Show-ExakitKitUpgrade -Installing $env:EXAKIT_KIT_SOURCE
 Set-ExakitManifestValue "kit.source" $kitSource
 # The kit's own version comes from the versions manifest shipping with THIS
 # tree, not from whatever copy an earlier install left under the kit home.
@@ -139,7 +142,7 @@ try {
         # merely answer SELECT 1. Twin of _exakit_install_exapump (common.sh).
         if (Invoke-ExakitSoftStep -Component "exapump" -Repair "exakit update" -Body {
                 $prevQuiet = $script:ExakitQuietDetail
-                if ($script:UiFancy) { $script:ExakitQuietDetail = $true }
+                if (Test-ExakitStdoutIsTerminal) { $script:ExakitQuietDetail = $true }
                 try {
                     Install-Exapump
                     New-ExapumpProfile
@@ -178,6 +181,14 @@ try {
         if (Get-Command Invoke-LegacyCrossingAfter -ErrorAction SilentlyContinue) {
             Invoke-LegacyCrossingAfter
         }
+        # THE BRIDGE'S DOWNLOAD STARTS HERE, not two steps later. Priming the
+        # MCP package is a network download and an unpack; the load below is a
+        # local database reading local files. Neither needs the other, so the
+        # download runs underneath the load and Step 4 collects a finished one.
+        # See Start-ExakitMcpPrefetch. Twin of the same call in kit_shared_steps.
+        if (Get-Command Start-ExakitMcpPrefetch -ErrorAction SilentlyContinue) {
+            try { Start-ExakitMcpPrefetch } catch { }
+        }
         [void](Invoke-ExakitBestEffort -Component "sample_data" -Repair "exakit data-load" `
             -Label "sample data" `
             -Warning "Sample data load did not finish cleanly." `
@@ -194,7 +205,7 @@ try {
                 # silence every step after it.
                 # Twin of _exakit_install_mcp (common.sh).
                 $prevQuiet = $script:ExakitQuietDetail
-                if ($script:UiFancy) { $script:ExakitQuietDetail = $true }
+                if (Test-ExakitStdoutIsTerminal) { $script:ExakitQuietDetail = $true }
                 try {
                     Install-Mcp
                     Test-McpServer
@@ -257,7 +268,7 @@ try {
         # covered it live. Twin of _exakit_install_pyexasol (common.sh).
         if (Invoke-ExakitSoftStep -Component "pyexasol" -Repair "exakit update" -Body {
                 $prevQuiet = $script:ExakitQuietDetail
-                if ($script:UiFancy) { $script:ExakitQuietDetail = $true }
+                if (Test-ExakitStdoutIsTerminal) { $script:ExakitQuietDetail = $true }
                 try {
                     if (-not (Install-Pyexasol)) { return $false }
                     Test-PyexasolConnection
@@ -302,6 +313,18 @@ try {
         # ~\.exasol-starter-kit\kit and ran setup from there.
         $kitSetupDir = Join-Path $script:ExakitHome "kit\setup"
         New-Item -ItemType Directory -Force -Path $kitSetupDir | Out-Null
+        # CLEAR WHAT WE ARE ABOUT TO REPLACE. A copy merges, it does not mirror,
+        # so a module the new kit DELETED goes on living in the staged copy -
+        # and the staged copy is what an installed exakit loads. Installing over
+        # the official kit left its nano.ps1, runtime-nano.sh and catalog.tsv in
+        # lib\, three files this kit removed on purpose. Twin of the same clear
+        # in kit_shared_steps.
+        foreach ($stale in @(
+            (Join-Path $kitSetupDir "lib"), (Join-Path $kitSetupDir "help"),
+            (Join-Path $script:ExakitHome "kit\mcp"), (Join-Path $script:ExakitHome "kit\sql"),
+            (Join-Path $script:ExakitHome "kit\skills"))) {
+            Remove-Item -Recurse -Force $stale -ErrorAction SilentlyContinue
+        }
         Copy-ExakitAsset -Source $LibDir -Destination (Join-Path $kitSetupDir "lib")
         Copy-ExakitAsset -Source (Join-Path $ScriptDir "exakit.ps1") -Destination (Join-Path $kitSetupDir "exakit.ps1")
         # skills/ is not optional decoration: exakit skills, exakit
@@ -416,5 +439,18 @@ try {
     Exit-ExakitInstallLock
     exit 1
 } finally {
+    # STOP ANIMATING BEFORE ANYTHING ELSE. The spinner runs in its own runspace,
+    # and a live runspace keeps Windows PowerShell 5.1 from terminating - so a
+    # run that ended while one was spinning printed its last line and then sat
+    # there, which reads as a hang rather than as a finished install. Fail()
+    # stops it on the path it owns; this covers every other way out, including
+    # the ones nobody has thought of yet.
+    try { Stop-ExakitAnimation } catch { }
+    # A prefetch that never got collected (the MCP step was skipped, or the run
+    # is ending early) must not outlive the installer. This finally is the one
+    # place every exit passes through. Twin of the same call in exakit_finish.
+    if (Get-Command Stop-ExakitMcpPrefetch -ErrorAction SilentlyContinue) {
+        try { Stop-ExakitMcpPrefetch } catch { }
+    }
     Exit-ExakitInstallLock
 }

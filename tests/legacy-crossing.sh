@@ -640,8 +640,20 @@ _done_gate="$(printf '%s\n' "$CROSS_SRC" | sed -n '/crossing_done 2>\/dev\/null 
 has "a crossing already done still frees the port" 'legacy_stop_container' "$_done_gate"
 
 # And the PowerShell twin says all of it the same way.
-has "ps: the done-gate frees the port too"   'Stop-LegacyContainer -Quiet' \
-    "$(printf '%s\n' "$CROSS_PS" | sed -n '/legacy.crossing_done") -eq "True") {/,/^    }$/p')"
+# ASSIGNED FIRST, NOT INLINED INTO THE has - and that is not style. In
+# argument position bash 3.2 (which is /bin/bash on macOS, and what the macOS
+# runner uses) BRACE-EXPANDS the text of a command substitution: the `{` ... `,`
+# ... `}` of a sed range reads as a brace list, so `/...{/,/^    }$/p` reaches
+# sed as two scripts with the braces gone -
+#     sed: 1: "/legacy.crossing_done") /$/p": invalid command code $
+#     sed: 1: "/legacy.crossing_done") /^    $/p": invalid command code ^
+# - both of which fail, the substitution is empty, and the assertion reports
+# MISSING about a line that is right there in the file. Bash 5 (every Linux
+# runner) parses it correctly, so this failed on macOS alone. An assignment is
+# not brace-expanded, which is why every neighbouring extraction above works.
+# tests/bash32-guard.sh keeps it that way.
+_ps_done_gate="$(printf '%s\n' "$CROSS_PS" | sed -n '/legacy.crossing_done") -eq "True") {/,/^    }$/p')"
+has "ps: the done-gate frees the port too"   'Stop-LegacyContainer -Quiet' "$_ps_done_gate"
 has "ps: a blocked offer records why"        'legacy.offer_blocked' "$CROSS_PS"
 has "ps: the engine reason is retryable"     '$retry = $true' \
     "$(printf '%s
@@ -694,8 +706,16 @@ eng_probe() { # eng_probe <recorded-engine> <holder> <expression>
     fi
     mv "$_ep_home/m.tmp" "$_ep_home/manifest.json"
     : > "$ENGWORK/calls"
+    # THE STUBS ARE PREPENDED, NOT SUBSTITUTED FOR THE PATH. Cutting it down to
+    # /usr/bin:/bin also cut out uv and any python3 but /usr/bin/python3 - and
+    # on a Mac that one is an Xcode shim that does not run (no Command Line
+    # Tools, or a licence not yet agreed). manifest_get then answered with an
+    # xcrun error instead of a value, every lookup in here came back empty, and
+    # seven checks failed on a developer machine over something this suite is
+    # not about. The stub directory is first, so docker and podman still
+    # resolve to the stubs, which is the only substitution intended.
     EXAKIT_HOME="$_ep_home" EXAKIT_BIN_DIR="$_ep_home/bin" HOLDER="$2" \
-    PATH="$ENGWORK/bin:/usr/bin:/bin" ROOT="$ROOT" \
+    PATH="$ENGWORK/bin:$PATH" ROOT="$ROOT" \
     bash -c '
         . "$ROOT/setup/lib/common.sh"
         . "$ROOT/setup/lib/detect.sh"
