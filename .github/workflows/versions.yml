@@ -432,6 +432,119 @@ jobs:
           sys.exit(1 if problems else 0)
           PY
 
+  repo-published-pins:
+    name: the repo-published pins match this repository's releases
+    runs-on: ubuntu-latest
+    # Deliberately NOT gated on `changes`: json-tables and exasol-scheduler are
+    # built and released by THIS repository, so their pins are repo-local. A
+    # fork publishes its own release under the same tag with different
+    # binaries, and a sync that carries the fork's digests here makes the
+    # add-on uninstallable -- the module refuses every asset whose digest is
+    # not the pinned one. That breakage arrives in commits that need not touch
+    # versions.json at all, and it went unnoticed once because the gated job
+    # only runs when the file is in the diff. This one always runs.
+    steps:
+      - uses: actions/checkout@v7
+      - name: every repo-published pin resolves in this repository
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python3 - <<'PY'
+          import json, os, sys, time, urllib.error, urllib.request
+
+          REPO = os.environ.get("GITHUB_REPOSITORY", "")
+
+          with open("versions.json") as handle:
+              components = (json.load(handle).get("components") or {})
+          problems = []
+
+          def fetch(url):
+              request = urllib.request.Request(url, headers={
+                  "Accept": "application/json", "User-Agent": "exakit-repo-pins",
+              })
+              if os.environ.get("GITHUB_TOKEN"):
+                  request.add_header("Authorization", "Bearer %s" % os.environ["GITHUB_TOKEN"])
+              last = "unknown error"
+              for attempt in range(3):
+                  try:
+                      with urllib.request.urlopen(request, timeout=30) as response:
+                          return json.load(response), None
+                  except urllib.error.HTTPError as error:
+                      if error.code in (403, 429) or error.code >= 500:
+                          last = "HTTP %s" % error.code
+                          time.sleep(2 * (attempt + 1))
+                          continue
+                      return None, "HTTP %s" % error.code
+                  except Exception as error:
+                      last = str(error)
+                      time.sleep(2 * (attempt + 1))
+              return None, last
+
+          def check(label, block, prefix, required, asset_for):
+              """Assert the pinned release lives in THIS repository and every pinned
+              digest equals the digest of the asset actually published there."""
+              version = block.get("version")
+              if not version:
+                  return
+              release = block.get("release") or "%s-%s" % (prefix, version)
+              if not release.startswith("%s-%s" % (prefix, version)):
+                  problems.append("%s: release %s does not belong to version %s" % (label, release, version))
+              pins = block.get("sha256") or {}
+              if not pins:
+                  print("::warning::%s: no digests pinned yet (bootstrap)" % label)
+                  return
+              if set(pins) != required:
+                  problems.append("%s: sha256 must cover exactly %s, found %s"
+                                  % (label, sorted(required), sorted(pins)))
+              body, reason = fetch("https://api.github.com/repos/%s/releases/tags/%s" % (REPO, release))
+              if body is None:
+                  problems.append("%s: release %s does not exist in %s (%s) -- the pins must name a "
+                                  "release published by THIS repository, not a fork's"
+                                  % (label, release, REPO, reason))
+                  return
+              assets = {a.get("name", ""): a for a in body.get("assets") or []}
+              wrong = 0
+              for key, pinned in sorted(pins.items()):
+                  name = asset_for(key)
+                  asset = assets.get(name)
+                  if asset is None:
+                      problems.append("%s: release %s has no asset %s (pinned as sha256.%s)"
+                                      % (label, release, name, key))
+                      continue
+                  published = str(asset.get("digest") or "").replace("sha256:", "")
+                  if published != pinned:
+                      wrong += 1
+                      problems.append("%s: sha256.%s pins %s but %s on %s is %s"
+                                      % (label, key, pinned, name, release, published))
+              if wrong:
+                  problems.append("%s: %d digest(s) describe a different build -- pins copied from a fork "
+                                  "do not apply here, because each repository publishes its own release "
+                                  "under this tag. Re-pin from %s's own release." % (label, wrong, REPO))
+              elif not problems:
+                  print("  ok  %s: %s carries every pinned asset with the pinned digest" % (label, release))
+
+          jt = components.get("json-tables") or {}
+          def jt_asset(key):
+              if key == "wheel":
+                  return jt.get("wheel", "")
+              if key.startswith("cargo-"):
+                  plat = key[len("cargo-"):]
+                  return "exakit-json-tables-cargo-%s%s" % (plat, ".exe" if "windows" in plat else "")
+              return "exasol-json-tables-ingest-%s%s" % (key, ".exe" if "windows" in key else "")
+
+          check("json-tables", jt, "json-tables",
+                {"linux-x86_64", "linux-aarch64", "macos-aarch64",
+                 "windows-x86_64", "cargo-windows-x86_64", "wheel"}, jt_asset)
+
+          check("exasol-scheduler", components.get("exasol-scheduler") or {}, "exasol-scheduler",
+                {"linux-x86_64", "linux-arm64", "macos-arm64", "macos-x86_64", "windows-x86_64"},
+                lambda key: "exasol-scheduler-%s%s" % (key, ".exe" if "windows" in key else ""))
+
+          for problem in problems:
+              print("versions.json: %s" % problem, file=sys.stderr)
+          sys.exit(1 if problems else 0)
+          PY
+
   shell-tests:
     name: shell tests (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
