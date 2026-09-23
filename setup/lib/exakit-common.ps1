@@ -4914,13 +4914,17 @@ function Show-ExakitMarketplaceMenu {
             $ver = Get-ExakitComponentCurrent $addon.Id
             if (-not $ver -and (Get-Command $addon.VersionFn -ErrorAction SilentlyContinue)) { $ver = & $addon.VersionFn }
             if (-not $ver) { $ver = "?" }
-            $rows += @{ Id = $null; Label = "$($addon.Id) - already installed" }
+            # "Installed" and the version travel SEPARATELY: the version goes in
+            # the Version column beside every other add-on's, the word in
+            # Description. Twin of the _mm_covered rows in exakit_marketplace_menu.
+            $rows += @{ Id = $null; Label = $addon.Id; Why = "Installed"
+                Version = (Get-ExakitVersionPlain ("" + $ver)) }
         } elseif (Test-ExakitAddonSystemPresent $addon.Id) {
             # The user already has the tool from somewhere else - covered, and
             # the kit does not manage it.
-            $rows += @{ Id = $null; Label = "$($addon.Id) - already on this system" }
+            $rows += @{ Id = $null; Label = $addon.Id; Why = "managed outside the kit"; Version = "" }
         } elseif (-not (Get-Command $addon.InstallFn -ErrorAction SilentlyContinue)) {
-            $rows += @{ Id = $null; Label = "$($addon.Id) - not in this kit copy" }
+            $rows += @{ Id = $null; Label = $addon.Id; Why = "not in this kit copy"; Version = "" }
         } else {
             # Get-ExakitComponentAvailable lives in the CLI (setup\exakit.ps1)
             # and NOWHERE else. The closing offer during a fresh install runs
@@ -4998,10 +5002,18 @@ function Show-ExakitMarketplaceMenu {
     # output that path produced. They are represented by the message below
     # instead. Twin of exakit_marketplace_menu in common.sh.
     $selectable = @($rows | Where-Object { $_.Id })
+    $covered = @($rows | Where-Object { -not $_.Id })
     Write-Host ""
 
     if ($selectable.Count -eq 0) {
         Info "Everything available is already covered."
+        # Named, not just counted: an installed add-on shows its version, the
+        # others show why. Twin of the _mm_covered loop in common.sh.
+        foreach ($c in $covered) {
+            $why = "" + $c.Why
+            if ($c.Version) { $why += " " + $c.Version }
+            Info ("{0,-14} {1}" -f $c.Label, $why)
+        }
         return
     }
 
@@ -5029,18 +5041,22 @@ function Show-ExakitMarketplaceMenu {
     # The rows the reader ticks here are the rows Invoke-ExakitMarketplaceApply
     # then fills in, so the choice and the progress are one screen.
     #
-    # Only INSTALLABLE add-ons get a row - which is also what keeps the group's
-    # child range contiguous. ui_table_disable / the disabled state is how the
-    # rest would come back, as dim unpickable rows, the way the MCP client list
-    # shows "Cursor - not installed".
+    # The installable add-ons first, which keeps the group's child range
+    # contiguous; then the ones that cannot be installed (already installed,
+    # managed outside the kit, not in this kit copy) as dim, unpickable rows
+    # saying why, the way the MCP client list shows "Cursor - not installed".
+    # Twin of _exakit_addon_table_build in common.sh.
     $addonIds = New-Object 'System.Collections.Generic.List[string]'
     $script:ExakitAddonTable = New-ExakitTable -Title "Marketplace add-ons" -Col1 "Add-on" `
         -Col2 "Version" -Col3 "Description"
     [void](Add-ExakitTableRow -Kind "group" -Label "Select All" -Table $script:ExakitAddonTable)
     [void]$addonIds.Add("")
     $addonCount = $selectable.Count
+    $coveredCount = $covered.Count
     for ($i = 0; $i -lt $addonCount; $i++) {
-        if ($i -eq ($addonCount - 1)) { $kind = "corner" } else { $kind = "tee" }
+        # The corner belongs to the last row of the TREE: with disabled rows
+        # after the installable ones, the last installable one is a tee.
+        if ($i -eq ($addonCount - 1) -and $coveredCount -eq 0) { $kind = "corner" } else { $kind = "tee" }
         # One line, whatever the About says: the column truncates, and a folded
         # cell would make the row two lines tall - which is the frame-height
         # invariant the redraw depends on.
@@ -5049,9 +5065,19 @@ function Show-ExakitMarketplaceMenu {
             -Col2 ("" + $selectable[$i].Version) -Col3 $desc -Table $script:ExakitAddonTable)
         [void]$addonIds.Add($selectable[$i].Id)
     }
+    for ($i = 0; $i -lt $coveredCount; $i++) {
+        if ($i -eq ($coveredCount - 1)) { $kind = "corner" } else { $kind = "tee" }
+        # The state word goes to Description (the selection screen) AND to the
+        # disabled note (the Status cell on the install screen), so the row says
+        # the same thing on either.
+        $at = Add-ExakitTableRow -Kind $kind -Label $covered[$i].Label `
+            -Col2 ("" + $covered[$i].Version) -Col3 ("" + $covered[$i].Why) -Table $script:ExakitAddonTable
+        Disable-ExakitTableRow -Row $at -Note ("" + $covered[$i].Why) -Table $script:ExakitAddonTable
+        [void]$addonIds.Add("")
+    }
     [void](Add-ExakitTableRow -Kind "plain" -Label "Skip" -Table $script:ExakitAddonTable)
     [void]$addonIds.Add("")
-    $rowSkip = $addonCount + 2
+    $rowSkip = $addonCount + $coveredCount + 2
     $script:ExakitAddonTableIds = $addonIds.ToArray()
     # Default: the group AND every available add-on pre-selected - the same
     # posture as the data-load menu, where Enter alone acts on what is on offer
