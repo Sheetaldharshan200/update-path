@@ -101,7 +101,7 @@ try {
         $script:PersonalNoDatabase = $false
         Install-PersonalDeployment
         if ($script:PersonalNoDatabase) {
-            Register-ExakitSoftFailure -Component "runtime" -Repair "exakit update" `
+            Register-ExakitSoftFailure -Component "runtime" -Repair (Get-ExakitInstallCommand) `
                 -Reason (Get-ExakitFailureReason) -Label "the local database"
             Warn2 "The database was not installed - carrying on so the rest of the install completes"
         } else {
@@ -116,7 +116,7 @@ try {
             $script:PersonalNoDatabase = $false
             Install-PersonalDeployment
             if ($script:PersonalNoDatabase) {
-                Register-ExakitSoftFailure -Component "runtime" -Repair "exakit update" `
+                Register-ExakitSoftFailure -Component "runtime" -Repair (Get-ExakitInstallCommand) `
                     -Reason (Get-ExakitFailureReason) -Label "the local database"
                 Warn2 "The database was not installed - carrying on so the rest of the install completes"
             }

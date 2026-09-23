@@ -379,10 +379,10 @@ personal_check_requirements() {
                         # rootless podman fails later, deep inside a container
                         # start, with an error that names neither podman nor
                         # the missing package.
-                        info "Install it inside this distro (Debian/Ubuntu: 'sudo apt-get install -y podman uidmap'), then run 'exakit update'."
+                        info "Install it inside this distro (Debian/Ubuntu: 'sudo apt-get install -y podman uidmap'), then re-run the installer: $(exakit_install_command)"
                         info "Podman Desktop or Docker Desktop on the WINDOWS side does not count - the launcher runs in here and looks on this PATH."
                     else
-                        info "Install it with your package manager (e.g. 'sudo apt-get install -y podman' or 'sudo dnf install -y podman'), then run 'exakit update'."
+                        info "Install it with your package manager (e.g. 'sudo apt-get install -y podman' or 'sudo dnf install -y podman'), then re-run the installer: $(exakit_install_command)"
                     fi
                 fi
             fi
@@ -1225,7 +1225,7 @@ personal_podman_running() {
     _personal_podman_answers && return 0
     warn "Podman is installed, but it cannot run containers on this machine."
     [ -n "${_ppr_said:-}" ] && info "What it said: $_ppr_said"
-    info "Check it with 'podman info'; once that answers, run 'exakit update' to finish the install."
+    info "Check it with 'podman info'; once that answers, re-run the installer to finish the install: $(exakit_install_command)"
     exakit_note_failure "Podman is installed but not usable ('podman info' failed): ${_ppr_said:-no output}"
     return 1
 }
@@ -1262,7 +1262,7 @@ personal_deploy_local() {
         # nothing has been written, nothing is half made, and every step that
         # does not need a database still has value. Same shape as a declined
         # Podman install.
-        info "Stop it first ('exakit stop', or 'exasol stop'), then run 'exakit update' to deploy a fresh one - port $(personal_db_port) stays in use while it is running."
+        info "Stop it first ('exakit stop', or 'exasol stop'), then re-run the installer to deploy a fresh one - port $(personal_db_port) stays in use while it is running: $(exakit_install_command)"
         exakit_note_failure "Declined to reuse the database already running on port $(personal_db_port)"
         return 1
     fi
@@ -1356,7 +1356,7 @@ personal_deploy_local() {
     if port_in_use "$(personal_db_port)"; then
         if ! personal_reap_orphan_daemon; then
             warn "Port $(personal_db_port) is in use by a process that is not a reachable Exasol Personal deployment.$(personal_foreign_db_hint)"
-            info "Stop that application, then run 'exakit update' (EXAKIT_DB_PORT does not choose the port of a personal deployment)."
+            info "Stop that application, then re-run the installer (EXAKIT_DB_PORT does not choose the port of a personal deployment): $(exakit_install_command)"
             exakit_note_failure "Port $(personal_db_port) is held by something that is not an Exasol Personal deployment"
             return 1
         fi
@@ -1437,7 +1437,7 @@ personal_deploy_local() {
             # deployment is what a retry needs to look at.
             rollback_clear
             warn "Local deployment failed.$(personal_foreign_db_hint)"
-            info "Retry it with 'exakit update' - completed steps are skipped."
+            info "Retry it by re-running the installer - completed steps are skipped: $(exakit_install_command)"
             exakit_note_failure "The launcher could not deploy the database locally"
             return 1
         fi
@@ -1450,7 +1450,7 @@ personal_deploy_local() {
         _personal_deploy_print_notice "$_deploy_notice"
         rm -rf "$_deploy_tmp"
         rollback_clear
-        info "Retry it with 'exakit update', or read the state with 'exakit status'."
+        info "Retry it by re-running the installer ($(exakit_install_command)), or read the state with 'exakit status'."
         return 1
     fi
 

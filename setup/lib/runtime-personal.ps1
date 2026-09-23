@@ -728,8 +728,42 @@ function Test-PersonalPodmanRunning {
     [void](Invoke-ExakitLogged $podman.Source "info")
     Warn2 "Podman is installed, but it cannot run containers on this machine."
     Info "Check it with 'podman info' (and 'podman machine start' if its machine is off)."
-    Info "Once that answers, run 'exakit update' to finish the install."
+    Info "Once that answers, re-run the installer to finish the install: $(Get-ExakitInstallCommand)"
     return $false
+}
+
+# Invoke-PersonalInstallLocal <args> - `exasol install local`, retried when it
+# failed on a Windows file lock rather than on anything about the deployment.
+#
+# The launcher writes runtime-artifacts\index.json as a temp file renamed over
+# the old one, and Windows refuses that rename while any other process holds
+# the target open - Defender or another scanner inspecting the file it just
+# wrote, the search indexer. Measured on a Nano-to-Personal upgrade:
+#   rename ...\runtime-artifacts\index.json.tmp-1356456713 ...\index.json: Access is denied.
+# a second after the deploy began, with nothing deployed, and the very next
+# installer run went through untouched. The lock is gone within seconds, so the
+# retry is short and only fires on that signature: any other failure is real and
+# goes straight back to the caller. Nothing to undo in between - the launcher
+# failed in initialisation, before creating a deployment.
+# Windows only: POSIX rename replaces an open file, so the sh side has no twin.
+function Invoke-PersonalInstallLocal {
+    param([string[]]$InstallArgs)
+    $attempts = 3
+    for ($attempt = 1; $attempt -le $attempts; $attempt++) {
+        $logBefore = 0
+        if ($script:LogFile -and (Test-Path $script:LogFile)) {
+            $logBefore = @(Get-Content -Path $script:LogFile).Count
+        }
+        $rc = Invoke-ExakitLogged (Get-PersonalCli) @InstallArgs
+        if ($rc -eq 0) { return 0 }
+        if ($attempt -eq $attempts -or -not $script:LogFile) { return $rc }
+        if (Test-PersonalDeploymentExists) { return $rc }
+        $output = @(Get-Content -Path $script:LogFile | Select-Object -Skip $logBefore) -join "`n"
+        if ($output -notmatch 'Access is denied|being used by another process') { return $rc }
+        Write-ExakitLog "WARN" "exasol install local hit a file lock (attempt $attempt of $attempts) - retrying"
+        Start-Sleep -Seconds (3 * $attempt)
+    }
+    return $rc
 }
 
 function Install-PersonalDeployment {
@@ -743,7 +777,7 @@ function Install-PersonalDeployment {
         # NOT THE END OF THE RUN. The user declined a database, not the kit:
         # nothing has been written and nothing is half made. Same shape as a
         # declined Podman install, and the same flag carries it out.
-        Info "Stop it first ('exakit stop', or 'exasol stop'), then run 'exakit update' to deploy a fresh one - port $(Get-PersonalDbPort) stays in use while it is running."
+        Info "Stop it first ('exakit stop', or 'exasol stop'), then re-run the installer to deploy a fresh one - port $(Get-PersonalDbPort) stays in use while it is running: $(Get-ExakitInstallCommand)"
         Set-ExakitFailureReason "Declined to reuse the database already running on port $(Get-PersonalDbPort)"
         $script:PersonalNoDatabase = $true
         return
@@ -809,7 +843,7 @@ function Install-PersonalDeployment {
 
     if (Test-ExakitPortInUse (Get-PersonalDbPort)) {
         Warn2 "Port $(Get-PersonalDbPort) is in use by a process that is not a reachable Exasol Personal deployment.$(Get-PersonalForeignDbHint)"
-        Info "Stop that application, then run 'exakit update' (EXAKIT_DB_PORT does not choose the port of a personal deployment)."
+        Info "Stop that application, then re-run the installer (EXAKIT_DB_PORT does not choose the port of a personal deployment): $(Get-ExakitInstallCommand)"
         Set-ExakitFailureReason "Port $(Get-PersonalDbPort) is held by something that is not an Exasol Personal deployment"
         $script:PersonalNoDatabase = $true
         return
@@ -855,7 +889,7 @@ function Install-PersonalDeployment {
     $flag = Get-PersonalAutoApproveFlag "install"
     if ($flag) { $installArgs += $flag }
     $script:ExakitActiveLabel = "Deploying Exasol Personal locally"
-    if ((Invoke-ExakitLogged (Get-PersonalCli) @installArgs) -ne 0) {
+    if ((Invoke-PersonalInstallLocal $installArgs) -ne 0) {
         # A DEPLOYMENT THAT EXISTS IS GIVEN THE KIT'S OWN BUDGET FIRST: the
         # launcher waits 27 seconds for a first boot, and a first boot in a
         # fresh Podman machine takes longer. Twin of the same branch in
@@ -873,13 +907,18 @@ function Install-PersonalDeployment {
                 # returns bare on four reuse paths, and an `if (Install-...)`
                 # caller would read every one of them as a failure.
                 Warn2 "Local deployment failed, and Podman is still not installed - that is what the launcher could not do."
-                Info "Install it yourself with 'winget install RedHat.Podman' (a reboot may be needed), then run 'exakit update'."
+                Info "Install it yourself with 'winget install RedHat.Podman' (a reboot may be needed), then re-run the installer: $(Get-ExakitInstallCommand)"
                 Set-ExakitFailureReason "Podman is not installed and the launcher could not install it (winget install RedHat.Podman)"
                 $script:PersonalNoDatabase = $true
                 return
             }
             Warn2 "Local deployment failed.$(Get-PersonalForeignDbHint)"
-            Info "Retry it with 'exakit update' - completed steps are skipped."
+            # The INSTALLER, not `exakit update`: update only moves components
+            # that have a newer advertised version, so a deployment that never
+            # happened is "already current" to it - and on the Nano-to-Personal
+            # crossing the manifest still names nano, which it skips outright.
+            # A re-run resumes at this step. Twin of personal_deploy_local.
+            Info "Retry it by re-running the installer - completed steps are skipped: $(Get-ExakitInstallCommand)"
             Set-ExakitFailureReason "The launcher could not deploy the database locally"
             $script:PersonalNoDatabase = $true
             return

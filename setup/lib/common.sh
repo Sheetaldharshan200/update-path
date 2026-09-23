@@ -9308,7 +9308,12 @@ exakit_print_soft_failures() {
             "${UI_ACCENT:-}" "${_sf_repair:-see the log}" "${UI_RESET:-}"
     done
     printf '\n'
-    info "Everything else is ready — the database, and the exakit command itself."
+    # Not "the database" when the database is what failed: the summary
+    # used to list it as missing and then, one line on, as ready.
+    case " $EXAKIT_SOFT_FAILED " in
+        *" runtime "*) info "Everything that does not need the database is ready, including the exakit command itself." ;;
+        *) info "Everything else is ready — the database, and the exakit command itself." ;;
+    esac
     if [ -n "${EXAKIT_LOG_FILE:-}" ]; then
         info "Full detail for each failure: $EXAKIT_LOG_FILE"
     fi
