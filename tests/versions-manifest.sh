@@ -82,7 +82,7 @@ SHIPPED_PY
 # 1. Synthetic versions are out of reach of any release -- major 99, year 2099, or
 #    a 0.0.x floor -- never the next plausible number. The synthetic exapump in the
 #    cache and notice fixtures used to be 0.12.0, one routine release above what the
-#    document advertised, and versions-bump.yml runs weekly and does not edit tests.
+#    document advertised, and versions-bump.yml runs daily and does not edit tests.
 # 2. Every rewrite proves it changed something. That is the half that survives the
 #    next person picking a plausible-looking literal: the fixture fails loudly
 #    instead of quietly becoming a copy of the document it was derived from.
