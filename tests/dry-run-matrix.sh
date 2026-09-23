@@ -587,7 +587,13 @@ heal_case() { # heal_case <running> <exists> <deploy-arg> — echoes the calls m
         personal_deployment_running() { return '"$1"'; }
         personal_deployment_exists()  { return '"$2"'; }
         personal_start()       { printf "start "; }
-        personal_wait_ready()  { printf "wait "; }
+        # The self-heal asks for the REPAIRING wait now: a start the launcher
+        # accepted without acting on is finished by its own deploy, and this is
+        # the function that does that. personal_wait_ready is still stubbed,
+        # and still not what this path calls - which is the point.
+        personal_wait_ready()  { printf "plain-wait "; }
+        personal_wait_ready_or_deploy() { printf "wait "; }
+        personal_repair_command() { printf "exakit repair-runtime"; }
         personal_deploy_local(){ printf "deploy "; }
         info() { :; }; die() { printf "die"; exit 1; }
         exakit_ensure_runtime_running '"$3"'
@@ -595,7 +601,7 @@ heal_case() { # heal_case <running> <exists> <deploy-arg> — echoes the calls m
     ' 2>/dev/null
 }
 check "self_heal(running -> untouched)"        ""            "$(heal_case 0 0 "")"
-check "self_heal(stopped -> start + wait)"     "start wait " "$(heal_case 1 0 "")"
+check "self_heal(stopped -> start + repairing wait)" "start wait " "$(heal_case 1 0 "")"
 check "self_heal(missing + deploy -> deploys)" "deploy "     "$(heal_case 1 1 deploy)"
 check "self_heal(missing, no deploy -> dies)"  "die"         "$(heal_case 1 1 "")"
 # ...and the commands that speak SQL actually use it, on both sides.

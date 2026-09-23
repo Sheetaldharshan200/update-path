@@ -529,6 +529,44 @@ _cls2="$(EXAKIT_HOME="$H1" EXAKIT_BIN_DIR="$H1/bin" EXAKIT_EXAPUMP_BIN="$STUB3/e
 check "a table in no sample schema is the user's" "S1.T1" "$_cls2"
 check "...and the database was not asked about it" "0" "$(grep -c 'EXAKIT_LR' "$WORK/stub3.log" 2>/dev/null || true)"
 
+# A SAMPLE TABLE THE DATASET GENERATES. energy's ENERGY_READINGS is built by
+# 02_load_data.sql — 108,000 rows and no CSV — so a catalog read from the CSV
+# names alone never saw it. Every upgrade from a kit that had loaded the energy
+# dataset was then told it held "1 table(s) in 1 schema(s) of your own": the
+# kit's own sample data, offered back to the user, copied out, restored, and
+# replaced by the dataset load minutes later. dataset.conf declares it in
+# markers=, and the catalog carries it with an empty row count.
+_cat="$(ROOT="$ROOT" EXAKIT_HOME="$H1" bash -c '. "$ROOT/setup/lib/common.sh"; . "$ROOT/setup/lib/detect.sh"; . "$ROOT/setup/lib/exapump.sh"; . "$ROOT/setup/lib/legacy-crossing.sh"; legacy_sample_catalog')"
+has "the catalog carries a generated table, row count unknown" "ENERGY.ENERGY_READINGS|energy|" "$_cat"
+has "...and the CSV-backed ones keep their counts" "ENERGY.ENERGY_METERS|energy|50" "$_cat"
+_gen="$(ROOT="$ROOT" EXAKIT_HOME="$H1" bash -c '. "$ROOT/setup/lib/common.sh"; . "$ROOT/setup/lib/detect.sh"; . "$ROOT/setup/lib/exapump.sh"; . "$ROOT/setup/lib/legacy-crossing.sh"
+    legacy_is_sample_table "ENERGY.ENERGY_READINGS" && printf gen=yes || printf gen=no
+    legacy_is_sample_table "MYWORK.SALES" && printf " mine=yes" || printf " mine=no"')"
+check "the restore stands aside for the generated table, not the user's" "gen=yes mine=no" "$_gen"
+# The whole of the reported case: a kit that loaded the energy dataset and
+# nothing else has nothing of the user's in it, so no offer is made at all.
+STUB4="$WORK/stub4"; mkdir -p "$STUB4"
+cat > "$STUB4/exapump" <<'EOF'
+#!/bin/sh
+printf '%s\n' "$*" >> "$STUBLOG"
+case "$*" in
+  *EXAKIT_LR*) printf 'EXAKIT_LR[ENERGY.ENERGY_METERS<<:>>50]\n'; exit 0 ;;
+esac
+exit 0
+EOF
+chmod +x "$STUB4/exapump"
+_cls3="$(EXAKIT_HOME="$H1" EXAKIT_BIN_DIR="$H1/bin" EXAKIT_EXAPUMP_BIN="$STUB4/exapump" \
+    STUBLOG="$WORK/stub4.log" PATH="$STUB4:$PATH" ROOT="$ROOT" bash -c '
+    . "$ROOT/setup/lib/common.sh"; . "$ROOT/setup/lib/detect.sh"
+    . "$ROOT/setup/lib/exapump.sh"; . "$ROOT/setup/lib/legacy-crossing.sh"
+    legacy_classify "ENERGY.ENERGY_METERS
+ENERGY.ENERGY_READINGS"
+    _own="$(printf "%s" "$EXAKIT_LEGACY_OWN_TABLES" | tr "\n" ",")"
+    _smp="$(printf "%s" "$EXAKIT_LEGACY_SAMPLE_TABLES" | tr "\n" ",")"
+    printf "OWN=%s|SAMPLE=%s|IDS=%s" "${_own%,}" "${_smp%,}" "$EXAKIT_LEGACY_SAMPLE_IDS"')"
+check "a database holding only the energy dataset has nothing of the user's" \
+    "OWN=|SAMPLE=ENERGY.ENERGY_METERS,ENERGY.ENERGY_READINGS|IDS=energy" "$_cls3"
+
 echo
 echo "the after-the-install road: exakit migrate docker-nano"
 has "the CLI loads the crossing module"      'legacy-crossing.sh' "$(cat "$ROOT/setup/exakit")"

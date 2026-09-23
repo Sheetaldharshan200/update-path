@@ -5680,7 +5680,17 @@ exakit_runtime_status() {
 
 exakit_runtime_start() {
     case "$(exakit_installation_runtime_type 2>/dev/null || true)" in
-        personal) command -v personal_start >/dev/null 2>&1 && personal_start ;;
+        # AND THEN WAIT FOR IT. The launcher's start exits 0 without acting
+        # in more than one state, so `exakit start` used to report success over
+        # a database that never came up; personal_wait_ready_or_deploy asks the
+        # database instead of the record and runs the launcher's own deploy
+        # when nothing answers. The wait lives here rather than inside
+        # personal_start, which other callers run as a best-effort nudge.
+        personal)
+            command -v personal_start >/dev/null 2>&1 || return 0
+            personal_start
+            command -v personal_wait_ready_or_deploy >/dev/null 2>&1 && personal_wait_ready_or_deploy
+            ;;
     esac
     return 0
 }
@@ -8478,7 +8488,11 @@ exakit_ensure_runtime_running() {
             if personal_deployment_exists; then
                 info "Self-heal: the database is deployed but not running — starting it"
                 personal_start
-                personal_wait_ready
+                # The same repair the install uses: a start the launcher took
+                # without acting on is finished by its own deploy.
+                # NOT `|| personal_wait_ready`: that would spend the whole
+                # budget a second time before saying anything.
+                personal_wait_ready_or_deploy ||                     die "The database is deployed but did not come up. Read the state with 'exakit status', or repair with: $(personal_repair_command)"
                 return 0
             fi
             if [ "$_err_deploy" = "deploy" ]; then

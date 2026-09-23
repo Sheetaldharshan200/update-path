@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+**An upgrade no longer offers you the kit's own sample data back.** Installing
+0.2.0 over a kit that had loaded the energy dataset said "1 table(s) in 1
+schema(s) of your own" and offered to migrate it - on a database holding
+nothing but the kit's own samples. The one table was ENERGY.ENERGY_READINGS,
+and the crossing works out what belongs to the kit by reading the CSV files
+each dataset ships. That table has no CSV: energy generates its 108,000 rows in
+02_load_data.sql, so it was invisible to the catalog and fell through to "the
+user's own". The same catalog is what tells the restore to stand aside for a
+table the dataset load is about to create, so those rows were also copied out,
+restored, and then replaced by the dataset load a few minutes later. The
+catalog now also reads the tables dataset.conf already declares in `markers=`,
+which covers the ones no CSV accounts for; a declared table with no file behind
+it has no row count to compare against, so it counts as the kit's own and stays
+where it is. A database that holds only the kit's samples now says nothing at
+all, which is what it always meant to do.
+
 **A machine without Podman is given Podman, not turned away.** On Linux and in
 WSL the install refused: "This machine is not ready ... 'podman' is not on
 PATH", with a package-manager command to run and the whole install to start
@@ -43,6 +59,34 @@ one place decide. Both halves: `setup-linux.sh`/`setup-macos.sh` on the first
 run and on the resume arm, and `setup-windows.ps1`, where the launcher is the
 one that installs Podman and an unelevated winget on a managed laptop is the
 failure this covers.
+
+**A start the launcher accepted is not a database.** The launcher's `start`
+exits 0 and does nothing at all in more than one state. The kit knew about one
+of them; it did not know about a deployment the launcher has *initialized but
+never deployed*, which takes the start, warns that a deploy is what it actually
+needs, and leaves nothing listening. The installer said "Reusing the existing
+Exasol deployment (started)", waited its whole 150-second budget, and ended the
+run at step 2 of 6 - while `exasol deploy`, typed by hand, brought the same
+deployment up in twenty seconds. The kit now asks the *database* rather than
+the launcher's record: a deployment that does not answer after a start it
+accepted was never started, so the launcher's own deploy is run and the
+database is asked again. Reading behaviour instead of a state string means the
+next spelling of this state needs no new case arm. `exakit start` heals itself
+the same way, and so do all three adoption paths in the install.
+
+**Nothing in the database step ends the run any more.** Declining to reuse a
+database already running on port 8563 closed the installer at step 2 of 6 - and
+so did declining to delete a stopped deployment, a foreign process holding the
+port, and a deploy the launcher could not complete. None of those leave
+anything half written, and none of them are a reason to withhold the launcher,
+the AI bridge or the `exakit` command. Each is now recorded like any other step
+that did not finish, named in the closing summary with the command that
+completes it, and the install carries on. The destroy that the deploy arms as
+its undo is *disarmed* rather than fired on those paths, because the run is no
+longer ending and a partial deployment is exactly what a retry has to look at -
+and the licence notice is replayed there too, since a deployment that survives
+has accepted the terms. The one hard stop left in that step is a machine that
+cannot create a temporary directory.
 
 **Installed is not running, and the difference was a whole failed install.**
 `command -v podman` answers whether the binary is on PATH and says nothing

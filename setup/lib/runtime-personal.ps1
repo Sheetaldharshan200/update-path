@@ -325,7 +325,7 @@ function Show-PersonalGuestRebuildNote {
 # upgrade into a reported crash. An explicitly set EXAKIT_PERSONAL_READY_TIMEOUT
 # still wins - a number the user chose is never overridden by a guess. Twin of
 # personal_wait_ready.
-function Wait-PersonalReady {
+function Test-PersonalReadyProbe {
     Info "Checking deployment health"
     $budget = 150
     $raise = "EXAKIT_PERSONAL_READY_TIMEOUT"
@@ -349,13 +349,70 @@ function Wait-PersonalReady {
             # The database answered under this launcher, so whatever rebuild that
             # first start owed is paid - recorded so the notice retires itself.
             $done = Get-PersonalLauncherVersion
-            if ($done) { Set-ExakitManifestValue "runtime.guest_rebuilt_for" $done }
-            return
+            if (-not $done) { return $true }
+            # [void], because THIS FUNCTION'S OUTPUT IS NOW ITS ANSWER. It
+            # used to return nothing and a stray object from the manifest write
+            # cost nobody anything; it is a $true/$false probe now, and anything
+            # else it emits joins that answer.
+            [void](Set-ExakitManifestValue "runtime.guest_rebuilt_for" $done)
+            return $true
         }
         Start-Sleep -Seconds 5
     }
-    $spent = [int]([DateTime]::UtcNow - $t0).TotalSeconds
+    $script:PersonalReadySpent  = [int]([DateTime]::UtcNow - $t0).TotalSeconds
+    $script:PersonalReadyBudget = $budget
+    $script:PersonalReadyRaise  = $raise
+    return $false
+}
+
+# Wait-PersonalReady - the probe, and the end of the run when it fails. Every
+# caller outside the install still reaches this one; the install's callers use
+# Wait-PersonalReadyOrDeploy below, which tries the repair first and hands a
+# refusal back instead of ending the run. Twin of personal_wait_ready.
+function Wait-PersonalReady {
+    if (Test-PersonalReadyProbe) { return }
+    $spent  = $script:PersonalReadySpent
+    $budget = $script:PersonalReadyBudget
+    $raise  = $script:PersonalReadyRaise
     Fail "The deployment did not answer within ${spent} seconds (the ceiling is ${budget}s; raise it with ${raise}). Read the state with 'exakit status', then 'exakit start' to retry - a deployment stuck in 'interrupted' is repaired with 'exakit repair-runtime' (destructive, it asks first)."
+}
+
+# Wait-PersonalReadyOrDeploy - A START THAT REPORTED SUCCESS IS NOT A DATABASE.
+# The launcher's start exits 0 and does nothing at all in more than one state:
+# "deployment_failed" is the one the kit already knew about, and "initialized
+# but not deployed yet" is the one that cost a whole install - start said OK,
+# the kit said it was reusing the deployment, and then waited its entire
+# 150-second budget for a database nobody had asked to exist.
+#
+# So this stops reading the state and reads the DATABASE. Whatever the launcher
+# called it, a deployment that does not answer after a start it accepted was
+# never started, and the launcher's own deploy is what brings it up - about
+# twenty seconds. Asking the database rather than the record means the next
+# spelling of this state needs no new case arm.
+#
+# $true when the database answers, $false when it never did. Never ends the
+# run: the caller records it and carries on. Twin of
+# personal_wait_ready_or_deploy.
+function Wait-PersonalReadyOrDeploy {
+    if (Test-PersonalReadyProbe) { return $true }
+    Warn2 "The database did not answer after the launcher accepted the start."
+    Info "In some states the launcher's start does nothing and its deploy is the fix - running that now."
+    $deployArgs = @("deploy")
+    $flag = Get-PersonalAutoApproveFlag "deploy"
+    if ($flag) { $deployArgs += $flag }
+    $script:ExakitActiveLabel = "Deploying the existing database"
+    $rc = Invoke-ExakitLogged (Get-PersonalCli) @deployArgs
+    $script:ExakitActiveLabel = ""
+    if ($rc -ne 0) {
+        Set-ExakitFailureReason "The database never answered, and the launcher's deploy could not bring it up"
+        return $false
+    }
+    if (Test-PersonalReadyProbe) {
+        Ok "The database answered after the launcher's deploy"
+        return $true
+    }
+    Set-ExakitFailureReason "The database never answered, even after the launcher deployed it again"
+    return $false
 }
 
 # Test-PersonalRequirements - the compatibility gate. Windows arm64 is refused
@@ -683,7 +740,13 @@ function Install-PersonalDeployment {
             Set-PersonalManifest "healthy"
             return
         }
-        Fail "Declined to reuse the running database. Stop it first ('exakit stop', or 'exasol stop'), then re-run to deploy a fresh one - port $(Get-PersonalDbPort) stays in use while it is running."
+        # NOT THE END OF THE RUN. The user declined a database, not the kit:
+        # nothing has been written and nothing is half made. Same shape as a
+        # declined Podman install, and the same flag carries it out.
+        Info "Stop it first ('exakit stop', or 'exasol stop'), then run 'exakit update' to deploy a fresh one - port $(Get-PersonalDbPort) stays in use while it is running."
+        Set-ExakitFailureReason "Declined to reuse the database already running on port $(Get-PersonalDbPort)"
+        $script:PersonalNoDatabase = $true
+        return
     }
 
     if (Test-PersonalDeploymentExists) {
@@ -702,7 +765,7 @@ function Install-PersonalDeployment {
             $script:ExakitActiveLabel = "Retrying the deployment"
             if (((Invoke-ExakitLogged (Get-PersonalCli) @deployArgs) -eq 0) -or (Wait-PersonalSlowFirstBoot)) {
                 Ok "Reusing the existing Exasol deployment (deployed again)"
-                Wait-PersonalReady
+                if (-not (Wait-PersonalReadyOrDeploy)) { $script:PersonalNoDatabase = $true; return }
                 Set-PersonalManifest "healthy"
                 return
             }
@@ -716,7 +779,10 @@ function Install-PersonalDeployment {
             if ($flag) { $startArgs += $flag }
             if ((Test-PersonalLauncherSupports "start") -and ((Invoke-ExakitLogged (Get-PersonalCli) @startArgs) -eq 0)) {
                 Ok "Reusing the existing Exasol deployment (started)"
-                Wait-PersonalReady
+                # NOT "started, therefore running": the launcher accepts a start
+                # for a deployment it has only initialized, does nothing, and
+                # the kit then waits its whole budget for it.
+                if (-not (Wait-PersonalReadyOrDeploy)) { $script:PersonalNoDatabase = $true; return }
                 Set-PersonalManifest "healthy"
                 return
             }
@@ -727,7 +793,10 @@ function Install-PersonalDeployment {
         # one diagnosis away from starting tomorrow; deleting it is the user's
         # call, made with the consequence in front of them.
         if (-not (Confirm-ExakitEnvPrompt "EXAKIT_REPLACE_DB" "DELETE the stopped deployment and its data, and deploy a fresh one? This cannot be undone." $false)) {
-            Fail "Nothing was deleted. Start it yourself with 'exakit start', diagnose with 'exakit status', repair with 'exakit repair-runtime' - or re-run with EXAKIT_REPLACE_DB=1 to replace it, deleting its data."
+            Info "Nothing was deleted. Start it yourself with 'exakit start', diagnose with 'exakit status', repair with 'exakit repair-runtime' - or re-run with EXAKIT_REPLACE_DB=1 to replace it, deleting its data."
+            Set-ExakitFailureReason "A stopped deployment could not be started, and deleting it was declined"
+            $script:PersonalNoDatabase = $true
+            return
         }
         Info "Replacing the existing deployment - its previous data is not recoverable."
         # --auto-approve: destroy has its own [y/N] prompt, which a piped or
@@ -739,7 +808,11 @@ function Install-PersonalDeployment {
     }
 
     if (Test-ExakitPortInUse (Get-PersonalDbPort)) {
-        Fail "Port $(Get-PersonalDbPort) is in use by a process that is not a reachable Exasol Personal deployment.$(Get-PersonalForeignDbHint) Stop that application and re-run (EXAKIT_DB_PORT does not choose the port of a personal deployment)."
+        Warn2 "Port $(Get-PersonalDbPort) is in use by a process that is not a reachable Exasol Personal deployment.$(Get-PersonalForeignDbHint)"
+        Info "Stop that application, then run 'exakit update' (EXAKIT_DB_PORT does not choose the port of a personal deployment)."
+        Set-ExakitFailureReason "Port $(Get-PersonalDbPort) is held by something that is not an Exasol Personal deployment"
+        $script:PersonalNoDatabase = $true
+        return
     }
 
     # The progress bar narrates the deploy and the spinner narrates the health
@@ -773,7 +846,7 @@ function Install-PersonalDeployment {
         # command away from a database, and better told now than after the
         # launcher has spent five minutes discovering it.
         Set-ExakitFailureReason "Podman is installed but not usable ('podman info' failed; its machine may be stopped)"
-        $script:PersonalNoPodman = $true
+        $script:PersonalNoDatabase = $true
         return
     }
     Info "Deploying Exasol Personal locally - the database runs through Podman's default machine, which the launcher prepares."
@@ -802,14 +875,21 @@ function Install-PersonalDeployment {
                 Warn2 "Local deployment failed, and Podman is still not installed - that is what the launcher could not do."
                 Info "Install it yourself with 'winget install RedHat.Podman' (a reboot may be needed), then run 'exakit update'."
                 Set-ExakitFailureReason "Podman is not installed and the launcher could not install it (winget install RedHat.Podman)"
-                $script:PersonalNoPodman = $true
+                $script:PersonalNoDatabase = $true
                 return
             }
-            Fail "Local deployment failed.$(Get-PersonalForeignDbHint) Re-running the installer retries it safely."
+            Warn2 "Local deployment failed.$(Get-PersonalForeignDbHint)"
+            Info "Retry it with 'exakit update' - completed steps are skipped."
+            Set-ExakitFailureReason "The launcher could not deploy the database locally"
+            $script:PersonalNoDatabase = $true
+            return
         }
     }
 
-    Wait-PersonalReady
+    if (-not (Wait-PersonalReadyOrDeploy)) {
+        $script:PersonalNoDatabase = $true
+        return
+    }
     } finally {
         $script:ExakitQuietDetail = $prevDeployQuiet
     }

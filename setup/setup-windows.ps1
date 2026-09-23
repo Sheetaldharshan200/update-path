@@ -98,9 +98,9 @@ try {
     }
 
     if (Begin-ExakitStep "runtime" "Step 2/6  Local database deployment") {
-        $script:PersonalNoPodman = $false
+        $script:PersonalNoDatabase = $false
         Install-PersonalDeployment
-        if ($script:PersonalNoPodman) {
+        if ($script:PersonalNoDatabase) {
             Register-ExakitSoftFailure -Component "runtime" -Repair "exakit update" `
                 -Reason (Get-ExakitFailureReason) -Label "the local database"
             Warn2 "The database was not installed - carrying on so the rest of the install completes"
@@ -113,17 +113,25 @@ try {
         # Twin of setup-macos.sh / setup-linux.sh.
         if (-not (Test-PersonalDeploymentExists)) {
             Info "Deployment marked done but not reachable - redeploying"
-            $script:PersonalNoPodman = $false
+            $script:PersonalNoDatabase = $false
             Install-PersonalDeployment
-            if ($script:PersonalNoPodman) {
+            if ($script:PersonalNoDatabase) {
                 Register-ExakitSoftFailure -Component "runtime" -Repair "exakit update" `
                     -Reason (Get-ExakitFailureReason) -Label "the local database"
                 Warn2 "The database was not installed - carrying on so the rest of the install completes"
             }
         } elseif (-not (Test-PersonalDeploymentRunning)) {
             Info "Database is deployed but not running - starting it"
-            Start-Personal
-            Wait-PersonalReady
+            # Recorded, not fatal, and for the same reason as the arm above.
+            # Invoke-ExakitSoftStep catches Start-Personal's own Fail, which is
+            # right for `exakit start` and wrong here, where this is one step of
+            # six; Wait-PersonalReadyOrDeploy repairs a start the launcher
+            # accepted without acting on. Twin of the subshell in setup-linux.sh.
+            [void](Invoke-ExakitSoftStep -Component "runtime" -Repair "exakit start" `
+                -Label "the local database" -Body {
+                    Start-Personal
+                    return (Wait-PersonalReadyOrDeploy)
+                })
         }
     }
 
