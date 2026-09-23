@@ -4,7 +4,7 @@ Gets you from a Linux machine to a local Exasol database with an AI assistant co
 
 ## What you need
 
-- **Podman** (rootless is fine) — the database runs through it. You do not have to install it first: if it is missing, the installer says so and installs it between the launcher step and the database step. It asks before it does, because that one command needs `sudo`; answer no, or pre-answer with `EXAKIT_INSTALL_PODMAN=0`, and it prints the command for you to run instead. Either way the install carries on: everything that does not need a database still installs, and `exakit update` finishes the job once Podman is there. Podman also has to **work**, not just be installed - the kit runs `podman info` before deploying and tells you what Podman said if it cannot.
+- **Podman** (rootless is fine) — the database runs through it. You do not have to install it first: if it is missing, the installer says so and installs it between the launcher step and the database step, without stopping to ask — you asked for the database, and the database needs it. It runs one package-manager command through `sudo`, and asks for your password only if `sudo` actually wants one; the command's output goes to the logfile rather than the screen. A run that must not install packages sets `EXAKIT_INSTALL_PODMAN=0`, and the install still carries on: everything that does not need a database is installed, and `exakit update` finishes the job once Podman is there. Podman also has to **work**, not just be installed — the kit runs `podman info` before deploying and tells you what Podman said if it cannot.
 - 8 GB+ RAM, 20 GB free disk
 - **No Python install needed.** The kit uses a system Python 3.11+ if it finds one, and otherwise installs a managed Python for its own use.
 
