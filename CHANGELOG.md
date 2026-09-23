@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+**An upgrade no longer offers you the kit's own sample data back.** Installing
+0.2.0 over a kit that had loaded the energy dataset said "1 table(s) in 1
+schema(s) of your own" and offered to migrate it - on a database holding
+nothing but the kit's own samples. The one table was ENERGY.ENERGY_READINGS,
+and the crossing works out what belongs to the kit by reading the CSV files
+each dataset ships. That table has no CSV: energy generates its 108,000 rows in
+02_load_data.sql, so it was invisible to the catalog and fell through to "the
+user's own". The same catalog is what tells the restore to stand aside for a
+table the dataset load is about to create, so those rows were also copied out,
+restored, and then replaced by the dataset load a few minutes later. The
+catalog now also reads the tables dataset.conf already declares in `markers=`,
+which covers the ones no CSV accounts for; a declared table with no file behind
+it has no row count to compare against, so it counts as the kit's own and stays
+where it is. A database that holds only the kit's samples now says nothing at
+all, which is what it always meant to do.
+
 **A machine without Podman is given Podman, not turned away.** On Linux and in
 WSL the install refused: "This machine is not ready ... 'podman' is not on
 PATH", with a package-manager command to run and the whole install to start
