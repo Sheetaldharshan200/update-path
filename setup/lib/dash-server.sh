@@ -639,13 +639,48 @@ dash_server_validate() {
     else
         _dsv_why="$(_dash_server_failure_reason "$_dsv_log")"
         if [ -n "$_dsv_why" ]; then
-            warn "dash-server did not answer on port $EXAKIT_DASH_SERVER_PORT — $_dsv_why. Recorded validated=false; retry with: exakit update"
+            _dsv_hint="$(_dash_server_missing_tool_hint "$_dsv_why")"
+            if [ -n "$_dsv_hint" ]; then
+                # The remedy that can actually work, instead of the one that
+                # cannot: a retry does not put a missing command on the machine.
+                warn "dash-server did not answer on port $EXAKIT_DASH_SERVER_PORT — $_dsv_why"
+                info "$_dsv_hint"
+            else
+                warn "dash-server did not answer on port $EXAKIT_DASH_SERVER_PORT — $_dsv_why. Recorded validated=false; retry with: exakit update"
+            fi
         else
             warn "dash-server did not answer on port $EXAKIT_DASH_SERVER_PORT within ${_dsv_waited}s. Recorded validated=false; retry with: exakit update"
         fi
         manifest_set components.dash_server.validated false
     fi
     return 0
+}
+
+# _dash_server_missing_tool <reason> - the NAME of a command the server could
+# not find, or nothing.
+#
+# "RETRY WITH: EXAKIT UPDATE" CANNOT INSTALL GIT. dash-server shells out to git
+# when it starts, and on a machine without it the start dies with
+# FileNotFoundError: [Errno 2] No such file or directory: 'git'. The reason line
+# said exactly that - and then offered a retry that would fail the same way for
+# ever, because nothing about re-running the installer puts git on the machine.
+# A missing command is the one failure whose remedy is obvious the moment the
+# name is read, so it is read.
+_dash_server_missing_tool() {
+    printf '%s' "$1" | sed -n "s/.*No such file or directory: '\\([^']*\\)'.*/\\1/p" | head -1
+}
+
+# _dash_server_missing_tool_hint <reason> - one sentence naming the command to
+# install, or nothing. Only for a tool that really is absent: the same
+# FileNotFoundError can name a data file, and telling someone to apt-get
+# install a path would be worse than saying nothing.
+_dash_server_missing_tool_hint() {
+    _dsmth_tool="$(_dash_server_missing_tool "$1")"
+    [ -n "$_dsmth_tool" ] || return 0
+    case "$_dsmth_tool" in */*) return 0 ;; esac
+    command -v "$_dsmth_tool" >/dev/null 2>&1 && return 0
+    printf "dash-server needs '%s' on PATH and it is not installed. Install it (Debian/Ubuntu: sudo apt-get install -y %s), then: exakit marketplace" \
+        "$_dsmth_tool" "$_dsmth_tool"
 }
 
 # _dash_server_failure_reason <log> [log...] — the line from a start log that
@@ -864,6 +899,8 @@ dash_server_start() {
     _dss_why="$(_dash_server_failure_reason "$EXAKIT_DASH_SERVER_LOG")"
     if [ -n "$_dss_why" ]; then
         warn "dash-server did not answer on port $EXAKIT_DASH_SERVER_PORT — $_dss_why"
+        _dss_hint="$(_dash_server_missing_tool_hint "$_dss_why")"
+        [ -n "$_dss_hint" ] && info "$_dss_hint"
     else
         warn "dash-server did not answer on port $EXAKIT_DASH_SERVER_PORT within ${_dss_waited}s — see $(ui_tilde "$EXAKIT_DASH_SERVER_LOG")"
     fi
