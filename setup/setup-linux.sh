@@ -118,8 +118,21 @@ else
         rollback_clear
     elif ! personal_deployment_running; then
         info "Database is deployed but not running — starting it"
-        personal_start
-        personal_wait_ready
+        # Recorded, not fatal, and for the same reason as the arm above: the
+        # steps that do not need a database still have value, and a start that
+        # the launcher accepted without doing anything is repaired inside
+        # personal_wait_ready_or_deploy rather than waited out here.
+        # A SUBSHELL, because personal_start still ends the run on its own
+        # failures - that is right for `exakit start`, which exists only to do
+        # this, and wrong here, where it is one step of six. die exits, so the
+        # subshell turns it into a false; the reason it leaves behind is in a
+        # file, so it survives the subshell to reach the summary.
+        if ( personal_start && personal_wait_ready_or_deploy ); then
+            :
+        else
+            exakit_record_soft_failure runtime "exakit start" "$(exakit_take_failure_note)" "the local database"
+            warn "The database was not started - carrying on so the rest of the install completes"
+        fi
     fi
 fi
 
