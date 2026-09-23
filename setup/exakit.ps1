@@ -2306,7 +2306,16 @@ function Get-ExakitRuntimeStatus {
 
 function Start-ExakitRuntime {
     switch (Get-RuntimeType) {
-        "personal" { Start-Personal }
+        # AND THEN WAIT FOR IT. The launcher's start exits 0 without acting in
+        # more than one state, so `exakit start` reported success over a
+        # database that never came up; Wait-PersonalReadyOrDeploy asks the
+        # database instead of the record and runs the launcher's own deploy
+        # when nothing answers. The wait lives here rather than inside
+        # Start-Personal, which other callers run as a best-effort nudge.
+        "personal" {
+            Start-Personal
+            [void](Wait-PersonalReadyOrDeploy)
+        }
     }
 }
 

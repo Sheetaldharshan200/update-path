@@ -1427,7 +1427,7 @@ for _p2setup in setup-linux.sh setup-macos.sh; do
     # redeploy fails the same single way - it used to fall straight through to
     # rollback_clear and let every later step discover the missing database one
     # refused connection at a time.
-    check "...on the resume arm as well as the first run" "2"         "$(printf '%s' "$_p2body" | grep -c 'exakit_record_soft_failure runtime')"
+    check "...on all three arms: the install, the redeploy and the start" "3"         "$(printf '%s' "$_p2body" | grep -c 'exakit_record_soft_failure runtime')"
 done
 
 # The steps that need a database say so ONCE, together, and the exakit helper
@@ -1443,7 +1443,7 @@ has "...and the exakit helper still runs" "begin_step exakit_helper" "$_p2kss"
 # the install exactly as the sh side does.
 _p2winrt="$(cat "$ROOT/setup/lib/runtime-personal.ps1")"
 _p2winsu="$(cat "$ROOT/setup/setup-windows.ps1")"
-has "windows flags a podman-less deploy rather than failing it"     'script:PersonalNoPodman = $true' "$_p2winrt"
+has "windows flags a podman-less deploy rather than failing it"     'script:PersonalNoDatabase = $true' "$_p2winrt"
 has "...leaving the same kind of reason"     'Set-ExakitFailureReason "Podman is not installed and the launcher' "$_p2winrt"
 has "...and the windows step records it"     'Register-ExakitSoftFailure -Component "runtime"' "$_p2winsu"
 check "...on both arms, like the sh side" "2"     "$(printf '%s' "$_p2winsu" | grep -c 'Register-ExakitSoftFailure -Component "runtime"')"
@@ -1476,6 +1476,92 @@ has "...only when it really is stopped" 'machine", "list"' "$_p2winrun"
 has "...putting the whole error in the log" 'Invoke-ExakitLogged $podman.Source "info"' "$_p2winrun"
 has "...and naming the command that finishes the job" "exakit update" "$_p2winrun"
 has "the windows deploy asks before it deploys"     "elseif (-not (Test-PersonalPodmanRunning))" "$(cat "$ROOT/setup/lib/runtime-personal.ps1")"
+
+# ---------------------------------------------------------------------------
+# A START THE LAUNCHER ACCEPTED IS NOT A DATABASE
+#
+# The launcher's `start` exits 0 and does nothing in more than one state. The
+# kit knew about "deployment_failed"; it did not know about a deployment the
+# launcher has initialized but never deployed, which takes the start, warns
+# that a deploy is what it needs, and leaves nothing listening. The kit said
+# "Reusing the existing Exasol deployment (started)", waited its whole
+# 150-second budget, and ended the run - while `exasol deploy`, by hand, fixed
+# it in twenty seconds. So the check reads the DATABASE, not the state string.
+_p2ord="$(sed -n '/^personal_wait_ready_or_deploy()/,/^}/p' "$ROOT/setup/lib/runtime-personal.sh")"
+has "a start that produced nothing is repaired, not waited out" \
+    "_personal_wait_ready_probe" "$_p2ord"
+has "...with the launcher's own deploy" 'deploy $(personal_auto_approve_flag deploy)' "$_p2ord"
+has "...and asked again afterwards" "The database answered after the launcher's deploy" "$_p2ord"
+has "...leaving a reason when even that fails" "exakit_note_failure" "$_p2ord"
+lacks "...and never ending the run" "die " "$_p2ord"
+# The probe and the fatal wrapper are separate, so every caller OUTSIDE the
+# install still gets the hard stop it was written for.
+has "the fatal wrapper is still there for its own callers" \
+    "die " "$(sed -n '/^personal_wait_ready()/,/^}/p' "$ROOT/setup/lib/runtime-personal.sh")"
+_p2dep3="$(sed -n '/^personal_deploy_local()/,/^}/p' "$ROOT/setup/lib/runtime-personal.sh")"
+check "...and the three adoption paths all use the repairing one" "3" \
+    "$(printf '%s' "$_p2dep3" | grep -c 'personal_wait_ready_or_deploy || return 1')"
+# THE WAIT IS AT THE CALL SITE, not inside personal_start: two best-effort
+# callers in legacy-crossing.sh run it as `personal_start >/dev/null 2>&1 ||
+# true`, and a silent 150-second block is not what they asked for.
+has "exakit start waits for the database it asked for" "personal_wait_ready_or_deploy" \
+    "$(sed -n '/^exakit_runtime_start()/,/^}/p' "$ROOT/setup/lib/common.sh")"
+has "...and the runtime self-heal uses the same repair" "personal_wait_ready_or_deploy" \
+    "$(sed -n '/^exakit_ensure_runtime_running()/,/^}/p' "$ROOT/setup/lib/common.sh")"
+lacks "...while personal_start stays a nudge its other callers can afford" \
+    "personal_wait_ready_or_deploy" \
+    "$(sed -n '/^personal_start()/,/^}/p' "$ROOT/setup/lib/runtime-personal.sh")"
+
+# NOTHING IN THE DEPLOY STEP ENDS THE RUN ANY MORE except a machine that cannot
+# make a temporary directory. Declining to reuse a running database closed the
+# installer at step 2 of 6; so did declining to delete a stopped one, a foreign
+# process on the port, and a deploy that failed. None of those leave anything
+# half written, and none of them are reasons to withhold the rest of the kit.
+check "the deploy step has one hard stop left, and it is the environment" "1" \
+    "$(printf '%s' "$_p2dep3" | grep -c '^        die ')"
+has "...declining a running database is recorded" \
+    "Declined to reuse the database already running" "$_p2dep3"
+has "...so is declining to delete a stopped one" \
+    "deleting it was declined" "$_p2dep3"
+has "...so is a port held by something else" \
+    "is held by something that is not an Exasol Personal deployment" "$_p2dep3"
+has "...and so is a deploy the launcher could not do" \
+    "could not deploy the database locally" "$_p2dep3"
+# THE DESTROY IS DISARMED, NOT FIRED. push_rollback arms a destroy before the
+# deploy; the run is no longer ending, and a partial deployment is what a retry
+# has to look at.
+check "...disarming the undo it no longer wants" "2" \
+    "$(printf '%s' "$_p2dep3" | grep -c 'rollback_clear')"
+# ...and the deployment that survives has accepted the licence terms.
+has "...and the licence notice survives that path" \
+    '_personal_deploy_print_notice "$_deploy_notice"' "$_p2dep3"
+
+for _p2setup2 in setup-linux.sh setup-macos.sh; do
+    _p2body2="$(cat "$ROOT/setup/$_p2setup2")"
+    # A SUBSHELL, because personal_start still dies - right for `exakit start`,
+    # wrong for one step of six.
+    has "$_p2setup2 survives a start that cannot finish" \
+        "( personal_start && personal_wait_ready_or_deploy )" "$_p2body2"
+    has "...recording it against the right repair" \
+        'exakit_record_soft_failure runtime "exakit start"' "$_p2body2"
+done
+
+_p2winh="$(cat "$ROOT/setup/lib/runtime-personal.ps1")"
+has "windows repairs the same start" "function Wait-PersonalReadyOrDeploy" "$_p2winh"
+has "...keeping the fatal wrapper for its own callers" "function Wait-PersonalReady {" "$_p2winh"
+has "...and the probe answers instead of failing" "function Test-PersonalReadyProbe" "$_p2winh"
+has "...exakit start waits for it there too" "Wait-PersonalReadyOrDeploy" \
+    "$(cat "$ROOT/setup/exakit.ps1")"
+lacks "...while Start-Personal stays a nudge" "Wait-PersonalReadyOrDeploy" \
+    "$(sed -n '/^function Start-Personal/,/^}/p' "$ROOT/setup/lib/runtime-personal.ps1")"
+# ONE FLAG, because it stopped meaning "no podman" the moment a declined reuse
+# and a failed deploy started using it.
+lacks "...under one name for every cause" "PersonalNoPodman" "$_p2winh"
+check "...set by each cause that leaves no database" "9" \
+    "$(printf '%s' "$_p2winh" | grep -c 'PersonalNoDatabase = $true')"
+has "the windows resume arm survives a start that cannot finish" \
+    'Invoke-ExakitSoftStep -Component "runtime" -Repair "exakit start"' \
+    "$(cat "$ROOT/setup/setup-windows.ps1")"
 
 check "the installer no longer turns WSL away" "" \
     "$(grep -c 'it does not support WSL' "$ROOT/install.sh" "$ROOT/setup/lib/runtime-personal.sh" "$ROOT/setup/lib/detect.sh" 2>/dev/null | grep -v ':0$' | tr '\n' ' ')"

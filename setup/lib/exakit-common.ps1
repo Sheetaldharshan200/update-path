@@ -4406,7 +4406,13 @@ function Confirm-ExakitRuntimeRunning {
         if (Test-PersonalDeploymentExists) {
             Info "Self-heal: the database is deployed but not running - starting it"
             Start-Personal
-            Wait-PersonalReady
+            # The same repair the install uses: a start the launcher took
+            # without acting on is finished by its own deploy. NOT followed by
+            # Wait-PersonalReady, which would spend the whole budget a second
+            # time before saying anything.
+            if (-not (Wait-PersonalReadyOrDeploy)) {
+                Fail "The database is deployed but did not come up. Read the state with 'exakit status', or repair with: exakit repair-runtime"
+            }
             return
         }
         if ($Deploy) {

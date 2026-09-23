@@ -1189,7 +1189,13 @@ personal_deploy_local() {
             personal_record_manifest "healthy"
             return 0
         fi
-        die "Declined to reuse the running database. Stop it first ('exakit stop', or 'exasol stop'), then re-run to deploy a fresh one — port $(personal_db_port) stays in use while it is running."
+        # NOT THE END OF THE RUN. The user declined a database, not the kit:
+        # nothing has been written, nothing is half made, and every step that
+        # does not need a database still has value. Same shape as a declined
+        # Podman install.
+        info "Stop it first ('exakit stop', or 'exasol stop'), then run 'exakit update' to deploy a fresh one - port $(personal_db_port) stays in use while it is running."
+        exakit_note_failure "Declined to reuse the database already running on port $(personal_db_port)"
+        return 1
     fi
 
     # A deployment exists but is not running — cleanly stopped, or a crashed
@@ -1219,7 +1225,7 @@ personal_deploy_local() {
             if run_logged "$(personal_cli)" deploy $(personal_auto_approve_flag deploy) || \
                personal_recover_slow_first_boot; then
                 ok "Reusing the existing Exasol deployment (deployed again)"
-                personal_wait_ready
+                personal_wait_ready_or_deploy || return 1
                 personal_record_manifest "healthy"
                 return 0
             fi
@@ -1231,7 +1237,12 @@ personal_deploy_local() {
             if personal_launcher_supports start && \
                run_logged "$(personal_cli)" start $(personal_auto_approve_flag start); then
                 ok "Reusing the existing Exasol deployment (started)"
-                personal_wait_ready
+                # NOT "started, therefore running". This is the line the
+                # screenshot ended on: the launcher accepted a start for a
+                # deployment it had only initialized, did nothing, and the kit
+                # then waited 151 seconds for it. The repair is the launcher's
+                # own deploy, and it takes twenty seconds.
+                personal_wait_ready_or_deploy || return 1
                 personal_record_manifest "healthy"
                 return 0
             fi
@@ -1243,7 +1254,7 @@ personal_deploy_local() {
             if personal_reap_orphan_daemon 2>/dev/null && \
                run_logged "$(personal_cli)" start $(personal_auto_approve_flag start); then
                 ok "Reusing the existing Exasol deployment (started after clearing an orphaned runner)"
-                personal_wait_ready
+                personal_wait_ready_or_deploy || return 1
                 personal_record_manifest "healthy"
                 return 0
             fi
@@ -1256,7 +1267,9 @@ personal_deploy_local() {
         # are asked (default no); automation says EXAKIT_REPLACE_DB=1, and
         # exakit repair-runtime remains the sanctioned destructive repair.
         if ! confirm_env EXAKIT_REPLACE_DB "DELETE the stopped deployment and its data, and deploy a fresh one? This cannot be undone." n; then
-            die "Nothing was deleted. Start it yourself with 'exakit start', diagnose with 'exakit status', repair with 'exakit repair-runtime' — or re-run with EXAKIT_REPLACE_DB=1 to replace it, deleting its data."
+            info "Nothing was deleted. Start it yourself with 'exakit start', diagnose with 'exakit status', repair with 'exakit repair-runtime' - or re-run with EXAKIT_REPLACE_DB=1 to replace it, deleting its data."
+            exakit_note_failure "A stopped deployment could not be started, and deleting it was declined"
+            return 1
         fi
         info "Replacing the existing deployment — its previous data is not recoverable."
         # --auto-approve: destroy has its own [y/N] prompt, which a piped or
@@ -1272,8 +1285,12 @@ personal_deploy_local() {
     # a stale container), which the reaper leaves untouched, is a hard stop.
     # EXAKIT_DB_PORT does not apply to the personal path, so name the real port.
     if port_in_use "$(personal_db_port)"; then
-        personal_reap_orphan_daemon || \
-            die "Port $(personal_db_port) is in use by a process that is not a reachable Exasol Personal deployment.$(personal_foreign_db_hint) Stop that application and re-run (EXAKIT_DB_PORT does not choose the port of a personal deployment)."
+        if ! personal_reap_orphan_daemon; then
+            warn "Port $(personal_db_port) is in use by a process that is not a reachable Exasol Personal deployment.$(personal_foreign_db_hint)"
+            info "Stop that application, then run 'exakit update' (EXAKIT_DB_PORT does not choose the port of a personal deployment)."
+            exakit_note_failure "Port $(personal_db_port) is held by something that is not an Exasol Personal deployment"
+            return 1
+        fi
     fi
 
     # Two points, not three. Deploying and then checking health are one fact to
@@ -1281,10 +1298,13 @@ personal_deploy_local() {
     # line, and the launcher's EULA notice follows as the step's own second
     # point instead of being wedged between them.
     #
-    # Safe to leave the notice until last: personal_wait_ready dies if the
-    # database never answers, die runs the EXIT trap, and the rollback pushed
-    # below destroys this deployment -- so the path that skips the notice is the
-    # path where no deployment survives to have accepted anything.
+    # THE NOTICE FOLLOWS THE DEPLOYMENT, NOT THE HEALTH CHECK. It used to be
+    # safe to leave it until last for a reason that has since stopped being
+    # true: a database that never answered ended the run, the rollback below
+    # destroyed the deployment, and no deployment survived to have accepted
+    # anything. That failure is now recorded rather than fatal, and the
+    # deployment stays - so the licence terms are replayed on that path too,
+    # below, before this function hands its refusal back.
     #
     # Same bracket and the same terminal gate as personal_install_launcher: the
     # progress bar narrates the deploy and the spinner narrates the health
@@ -1343,11 +1363,27 @@ personal_deploy_local() {
         else
             _personal_deploy_print_tail "$_deploy_tail"
             rm -rf "$_deploy_tmp"
-            die "Local deployment failed.$(personal_foreign_db_hint) Re-running the installer retries it safely."
+            # DISARMED, NOT FIRED. The destroy pushed above is the right undo
+            # for a run that is ending; this run is not ending, and a partial
+            # deployment is what a retry needs to look at.
+            rollback_clear
+            warn "Local deployment failed.$(personal_foreign_db_hint)"
+            info "Retry it with 'exakit update' - completed steps are skipped."
+            exakit_note_failure "The launcher could not deploy the database locally"
+            return 1
         fi
     fi
 
-    personal_wait_ready
+    if ! personal_wait_ready_or_deploy; then
+        EXAKIT_QUIET_DETAIL="$_pdl_prev_quiet"
+        # A deployment that exists has accepted the terms, whether or not its
+        # database is answering yet. See the note above the deploy.
+        _personal_deploy_print_notice "$_deploy_notice"
+        rm -rf "$_deploy_tmp"
+        rollback_clear
+        info "Retry it with 'exakit update', or read the state with 'exakit status'."
+        return 1
+    fi
 
     EXAKIT_QUIET_DETAIL="$_pdl_prev_quiet"
     # One line for both, and the elapsed covers both -- it is the step's time,
@@ -1362,7 +1398,7 @@ personal_deploy_local() {
     personal_record_manifest "healthy"
 }
 
-personal_wait_ready() {
+_personal_wait_ready_probe() {
     info "Checking deployment health"
     # A WALL-CLOCK ceiling, not a try count. Counting tries made the budget
     # thirty sleeps of five seconds PLUS thirty launcher probes of up to
@@ -1418,7 +1454,50 @@ personal_wait_ready() {
     [ "$_pwr_spent" -gt 0 ] || _pwr_spent=$(( _tries * 5 ))
     # Not "run the probe that just failed": name the two commands that actually
     # diagnose and recover a deploy that answers nothing.
+    return 1
+}
+
+# personal_wait_ready - the probe, and the end of the run when it fails. Every
+# caller outside the install still reaches this one; the install's callers use
+# personal_wait_ready_or_deploy below, which tries the repair first and hands a
+# refusal back instead of ending the run.
+personal_wait_ready() {
+    _personal_wait_ready_probe && return 0
     die "The deployment did not answer within ${_pwr_spent} seconds (the ceiling is ${_pwr_budget}s; raise it with ${_pwr_raise}). Read the state with 'exakit status', then 'exakit start' to retry - a deployment stuck in 'interrupted' is repaired with 'exakit repair-runtime' (destructive, it asks first)."
+}
+
+# personal_wait_ready_or_deploy - A START THAT REPORTED SUCCESS IS NOT A
+# DATABASE. The launcher's `start` exits 0 and does nothing at all in more than
+# one state: "deployment_failed" is the one the kit already knew about, and
+# "initialized but not deployed yet" is the one that cost a whole install -
+# start said OK, the kit said "Reusing the existing Exasol deployment
+# (started)", and then waited its entire 150-second budget for a database
+# nobody had asked to exist. The launcher prints its own advice in that WARN
+# and the fix is one command: its deploy.
+#
+# So this stops reading the state and reads the DATABASE. Whatever the launcher
+# called it, a deployment that does not answer after a start it accepted is a
+# deployment that was never started, and the launcher's deploy is what brings
+# it up - the same command a user runs by hand when they hit this, and it takes
+# about twenty seconds. Checking behaviour rather than a state string means the
+# next spelling of this state needs no new case arm.
+#
+# 0 when the database answers, 1 when it never did. Never dies: the caller in
+# the install records it and carries on.
+personal_wait_ready_or_deploy() {
+    _personal_wait_ready_probe && return 0
+    warn "The database did not answer after the launcher accepted the start."
+    info "In some states the launcher's start does nothing and its deploy is the fix - running that now."
+    EXAKIT_ACTIVE_LABEL="Deploying the existing database"
+    if ! run_logged "$(personal_cli)" deploy $(personal_auto_approve_flag deploy); then
+        EXAKIT_ACTIVE_LABEL=""
+        exakit_note_failure "The database never answered, and the launcher's deploy could not bring it up"
+        return 1
+    fi
+    EXAKIT_ACTIVE_LABEL=""
+    _personal_wait_ready_probe && { ok "The database answered after the launcher's deploy"; return 0; }
+    exakit_note_failure "The database never answered, even after the launcher deployed it again"
+    return 1
 }
 
 # personal_record_manifest [status] — write the connection details this kit

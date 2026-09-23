@@ -44,6 +44,34 @@ run and on the resume arm, and `setup-windows.ps1`, where the launcher is the
 one that installs Podman and an unelevated winget on a managed laptop is the
 failure this covers.
 
+**A start the launcher accepted is not a database.** The launcher's `start`
+exits 0 and does nothing at all in more than one state. The kit knew about one
+of them; it did not know about a deployment the launcher has *initialized but
+never deployed*, which takes the start, warns that a deploy is what it actually
+needs, and leaves nothing listening. The installer said "Reusing the existing
+Exasol deployment (started)", waited its whole 150-second budget, and ended the
+run at step 2 of 6 - while `exasol deploy`, typed by hand, brought the same
+deployment up in twenty seconds. The kit now asks the *database* rather than
+the launcher's record: a deployment that does not answer after a start it
+accepted was never started, so the launcher's own deploy is run and the
+database is asked again. Reading behaviour instead of a state string means the
+next spelling of this state needs no new case arm. `exakit start` heals itself
+the same way, and so do all three adoption paths in the install.
+
+**Nothing in the database step ends the run any more.** Declining to reuse a
+database already running on port 8563 closed the installer at step 2 of 6 - and
+so did declining to delete a stopped deployment, a foreign process holding the
+port, and a deploy the launcher could not complete. None of those leave
+anything half written, and none of them are a reason to withhold the launcher,
+the AI bridge or the `exakit` command. Each is now recorded like any other step
+that did not finish, named in the closing summary with the command that
+completes it, and the install carries on. The destroy that the deploy arms as
+its undo is *disarmed* rather than fired on those paths, because the run is no
+longer ending and a partial deployment is exactly what a retry has to look at -
+and the licence notice is replayed there too, since a deployment that survives
+has accepted the terms. The one hard stop left in that step is a machine that
+cannot create a temporary directory.
+
 **Installed is not running, and the difference was a whole failed install.**
 `command -v podman` answers whether the binary is on PATH and says nothing
 about whether it can start a container: a rootless Podman with no sub-id range,
