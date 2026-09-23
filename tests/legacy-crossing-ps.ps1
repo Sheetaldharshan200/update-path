@@ -561,6 +561,34 @@ Check "...with the dataset named" "tpch" (MGet "legacy.sample_left_out")
 Check "...nothing copied out" 0 @((Calls "exapump") | Where-Object { $_ -like "export *" }).Count
 Check "...and the container stopped for the port" 1 @((Calls "engine") | Where-Object { $_ -like "stop *" }).Count
 Remember
+
+Write-Host ""
+Write-Host "a sample table the dataset generates is the kit's too:"
+# energy's ENERGY_READINGS is built by 02_load_data.sql - 108,000 rows and no
+# CSV - so a catalog read from the CSV names alone never saw it. Every upgrade
+# from a kit that had loaded the energy dataset was then told it held "1
+# table(s) in 1 schema(s) of your own": the kit's own sample data, offered back
+# to the user, copied out, restored, and replaced by the dataset load minutes
+# later. dataset.conf declares it in markers=.
+$cat = @(Get-LegacySampleCatalog)
+$gen = @($cat | Where-Object { $_.Table -eq "ENERGY.ENERGY_READINGS" })
+Check "the catalog carries the generated table" 1 $gen.Count
+Check "...with no row count of its own" "" ("" + $gen[0].Rows)
+Check "...while a CSV-backed one keeps its count" "50" ("" + @($cat | Where-Object { $_.Table -eq "ENERGY.ENERGY_METERS" })[0].Rows)
+Check "the restore stands aside for it" "True" ("" + (Test-LegacySampleTable -Qualified "ENERGY.ENERGY_READINGS"))
+Check "...but not for the user's own" "False" ("" + (Test-LegacySampleTable -Qualified "MYWORK.SALES"))
+# The whole of the reported case: a kit that loaded the energy dataset and
+# nothing else has nothing of the user's in it, so no offer is made at all.
+Seed; $env:EXAKIT_LEGACY_DATA = "migrate"
+Set-Content -Path (Join-Path $env:EXAKIT_FAULT_DIR "db.tables") -Value "ENERGY.ENERGY_METERS`nENERGY.ENERGY_READINGS"
+Set-Content -Path (Join-Path $env:EXAKIT_FAULT_DIR "db.rows") -Value "ENERGY.ENERGY_METERS|50"
+$s = Screen { Invoke-LegacyCrossingBefore }
+Check "a kit-only energy database says nothing" "" $s.Trim()
+Lacks "...and never calls the sample the user's own" "of your own" $s
+Check "...nothing copied out" 0 @((Calls "exapump") | Where-Object { $_ -like "export *" }).Count
+Check "...settled as skip" "skip" (MGet "legacy.choice")
+Check "...with energy named as the dataset left out" "energy" (MGet "legacy.sample_left_out")
+Remember
 Seed; $env:EXAKIT_LEGACY_DATA = "migrate"
 Set-Content -Path (Join-Path $env:EXAKIT_FAULT_DIR "db.tables") -Value "TPCH.REGION"
 $s = Screen { Invoke-LegacyCrossingBefore }
