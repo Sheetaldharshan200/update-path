@@ -135,6 +135,10 @@ personal_heal_rootless_podman() {
 # failure arrives much later, inside a container start, naming neither Podman
 # nor the package. The same reasoning as _personal_uidmap_install_cmd below,
 # which stays for the machine that has Podman but not those binaries.
+# _personal_podman_install_cmd - the command to SHOW someone. Short enough to
+# read, short enough to retype. What the kit actually runs is the hardened
+# twin below; the two are kept apart because a wall of environment variables is
+# the wrong thing to print at a reader who just wants to install Podman.
 _personal_podman_install_cmd() {
     if command -v apt-get >/dev/null 2>&1; then printf 'apt-get install -y podman uidmap\n'; return 0; fi
     if command -v dnf     >/dev/null 2>&1; then printf 'dnf install -y podman\n'; return 0; fi
@@ -148,6 +152,40 @@ _personal_podman_install_cmd() {
 # personal_podman_installable — can this machine be given Podman by the kit?
 # A command to run and a way to become root: without either, the install stays
 # the user's to do and the gate says so before anything is downloaded.
+# _personal_podman_install_cmd_auto - the same command, hardened for a run
+# whose output nobody is watching.
+#
+# THIS IS WHAT A CAPTURED INSTALL COSTS. With apt writing to the screen, a
+# question from needrestart ("Which services should be restarted?" - installed
+# by default on Ubuntu 22.04 and later) or from dpkg about a config file was
+# visible and answerable. Behind a spinner it is not: the install waits on
+# stdin for an answer nobody can see, for ever, and the only thing on screen is
+# a spinner counting up. Measured at over 500 seconds before anyone gave up.
+#
+# So the prompts are turned off at the source. DEBIAN_FRONTEND stops debconf
+# asking, NEEDRESTART_MODE=a restarts services without asking, and the two
+# force-conf options keep the config files already on the machine, which is
+# what a non-interactive apt should do. The redirect from /dev/null is the
+# belt: ANY prompt that still gets through reads EOF and the command fails in
+# a second instead of hanging, which is the failure a reader can act on.
+_personal_podman_install_cmd_auto() {
+    _ppica_cmd="$(_personal_podman_install_cmd 2>/dev/null || true)"
+    [ -n "$_ppica_cmd" ] || return 1
+    case "$_ppica_cmd" in
+        apt-get*)
+            printf 'DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a NEEDRESTART_SUSPEND=1 %s -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold </dev/null\n' \
+                "$_ppica_cmd"
+            ;;
+        *)
+            # dnf, yum, zypper, pacman and apk all take their "assume yes" flag
+            # above and have no debconf equivalent. The redirect still applies:
+            # a prompt nobody can answer must fail, not wait.
+            printf '%s </dev/null\n' "$_ppica_cmd"
+            ;;
+    esac
+    return 0
+}
+
 personal_podman_installable() {
     _ppi_cmd="$(_personal_podman_install_cmd 2>/dev/null || true)"
     [ -n "$_ppi_cmd" ] || return 1
@@ -252,8 +290,11 @@ personal_install_podman() {
     # command to run by hand.
     _pin_run="$_pin_sudo"
     [ -n "$_pin_run" ] && _pin_run="sudo -n "
+    # The hardened twin, never the printed one: see
+    # _personal_podman_install_cmd_auto for what a captured apt costs without it.
+    _pin_auto="$(_personal_podman_install_cmd_auto 2>/dev/null || printf '%s' "$_pin_cmd")"
     # shellcheck disable=SC2086
-    if ! run_logged ${_pin_run}sh -c "$_pin_cmd"; then
+    if ! run_logged ${_pin_run}sh -c "$_pin_auto"; then
         EXAKIT_ACTIVE_LABEL=""
         info "Run it yourself and re-run the installer:  ${_pin_sudo}$_pin_cmd"
         exakit_note_failure "Podman could not be installed (${_pin_sudo}$_pin_cmd)"
