@@ -1942,7 +1942,14 @@ function Write-ExakitSoftFailures {
         }
     }
     Write-Host ""
-    Info "Everything else is ready - the database, and the exakit command itself."
+    # Not "the database" when the database is what failed: the summary used to
+    # list it as missing and then, one line on, as ready.
+    # Twin of exakit_print_soft_failures.
+    if ($script:ExakitSoftFailed.Contains("runtime")) {
+        Info "Everything that does not need the database is ready, including the exakit command itself."
+    } else {
+        Info "Everything else is ready - the database, and the exakit command itself."
+    }
     if ($script:LogFile) { Info "Full detail for each failure: $script:LogFile" }
     Info "See where you stand any time with: exakit status"
 }

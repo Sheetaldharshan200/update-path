@@ -1469,7 +1469,7 @@ has "the deployment stops when it cannot get podman" "personal_install_podman ||
 
 for _p2setup in setup-linux.sh setup-macos.sh; do
     _p2body="$(cat "$ROOT/setup/$_p2setup")"
-    has "$_p2setup records the database step"         'exakit_record_soft_failure runtime "exakit update"' "$_p2body"
+    has "$_p2setup records the database step"         'exakit_record_soft_failure runtime "$(exakit_install_command)"' "$_p2body"
     has "...with the reason the deploy left" 'exakit_take_failure_note' "$_p2body"
     has "...and says the install carries on"         "carrying on so the rest of the install completes" "$_p2body"
     # THE RESUME ARM TOO. A re-run whose deployment is gone redeploys, and that
@@ -1499,6 +1499,28 @@ check "...on both arms, like the sh side" "2"     "$(printf '%s' "$_p2winsu" | g
 has "...and the db-dependent steps skip in one line"     "they all need the database, which is not installed" "$_p2winsu"
 check "...guarding all four of them too" "4"     "$(printf '%s' "$_p2winsu" | grep -c 'dbReady -and')"
 
+# THE REPAIR IS THE INSTALLER. `exakit update` only moves components with a
+# newer advertised version, so a deployment that never happened is "already
+# current" to it - measured on a Nano-to-Personal upgrade, where it skipped
+# nano and reported nothing to do. A re-run resumes at the database step.
+has "windows names the installer as the database repair"     'Register-ExakitSoftFailure -Component "runtime" -Repair (Get-ExakitInstallCommand)' "$_p2winsu"
+lacks "...and never exakit update"     'Component "runtime" -Repair "exakit update"' "$_p2winsu"
+lacks "the deploy hints never send the reader to exakit update (sh)"     "run 'exakit update'" "$(cat "$ROOT/setup/lib/runtime-personal.sh")"
+lacks "...nor on windows"     "run 'exakit update'" "$_p2winrt"
+_p2sfsh="$(sed -n '/^exakit_print_soft_failures()/,/^}/p' "$ROOT/setup/lib/common.sh")"
+has "a failed database is not called ready in the summary (sh)"     "Everything that does not need the database is ready" "$_p2sfsh"
+_p2sfps="$(sed -n '/^function Write-ExakitSoftFailures/,/^}/p' "$ROOT/setup/lib/exakit-common.ps1")"
+has "...nor on windows"     "Everything that does not need the database is ready" "$_p2sfps"
+
+# A WINDOWS FILE LOCK IS RETRIED. The launcher renames a temp file over
+# runtime-artifacts\index.json, and Windows refuses that while a scanner holds
+# the target open ("Access is denied"); the next run went straight through.
+_p2winil="$(sed -n '/^function Invoke-PersonalInstallLocal/,/^}/p' "$ROOT/setup/lib/runtime-personal.ps1")"
+has "windows deploys through the lock-aware wrapper"     'Invoke-PersonalInstallLocal $installArgs' "$(sed -n '/^function Install-PersonalDeployment/,/^}/p' "$ROOT/setup/lib/runtime-personal.ps1")"
+has "...which retries only on the lock signature"     'Access is denied|being used by another process' "$_p2winil"
+has "...never over a deployment that exists"     'Test-PersonalDeploymentExists' "$_p2winil"
+has "...and gives up after a bounded number of tries"     '$attempts = 3' "$_p2winil"
+
 # ---------------------------------------------------------------------------
 # INSTALLED IS NOT RUNNING
 #
@@ -1523,7 +1545,7 @@ has "windows asks podman whether it works too" "Test-PersonalPodmanAnswers" "$_p
 has "...and starts a machine that is merely stopped" '"machine" "start"' "$_p2winrun"
 has "...only when it really is stopped" 'machine", "list"' "$_p2winrun"
 has "...putting the whole error in the log" 'Invoke-ExakitLogged $podman.Source "info"' "$_p2winrun"
-has "...and naming the command that finishes the job" "exakit update" "$_p2winrun"
+has "...and naming the command that finishes the job" "re-run the installer" "$_p2winrun"
 has "the windows deploy asks before it deploys"     "elseif (-not (Test-PersonalPodmanRunning))" "$(cat "$ROOT/setup/lib/runtime-personal.ps1")"
 
 # ---------------------------------------------------------------------------

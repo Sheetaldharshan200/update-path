@@ -97,7 +97,7 @@ if begin_step runtime "Step 2/6  Local database deployment"; then
     if personal_deploy_local; then
         mark_step runtime
     else
-        exakit_record_soft_failure runtime "exakit update" \
+        exakit_record_soft_failure runtime "$(exakit_install_command)" \
             "$(exakit_take_failure_note)" "the local database"
         warn "The database was not installed - carrying on so the rest of the install completes"
     fi
@@ -112,7 +112,7 @@ else
         # quietly did nothing used to surface minutes later as a refused
         # connection in a step that had no idea why.
         if ! personal_deploy_local; then
-            exakit_record_soft_failure runtime "exakit update" "$(exakit_take_failure_note)" "the local database"
+            exakit_record_soft_failure runtime "$(exakit_install_command)" "$(exakit_take_failure_note)" "the local database"
             warn "The database was not installed - carrying on so the rest of the install completes"
         fi
         rollback_clear
