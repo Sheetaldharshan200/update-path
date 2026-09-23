@@ -21,11 +21,11 @@
     "already had the kit working and wants to know what is different."
   ],
   "0.2.0": [
-    "exakit marketplace with powerful add-ons",
-    "exakit update applies the recommended updates, latest AI skills",
-    "exakit version shows installed and recommended versions",
-    "truly agentic kit, works seemlessly with agents",
-    "services return after a reboot",
-    "self-heal at edge cases, bugfixes, security enhancements" 
+    "exakit marketplace with powerful add-ons.",
+    "exakit update applies the recommended updates, latest AI skills.",
+    "exakit version shows installed and recommended versions.",
+    "truly agentic, every command speaks JSON with clear exit codes.",
+    "services return after a reboot.",
+    "Self-healing installs, security hardening and many bug fixes."
   ]
 }
