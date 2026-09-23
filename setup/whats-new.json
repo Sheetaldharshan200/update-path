@@ -23,8 +23,9 @@
   "0.2.0": [
     "exakit marketplace with powerful add-ons",
     "exakit update applies the recommended updates, latest AI skills",
-    "exakit version shows installed and recommended versions.",
+    "exakit version shows installed and recommended versions",
     "truly agentic kit, works seemlessly with agents",
-    "Services return after a reboot"
+    "services return after a reboot",
+    "self-heal at edge cases, bugfixes, security enhancements" 
   ]
 }
