@@ -62,7 +62,7 @@ You already use AI. The hard part is trusting it with your data. This kit gives 
 | 🧩 | **[Exasol&nbsp;for&nbsp;VS&nbsp;Code](https://github.com/exasol-labs/exasol-vscode)** | SQL editing and schema browsing against the local database, inside your editor |
 | 🧬 | **[JSON&nbsp;Tables](https://github.com/exasol-labs/exasol-json-tables)** | Load JSON files into Exasol as regular tables, nested documents included |
 | ⏱️ | **[Exasol&nbsp;Scheduler](https://github.com/exasol-labs/exasol-scheduler)** | Lightweight, table-driven SQL job scheduling: run SQL on a timetable inside the local database |
-| 🏗️ | **[dbt-exasol](https://github.com/exasol/dbt-exasol)** | Build, test and document SQL models against the local database with dbt; your own `~/.dbt` is never touched |
+| 🏗️ | **[dbt-exasol](https://github.com/exasol/dbt-exasol)** | Build, test and document SQL models against the local database with dbt |
 
 
 
