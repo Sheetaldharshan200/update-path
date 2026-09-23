@@ -21,11 +21,10 @@
     "already had the kit working and wants to know what is different."
   ],
   "0.2.0": [
-    "exakit marketplace: dashboards, VS Code, JSON, dbt, a scheduler.",
-    "exakit update applies the recommended version set, AI skills too.",
+    "exakit marketplace with powerful add-ons",
+    "exakit update applies the recommended updates, latest AI skills",
     "exakit version shows installed and recommended versions.",
-    "Agents drive every command: --json output, remedies you can run.",
-    "Services return after a reboot; autostart reports what is real.",
-    "Uninstall names what it will remove, and you pick what goes."
+    "truly agentic kit, works seemlessly with agents",
+    "Services return after a reboot"
   ]
 }
