@@ -706,7 +706,20 @@ function Install-PersonalDeployment {
     try {
 
     Info "Exasol Personal is free to use and ships under Exasol's own licence terms, not the kit's MIT licence. The launcher shows them below."
-    Info "Deploying Exasol Personal locally - the database runs through Podman's default machine, which the launcher prepares (and installs Podman if needed; that may ask for administrator approval)"
+    # PODMAN IS NAMED WHEN IT IS MISSING, not in a clause on every deploy.
+    # Windows does not install it the way the sh side does - the LAUNCHER does,
+    # through winget, as part of `install local` - so the kit's job here is to
+    # say what is about to happen and what to do if the machine refuses it.
+    # That refusal is real: an unelevated winget on a managed laptop fails, and
+    # the first the user heard of it was the launcher's own error, mid-deploy,
+    # with no mention of Podman at all. Twin of personal_install_podman, which
+    # does the installing itself where the kit owns that job.
+    if (-not (Get-Command podman -ErrorAction SilentlyContinue)) {
+        Warn2 "Podman is not installed on this machine, and the database runs through it."
+        Info "The Exasol launcher installs it as part of this step, and Windows may ask for administrator approval."
+        Info "If that is refused or fails: install it yourself with 'winget install RedHat.Podman' (a reboot may be needed), then re-run the installer."
+    }
+    Info "Deploying Exasol Personal locally - the database runs through Podman's default machine, which the launcher prepares."
 
     $installArgs = @("install", "local")
     $flag = Get-PersonalAutoApproveFlag "install"
@@ -718,6 +731,12 @@ function Install-PersonalDeployment {
         # fresh Podman machine takes longer. Twin of the same branch in
         # personal_deploy_local; see Wait-PersonalSlowFirstBoot.
         if (-not ((Test-PersonalDeploymentExists) -and (Wait-PersonalSlowFirstBoot))) {
+            # THE LIKELIEST CAUSE FIRST. A deploy that fails with Podman still
+            # missing failed at installing Podman, and "Local deployment
+            # failed" sends the reader to look at the database instead.
+            if (-not (Get-Command podman -ErrorAction SilentlyContinue)) {
+                Fail "Local deployment failed, and Podman is still not installed - that is what the launcher could not do. Install it yourself with 'winget install RedHat.Podman' (a reboot may be needed), then re-run the installer."
+            }
             Fail "Local deployment failed.$(Get-PersonalForeignDbHint) Re-running the installer retries it safely."
         }
     }

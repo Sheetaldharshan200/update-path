@@ -18,6 +18,17 @@ start, naming neither. The gate still refuses before anything is downloaded
 where none of that can work: no package manager it knows, or no way to become
 root.
 
+**Windows says it too, where the launcher is the one that installs.** There
+the kit does not fetch Podman itself - `exasol install local` does, through
+winget - so the deploy step now names Podman when it is missing, says the
+launcher is about to install it and that Windows may ask for administrator
+approval, and gives the command to run if that is refused. An unelevated
+winget on a managed laptop does fail, and the first a user heard of it was
+the launcher's own error, mid-deploy, with no mention of Podman at all; a
+deploy that fails with Podman still absent now says that is what failed.
+The clause promising a Podman install on every deploy, needed or not, is
+gone.
+
 **Exasol Personal is pinned to 2.3.0** (was 2.3.0-rc6): the final release
 published on 2026-09-21, so the kit no longer ships a pin on a release
 candidate. Candidates were the reason the comment on the fallback demands a

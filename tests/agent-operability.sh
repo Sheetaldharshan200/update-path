@@ -1373,6 +1373,17 @@ lacks "...and never runs on macOS or Windows" "macos)" \
 # fails much later, inside a container start, naming neither.
 has "the apt command brings uidmap too" "apt-get install -y podman uidmap" \
     "$(sed -n '/^_personal_podman_install_cmd()/,/^}/p' "$ROOT/setup/lib/runtime-personal.sh")"
+# WINDOWS DOES NOT INSTALL IT ITSELF - the launcher does, through winget, as
+# part of `install local`. So the Windows half's job is to say what is about to
+# happen and what to do when the machine refuses it: an unelevated winget on a
+# managed laptop fails, and the first the user heard of it was the launcher's
+# own error, mid-deploy, with no mention of Podman at all.
+_p2win="$(sed -n '/^function Install-PersonalDeployment/,/^}/p' "$ROOT/setup/lib/runtime-personal.ps1")"
+has "windows names podman when it is missing" "Podman is not installed on this machine" "$_p2win"
+has "...saying the launcher does it, with admin" "may ask for administrator approval" "$_p2win"
+has "...and the command to run if that fails" "winget install RedHat.Podman" "$_p2win"
+has "...and a failed deploy blames podman when it is still absent" "Podman is still not installed" "$_p2win"
+lacks "...and the every-deploy clause is gone" "installs Podman if needed" "$_p2win"
 check "the installer no longer turns WSL away" "" \
     "$(grep -c 'it does not support WSL' "$ROOT/install.sh" "$ROOT/setup/lib/runtime-personal.sh" "$ROOT/setup/lib/detect.sh" 2>/dev/null | grep -v ':0$' | tr '\n' ' ')"
 check "...and routes it to the Linux setup" "setup/setup-linux.sh" \
