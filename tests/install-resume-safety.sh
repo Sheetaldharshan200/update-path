@@ -101,9 +101,18 @@ printf '\n== every resume branch disarms what it re-registered ==\n'
 # nothing, so the stack stays armed and the check goes red. The stubs supply the
 # two things the branch touches, with the deploy registering exactly the undo a
 # real one does.
+#
+# The branch ends at the elif/else/fi of the ENCLOSING if, not at the first one
+# it meets: the redeploy is itself wrapped in `if ! personal_deploy_local; then
+# ... fi` now, and stopping at that inner fi handed eval half an if block. The
+# enclosing keyword is the first one indented LESS than the branch body.
 resume_branch() {
-    awk '/Deployment marked done but not reachable/{inb=1}
-         inb && /^[[:space:]]*(elif|else|fi)([[:space:]]|$)/{exit}
+    awk '/Deployment marked done but not reachable/{
+             inb=1; match($0, /^[[:space:]]*/); body=RLENGTH
+         }
+         inb && /^[[:space:]]*(elif|else|fi)([[:space:]]|$)/{
+             match($0, /^[[:space:]]*/); if (RLENGTH < body) exit
+         }
          inb{print}' "$1"
 }
 
@@ -119,14 +128,30 @@ check_resume_disarms() {
         *) fail "$_crd_label resume branch no longer redeploys - this guard is testing the wrong block"
            return ;;
     esac
+    # An extract that does not parse used to pass: eval failed, nothing was
+    # registered, and an empty stack reads exactly like a disarmed one.
+    if ! printf '%s\n' "$_crd_body" | bash -n 2>/dev/null; then
+        fail "$_crd_label resume branch did not extract as whole statements - this guard is blind"
+        return
+    fi
     EXAKIT_ROLLBACK_FILE="$WORK/rb-$_crd_label"
     : > "$EXAKIT_ROLLBACK_FILE"
+    _crd_ran="$WORK/ran-$_crd_label"
+    rm -f "$_crd_ran"
     (
         info() { :; }
-        personal_deploy_local() { push_rollback "exasol destroy --remove --auto-approve"; }
+        warn() { :; }
+        exakit_take_failure_note() { :; }
+        exakit_record_soft_failure() { :; }
+        personal_deploy_local() {
+            : > "$_crd_ran"
+            push_rollback "exasol destroy --remove --auto-approve"
+        }
         eval "$_crd_body"
     )
-    if [ -s "$EXAKIT_ROLLBACK_FILE" ]; then
+    if [ ! -f "$_crd_ran" ]; then
+        fail "$_crd_label resume branch never reached the redeploy - this guard is blind"
+    elif [ -s "$EXAKIT_ROLLBACK_FILE" ]; then
         fail "$_crd_label resume redeploys and leaves armed: $(cat "$EXAKIT_ROLLBACK_FILE")"
     else
         pass "$_crd_label resume clears the undo it re-registered (branch executed)"
@@ -138,9 +163,12 @@ check_resume_disarms "Linux" "$ROOT/setup/setup-linux.sh"
 
 # The first-run branches must NOT need it - they have a mark_step, which clears
 # the stack as its side effect. A rollback_clear there would be noise that hides
-# the fact that mark_step is what normally does this.
-if grep -q 'personal_deploy_local$' "$ROOT/setup/setup-macos.sh" && \
-   grep -A1 'personal_deploy_local$' "$ROOT/setup/setup-macos.sh" | grep -q 'mark_step runtime'; then
+# the fact that mark_step is what normally does this. The deploy may be bare or
+# the condition of an `if` (it returns non-zero when Podman is unavailable, and
+# the run carries on without a database); either way mark_step follows it.
+_frd='^[[:space:]]*(if[[:space:]]+)?personal_deploy_local(;[[:space:]]*then)?[[:space:]]*$'
+if grep -qE "$_frd" "$ROOT/setup/setup-macos.sh" && \
+   grep -A1 -E "$_frd" "$ROOT/setup/setup-macos.sh" | grep -q 'mark_step runtime'; then
     pass "the first-run branch still relies on mark_step"
 else
     fail "the first-run branch no longer marks the step"
@@ -454,7 +482,9 @@ fi
 
 # And the offer that points AI clients at the bridge has to be gated on the
 # same condition as the step that builds it.
-if grep -B6 -F 'Request-ExakitMcpSetupOffer' "$_SWD" | grep -qF 'if ($exapumpSupported)'; then
+# Any condition that INCLUDES $exapumpSupported gates it -- the offer also waits
+# for a ready database now ($dbReady -and $exapumpSupported).
+if grep -B6 -F 'Request-ExakitMcpSetupOffer' "$_SWD" | grep -qE '^[[:space:]]*if \(.*\$exapumpSupported'; then
     pass "the MCP client offer is gated on the same condition as the bridge"
 else
     fail "the installer skips building the AI bridge and then offers to connect clients to it"
