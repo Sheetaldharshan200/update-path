@@ -29,6 +29,33 @@ deploy that fails with Podman still absent now says that is what failed.
 The clause promising a Podman install on every deploy, needed or not, is
 gone.
 
+**No Podman is a step that did not finish, not the end of the run.** Saying no
+to the Podman install used to close the whole installer, and so did a machine
+whose package manager the kit does not know - taking the launcher, exapump, the
+AI bridge, pyexasol and the `exakit` command that repairs all of them with it,
+none of which the user had declined and none of which need Podman. It is now
+the same shape as every other step that cannot finish: the database step
+records itself, the closing summary names it with the one command that
+completes it (`exakit update`), and the four steps that do need a database say
+so once, together, instead of failing one at a time. The requirements gate no
+longer stops either - it says what is missing and what it will cost, and lets
+one place decide. Both halves: `setup-linux.sh`/`setup-macos.sh` on the first
+run and on the resume arm, and `setup-windows.ps1`, where the launcher is the
+one that installs Podman and an unelevated winget on a managed laptop is the
+failure this covers.
+
+**Installed is not running, and the difference was a whole failed install.**
+`command -v podman` answers whether the binary is on PATH and says nothing
+about whether it can start a container: a rootless Podman with no sub-id range,
+storage left behind by another uid, or - on Windows - a machine that is simply
+switched off all passed that test and failed inside the launcher minutes later,
+with an error that named neither Podman nor the kit. Both halves now ask Podman
+itself (`podman info`) before deploying, repair the commonest cause once, and
+report what Podman said. On Windows a machine that exists but is stopped is
+started rather than reported - after a reboot it is off, and starting one is
+not reconfiguring it - and only then, if it still cannot answer, is it recorded
+like any other step that did not finish.
+
 **Exasol Personal is pinned to 2.3.0** (was 2.3.0-rc6): the final release
 published on 2026-09-21, so the kit no longer ships a pin on a release
 candidate. Candidates were the reason the comment on the fallback demands a
