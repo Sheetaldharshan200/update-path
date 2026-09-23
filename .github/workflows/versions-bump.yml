@@ -14,7 +14,14 @@ name: versions-bump
 #   A manual run from the Actions tab always works, switch or no switch.
 #
 # CHANGING THE PERIOD
-#   The cron line below. Times are UTC. '0 6 * * 1' is Mondays at 06:00.
+#   The cron line below. Times are UTC. '30 0 * * *' is every day at 00:30 UTC,
+#   which is 06:00 IST.
+#
+# ONE PROPOSAL AT A TIME
+#   While a bump pull request is open, a run does nothing -- not a second PR, and
+#   not a rewrite of the one under review. A proposal can sit open on purpose
+#   (waiting for a test pass, or deliberately not merged yet), and a daily run
+#   must not move it. Merge or close it and the next run proposes afresh.
 #
 # WHAT IT WILL AND WILL NOT PROPOSE
 #   Stable releases only: release candidates, betas, dev builds and arch-suffixed
@@ -25,7 +32,7 @@ name: versions-bump
 
 on:
   schedule:
-    - cron: '0 6 * * 1'
+    - cron: '30 0 * * *'
   workflow_dispatch:
 
 permissions:
@@ -42,10 +49,31 @@ jobs:
     if: github.event_name == 'workflow_dispatch' || vars.EXAKIT_AUTO_BUMP == 'true'
     runs-on: ubuntu-latest
     steps:
+      # Checked BEFORE any work: an open proposal means this run has nothing to
+      # do, whichever way it was started. See ONE PROPOSAL AT A TIME above.
+      - name: skip while a bump pull request is open
+        id: open
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -eu
+          existing="$(gh pr list -R "$GITHUB_REPOSITORY" --head chore/versions-bump --state open \
+              --json number --jq '.[0].number // empty')"
+          if [ -n "$existing" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            msg="A version-bump PR is already open (#$existing) - leaving it alone. Merge or close it and the next run proposes afresh."
+            echo "::notice::$msg"
+            echo "$msg" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - uses: actions/checkout@v7
+        if: steps.open.outputs.skip != 'true'
 
       - name: find newer stable releases and rewrite versions.json
         id: bump
+        if: steps.open.outputs.skip != 'true'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -320,8 +348,13 @@ jobs:
               if dialect == "bash":
                   pattern = re.compile(r'(%s="\$\{%s:-)([^}"]*)(\}")' % (name, name))
               elif dialect == "pwsh":
+                  # Two shapes are in use: the env-overridable
+                  #   $script:X = if ($env:Y) { $env:Y } else { "1.2.3" }
+                  # and the plain  $script:X = "1.2.3"  (runtime-personal.ps1).
+                  # Accepting only the first is what stopped the 2.3.0 Personal
+                  # bump with "found 0".
                   pattern = re.compile(
-                      r'(\$script:%s = if \(\$env:[A-Z_]+\) \{ \$env:[A-Z_]+ \} else \{ ")([^"]*)(" \})'
+                      r'(\$script:%s\s*=\s*(?:if \(\$env:[A-Z_]+\) \{ \$env:[A-Z_]+ \} else \{ )?")([^"]*)(")'
                       % name)
               else:
                   pattern = re.compile(r'(^%s = ")([^"]*)(")' % name, re.MULTILINE)
@@ -400,6 +433,12 @@ jobs:
           text = "\n".join(summary) + "\n"
           with open("bump-summary.md", "w") as handle:
               handle.write(text)
+          # Exactly the files this run changed, for the commit step: a fixed
+          # list there left an add-on module or runtime-personal.ps1 out of the
+          # commit, and versions.yml then failed the PR on the drift.
+          with open("bump-files.txt", "w") as handle:
+              for path in [MANIFEST] + sorted(touched):
+                  handle.write(path + "\n")
           print(text)
 
           if os.environ.get("GITHUB_STEP_SUMMARY"):
@@ -425,14 +464,14 @@ jobs:
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git switch -c "$BRANCH"
-          # Everything the bump touched, never the summary (a build artifact).
-          git add versions.json setup/lib/common.sh setup/lib/exakit-common.ps1 \
-                  mcp/runtime/exakit.py
-          git commit -m "$TITLE" -m "$(cat bump-summary.md)" \
-              -- versions.json setup/lib/common.sh setup/lib/exakit-common.ps1 \
-                 mcp/runtime/exakit.py
-          # One reusable branch, force-pushed: a later run replaces the proposal
-          # instead of leaving a trail of stale pull requests behind it.
+          # Everything the bump touched (bump-files.txt), never the summary or
+          # the list itself, which are build artifacts.
+          xargs git add -- < bump-files.txt
+          xargs git commit -m "$TITLE" -m "$(cat bump-summary.md)" -- < bump-files.txt
+          # One reusable branch, force-pushed. The skip step above means no PR is
+          # open on it by now, so this replaces only a branch left behind by a
+          # merged or closed proposal; the edit arm below covers the one race
+          # left (a PR opened on the branch while this run was working).
           git push --force origin "$BRANCH"
           existing="$(gh pr list --head "$BRANCH" --state open --json number --jq '.[0].number' || true)"
           if [ -n "$existing" ]; then
