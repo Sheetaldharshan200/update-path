@@ -1383,14 +1383,63 @@ has "the deployment installs podman before anything else" "personal_install_podm
 _p2first="$(printf '%s\n' "$_p2dep" | grep -nE '^\s+[a-z_]+' | grep -v '^\s*#' | head -1)"
 has "...as its first act" "personal_install_podman" "$_p2first"
 _p2ins="$(sed -n '/^personal_install_podman()/,/^}/p' "$ROOT/setup/lib/runtime-personal.sh")"
-has "it asks before touching the system"  "confirm_env EXAKIT_INSTALL_PODMAN" "$_p2ins"
-has "...and an unattended run opts in"    "EXAKIT_INSTALL_PODMAN=1" "$_p2ins"
-has "...it names what it is about to run" "Installing Podman:" "$_p2ins"
+# NO QUESTION. The database runs through Podman and the user asked for the
+# database; a y/n whose only sensible answer is yes bought nothing and cost a
+# keystroke in the middle of an install. It is still announced - the warn says
+# what is missing, the spinner says what is being done - and EXAKIT_INSTALL_PODMAN=0
+# is the way out for a scripted run where package installs are someone else's job.
+lacks "the podman install does not stop to ask" "confirm_env EXAKIT_INSTALL_PODMAN" "$_p2ins"
+has "...but it is still announced" "Podman is not installed" "$_p2ins"
+has "...and there is a way out for a run that must not install" \
+    "EXAKIT_INSTALL_PODMAN=0" "$_p2ins"
+# THE SCREEN SHOWS A QUESTION, A PASSWORD IF ONE IS NEEDED, AND A SPINNER.
+# It used to show three screens of apt unpacking eighty packages, in the middle
+# of an install that gives every other step one line. Nothing is hidden - every
+# one of those lines is in the logfile - and the command itself is logged by
+# run_logged, which is what puts it there.
+has "the package manager runs behind the spinner" 'run_logged ${_pin_run}sh -c' "$_p2ins"
+lacks "...not across the screen" 'info "Installing Podman' "$_p2ins"
+has "...under a label that says what is happening" 'EXAKIT_ACTIVE_LABEL="Installing Podman"' "$_p2ins"
+# THE PASSWORD IS ASKED FOR ON ITS OWN, BEFORE the capture. A captured sudo
+# waiting on a password behind a spinner is a machine that looks hung.
+has "the password is asked for in the open" "sudo -v" "$_p2ins"
+has "...only when sudo will really ask" "sudo -n true" "$_p2ins"
+
+# -n on the RUN: a sudoers that caches nothing would otherwise hang the
+# captured command on a prompt nobody can see.
+has "...while the captured run can never sit on a prompt" 'sudo -n ' "$_p2ins"
+has "...and a run with no terminal says so instead of waiting" \
+    "no terminal to type an administrator password on" "$_p2ins"
+# ...and the compatibility check no longer says what the step below is about to
+# say for itself.
+lacks "the gate does not pre-announce the podman install" \
+    "the kit installs it before the database step" \
+    "$(sed -n '/^personal_check_requirements()/,/^}/p' "$ROOT/setup/lib/runtime-personal.sh")"
 has "...and checks podman is really there afterwards" "still not on PATH" "$_p2ins"
 lacks "...and never runs on macOS or Windows" "macos)" \
     "$(printf '%s\n' "$_p2ins" | sed -n '/case "$(detect_os)" in/,/esac/p' | grep -v '\*)')"
 # Debian and Ubuntu need uidmap in the same breath: without it rootless Podman
 # fails much later, inside a container start, naming neither.
+# A CAPTURED PACKAGE INSTALL MUST NOT BE ABLE TO WAIT ON A PROMPT NOBODY SEES.
+# Moving apt behind the spinner is what made this matter: needrestart ships by
+# default on Ubuntu 22.04 and later and asks which services to restart, dpkg
+# asks about config files, and with the output in the logfile the only thing on
+# screen is a spinner counting past 500 seconds. The prompts are turned off at
+# the source, and the redirect is the belt - anything that still asks reads EOF
+# and fails in a second, which is a failure a reader can act on.
+_p2auto="$(sed -n '/^_personal_podman_install_cmd_auto()/,/^}/p' "$ROOT/setup/lib/runtime-personal.sh")"
+has "the captured apt cannot be asked a question" "DEBIAN_FRONTEND=noninteractive" "$_p2auto"
+has "...including the one needrestart asks" "NEEDRESTART_MODE=a" "$_p2auto"
+has "...and dpkg keeps the config already there" "force-confold" "$_p2auto"
+has "...with EOF as the backstop for anything else" "</dev/null" "$_p2auto"
+# EVERY package manager gets the backstop, not only apt.
+check "...on every package manager the kit knows" "2" \
+    "$(printf '%s' "$_p2auto" | grep -c '</dev/null')"
+# ...and the command a HUMAN is told to run stays short enough to retype.
+lacks "the printed command is still the short one" "DEBIAN_FRONTEND" \
+    "$(sed -n '/^_personal_podman_install_cmd()/,/^}/p' "$ROOT/setup/lib/runtime-personal.sh")"
+has "...while the run uses the hardened twin" '_pin_auto="$(_personal_podman_install_cmd_auto' "$_p2ins"
+
 has "the apt command brings uidmap too" "apt-get install -y podman uidmap" \
     "$(sed -n '/^_personal_podman_install_cmd()/,/^}/p' "$ROOT/setup/lib/runtime-personal.sh")"
 # WINDOWS DOES NOT INSTALL IT ITSELF - the launcher does, through winget, as
@@ -1414,8 +1463,8 @@ lacks "...and the every-deploy clause is gone" "installs Podman if needed" "$_p2
 # summary with the one command that completes it, and skipped past.
 _p2ins2="$(sed -n '/^personal_install_podman()/,/^}/p' "$ROOT/setup/lib/runtime-personal.sh")"
 lacks "a missing podman never ends the run" "die " "$_p2ins2"
-check "...every refusal returns instead" "6"     "$(printf '%s' "$_p2ins2" | grep -c 'return 1')"
-check "...and each one leaves a reason behind" "6"     "$(printf '%s' "$_p2ins2" | grep -c 'exakit_note_failure')"
+check "...every refusal returns instead" "7"     "$(printf '%s' "$_p2ins2" | grep -c 'return 1')"
+check "...and each one leaves a reason behind" "7"     "$(printf '%s' "$_p2ins2" | grep -c 'exakit_note_failure')"
 has "the deployment stops when it cannot get podman" "personal_install_podman || return 1"     "$(sed -n '/^personal_deploy_local()/,/^}/p' "$ROOT/setup/lib/runtime-personal.sh")"
 
 for _p2setup in setup-linux.sh setup-macos.sh; do

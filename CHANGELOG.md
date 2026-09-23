@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+**The Podman install stopped asking, and stopped shouting.** It used to put a
+y/n in the middle of the install and then three screens of `apt` unpacking
+twenty-four packages through a run that gives every other step one line. The
+question is gone — the database runs through Podman and you asked for the
+database, so a y/n whose only sensible answer is yes bought nothing — and the
+package manager now runs behind the spinner, with every line it printed in the
+logfile. What is left on screen is one line saying Podman is missing, a
+password prompt **only when `sudo` actually wants one** (decided at runtime by
+`sudo -n true`, not guessed), and the spinner. `EXAKIT_INSTALL_PODMAN=0` is the
+way out for a run where package installs are somebody else's job: the database
+step is recorded as not finished, and the rest of the install completes.
+Moving apt behind the spinner is also why its prompts are now turned off at the
+source. `needrestart` ships by default on Ubuntu 22.04 and later and asks which
+services to restart; dpkg asks about config files. On screen those were
+answerable, and behind a spinner they are not - the install waits on stdin for
+an answer nobody can see while the only thing moving is a counter, measured at
+over 500 seconds before anyone gave up. `DEBIAN_FRONTEND`, `NEEDRESTART_MODE`
+and dpkg's force-conf options stop the asking, and the command is run with its
+input closed so anything that still asks fails in a second with the command to
+run by hand.
+The compatibility check no longer pre-announces the install either — the step
+that does it says it, a few seconds later.
+
 **An upgrade no longer offers you the kit's own sample data back.** Installing
 0.2.0 over a kit that had loaded the energy dataset said "1 table(s) in 1
 schema(s) of your own" and offered to migrate it - on a database holding
@@ -23,11 +46,9 @@ WSL the install refused: "This machine is not ready ... 'podman' is not on
 PATH", with a package-manager command to run and the whole install to start
 again. The database runs through Podman, so the kit now fetches it where it is
 needed - between the launcher step and the database step - and says so first:
-one line naming what is missing, one naming the command it is about to run, and
-the version it ended up with. It asks before it does, because that command is
-the one thing in the kit that touches the system rather than the user's home;
-an unattended run opts in with `EXAKIT_INSTALL_PODMAN=1`, and a "no" prints the
-command instead. apt, dnf, yum, zypper, pacman and apk are known, and on
+one line naming what is missing, and the version it ended up with. (This
+shipped asking a y/n first; see the entry above, which removed it.)
+apt, dnf, yum, zypper, pacman and apk are known, and on
 Debian and Ubuntu `uidmap` comes along in the same command - rootless Podman
 needs it, and without it the failure arrives much later inside a container
 start, naming neither. The gate still refuses before anything is downloaded
