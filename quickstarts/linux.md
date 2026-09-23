@@ -4,10 +4,7 @@ Gets you from a Linux machine to a local Exasol database with an AI assistant co
 
 ## What you need
 
-- **Podman** (rootless is fine) — the launcher deploys through it and, unlike on Windows, does not install it for you:
-  ```bash
-  command -v podman || sudo apt-get install -y podman     # dnf on Fedora/RHEL
-  ```
+- **Podman** (rootless is fine) — the database runs through it. You do not have to install it first: if it is missing, the installer says so and installs it between the launcher step and the database step. It asks before it does, because that one command needs `sudo`; answer no, or pre-answer with `EXAKIT_INSTALL_PODMAN=0`, and it prints the command for you to run instead.
 - 8 GB+ RAM, 20 GB free disk
 - **No Python install needed.** The kit uses a system Python 3.11+ if it finds one, and otherwise installs a managed Python for its own use.
 
@@ -74,7 +71,7 @@ exakit update      # bring the kit and its components up to date
 
 | Situation | What to know |
 |---|---|
-| No Podman | Install it with your package manager (`sudo apt-get install -y podman`, `sudo dnf install -y podman`) and re-run. Podman specifically: no other container engine substitutes, because the launcher only drives Podman. |
+| No Podman | The installer offers to install it for you at the database step (apt, dnf, yum, zypper, pacman or apk). If you said no, or your package manager is not one it knows, install it yourself (`sudo apt-get install -y podman uidmap`, `sudo dnf install -y podman`) and re-run. Podman specifically: no other container engine substitutes, because the launcher only drives Podman. |
 | Rootless Podman | Fully supported and the usual case. Your user needs subordinate id ranges (`/etc/subuid`, `/etc/subgid` — most distros set these up when the user is created) and cgroups v2 (the default on every current distro). |
 | Autostart on a headless server | `exakit autostart` registers a systemd **user** unit that runs the launcher's start. A user unit only runs while you have a session, so the kit enables lingering for your user when it can (`loginctl enable-linger`); where that is refused, it says so and names the command an admin has to run. |
 | Upgrading the launcher | `exakit update` explains what a launcher update does before asking — including the one-time longer first start after it (the deployment rebuilds part of its runtime once; your data is kept). |

@@ -1292,6 +1292,12 @@ _p2gate() { # _p2gate <os> <with-podman:0|1> -> last die/ok marker
         [ -n "$_pg_src" ] && ln -sf "$_pg_src" "$_pg_bin/$_pg_tool"
     done
     [ "$2" = 1 ] && { printf '#!/bin/sh\nexit 0\n' > "$_pg_bin/podman"; chmod +x "$_pg_bin/podman"; }
+    # $3=installable: a package manager the kit knows, and a way to become root.
+    if [ "${3:-0}" = 1 ]; then
+        for _pg_have in apt-get sudo; do
+            printf '#!/bin/sh\nexit 0\n' > "$_pg_bin/$_pg_have"; chmod +x "$_pg_bin/$_pg_have"
+        done
+    fi
     PATH="$_pg_bin" bash -c '
         die() { echo "DIED: $*"; exit 1; }
         error() { :; }; info() { :; }; warn() { :; }; ok() { echo "OK: $*"; }
@@ -1309,6 +1315,8 @@ _p2gate() { # _p2gate <os> <with-podman:0|1> -> last die/ok marker
         # then compared against an empty string and blamed the gate. The
         # constants and the function under test are now each asked for by name.
         eval "$(sed -n "/^EXAKIT_PERSONAL_/p" "$0/setup/lib/runtime-personal.sh" | grep -v "()")"
+        eval "$(sed -n "/^_personal_podman_install_cmd()/,/^}/p" "$0/setup/lib/runtime-personal.sh")"
+        eval "$(sed -n "/^personal_podman_installable()/,/^}/p" "$0/setup/lib/runtime-personal.sh")"
         eval "$(sed -n "/^personal_check_requirements()/,/^}/p" "$0/setup/lib/runtime-personal.sh")"
         # The rootless heal is a different subject with its own suite; here it
         # must only not be missing.
@@ -1338,6 +1346,33 @@ check "gate(wsl, podman) passes like linux" \
     "OK: Compatibility check passed (wsl arm64, 16 GB RAM, 100 GB free)" "$(_p2gate wsl 1)"
 check "gate(wsl, no podman) refuses podman by name" \
     "DIED: Podman is required for the Exasol Personal runtime in WSL." "$(_p2gate wsl 0)"
+# A MACHINE THE KIT CAN FETCH PODMAN FOR IS NOT TURNED AWAY. Refusing here sent
+# a user to their package manager and back to the beginning of the install; the
+# database step installs it instead, between the launcher and the deployment
+# (personal_install_podman), and asks before it touches the system. The gate
+# still refuses where that cannot work - no package manager it knows, or no way
+# to become root - which is what the two checks above are.
+check "gate(linux, no podman but installable) carries on" \
+    "OK: Compatibility check passed (linux arm64, 16 GB RAM, 100 GB free)" "$(_p2gate linux 0 1)"
+check "gate(wsl, no podman but installable) carries on" \
+    "OK: Compatibility check passed (wsl arm64, 16 GB RAM, 100 GB free)" "$(_p2gate wsl 0 1)"
+# ...and it is the DATABASE step that does it, not the gate: a package install
+# must not run in front of a machine that has not yet agreed to anything.
+_p2dep="$(sed -n '/^personal_deploy_local()/,/^}/p' "$ROOT/setup/lib/runtime-personal.sh")"
+has "the deployment installs podman before anything else" "personal_install_podman" "$_p2dep"
+_p2first="$(printf '%s\n' "$_p2dep" | grep -nE '^\s+[a-z_]+' | grep -v '^\s*#' | head -1)"
+has "...as its first act" "personal_install_podman" "$_p2first"
+_p2ins="$(sed -n '/^personal_install_podman()/,/^}/p' "$ROOT/setup/lib/runtime-personal.sh")"
+has "it asks before touching the system"  "confirm_env EXAKIT_INSTALL_PODMAN" "$_p2ins"
+has "...and an unattended run opts in"    "EXAKIT_INSTALL_PODMAN=1" "$_p2ins"
+has "...it names what it is about to run" "Installing Podman:" "$_p2ins"
+has "...and checks podman is really there afterwards" "still not on PATH" "$_p2ins"
+lacks "...and never runs on macOS or Windows" "macos)" \
+    "$(printf '%s\n' "$_p2ins" | sed -n '/case "$(detect_os)" in/,/esac/p' | grep -v '\*)')"
+# Debian and Ubuntu need uidmap in the same breath: without it rootless Podman
+# fails much later, inside a container start, naming neither.
+has "the apt command brings uidmap too" "apt-get install -y podman uidmap" \
+    "$(sed -n '/^_personal_podman_install_cmd()/,/^}/p' "$ROOT/setup/lib/runtime-personal.sh")"
 check "the installer no longer turns WSL away" "" \
     "$(grep -c 'it does not support WSL' "$ROOT/install.sh" "$ROOT/setup/lib/runtime-personal.sh" "$ROOT/setup/lib/detect.sh" 2>/dev/null | grep -v ':0$' | tr '\n' ' ')"
 check "...and routes it to the Linux setup" "setup/setup-linux.sh" \

@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+**A machine without Podman is given Podman, not turned away.** On Linux and in
+WSL the install refused: "This machine is not ready ... 'podman' is not on
+PATH", with a package-manager command to run and the whole install to start
+again. The database runs through Podman, so the kit now fetches it where it is
+needed - between the launcher step and the database step - and says so first:
+one line naming what is missing, one naming the command it is about to run, and
+the version it ended up with. It asks before it does, because that command is
+the one thing in the kit that touches the system rather than the user's home;
+an unattended run opts in with `EXAKIT_INSTALL_PODMAN=1`, and a "no" prints the
+command instead. apt, dnf, yum, zypper, pacman and apk are known, and on
+Debian and Ubuntu `uidmap` comes along in the same command - rootless Podman
+needs it, and without it the failure arrives much later inside a container
+start, naming neither. The gate still refuses before anything is downloaded
+where none of that can work: no package manager it knows, or no way to become
+root.
+
 **Exasol Personal is pinned to 2.3.0** (was 2.3.0-rc6): the final release
 published on 2026-09-21, so the kit no longer ships a pin on a release
 candidate. Candidates were the reason the comment on the fallback demands a
