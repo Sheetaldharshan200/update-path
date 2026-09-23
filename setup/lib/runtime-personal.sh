@@ -200,33 +200,60 @@ personal_install_podman() {
 
     _pin_sudo=""
     [ "$(id -u 2>/dev/null || echo 1)" = "0" ] || _pin_sudo="sudo "
-    if [ -n "$(_exakit_prompt_tty)" ]; then
-        confirm_env EXAKIT_INSTALL_PODMAN "Install it now? It runs one command as root${_pin_sudo:+ and will ask for your password}" y || {
-            info "Not installed. To do it yourself:  ${_pin_sudo}$_pin_cmd"
-            exakit_note_failure "Podman was not installed (declined); the database needs it"
+    # PROMISED ONLY WHEN IT WILL HAPPEN. A machine with NOPASSWD, or one where
+    # sudo was used a minute ago, is never asked for a password - and a
+    # question that says it will be is a question that was not read carefully
+    # enough to write.
+    # NOT ASKED FOR ANY MORE. The database runs through Podman and the user
+    # already asked for the database; a y/n whose only sensible answer is yes is
+    # a question that buys nothing and costs a keystroke in the middle of an
+    # install. It is still announced - the warn above says what is missing, and
+    # the spinner below says what is being done about it - and the one command
+    # it runs is in the logfile.
+    #
+    # EXAKIT_INSTALL_PODMAN=0 is the way out for anyone who needs one: a
+    # scripted run on a machine where package installs are somebody else's job.
+    # It is an opt-OUT rather than an opt-in, because the kit installing what
+    # the database needs is now the default on every road.
+    case "${EXAKIT_INSTALL_PODMAN:-}" in
+        0|n|N|no|NO|No)
+            info "Not installed (EXAKIT_INSTALL_PODMAN=0). To do it yourself:  ${_pin_sudo}$_pin_cmd"
+            exakit_note_failure "Podman was not installed (EXAKIT_INSTALL_PODMAN=0); the database needs it"
             return 1
-        }
-    else
-        # Unattended: a package install is a system change, so it is opted into
-        # rather than assumed - the same rule the rootless self-heal follows.
-        case "${EXAKIT_INSTALL_PODMAN:-}" in
-            1|y|Y|yes|YES|Yes) : ;;
-            *)
-                info "The kit can install it for you, but it changes the system, so an unattended run has to opt in:"
-                info "  EXAKIT_INSTALL_PODMAN=1  (or run it yourself: ${_pin_sudo}$_pin_cmd)"
-                exakit_note_failure "Podman is not installed; an unattended run needs EXAKIT_INSTALL_PODMAN=1"
-                return 1
-                ;;
-        esac
-    fi
+            ;;
+    esac
 
-    info "Installing Podman: ${_pin_sudo}$_pin_cmd"
+    # THE PASSWORD AND THE PACKAGE MANAGER ARE TWO DIFFERENT THINGS, and
+    # running them as one is what put three screens of apt through the middle
+    # of an install that shows one line per step. A captured sudo asking for a
+    # password behind a spinner is a machine that looks hung - so the password
+    # is asked for FIRST, in the open and on its own, and the package manager
+    # then runs behind the spinner with a credential it no longer has to ask
+    # about. Nothing is hidden: every line apt printed is in the logfile.
+    if [ -n "$_pin_sudo" ] && ! sudo -n true 2>/dev/null; then
+        if [ -z "$(_exakit_prompt_tty)" ]; then
+            # No terminal to type a password on. Said, not waited on: a
+            # captured sudo would sit on stdin for ever behind a spinner.
+            info "This run has no terminal to type an administrator password on. Run it yourself, then re-run:  ${_pin_sudo}$_pin_cmd"
+            exakit_note_failure "Podman needs an administrator password and this run has no terminal to ask for one"
+            return 1
+        fi
+        info "Your password, for this one command as administrator:"
+        if ! sudo -v; then
+            info "Not installed. To do it yourself:  ${_pin_sudo}$_pin_cmd"
+            exakit_note_failure "The administrator password for the Podman install was not given"
+            return 1
+        fi
+    fi
     EXAKIT_ACTIVE_LABEL="Installing Podman"
-    # NOT run_logged: sudo may ask for a password, and a captured command with a
-    # spinner over it is a machine that looks hung. The command itself is in the
-    # log above, and what it prints goes to the screen like any other install.
+    # -n on the RUN, never on the ask above: a sudoers with timestamp_timeout=0
+    # caches nothing, and without this the captured command would hang on a
+    # password prompt nobody can see. It fails in a second instead, with the
+    # command to run by hand.
+    _pin_run="$_pin_sudo"
+    [ -n "$_pin_run" ] && _pin_run="sudo -n "
     # shellcheck disable=SC2086
-    if ! ${_pin_sudo}sh -c "$_pin_cmd"; then
+    if ! run_logged ${_pin_run}sh -c "$_pin_cmd"; then
         EXAKIT_ACTIVE_LABEL=""
         info "Run it yourself and re-run the installer:  ${_pin_sudo}$_pin_cmd"
         exakit_note_failure "Podman could not be installed (${_pin_sudo}$_pin_cmd)"
@@ -284,14 +311,15 @@ personal_check_requirements() {
                 _pcr_where="on Linux"
                 [ "$_pcr_os" = wsl ] && _pcr_where="in WSL"
                 if personal_podman_installable; then
-                    # THE KIT CAN FETCH IT, so this is not a reason to stop.
-                    # personal_install_podman runs at the top of the database
-                    # step - after the launcher, before the deployment - and
-                    # asks first. Falling through rather than returning: the
-                    # RAM and free-disk checks below are the rest of this gate,
-                    # and a machine short of both would otherwise hear about
-                    # neither.
-                    info "Podman is not installed ${_pcr_where}, and the database needs it - the kit installs it before the database step."
+                    # THE KIT CAN FETCH IT, so this is not a reason to stop -
+                    # and not a reason to say anything either. The database
+                    # step names it, asks, and installs it, all within a few
+                    # seconds of here; saying it twice made the compatibility
+                    # check carry a line about something it was not doing.
+                    # Falling through rather than returning: the RAM and
+                    # free-disk checks below are the rest of this gate, and a
+                    # machine short of both would otherwise hear about neither.
+                    :
                 else
                     # THE KIT CANNOT FETCH IT HERE - and that used to end the
                     # run before a single file was written, taking the
