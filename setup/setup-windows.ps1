@@ -346,11 +346,29 @@ try {
         # the official kit left its nano.ps1, runtime-nano.sh and catalog.tsv in
         # lib\, three files this kit removed on purpose. Twin of the same clear
         # in kit_shared_steps.
-        foreach ($stale in @(
-            (Join-Path $kitSetupDir "lib"), (Join-Path $kitSetupDir "help"),
-            (Join-Path $script:ExakitHome "kit\mcp"), (Join-Path $script:ExakitHome "kit\sql"),
-            (Join-Path $script:ExakitHome "kit\skills"))) {
-            Remove-Item -Recurse -Force $stale -ErrorAction SilentlyContinue
+        #
+        # ONLY WHEN THIS IS NOT THE KIT HOME ITSELF. install.ps1 unpacks the kit
+        # into ~\.exasol-starter-kit\kit and runs setup from there, so these
+        # "stale" directories are this run's own sources: clearing them deleted
+        # setup\help, and every Copy-ExakitAsset below then found no source and
+        # returned without a word. With no help documents on disk the
+        # marketplace lost its tagline tier and every add-on's Description read
+        # "Details: exakit help <id>". The bash twin skips the whole block on the
+        # same condition ([ "$_script_dir" -ef "$EXAKIT_HOME/kit/setup" ]).
+        $kitSetupInPlace = $false
+        try {
+            $kitSetupInPlace = [string]::Equals(
+                (Resolve-Path $ScriptDir).Path.TrimEnd('\', '/'),
+                (Resolve-Path $kitSetupDir).Path.TrimEnd('\', '/'),
+                [System.StringComparison]::OrdinalIgnoreCase)
+        } catch { }
+        if (-not $kitSetupInPlace) {
+            foreach ($stale in @(
+                (Join-Path $kitSetupDir "lib"), (Join-Path $kitSetupDir "help"),
+                (Join-Path $script:ExakitHome "kit\mcp"), (Join-Path $script:ExakitHome "kit\sql"),
+                (Join-Path $script:ExakitHome "kit\skills"))) {
+                Remove-Item -Recurse -Force $stale -ErrorAction SilentlyContinue
+            }
         }
         Copy-ExakitAsset -Source $LibDir -Destination (Join-Path $kitSetupDir "lib")
         Copy-ExakitAsset -Source (Join-Path $ScriptDir "exakit.ps1") -Destination (Join-Path $kitSetupDir "exakit.ps1")

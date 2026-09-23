@@ -614,6 +614,17 @@ $script:UiTableHandle = $null
 $script:UiTableSrc = ""
 if ($PSCommandPath) { $script:UiTableSrc = $PSCommandPath }
 elseif ($PSScriptRoot) { $script:UiTableSrc = Join-Path $PSScriptRoot "ui.ps1" }
+# Read ONCE, now, while the file is certainly there - not when the first table
+# starts. A table starts minutes later, at the end of an install, and on Windows
+# that install had just cleared and re-staged kit\setup\lib: the read threw,
+# Start-ExakitTable answered $false, and the marketplace install fell back to
+# plain lines and a one-line bar under a table that never animated. Whatever
+# happens to the file afterwards, the animator has the source this session was
+# loaded from - which is also the only source that matches the functions in it.
+$script:UiTableSrcText = ""
+if ($script:UiTableSrc) {
+    try { $script:UiTableSrcText = [System.IO.File]::ReadAllText($script:UiTableSrc) } catch { }
+}
 
 # New-ExakitTable [-Title] [-Col1] [-Col2] [-Col3] - a fresh, empty table. Returns it,
 # and also parks it as the module's current one so every other call can default
@@ -1294,10 +1305,12 @@ function Start-ExakitTable {
         $script:UiSpinNested = 0
         try { Stop-ExakitSpinner } catch { }
     }
-    if (-not $script:UiTableSrc) { return $false }
+    $src = $script:UiTableSrcText
+    if (-not $src -and $script:UiTableSrc) {
+        try { $src = [System.IO.File]::ReadAllText($script:UiTableSrc) } catch { $src = "" }
+    }
+    if (-not $src) { return $false }
     try {
-        $src = [System.IO.File]::ReadAllText($script:UiTableSrc)
-        if (-not $src) { return $false }
         $Table.Run = $true
         $Table.Stop = $false
         $Table.Alive = $false
