@@ -1281,7 +1281,8 @@ check "asset(linux/x86_64)" "exasol-personal_Linux_x86_64.tar.gz" "$(_p2 linux x
 # The gate, behaviourally: what it says when it refuses is the user's whole
 # experience of the refusal, so the checks pin the die() reason - not the text
 # of the case arm.
-_p2gate() { # _p2gate <os> <with-podman:0|1> -> last die/ok marker
+_p2gate() { _p2gate_setup "$@" | tail -1; }   # the verdict line alone
+_p2gate_setup() { # _p2gate_setup <os> <with-podman:0|1> [installable] -> all output
     _pg_bin="$WORK/p2-bin-$1-$2"; mkdir -p "$_pg_bin"
     # A PATH with the tools the probe needs and NOTHING found by accident:
     # GitHub's ubuntu runners ship podman in /usr/bin, so scrubbing to
@@ -1300,7 +1301,11 @@ _p2gate() { # _p2gate <os> <with-podman:0|1> -> last die/ok marker
     fi
     PATH="$_pg_bin" bash -c '
         die() { echo "DIED: $*"; exit 1; }
-        error() { :; }; info() { :; }; warn() { :; }; ok() { echo "OK: $*"; }
+        error() { :; }; ok() { echo "OK: $*"; }
+        # KEPT, not swallowed. What the gate SAYS when it defers is now the
+        # whole of its refusal behaviour - there is no die() left to pin - so
+        # the checks below read these lines. tail -1 still yields the verdict.
+        info() { echo "INFO: $*"; }; warn() { echo "WARN: $*"; }
         confirm_env() { return 0; }
         . "$0/setup/lib/detect.sh" 2>/dev/null
         detect_os() { echo "'"$1"'"; }
@@ -1322,10 +1327,21 @@ _p2gate() { # _p2gate <os> <with-podman:0|1> -> last die/ok marker
         # must only not be missing.
         personal_heal_rootless_podman() { :; }
         unset EXAKIT_DB_PORT
-        personal_check_requirements 2>/dev/null' "$ROOT" "$_pg_bin" 2>/dev/null | tail -1
+        personal_check_requirements 2>/dev/null' "$ROOT" "$_pg_bin" 2>/dev/null
 }
-check "gate(linux, no podman) refuses podman by name" \
-    "DIED: Podman is required for the Exasol Personal runtime on Linux." "$(_p2gate linux 0)"
+# NOT A HARD STOP ANY MORE, on either branch. Ending the run here cost the
+# launcher, exapump, the AI bridge and the exakit command - none of which need
+# Podman - before a single file was written. ONE PLACE decides what a missing
+# Podman costs and it is the database step, which records it and lets the rest
+# of the install finish. The gate still SAYS it, up front, so nobody watches a
+# whole install to find out.
+_p2nolinux="$(_p2gate_setup linux 0)"
+check "gate(linux, no podman, uninstallable) carries on" \
+    "OK: Compatibility check passed (linux arm64, 16 GB RAM, 100 GB free)" "$(printf '%s\n' "$_p2nolinux" | tail -1)"
+has "...naming podman as what is missing" "Podman is not installed on Linux" "$_p2nolinux"
+has "...and what it costs" "database step will be skipped" "$_p2nolinux"
+has "...and the command that finishes the job later" "exakit update" "$_p2nolinux"
+lacks "...and nothing dies" "DIED" "$_p2nolinux"
 check "gate(linux, podman) passes" \
     "OK: Compatibility check passed (linux arm64, 16 GB RAM, 100 GB free)" "$(_p2gate linux 1)"
 # WSL IS A SUPPORTED PLATFORM, and these four checks are why. The kit used to
@@ -1344,8 +1360,12 @@ lacks "no doc still says Personal refuses WSL" "does not support WSL" \
     "$(cat "$ROOT/README.md" "$ROOT/quickstarts/linux.md" "$ROOT/quickstarts/windows.md" "$ROOT/setup/help/personal.json")"
 check "gate(wsl, podman) passes like linux" \
     "OK: Compatibility check passed (wsl arm64, 16 GB RAM, 100 GB free)" "$(_p2gate wsl 1)"
-check "gate(wsl, no podman) refuses podman by name" \
-    "DIED: Podman is required for the Exasol Personal runtime in WSL." "$(_p2gate wsl 0)"
+_p2nowsl="$(_p2gate_setup wsl 0)"
+check "gate(wsl, no podman, uninstallable) carries on" \
+    "OK: Compatibility check passed (wsl arm64, 16 GB RAM, 100 GB free)" "$(printf '%s\n' "$_p2nowsl" | tail -1)"
+has "...with the distro's own remedy" "uidmap" "$_p2nowsl"
+has "...and the WINDOWS-side warning kept" "does not count" "$_p2nowsl"
+lacks "...and nothing dies in WSL either" "DIED" "$_p2nowsl"
 # A MACHINE THE KIT CAN FETCH PODMAN FOR IS NOT TURNED AWAY. Refusing here sent
 # a user to their package manager and back to the beginning of the install; the
 # database step installs it instead, between the launcher and the deployment
@@ -1373,6 +1393,90 @@ lacks "...and never runs on macOS or Windows" "macos)" \
 # fails much later, inside a container start, naming neither.
 has "the apt command brings uidmap too" "apt-get install -y podman uidmap" \
     "$(sed -n '/^_personal_podman_install_cmd()/,/^}/p' "$ROOT/setup/lib/runtime-personal.sh")"
+# WINDOWS DOES NOT INSTALL IT ITSELF - the launcher does, through winget, as
+# part of `install local`. So the Windows half's job is to say what is about to
+# happen and what to do when the machine refuses it: an unelevated winget on a
+# managed laptop fails, and the first the user heard of it was the launcher's
+# own error, mid-deploy, with no mention of Podman at all.
+_p2win="$(sed -n '/^function Install-PersonalDeployment/,/^}/p' "$ROOT/setup/lib/runtime-personal.ps1")"
+has "windows names podman when it is missing" "Podman is not installed on this machine" "$_p2win"
+has "...saying the launcher does it, with admin" "may ask for administrator approval" "$_p2win"
+has "...and the command to run if that fails" "winget install RedHat.Podman" "$_p2win"
+has "...and a failed deploy blames podman when it is still absent" "Podman is still not installed" "$_p2win"
+lacks "...and the every-deploy clause is gone" "installs Podman if needed" "$_p2win"
+# ---------------------------------------------------------------------------
+# NO PODMAN IS A STEP THAT DID NOT FINISH, NOT AN END TO THE RUN
+#
+# Saying no to the Podman install used to close the whole installer - the
+# launcher, exapump, the AI bridge, pyexasol and the exakit command that
+# repairs all of them, none of which the user had declined. It is now the same
+# shape as every other step that cannot finish: recorded, named in the closing
+# summary with the one command that completes it, and skipped past.
+_p2ins2="$(sed -n '/^personal_install_podman()/,/^}/p' "$ROOT/setup/lib/runtime-personal.sh")"
+lacks "a missing podman never ends the run" "die " "$_p2ins2"
+check "...every refusal returns instead" "6"     "$(printf '%s' "$_p2ins2" | grep -c 'return 1')"
+check "...and each one leaves a reason behind" "6"     "$(printf '%s' "$_p2ins2" | grep -c 'exakit_note_failure')"
+has "the deployment stops when it cannot get podman" "personal_install_podman || return 1"     "$(sed -n '/^personal_deploy_local()/,/^}/p' "$ROOT/setup/lib/runtime-personal.sh")"
+
+for _p2setup in setup-linux.sh setup-macos.sh; do
+    _p2body="$(cat "$ROOT/setup/$_p2setup")"
+    has "$_p2setup records the database step"         'exakit_record_soft_failure runtime "exakit update"' "$_p2body"
+    has "...with the reason the deploy left" 'exakit_take_failure_note' "$_p2body"
+    has "...and says the install carries on"         "carrying on so the rest of the install completes" "$_p2body"
+    # THE RESUME ARM TOO. A re-run whose deployment is gone redeploys, and that
+    # redeploy fails the same single way - it used to fall straight through to
+    # rollback_clear and let every later step discover the missing database one
+    # refused connection at a time.
+    check "...on the resume arm as well as the first run" "2"         "$(printf '%s' "$_p2body" | grep -c 'exakit_record_soft_failure runtime')"
+done
+
+# The steps that need a database say so ONCE, together, and the exakit helper
+# still installs - it is the command that finishes the job later.
+_p2kss="$(sed -n '/^kit_shared_steps()/,/^}/p' "$ROOT/setup/lib/common.sh")"
+has "the db-dependent steps are skipped in one line"     "they all need the database, which is not installed" "$_p2kss"
+has "...decided by the recorded failure" 'exakit_soft_failed runtime' "$_p2kss"
+check "...guarding all four of them" "4"     "$(printf '%s' "$_p2kss" | grep -c 'if \[ "$_kss_nodb" = 1 \]')"
+has "...and the exakit helper still runs" "begin_step exakit_helper" "$_p2kss"
+
+# THE WINDOWS TWIN. There the LAUNCHER installs Podman, through winget, so the
+# kit cannot retry it - but a machine whose winget refused must reach the end of
+# the install exactly as the sh side does.
+_p2winrt="$(cat "$ROOT/setup/lib/runtime-personal.ps1")"
+_p2winsu="$(cat "$ROOT/setup/setup-windows.ps1")"
+has "windows flags a podman-less deploy rather than failing it"     'script:PersonalNoPodman = $true' "$_p2winrt"
+has "...leaving the same kind of reason"     'Set-ExakitFailureReason "Podman is not installed and the launcher' "$_p2winrt"
+has "...and the windows step records it"     'Register-ExakitSoftFailure -Component "runtime"' "$_p2winsu"
+check "...on both arms, like the sh side" "2"     "$(printf '%s' "$_p2winsu" | grep -c 'Register-ExakitSoftFailure -Component "runtime"')"
+has "...and the db-dependent steps skip in one line"     "they all need the database, which is not installed" "$_p2winsu"
+check "...guarding all four of them too" "4"     "$(printf '%s' "$_p2winsu" | grep -c 'dbReady -and')"
+
+# ---------------------------------------------------------------------------
+# INSTALLED IS NOT RUNNING
+#
+# `command -v podman` says the binary is on PATH and nothing about whether it
+# can start a container. A rootless podman with no sub-id range, storage left
+# by another uid, or - on Windows - a machine that is simply switched off, all
+# pass that test and fail inside the launcher minutes later, with an error that
+# names neither podman nor the kit. Both halves now ask podman itself.
+_p2run="$(sed -n '/^personal_podman_running()/,/^}/p' "$ROOT/setup/lib/runtime-personal.sh")"
+has "linux asks podman whether it works" "podman info" "$_p2run"
+has "...repairing the commonest cause once before giving up"     "personal_heal_rootless_podman" "$_p2run"
+has "...and says what podman said" "What it said" "$_p2run"
+has "...leaving a reason for the summary" "exakit_note_failure" "$_p2run"
+has "...and it is a soft failure like the rest" "return 1" "$_p2run"
+_p2dep2="$(sed -n '/^personal_deploy_local()/,/^}/p' "$ROOT/setup/lib/runtime-personal.sh")"
+has "the deployment asks before it deploys" "personal_podman_running || return 1" "$_p2dep2"
+
+_p2winrun="$(sed -n '/^function Test-PersonalPodmanRunning/,/^}/p' "$ROOT/setup/lib/runtime-personal.ps1")"
+has "windows asks podman whether it works too" "Test-PersonalPodmanAnswers" "$_p2winrun"
+# THE ONE THING WINDOWS HAS THAT LINUX DOES NOT: podman there is a Linux VM,
+# and after a reboot it is off. Starting it is not reconfiguring it.
+has "...and starts a machine that is merely stopped" '"machine" "start"' "$_p2winrun"
+has "...only when it really is stopped" 'machine", "list"' "$_p2winrun"
+has "...putting the whole error in the log" 'Invoke-ExakitLogged $podman.Source "info"' "$_p2winrun"
+has "...and naming the command that finishes the job" "exakit update" "$_p2winrun"
+has "the windows deploy asks before it deploys"     "elseif (-not (Test-PersonalPodmanRunning))" "$(cat "$ROOT/setup/lib/runtime-personal.ps1")"
+
 check "the installer no longer turns WSL away" "" \
     "$(grep -c 'it does not support WSL' "$ROOT/install.sh" "$ROOT/setup/lib/runtime-personal.sh" "$ROOT/setup/lib/detect.sh" 2>/dev/null | grep -v ':0$' | tr '\n' ' ')"
 check "...and routes it to the Linux setup" "setup/setup-linux.sh" \

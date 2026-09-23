@@ -98,15 +98,28 @@ try {
     }
 
     if (Begin-ExakitStep "runtime" "Step 2/6  Local database deployment") {
+        $script:PersonalNoPodman = $false
         Install-PersonalDeployment
-        Set-ExakitStepDone "runtime"
+        if ($script:PersonalNoPodman) {
+            Register-ExakitSoftFailure -Component "runtime" -Repair "exakit update" `
+                -Reason (Get-ExakitFailureReason) -Label "the local database"
+            Warn2 "The database was not installed - carrying on so the rest of the install completes"
+        } else {
+            Set-ExakitStepDone "runtime"
+        }
     } else {
         # The resume arms every setup carries: redeploy what is gone, start what
         # is merely stopped - every later step talks SQL to the database.
         # Twin of setup-macos.sh / setup-linux.sh.
         if (-not (Test-PersonalDeploymentExists)) {
             Info "Deployment marked done but not reachable - redeploying"
+            $script:PersonalNoPodman = $false
             Install-PersonalDeployment
+            if ($script:PersonalNoPodman) {
+                Register-ExakitSoftFailure -Component "runtime" -Repair "exakit update" `
+                    -Reason (Get-ExakitFailureReason) -Label "the local database"
+                Warn2 "The database was not installed - carrying on so the rest of the install completes"
+            }
         } elseif (-not (Test-PersonalDeploymentRunning)) {
             Info "Database is deployed but not running - starting it"
             Start-Personal
@@ -125,6 +138,18 @@ try {
     # too, because the read-only database user it connects as is provisioned
     # through exapump. Understating it is how a reader ends up hunting for a
     # server that was never built.
+    # SAID ONCE, not discovered four times. Without a database, exapump has
+    # nothing to connect to, the sample data has nowhere to go, the AI bridge
+    # cannot provision its read-only user and pyexasol cannot validate - and
+    # each of those used to fail on its own, four errors deep, for one cause
+    # already named above. Twin of _kss_nodb in kit_shared_steps (common.sh).
+    # The exakit helper below still installs: it is the command that finishes
+    # the job once Podman is there.
+    $dbReady = -not (Test-ExakitSoftFailed "runtime")
+    if (-not $dbReady) {
+        Info "Skipping exapump, the sample data, the AI bridge and pyexasol - they all need the database, which is not installed"
+    }
+
     $exapumpSupported = ((Get-ExakitHostArch) -eq "amd64")
     if (-not $exapumpSupported) {
         Warn2 "exapump publishes Windows builds for x86_64 only (this machine's hardware is $(Get-ExakitHostArch))."
@@ -133,7 +158,7 @@ try {
     }
 
     # --- step 3: exapump (data loading CLI) ------------------------------------
-    if ($exapumpSupported -and (Begin-ExakitStep "exapump" "Step 3/6  exapump (data loading CLI)")) {
+    if ($dbReady -and $exapumpSupported -and (Begin-ExakitStep "exapump" "Step 3/6  exapump (data loading CLI)")) {
         # Three lines for this step, not nine. Invoke-ExakitLogged animates the
         # label Begin-ExakitStep set, so the Info bullets under it were the
         # second telling. What survives goes through OkStep: what was installed
@@ -169,7 +194,9 @@ try {
     # that already holds the sample tables - and the AI client has data to
     # query the moment it connects. Wrapped so a failed/declined load never
     # aborts the rest of setup (mirrors kit_shared_steps' `|| true` in bash).
-    if ($exapumpSupported -and (Test-ExakitSoftFailed "exapump")) {
+    if (-not $dbReady) {
+        # already said above - nothing more to add here
+    } elseif ($exapumpSupported -and (Test-ExakitSoftFailed "exapump")) {
         Info "Skipping the sample data - it is loaded with exapump, which is not installed"
     } elseif ($exapumpSupported) {
         # YOUR OWN DATA FIRST, THEN THE SAMPLE. The copy out of the old
@@ -196,7 +223,7 @@ try {
     }
 
     # --- step 3: AI bridge (server, clients, skills) ----------------------------
-    if ($exapumpSupported -and (Begin-ExakitStep "mcp" "Step 4/6  AI bridge (MCP server, clients and skills)")) {
+    if ($dbReady -and $exapumpSupported -and (Begin-ExakitStep "mcp" "Step 4/6  AI bridge (MCP server, clients and skills)")) {
         if (Invoke-ExakitSoftStep -Component "mcp" -Repair "exakit update" -Body {
                 # One line for this step's server work: the spinner narrates
                 # the prime and the handshake, so the Info/Ok pairs beneath
@@ -239,7 +266,7 @@ try {
     # installed and a read-only database user it never provisioned. The skills
     # offer below stays unconditional: skills are documents an AI client reads,
     # and they are just as useful with the database alone.
-    if ($exapumpSupported) {
+    if ($dbReady -and $exapumpSupported) {
         [void](Invoke-ExakitBestEffort -Component "mcp_clients" -Repair "exakit mcp-setup" `
             -Label "AI client (MCP) setup" `
             -Warning "Your local runtime is installed, but MCP client setup did not finish cleanly." `
@@ -262,7 +289,7 @@ try {
     # soft in name only: the driver could install fine and any Fail() raised while
     # validating (an unwritable manifest, say) still ended the run before the
     # exakit helper below existed. Install and validate are one isolated unit.
-    if (Begin-ExakitStep "pyexasol" "Step 5/6  pyexasol (Exasol Python driver)") {
+    if ($dbReady -and (Begin-ExakitStep "pyexasol" "Step 5/6  pyexasol (Exasol Python driver)")) {
         # Two lines for this step, not five: the outcome, and the interpreter to
         # run it with. Everything between is in the logfile, and the spinner
         # covered it live. Twin of _exakit_install_pyexasol (common.sh).

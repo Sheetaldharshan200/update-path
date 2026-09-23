@@ -84,12 +84,29 @@ fi
 
 # --- step 3: local deployment ----------------------------------------------
 if begin_step runtime "Step 2/6  Local database deployment"; then
-    personal_deploy_local
-    mark_step runtime
+    # personal_deploy_local returns non-zero for ONE reason: Podman is not here
+    # and the kit was not allowed, or not able, to install it. Everything else
+    # in there still stops the run, because a deployment that half exists is
+    # not something to carry on from. This one is: nothing has been changed,
+    # and the steps that do not need a database still have value.
+    if personal_deploy_local; then
+        mark_step runtime
+    else
+        exakit_record_soft_failure runtime "exakit update" \
+            "$(exakit_take_failure_note)" "the local database"
+        warn "The database was not installed - carrying on so the rest of the install completes"
+    fi
 else
     if ! personal_deployment_exists; then
         info "Deployment marked done but not reachable — redeploying"
-        personal_deploy_local
+        # Same one non-zero as the first-run arm above: Podman is not here, so
+        # there is no database. Recorded, not fallen through - a redeploy that
+        # quietly did nothing used to surface minutes later as a refused
+        # connection in a step that had no idea why.
+        if ! personal_deploy_local; then
+            exakit_record_soft_failure runtime "exakit update" "$(exakit_take_failure_note)" "the local database"
+            warn "The database was not installed - carrying on so the rest of the install completes"
+        fi
         # The deploy registers `destroy --remove --auto-approve` as its undo.
         # The branch above disarms it with mark_step; this one has no mark_step
         # to make -- the step is already recorded -- so it must say so directly,
