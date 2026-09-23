@@ -13,6 +13,15 @@ password prompt **only when `sudo` actually wants one** (decided at runtime by
 `sudo -n true`, not guessed), and the spinner. `EXAKIT_INSTALL_PODMAN=0` is the
 way out for a run where package installs are somebody else's job: the database
 step is recorded as not finished, and the rest of the install completes.
+Moving apt behind the spinner is also why its prompts are now turned off at the
+source. `needrestart` ships by default on Ubuntu 22.04 and later and asks which
+services to restart; dpkg asks about config files. On screen those were
+answerable, and behind a spinner they are not - the install waits on stdin for
+an answer nobody can see while the only thing moving is a counter, measured at
+over 500 seconds before anyone gave up. `DEBIAN_FRONTEND`, `NEEDRESTART_MODE`
+and dpkg's force-conf options stop the asking, and the command is run with its
+input closed so anything that still asks fails in a second with the command to
+run by hand.
 The compatibility check no longer pre-announces the install either — the step
 that does it says it, a few seconds later.
 

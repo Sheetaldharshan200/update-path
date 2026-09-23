@@ -1420,6 +1420,26 @@ lacks "...and never runs on macOS or Windows" "macos)" \
     "$(printf '%s\n' "$_p2ins" | sed -n '/case "$(detect_os)" in/,/esac/p' | grep -v '\*)')"
 # Debian and Ubuntu need uidmap in the same breath: without it rootless Podman
 # fails much later, inside a container start, naming neither.
+# A CAPTURED PACKAGE INSTALL MUST NOT BE ABLE TO WAIT ON A PROMPT NOBODY SEES.
+# Moving apt behind the spinner is what made this matter: needrestart ships by
+# default on Ubuntu 22.04 and later and asks which services to restart, dpkg
+# asks about config files, and with the output in the logfile the only thing on
+# screen is a spinner counting past 500 seconds. The prompts are turned off at
+# the source, and the redirect is the belt - anything that still asks reads EOF
+# and fails in a second, which is a failure a reader can act on.
+_p2auto="$(sed -n '/^_personal_podman_install_cmd_auto()/,/^}/p' "$ROOT/setup/lib/runtime-personal.sh")"
+has "the captured apt cannot be asked a question" "DEBIAN_FRONTEND=noninteractive" "$_p2auto"
+has "...including the one needrestart asks" "NEEDRESTART_MODE=a" "$_p2auto"
+has "...and dpkg keeps the config already there" "force-confold" "$_p2auto"
+has "...with EOF as the backstop for anything else" "</dev/null" "$_p2auto"
+# EVERY package manager gets the backstop, not only apt.
+check "...on every package manager the kit knows" "2" \
+    "$(printf '%s' "$_p2auto" | grep -c '</dev/null')"
+# ...and the command a HUMAN is told to run stays short enough to retype.
+lacks "the printed command is still the short one" "DEBIAN_FRONTEND" \
+    "$(sed -n '/^_personal_podman_install_cmd()/,/^}/p' "$ROOT/setup/lib/runtime-personal.sh")"
+has "...while the run uses the hardened twin" '_pin_auto="$(_personal_podman_install_cmd_auto' "$_p2ins"
+
 has "the apt command brings uidmap too" "apt-get install -y podman uidmap" \
     "$(sed -n '/^_personal_podman_install_cmd()/,/^}/p' "$ROOT/setup/lib/runtime-personal.sh")"
 # WINDOWS DOES NOT INSTALL IT ITSELF - the launcher does, through winget, as
