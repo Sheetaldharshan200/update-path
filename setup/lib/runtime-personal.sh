@@ -127,6 +127,126 @@ personal_heal_rootless_podman() {
 # _personal_uidmap_install_cmd — the install command for THIS distribution, or
 # empty when its package manager is not one the kit knows. Named separately so
 # the heal above reads as one decision.
+# _personal_podman_install_cmd — the one command that installs Podman on this
+# machine, or nothing when the package manager is not one the kit knows.
+#
+# uidmap rides along on Debian and Ubuntu: rootless Podman needs newuidmap and
+# newgidmap, they ship in a separate package there, and without them the
+# failure arrives much later, inside a container start, naming neither Podman
+# nor the package. The same reasoning as _personal_uidmap_install_cmd below,
+# which stays for the machine that has Podman but not those binaries.
+_personal_podman_install_cmd() {
+    if command -v apt-get >/dev/null 2>&1; then printf 'apt-get install -y podman uidmap\n'; return 0; fi
+    if command -v dnf     >/dev/null 2>&1; then printf 'dnf install -y podman\n'; return 0; fi
+    if command -v yum     >/dev/null 2>&1; then printf 'yum install -y podman\n'; return 0; fi
+    if command -v zypper  >/dev/null 2>&1; then printf 'zypper install -y podman\n'; return 0; fi
+    if command -v pacman  >/dev/null 2>&1; then printf 'pacman -S --noconfirm podman\n'; return 0; fi
+    if command -v apk     >/dev/null 2>&1; then printf 'apk add --no-cache podman\n'; return 0; fi
+    return 1
+}
+
+# personal_podman_installable — can this machine be given Podman by the kit?
+# A command to run and a way to become root: without either, the install stays
+# the user's to do and the gate says so before anything is downloaded.
+personal_podman_installable() {
+    _ppi_cmd="$(_personal_podman_install_cmd 2>/dev/null || true)"
+    [ -n "$_ppi_cmd" ] || return 1
+    [ "$(id -u 2>/dev/null || echo 1)" = "0" ] && return 0
+    command -v sudo >/dev/null 2>&1
+}
+
+# personal_install_podman — Podman, when the database step finds it missing.
+#
+# WHERE THIS RUNS MATTERS. The launcher is installed first and the database is
+# deployed second, and Podman is the thing the second step needs - so it is
+# fetched between them, named, and installed once. Doing it in the gate instead
+# would put a package install in front of a machine that has not yet agreed to
+# anything, and refusing there (which is what happened before) sent a user off
+# to a package manager and back to the beginning of the install.
+#
+# It asks first, because this is the one thing in the kit that touches the
+# system rather than the user's home: same shape as the rootless self-heal
+# above, same opt-in for an unattended run.
+#
+# AND IT RETURNS RATHER THAN ENDING THE RUN. Saying no used to close the whole
+# install - the database step, and with it the launcher, exapump, the AI bridge
+# and the exakit command itself, none of which the user had declined. Every
+# other step in the kit that cannot finish records itself and lets the rest go
+# on; this one now does too, and the closing summary names the one command that
+# finishes it. 1 means "no database this time", and the caller stops there.
+personal_install_podman() {
+    command -v podman >/dev/null 2>&1 && return 0
+    case "$(detect_os)" in
+        linux|wsl) : ;;
+        *) return 0 ;;   # macOS and Windows: the launcher brings its own
+    esac
+
+    _pin_cmd="$(_personal_podman_install_cmd 2>/dev/null || true)"
+    _pin_where="on this machine"
+    [ "$(detect_os)" = wsl ] && _pin_where="inside this distro"
+
+    warn "Podman is not installed $_pin_where, and the database runs through it."
+    if [ -z "$_pin_cmd" ]; then
+        info "This machine's package manager is not one the kit knows, so install Podman yourself and re-run."
+        exakit_note_failure "Podman is not installed and the kit does not know this machine's package manager"
+        return 1
+    fi
+    if [ "$(id -u 2>/dev/null || echo 1)" != "0" ] && ! command -v sudo >/dev/null 2>&1; then
+        info "The kit can install it, but 'sudo' is not on PATH. Run this as root, then re-run the installer:"
+        info "  $_pin_cmd"
+        exakit_note_failure "Podman is not installed and 'sudo' is not on PATH ($_pin_cmd)"
+        return 1
+    fi
+
+    _pin_sudo=""
+    [ "$(id -u 2>/dev/null || echo 1)" = "0" ] || _pin_sudo="sudo "
+    if [ -n "$(_exakit_prompt_tty)" ]; then
+        confirm_env EXAKIT_INSTALL_PODMAN "Install it now? It runs one command as root${_pin_sudo:+ and will ask for your password}" y || {
+            info "Not installed. To do it yourself:  ${_pin_sudo}$_pin_cmd"
+            exakit_note_failure "Podman was not installed (declined); the database needs it"
+            return 1
+        }
+    else
+        # Unattended: a package install is a system change, so it is opted into
+        # rather than assumed - the same rule the rootless self-heal follows.
+        case "${EXAKIT_INSTALL_PODMAN:-}" in
+            1|y|Y|yes|YES|Yes) : ;;
+            *)
+                info "The kit can install it for you, but it changes the system, so an unattended run has to opt in:"
+                info "  EXAKIT_INSTALL_PODMAN=1  (or run it yourself: ${_pin_sudo}$_pin_cmd)"
+                exakit_note_failure "Podman is not installed; an unattended run needs EXAKIT_INSTALL_PODMAN=1"
+                return 1
+                ;;
+        esac
+    fi
+
+    info "Installing Podman: ${_pin_sudo}$_pin_cmd"
+    EXAKIT_ACTIVE_LABEL="Installing Podman"
+    # NOT run_logged: sudo may ask for a password, and a captured command with a
+    # spinner over it is a machine that looks hung. The command itself is in the
+    # log above, and what it prints goes to the screen like any other install.
+    # shellcheck disable=SC2086
+    if ! ${_pin_sudo}sh -c "$_pin_cmd"; then
+        EXAKIT_ACTIVE_LABEL=""
+        info "Run it yourself and re-run the installer:  ${_pin_sudo}$_pin_cmd"
+        exakit_note_failure "Podman could not be installed (${_pin_sudo}$_pin_cmd)"
+        return 1
+    fi
+    EXAKIT_ACTIVE_LABEL=""
+    if ! command -v podman >/dev/null 2>&1; then
+        warn "The install reported success, but 'podman' is still not on PATH."
+        info "Open a new shell and re-run the installer."
+        exakit_note_failure "Podman installed but not on PATH in this shell"
+        return 1
+    fi
+    ok "Podman installed ($(podman --version 2>/dev/null | head -1))"
+    # The sub-id ranges and uidmap are checked the moment Podman exists, so a
+    # machine that has just been given it is not left one container start away
+    # from a failure that names neither.
+    personal_heal_rootless_podman || true
+    return 0
+}
+
 _personal_uidmap_install_cmd() {
     if command -v apt-get >/dev/null 2>&1; then printf 'apt-get install -y uidmap\n'; return 0; fi
     if command -v dnf     >/dev/null 2>&1; then printf 'dnf install -y shadow-utils\n'; return 0; fi
@@ -163,18 +283,39 @@ personal_check_requirements() {
                 # returns it.
                 _pcr_where="on Linux"
                 [ "$_pcr_os" = wsl ] && _pcr_where="in WSL"
-                error "This machine is not ready: the Exasol Personal local deployment ${_pcr_where} needs Podman, and 'podman' is not on PATH."
-                if [ "$_pcr_os" = wsl ]; then
-                    # Inside WSL the package manager is the distro's own, and
-                    # uidmap is the part people miss: without it rootless podman
-                    # fails later, deep inside a container start, with an error
-                    # that names neither podman nor the missing package.
-                    info "Install it inside this distro (Debian/Ubuntu: 'sudo apt-get install -y podman uidmap'), then re-run."
-                    info "Podman Desktop or Docker Desktop on the WINDOWS side does not count - the launcher runs in here and looks on this PATH."
-                    die "Podman is required for the Exasol Personal runtime in WSL."
+                if personal_podman_installable; then
+                    # THE KIT CAN FETCH IT, so this is not a reason to stop.
+                    # personal_install_podman runs at the top of the database
+                    # step - after the launcher, before the deployment - and
+                    # asks first. Falling through rather than returning: the
+                    # RAM and free-disk checks below are the rest of this gate,
+                    # and a machine short of both would otherwise hear about
+                    # neither.
+                    info "Podman is not installed ${_pcr_where}, and the database needs it - the kit installs it before the database step."
+                else
+                    # THE KIT CANNOT FETCH IT HERE - and that used to end the
+                    # run before a single file was written, taking the
+                    # launcher, exapump, the AI bridge and the exakit command
+                    # with it. None of those need Podman. ONE PLACE decides
+                    # what a missing Podman costs, and it is the database step:
+                    # it records the failure and the closing summary names the
+                    # command that finishes the job. Still said here, though,
+                    # because hearing it at the start is what saves someone
+                    # watching a whole install to find out.
+                    warn "Podman is not installed ${_pcr_where}, and the kit cannot install it on this machine."
+                    info "The database step will be skipped; everything that does not need it still installs."
+                    if [ "$_pcr_os" = wsl ]; then
+                        # Inside WSL the package manager is the distro's own,
+                        # and uidmap is the part people miss: without it
+                        # rootless podman fails later, deep inside a container
+                        # start, with an error that names neither podman nor
+                        # the missing package.
+                        info "Install it inside this distro (Debian/Ubuntu: 'sudo apt-get install -y podman uidmap'), then run 'exakit update'."
+                        info "Podman Desktop or Docker Desktop on the WINDOWS side does not count - the launcher runs in here and looks on this PATH."
+                    else
+                        info "Install it with your package manager (e.g. 'sudo apt-get install -y podman' or 'sudo dnf install -y podman'), then run 'exakit update'."
+                    fi
                 fi
-                info "Install it with your package manager (e.g. 'sudo apt-get install -y podman' or 'sudo dnf install -y podman'), then re-run."
-                die "Podman is required for the Exasol Personal runtime on Linux."
             fi
             # ROOTLESS IS CHECKED HERE, AND FIXED HERE. Nothing used to look
             # at it on the install path at all: the preflight knew, printed a
@@ -182,8 +323,11 @@ personal_check_requirements() {
             # first a user heard of a missing sub-id range was a container
             # start failing minutes later, naming neither Podman nor the range.
             # Same place as the podman check above, so it happens before
-            # anything is downloaded.
-            personal_heal_rootless_podman
+            # anything is downloaded. Only once Podman exists, though: on a
+            # machine that is about to be given it there is nothing yet to
+            # check, and personal_install_podman runs this itself the moment
+            # the package lands.
+            command -v podman >/dev/null 2>&1 && personal_heal_rootless_podman
             ;;
         *)
             error "Exasol Personal supports macOS, Linux (native or WSL) and Windows x86_64 - it does not support $_pcr_os."
@@ -978,9 +1122,58 @@ personal_recover_slow_first_boot() {
     return 1
 }
 
+# _personal_podman_answers - the smallest question that needs all of podman to
+# work. Sets _ppr_said to the last thing it said, for the reason line.
+_personal_podman_answers() {
+    _ppr_said="$(exakit_run_bounded 30 podman info --format '{{.Host.Arch}}' 2>&1)" && return 0
+    _ppr_said="$(printf '%s\n' "$_ppr_said" | grep -v '^[[:space:]]*$' | tail -1)"
+    return 1
+}
+
+# personal_podman_running - INSTALLED IS NOT RUNNING, and the difference is a
+# whole failed install. `command -v podman` answers whether the binary is on
+# PATH; it says nothing about whether podman can start a container. A rootless
+# podman with no sub-id range, a storage directory left behind by a different
+# uid, a service the distro never enabled - each of those has podman on PATH
+# and fails the instant the launcher asks it for anything, several minutes in,
+# with an error that names neither podman nor the kit.
+#
+# Podman on Linux has no daemon to be "up", so `podman info` IS the check: it
+# needs the binary, the storage, the sub-id ranges and the user namespace, and
+# it is the same thing the launcher does first. Windows has a machine that can
+# be stopped, which is why its twin (Test-PersonalPodmanRunning) starts one.
+#
+# 0 when podman answers, 1 when it does not - with the reason left behind for
+# the step to record. Not installed is 0: that is a different failure, already
+# named by personal_install_podman.
+personal_podman_running() {
+    command -v podman >/dev/null 2>&1 || return 0
+    _personal_podman_answers && return 0
+    # ONE REPAIR, THEN ASK AGAIN. Much the commonest reason a rootless podman
+    # is installed and still cannot start anything is a missing sub-id range,
+    # which the heal fixes with consent. Anything else is reported as it is.
+    personal_heal_rootless_podman
+    _personal_podman_answers && return 0
+    warn "Podman is installed, but it cannot run containers on this machine."
+    [ -n "${_ppr_said:-}" ] && info "What it said: $_ppr_said"
+    info "Check it with 'podman info'; once that answers, run 'exakit update' to finish the install."
+    exakit_note_failure "Podman is installed but not usable ('podman info' failed): ${_ppr_said:-no output}"
+    return 1
+}
+
 # personal_deploy_local — run the local deployment. This is the long step
 # (usually under 2 minutes); output stays visible and is logged.
 personal_deploy_local() {
+    # BEFORE ANYTHING ELSE IN THIS STEP: the deployment runs through Podman, so
+    # a machine without it is given it here - after the launcher, before the
+    # database. No-op wherever Podman is already there, and on the platforms
+    # whose launcher brings its own. A no, or a machine it cannot install on,
+    # ends this STEP and not the run: the caller records it and the install
+    # carries on to what does not need a database.
+    personal_install_podman || return 1
+    # AND THAT IT ACTUALLY RUNS. A podman that is present but cannot start a
+    # container fails inside the launcher, minutes later, naming neither.
+    personal_podman_running || return 1
     # A reachable Exasol is already up (this run, a previous run, or the user
     # started it by hand). `exasol info` is the launcher's own health signal.
     # Checked BEFORE the port test below so a healthy database that legitimately

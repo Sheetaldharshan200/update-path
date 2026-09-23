@@ -626,6 +626,55 @@ function Set-PersonalManifest {
 # licence to delete, and the reap-and-retry that saves the common case lives on
 # the sh side's macOS daemon, which Windows does not have. Twin of
 # personal_deploy_local.
+# Test-PersonalPodmanAnswers - the smallest question that needs all of podman
+# to work. Invoke-ExakitBounded returns $null on a non-zero exit, so a null is
+# the failure.
+function Test-PersonalPodmanAnswers {
+    param([Parameter(Mandatory)]$Podman)
+    return ($null -ne (Invoke-ExakitBounded -FilePath $Podman.Source -TimeoutSeconds 30 `
+        -Arguments @("info", "--format", "{{.Host.Arch}}")))
+}
+
+# Test-PersonalPodmanRunning - INSTALLED IS NOT RUNNING, and on Windows the gap
+# between the two is a whole VM. Podman here is a Linux machine under WSL, and
+# `podman.exe` on PATH says nothing about whether that machine is up: after a
+# reboot it is not, and Podman Desktop being closed is enough. Every podman
+# command then fails, so the launcher's deploy fails, minutes in, with an error
+# that names neither podman nor the machine.
+#
+# A STOPPED MACHINE IS STARTED, not reported. Starting one is not reconfiguring
+# it - the kit's promise about leaving an existing machine alone is about its
+# settings and its containers, and a machine that is off is the one state in
+# which it can do no work for anyone. Twin of personal_podman_running, which
+# has no machine to start and so only asks.
+function Test-PersonalPodmanRunning {
+    $podman = Get-Command podman -ErrorAction SilentlyContinue
+    # Not installed is a different failure, and the launcher's to fix.
+    if (-not $podman) { return $true }
+    if (Test-PersonalPodmanAnswers $podman) { return $true }
+
+    $list = "" + (Invoke-ExakitBounded -FilePath $podman.Source -TimeoutSeconds 30 `
+        -Arguments @("machine", "list", "--format", "{{.Name}} {{.Running}}"))
+    if ($list -match "false") {
+        Info "Podman's machine exists but is not running - starting it (this takes a minute)"
+        $script:ExakitActiveLabel = "Starting Podman's machine"
+        [void](Invoke-ExakitLogged $podman.Source "machine" "start")
+        $script:ExakitActiveLabel = ""
+        if (Test-PersonalPodmanAnswers $podman) {
+            Ok "Podman's machine is running"
+            return $true
+        }
+    }
+
+    # THE WHOLE ERROR TO THE LOG. The bounded probe above keeps only the exit
+    # code, and "podman info failed" with nothing else is not diagnosable.
+    [void](Invoke-ExakitLogged $podman.Source "info")
+    Warn2 "Podman is installed, but it cannot run containers on this machine."
+    Info "Check it with 'podman info' (and 'podman machine start' if its machine is off)."
+    Info "Once that answers, run 'exakit update' to finish the install."
+    return $false
+}
+
 function Install-PersonalDeployment {
     if (Test-PersonalDeploymentRunning) {
         Info "An Exasol database is already running on port $(Get-PersonalDbPort)."
@@ -706,7 +755,28 @@ function Install-PersonalDeployment {
     try {
 
     Info "Exasol Personal is free to use and ships under Exasol's own licence terms, not the kit's MIT licence. The launcher shows them below."
-    Info "Deploying Exasol Personal locally - the database runs through Podman's default machine, which the launcher prepares (and installs Podman if needed; that may ask for administrator approval)"
+    # PODMAN IS NAMED WHEN IT IS MISSING, not in a clause on every deploy.
+    # Windows does not install it the way the sh side does - the LAUNCHER does,
+    # through winget, as part of `install local` - so the kit's job here is to
+    # say what is about to happen and what to do if the machine refuses it.
+    # That refusal is real: an unelevated winget on a managed laptop fails, and
+    # the first the user heard of it was the launcher's own error, mid-deploy,
+    # with no mention of Podman at all. Twin of personal_install_podman, which
+    # does the installing itself where the kit owns that job.
+    if (-not (Get-Command podman -ErrorAction SilentlyContinue)) {
+        Warn2 "Podman is not installed on this machine, and the database runs through it."
+        Info "The Exasol launcher installs it as part of this step, and Windows may ask for administrator approval."
+        Info "If that is refused or fails: install it yourself with 'winget install RedHat.Podman' (a reboot may be needed), then re-run the installer."
+    } elseif (-not (Test-PersonalPodmanRunning)) {
+        # Installed, and still no database: same soft failure as a podman that
+        # was never installed, because the user is in the same position - one
+        # command away from a database, and better told now than after the
+        # launcher has spent five minutes discovering it.
+        Set-ExakitFailureReason "Podman is installed but not usable ('podman info' failed; its machine may be stopped)"
+        $script:PersonalNoPodman = $true
+        return
+    }
+    Info "Deploying Exasol Personal locally - the database runs through Podman's default machine, which the launcher prepares."
 
     $installArgs = @("install", "local")
     $flag = Get-PersonalAutoApproveFlag "install"
@@ -718,6 +788,23 @@ function Install-PersonalDeployment {
         # fresh Podman machine takes longer. Twin of the same branch in
         # personal_deploy_local; see Wait-PersonalSlowFirstBoot.
         if (-not ((Test-PersonalDeploymentExists) -and (Wait-PersonalSlowFirstBoot))) {
+            # THE LIKELIEST CAUSE FIRST. A deploy that fails with Podman still
+            # missing failed at installing Podman, and "Local deployment
+            # failed" sends the reader to look at the database instead.
+            if (-not (Get-Command podman -ErrorAction SilentlyContinue)) {
+                # NOT Fail. This is the one deployment failure the install can
+                # carry on from, and the twin of personal_deploy_local's single
+                # non-zero return: nothing has been created, nothing is half
+                # written, and the steps that do not need a database still have
+                # value. The flag - not a return value - because this function
+                # returns bare on four reuse paths, and an `if (Install-...)`
+                # caller would read every one of them as a failure.
+                Warn2 "Local deployment failed, and Podman is still not installed - that is what the launcher could not do."
+                Info "Install it yourself with 'winget install RedHat.Podman' (a reboot may be needed), then run 'exakit update'."
+                Set-ExakitFailureReason "Podman is not installed and the launcher could not install it (winget install RedHat.Podman)"
+                $script:PersonalNoPodman = $true
+                return
+            }
             Fail "Local deployment failed.$(Get-PersonalForeignDbHint) Re-running the installer retries it safely."
         }
     }

@@ -4,10 +4,7 @@ Gets you from a Linux machine to a local Exasol database with an AI assistant co
 
 ## What you need
 
-- **Podman** (rootless is fine) — the launcher deploys through it and, unlike on Windows, does not install it for you:
-  ```bash
-  command -v podman || sudo apt-get install -y podman     # dnf on Fedora/RHEL
-  ```
+- **Podman** (rootless is fine) — the database runs through it. You do not have to install it first: if it is missing, the installer says so and installs it between the launcher step and the database step. It asks before it does, because that one command needs `sudo`; answer no, or pre-answer with `EXAKIT_INSTALL_PODMAN=0`, and it prints the command for you to run instead. Either way the install carries on: everything that does not need a database still installs, and `exakit update` finishes the job once Podman is there. Podman also has to **work**, not just be installed - the kit runs `podman info` before deploying and tells you what Podman said if it cannot.
 - 8 GB+ RAM, 20 GB free disk
 - **No Python install needed.** The kit uses a system Python 3.11+ if it finds one, and otherwise installs a managed Python for its own use.
 
@@ -27,7 +24,7 @@ curl -fsSL https://raw.githubusercontent.com/krishna-exasol/update-path/main/ins
 
 What happens, in order:
 
-1. Your machine is checked (Podman, RAM, disk) and the plan is shown — a machine that cannot run Exasol Personal is refused before anything is downloaded, with the reason named
+1. Your machine is checked (Podman, RAM, disk) and the plan is shown — a machine short of RAM or disk is refused before anything is downloaded, with the reason named; a missing Podman is called out here and settled at the database step
 2. The Exasol launcher is downloaded and checksum-verified, then deploys the database locally, reachable only from your machine
 3. The database is ready, usually in a few minutes
 4. exapump (the data tool) is installed, the sample data is loaded and verified
@@ -74,7 +71,8 @@ exakit update      # bring the kit and its components up to date
 
 | Situation | What to know |
 |---|---|
-| No Podman | Install it with your package manager (`sudo apt-get install -y podman`, `sudo dnf install -y podman`) and re-run. Podman specifically: no other container engine substitutes, because the launcher only drives Podman. |
+| No Podman | The installer offers to install it for you at the database step (apt, dnf, yum, zypper, pacman or apk). If you said no, or your package manager is not one it knows, the database step is skipped and named in the closing summary — the rest of the install still completes. Install Podman yourself (`sudo apt-get install -y podman uidmap`, `sudo dnf install -y podman`) and run `exakit update` to finish. Podman specifically: no other container engine substitutes, because the launcher only drives Podman. |
+| Podman is installed but nothing works | The kit asks `podman info` before it deploys, so this is caught up front rather than minutes into the launcher. The commonest cause is a missing subordinate id range, which the kit offers to repair; otherwise fix what `podman info` reports and run `exakit update`. |
 | Rootless Podman | Fully supported and the usual case. Your user needs subordinate id ranges (`/etc/subuid`, `/etc/subgid` — most distros set these up when the user is created) and cgroups v2 (the default on every current distro). |
 | Autostart on a headless server | `exakit autostart` registers a systemd **user** unit that runs the launcher's start. A user unit only runs while you have a session, so the kit enables lingering for your user when it can (`loginctl enable-linger`); where that is refused, it says so and names the command an admin has to run. |
 | Upgrading the launcher | `exakit update` explains what a launcher update does before asking — including the one-time longer first start after it (the deployment rebuilds part of its runtime once; your data is kept). |

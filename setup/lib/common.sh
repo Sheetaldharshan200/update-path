@@ -9636,7 +9636,23 @@ kit_shared_steps() {
     _script_dir="$3"
     _kit_root="$4"
 
-    if command -v exapump_install >/dev/null 2>&1; then
+    # NO DATABASE, NO STEPS THAT NEED ONE. When the database step records
+    # itself as unfinished - today that means Podman was not installed - every
+    # step after it would fail one at a time against a database that is not
+    # there, each with its own error and its own entry in the closing summary.
+    # One reason, said once, is the truth: the summary already carries it, and
+    # `exakit update` runs the lot once Podman is in place. The exakit command
+    # itself is still installed at the end, because it is what the reader needs
+    # next.
+    _kss_nodb=0
+    if exakit_soft_failed runtime; then
+        _kss_nodb=1
+        info "Skipping exapump, the sample data, the AI bridge and pyexasol - they all need the database, which is not installed"
+    fi
+
+    if [ "$_kss_nodb" = 1 ]; then
+        :
+    elif command -v exapump_install >/dev/null 2>&1; then
         if begin_step exapump "Step ${_step_no}/${_total}  exapump (data loading CLI)"; then
             if exakit_soft_step exapump "exakit update" "exapump" \
                     _exakit_install_exapump; then
@@ -9653,7 +9669,9 @@ kit_shared_steps() {
     # user is provisioned, granted, and posture-checked against a schema
     # that already holds the sample tables — and the AI client has data to
     # query the moment it connects.
-    if exakit_soft_failed exapump; then
+    if [ "$_kss_nodb" = 1 ]; then
+        :
+    elif exakit_soft_failed exapump; then
         info "Skipping the sample data — it is loaded with exapump, which is not installed"
     else
         # `|| true` alone hid a failed load completely: the run carried on (right)
@@ -9676,7 +9694,9 @@ kit_shared_steps() {
         exakit_clear_failure_note
     fi
 
-    if command -v mcp_install >/dev/null 2>&1; then
+    if [ "$_kss_nodb" = 1 ]; then
+        :
+    elif command -v mcp_install >/dev/null 2>&1; then
         if begin_step mcp "Step ${_step_no}/${_total}  AI bridge (MCP server, clients and skills)"; then
             if exakit_soft_step mcp "exakit update" "the MCP server" _exakit_install_mcp; then
                 mark_step mcp
@@ -9716,7 +9736,9 @@ kit_shared_steps() {
     exakit_clear_failure_note
     _step_no=$((_step_no + 1))
 
-    if command -v pyexasol_install >/dev/null 2>&1; then
+    if [ "$_kss_nodb" = 1 ]; then
+        :
+    elif command -v pyexasol_install >/dev/null 2>&1; then
         if begin_step pyexasol "Step ${_step_no}/${_total}  pyexasol (Exasol Python driver)"; then
             # pyexasol is the last, optional Component and it must not be able to
             # end the run: the exakit helper step below still has to happen, or
