@@ -9902,6 +9902,11 @@ kit_shared_steps() {
 # not a reference screen.
 connection_summary() {
     [ -f "$EXAKIT_MANIFEST" ] || { warn "No installation found ($EXAKIT_MANIFEST missing)"; return 1; }
+    # NO DATABASE, NO CONNECTION PANEL. A DSN printed after the database step
+    # failed reads as "connect here" to an address nothing is listening on; the
+    # soft-failure summary that follows says what is missing and how to finish.
+    # Twin of the same gate in Show-ExakitConnectionSummary.
+    exakit_soft_failed runtime && return 0
     _cs_dsn="$(manifest_get runtime.dsn 2>/dev/null)"
     _cs_user="$(manifest_get runtime.user 2>/dev/null)"
     printf '\n'

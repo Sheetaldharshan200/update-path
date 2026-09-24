@@ -1014,6 +1014,25 @@ legacy_crossing_after() {
     [ -s "$_lca_dir/index" ] || return 0
     [ "$(manifest_get legacy.restored 2>/dev/null || true)" = "" ] || return 0
 
+    # NO NEW DATABASE, NO QUESTION. When the deployment step failed there is
+    # nothing to restore into: asking "Migrate my data?" and then reporting
+    # "could not be restored" read as data loss, while the copy was safe on
+    # disk all along. Nothing is asked or recorded, so the next run starts the
+    # crossing fresh and asks once the database is up. The old container was
+    # stopped to free the port - it is started again, so the user is not left
+    # with no database at all; the next run stops it again before deploying.
+    # Twin of the same gate in Invoke-LegacyCrossingAfter.
+    if exakit_soft_failed runtime; then
+        echo
+        _lca_container="$(legacy_container)"
+        if [ -n "$_lca_container" ] && legacy_start_container >/dev/null 2>&1; then
+            info "Your previous database ($_lca_container) is running again, with all its data, while the new one is not installed."
+        fi
+        info "Your data is safe: the copy is kept at $(ui_tilde "$_lca_dir"), and nothing in the old database was changed."
+        info "Re-run the installer to finish - it offers to copy your data in once the new database is up: $(exakit_install_command)"
+        return 0
+    fi
+
     _lca_choice="$(manifest_get legacy.choice 2>/dev/null || true)"
     if [ -z "$_lca_choice" ]; then
         _lca_own="$(manifest_get legacy.tables_own 2>/dev/null || true)"

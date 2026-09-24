@@ -974,6 +974,25 @@ function Invoke-LegacyCrossingAfter {
     if (-not (Test-Path $indexPath)) { return }
     if ("" + (Get-ExakitManifestValue "legacy.restored") -ne "") { return }
 
+    # NO NEW DATABASE, NO QUESTION. When the deployment step failed there is
+    # nothing to restore into: asking "Migrate my data?" and then reporting
+    # "could not be restored" read as data loss, while the copy was safe on
+    # disk all along. Nothing is asked or recorded, so the next run starts the
+    # crossing fresh and asks once the database is up. The old container was
+    # stopped to free the port - it is started again, so the user is not left
+    # with no database at all; the next run stops it again before deploying.
+    # Twin of the same gate in legacy_crossing_after.
+    if (Test-ExakitSoftFailed -Component "runtime") {
+        Write-Host ""
+        $container = Get-LegacyContainer
+        if ($container -and (Start-LegacyContainer)) {
+            Info "Your previous database ($container) is running again, with all its data, while the new one is not installed."
+        }
+        Info "Your data is safe: the copy is kept at $(Get-ExakitTilde $dir), and nothing in the old database was changed."
+        Info "Re-run the installer to finish - it offers to copy your data in once the new database is up: $(Get-ExakitInstallCommand)"
+        return
+    }
+
     $choice = "" + (Get-ExakitManifestValue "legacy.choice")
     if (-not $choice) {
         $own = "" + (Get-ExakitManifestValue "legacy.tables_own")
