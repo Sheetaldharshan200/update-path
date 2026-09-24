@@ -680,7 +680,21 @@ check "the twin starts it before the load runs" "yes" \
     "$(printf '%s\n' "$WIN_SETUP" | awk '/Start-ExakitMcpPrefetch/{a=NR} /Request-ExakitDataLoadOffer/{if(a&&NR>a){print "yes";exit}}' | head -1)"
 # Collected by the step that needs it, with the inline prime still there for a
 # run where no prefetch happened - that fallback is what keeps this optional.
-has "the shell collects it in mcp_install"  'wait "$EXAKIT_MCP_PREFETCH_PID"' "$MCP_INSTALL_SH"
+# NOT `wait`, and the suite pins that. mcp_install runs inside the soft-step
+# SUBSHELL (`if ( "$@" )` in exakit_soft_step), and a shell can only wait on its
+# OWN children - `wait` on a sibling pid returns non-zero immediately without
+# waiting, so the log is read mid-write and then deleted under a live process.
+# Seen on a real install: the collected output was uv's first progress line,
+# "Installed 87 packages in 429ms", six seconds after the prefetch started, and
+# the prime was graded "Could not prime" over a download that was still going.
+lacks "the collector does not wait on a pid it does not own" \
+    'wait "$EXAKIT_MCP_PREFETCH_PID"' "$MCP_INSTALL_SH"
+has "...it polls for the process instead" \
+    'kill -0 "$EXAKIT_MCP_PREFETCH_PID"' "$MCP_INSTALL_SH"
+has "...and takes the exit code from a file, the only way across a subshell" \
+    'cat "$EXAKIT_MCP_PREFETCH_LOG.rc"' "$MCP_INSTALL_SH"
+has "the prefetch records that exit code" \
+    'EXAKIT_MCP_PREFETCH_LOG.rc"' "$(cat "$ROOT/setup/lib/mcp.sh")"
 has "...and still primes inline without one" 'uvx "${EXAKIT_MCP_PACKAGE}@${EXAKIT_MCP_VERSION}" --help 2>&1' "$MCP_INSTALL_SH"
 has "the twin collects it in Install-Mcp"    'Receive-ExakitMcpPrefetch' "$MCP_INSTALL_PS"
 has "...and still primes inline without one" 'Get-UvxPath) "$($script:McpPackage)@$($script:McpVersion)" "--help"' "$MCP_INSTALL_PS"
