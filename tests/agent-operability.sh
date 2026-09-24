@@ -960,7 +960,15 @@ has "the kit-level status says no database, not 'not installed'" 'top_status = "
 has "...with the runnable installer command as the remedy, never exakit start" \
     'remedies["database"] = install_cmd' "$EXAKIT_SH_JC"
 has "state queries raise the read-only flag" 'export EXAKIT_READONLY_QUERY=1' "$EXAKIT_SH_JC"
+# IN A SCRATCH HOME, because this asks whether a FILE appeared. Run against the
+# developer's real kit home it answers about a note some earlier, unrelated run
+# left there - a failed data load is enough - and reports WROTE about a write
+# this check never made. (It could not have written one itself: the read-only
+# flag is the thing under test. But a green check that depends on the
+# developer's machine being tidy is not a check.) Same hazard dry-run-matrix.sh
+# guards against by name.
 check "and the note writer honours it" "kept-clean" "$( (
+    EXAKIT_HOME="$WORK/note-home"; mkdir -p "$EXAKIT_HOME"
     EXAKIT_READONLY_QUERY=1 exakit_note_failure "should never land" 2>/dev/null
     [ -f "$(exakit_failure_note_file)" ] && echo WROTE || echo kept-clean
 ) )"

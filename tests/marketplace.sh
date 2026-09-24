@@ -59,15 +59,29 @@ export HOME
 EXAKIT_EXAPUMP_CONFIG_DIR="$HOME/.exapump"
 export EXAKIT_EXAPUMP_CONFIG_DIR
 mkdir -p "$EXAKIT_HOME" "$EXAKIT_BIN_DIR" "$HOME"
-# The suite must behave the same on a machine that really has dash-server
+# The suite must behave the same on a machine that really has these add-ons
 # installed — the feature working must not fail its own tests. The generic
 # system-present probe walks PATH, so rebuild PATH without any directory that
-# carries a real dash-server (the system-install section below adds its own
+# carries a real add-on launcher (the system-install section below adds its own
 # stub dir when it wants one).
+#
+# EVERY LAUNCHER, NOT JUST dash-server. This filter named one add-on while the
+# probe it defends against walks PATH for all of them, so installing any other
+# one broke the suite on the developer's own machine. Found by installing
+# json-tables here: `command -v exasol-json-tables` found the real binary in
+# ~/.local/bin, the menu correctly said "json-tables is already on this system —
+# the kit leaves it alone", and three checks that expect it to be installable
+# failed. The product was right and the suite was not hermetic. Launcher names
+# differ from ids on purpose (json-tables installs `exasol-json-tables`), so
+# they are listed rather than derived.
 _clean_path=""
 _old_ifs="$IFS"; IFS=:
 for _dir in $PATH; do
-    [ -x "$_dir/dash-server" ] || _clean_path="${_clean_path:+$_clean_path:}$_dir"
+    _keep=1
+    for _launcher in dash-server exasol-json-tables dbt-exasol exasol-scheduler; do
+        [ -x "$_dir/$_launcher" ] && { _keep=0; break; }
+    done
+    [ "$_keep" = 1 ] && _clean_path="${_clean_path:+$_clean_path:}$_dir"
 done
 IFS="$_old_ifs"
 PATH="$_clean_path"
