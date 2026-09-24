@@ -1340,7 +1340,8 @@ check "gate(linux, no podman, uninstallable) carries on" \
     "OK: Compatibility check passed (linux arm64, 16 GB RAM, 100 GB free)" "$(printf '%s\n' "$_p2nolinux" | tail -1)"
 has "...naming podman as what is missing" "Podman is not installed on Linux" "$_p2nolinux"
 has "...and what it costs" "database step will be skipped" "$_p2nolinux"
-has "...and the command that finishes the job later" "exakit update" "$_p2nolinux"
+has "...and the command that finishes the job later" "re-run the installer" "$_p2nolinux"
+lacks "...which is the installer, never exakit update" "exakit update" "$_p2nolinux"
 lacks "...and nothing dies" "DIED" "$_p2nolinux"
 check "gate(linux, podman) passes" \
     "OK: Compatibility check passed (linux arm64, 16 GB RAM, 100 GB free)" "$(_p2gate linux 1)"
