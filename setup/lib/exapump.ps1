@@ -749,8 +749,21 @@ function Get-ExakitUploadFailureReason {
         }
         return $out
     }
-    $out = $text -replace "^Error: ", ""
-    if ($out.Length -gt 100) { $out = $out.Substring(0, 100) }
+    # THE FALLBACK TRIMMED WORSE THAN THE BRANCH ABOVE IT, and the fallback is
+    # what an unrecognised engine error lands in - the ones a reader most needs
+    # whole. 160 at a word boundary with an ellipsis up there; a bare 100-character
+    # chop down here, mid-word, no ellipsis, and the "(Session: ...)" noise left in.
+    # Observed on a real load:
+    #     duplicate column name: name [line 4, column 5] (Session: 187
+    #     Failed to infer CSV schema from '/Users/me/Desktop/stress-lo
+    # Both stop mid-token, and the second loses the path it was about to name.
+    $out = ($text -replace "^Error: ", "") -replace " \(Session: \d+\)", ""
+    if ($out.Length -gt 160) {
+        $out = $out.Substring(0, 160)
+        $sp = $out.LastIndexOf(" ")
+        if ($sp -gt 0) { $out = $out.Substring(0, $sp) }
+        $out = "$out..."
+    }
     return $out
 }
 
@@ -1317,15 +1330,28 @@ function Test-ExakitJsonTablesApplicable {
 # Returns $true when the engine is ready, $false when this machine cannot have
 # it - that case still speaks up, because a silent failure is worse than a loud
 # one.
+# ONE ATTEMPT PER RUN, AND THAT IS NOT AN OPTIMISATION. This is called per FILE,
+# so a folder of ten JSON files whose engine cannot install downloaded the same
+# failing wheel ten times and printed the same three lines ten times - measured
+# at 95 seconds to load nothing, of which almost all was re-downloading a wheel
+# that had already failed its checksum. Whatever stops the engine installing is
+# the same on the second file as on the first. Per-process, so the next
+# `exakit data-load` tries again. Twin of $_EXAKIT_JSON_TABLES_BLOCKED.
+$script:JsonTablesBlocked = ""
 function Confirm-ExakitJsonTablesReady {
     if (Test-ExakitJsonTablesReady) { return $true }
+    if ($script:JsonTablesBlocked) {
+        Warn2 $script:JsonTablesBlocked
+        return $false
+    }
 
     # No dot-sourcing fallback here, unlike the shell: a dot-sourced module
     # inside a function loads into THAT function's scope and is gone on return.
     # Both entry points (setup/exakit.ps1 and setup-windows.ps1) source
     # every add-on module at the top, so a missing one means an old kit copy.
     if (-not (Get-Command Install-JsonTables -ErrorAction SilentlyContinue)) {
-        Warn2 "This kit copy does not carry the JSON engine - update the kit first: exakit update"
+        $script:JsonTablesBlocked = "This kit copy does not carry the JSON engine - update the kit first: exakit update"
+        Warn2 $script:JsonTablesBlocked
         return $false
     }
     if (-not (Test-ExakitJsonTablesApplicable)) {
@@ -1333,7 +1359,8 @@ function Confirm-ExakitJsonTablesReady {
         return $false
     }
     if (-not (Get-Command Invoke-ExakitMarketplaceApply -ErrorAction SilentlyContinue)) {
-        Warn2 "The marketplace installer is not available in this kit build."
+        $script:JsonTablesBlocked = "The marketplace installer is not available in this kit build."
+        Warn2 $script:JsonTablesBlocked
         return $false
     }
     # The marketplace's own installer, so the add-on arrives exactly as it would
@@ -1343,6 +1370,7 @@ function Confirm-ExakitJsonTablesReady {
     # plural, and one id is the same work.
     try { Invoke-ExakitMarketplaceApply -Ids @("json-tables") | Out-Null } catch { }
     if (-not (Test-ExakitJsonTablesReady)) {
+        $script:JsonTablesBlocked = "The JSON engine could not be installed, so this file was not loaded (details: exakit logs)."
         Warn2 "The JSON engine could not be installed, so this file was not loaded."
         Info "Everything already in the database is untouched. Details: exakit logs"
         return $false
