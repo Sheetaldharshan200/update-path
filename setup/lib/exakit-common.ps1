@@ -5588,6 +5588,11 @@ function Request-ExakitSkillsInstallOffer {
 # end with is not a reference screen. Twin of connection_summary in common.sh.
 function Show-ExakitConnectionSummary {
     if (-not (Test-Path $script:ManifestPath)) { Warn2 "No installation found ($script:ManifestPath missing)"; return }
+    # NO DATABASE, NO CONNECTION PANEL. A DSN printed after the database step
+    # failed reads as "connect here" to an address nothing is listening on; the
+    # soft-failure summary that follows says what is missing and how to finish.
+    # Twin of the same gate in connection_summary.
+    if (Test-ExakitSoftFailed -Component "runtime") { return }
     $dsn = Get-ExakitManifestValue "runtime.dsn"
     $user = Get-ExakitManifestValue "runtime.user"
     if (-not $dsn) { $dsn = "unknown" }
