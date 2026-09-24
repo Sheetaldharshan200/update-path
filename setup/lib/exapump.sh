@@ -638,7 +638,20 @@ exakit_upload_failure_reason() {
             esac
             printf '%s\n' "$_ufr_detail" ;;
         *)
-            printf '%s\n' "$(printf '%s' "$_ufr_line" | sed 's/^Error: //' | cut -c1-100)" ;;
+            # THE FALLBACK TRIMMED WORSE THAN THE BRANCH ABOVE IT, and the fallback is
+            # what an unrecognised engine error lands in - the ones a reader most needs
+            # whole. 160 at a word boundary with an ellipsis up there; a bare 100-character
+            # chop down here, mid-word, no ellipsis, and the "(Session: ...)" noise left in.
+            # Observed on a real load:
+            #     duplicate column name: name [line 4, column 5] (Session: 187
+            #     Failed to infer CSV schema from '/Users/me/Desktop/stress-lo
+            # Both stop mid-token, and the second loses the path it was about to name.
+            _ufr_rest="$(printf '%s' "$_ufr_line" | sed -e 's/^Error: //' -e 's/ (Session: [0-9]*)//g')"
+            case "$_ufr_rest" in
+                ????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????*)
+                    _ufr_rest="$(printf '%s' "$_ufr_rest" | cut -c1-160 | sed 's/ [^ ]*$//')..." ;;
+            esac
+            printf '%s\n' "$_ufr_rest" ;;
     esac
 }
 
@@ -1259,25 +1272,42 @@ _exakit_json_tables_load_module() {
 #
 # Returns 0 when the engine is ready, 1 when this machine cannot have it - that
 # case still speaks up, because a silent failure is worse than a loud one.
+#
+# ONE ATTEMPT PER RUN, AND THAT IS NOT AN OPTIMISATION. This is called per FILE,
+# so a folder of ten JSON files whose engine cannot install downloaded the same
+# failing wheel ten times and printed the same three lines ten times - measured
+# at 95 seconds to load nothing, of which almost all was re-downloading a wheel
+# that had already failed its checksum. Whatever stops the engine installing is
+# the same on the second file as on the first. The memo is per-process, so the
+# next `exakit data-load` tries again.
+_EXAKIT_JSON_TABLES_BLOCKED=""
 _exakit_json_tables_ensure() {
     _exakit_json_tables_ready && return 0
+    if [ -n "$_EXAKIT_JSON_TABLES_BLOCKED" ]; then
+        warn "$_EXAKIT_JSON_TABLES_BLOCKED"
+        return 1
+    fi
 
     _exakit_json_tables_load_module || {
+        _EXAKIT_JSON_TABLES_BLOCKED="This kit copy does not carry the JSON engine - update the kit first: exakit update"
         warn "This kit copy does not carry the JSON engine - update the kit first: exakit update"
         return 1
     }
     if command -v _exakit_addon_applicable >/dev/null 2>&1 && \
        ! _exakit_addon_applicable json-tables; then
         _jte_why="$(_exakit_addon_applicable_reason json-tables 2>/dev/null || true)"
+        _EXAKIT_JSON_TABLES_BLOCKED="JSON files need an engine that is not available on this machine${_jte_why:+: $_jte_why}"
         warn "JSON files need an engine that is not available on this machine${_jte_why:+: $_jte_why}"
         info "CSV and Parquet load without it. Convert the file, or load it from a supported machine."
         return 1
     fi
     command -v _exakit_marketplace_install_one >/dev/null 2>&1 || {
+        _EXAKIT_JSON_TABLES_BLOCKED="The marketplace installer is not available in this kit build."
         warn "The marketplace installer is not available in this kit build."
         return 1
     }
     if ! _exakit_marketplace_install_one json-tables >> "${EXAKIT_LOG_FILE:-/dev/null}" 2>&1; then
+        _EXAKIT_JSON_TABLES_BLOCKED="The JSON engine could not be installed, so this file was not loaded (details: exakit logs)."
         warn "The JSON engine could not be installed, so this file was not loaded."
         info "Everything already in the database is untouched. Details: exakit logs"
         return 1
