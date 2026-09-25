@@ -67,12 +67,12 @@
       "severity": "normal",
       "wheel": "exasol_json_tables-0.3.2-py3-none-any.whl",
       "sha256": {
-        "cargo-windows-x86_64": "ebc4f805e39d7a481936028ab34d961803e6da1cdbfa25ee95fafc32aab88c8c",
+        "cargo-windows-x86_64": "a7b59c970e2c5e0005996878b4d950b6b09a2836017603c8bed90193c9ab741a",
         "linux-aarch64": "2a800f891bad1966640391aa3bf0e3969b71296b13026c8dacd70332249f2f86",
         "linux-x86_64": "b3c1cebbcb479d12a16c5cf4afd81df2c9cc59d8cc685553200bd49786757112",
         "macos-aarch64": "a76cc138c729b3321e436cb551c7053e21f787a9fe38165e6799ddfd66bc1849",
         "wheel": "29cbbd270ca68d1fd1aa83641d65e5a8ea919377c53348f343b6598c755509b8",
-        "windows-x86_64": "33403cc1d1cec808709e9836330e8851034358f4224a68e3592c85bc5f4a5788"
+        "windows-x86_64": "8597f7e5488f11ea03a785088bd4dd6e94f872ceb6eff2ebc75f9cf802e1d4e7"
       }
     },
     "dbt-exasol": {
