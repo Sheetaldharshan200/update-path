@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "updated": "2026-09-17",
+  "updated": "2026-09-24",
   "kit": {
     "version": "0.2.0"
   },
@@ -62,17 +62,17 @@
       }
     },
     "json-tables": {
-      "version": "v0.3",
-      "release": "json-tables-v0.3",
+      "version": "v0.3.2",
+      "release": "json-tables-v0.3.2",
       "severity": "normal",
-      "wheel": "exasol_json_tables-0.3.0-py3-none-any.whl",
+      "wheel": "exasol_json_tables-0.3.2-py3-none-any.whl",
       "sha256": {
-        "cargo-windows-x86_64": "aeb2349e92de86c3da76af487737b7b3c2959ce34b3ce7b08b70d20ae5718bac",
-        "linux-aarch64": "c6e8bffd8a7f2b10397ed83a069a1db96ee0813da907de769adbce224a8bf121",
-        "linux-x86_64": "115229b1e99feef70342d87d60c6dfe815691965c624f200078edbd644ca2493",
-        "macos-aarch64": "6a19027fb455769e1c1f2915309bbd4f4ca3d77f05a35e6574d18bc2d5b8018e",
-        "wheel": "e8c2468b321d1bc8f57ac124ceb06a68ba80a8f5b7830d74dc75b581980b0f81",
-        "windows-x86_64": "acd0e1742864457019fe8963b8c8f429d12d7021dcab491def11870d73c93ff6"
+        "cargo-windows-x86_64": "ebc4f805e39d7a481936028ab34d961803e6da1cdbfa25ee95fafc32aab88c8c",
+        "linux-aarch64": "2a800f891bad1966640391aa3bf0e3969b71296b13026c8dacd70332249f2f86",
+        "linux-x86_64": "b3c1cebbcb479d12a16c5cf4afd81df2c9cc59d8cc685553200bd49786757112",
+        "macos-aarch64": "a76cc138c729b3321e436cb551c7053e21f787a9fe38165e6799ddfd66bc1849",
+        "wheel": "29cbbd270ca68d1fd1aa83641d65e5a8ea919377c53348f343b6598c755509b8",
+        "windows-x86_64": "33403cc1d1cec808709e9836330e8851034358f4224a68e3592c85bc5f4a5788"
       }
     },
     "dbt-exasol": {

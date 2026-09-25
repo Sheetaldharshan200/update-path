@@ -120,7 +120,10 @@ mcp_prefetch_begin() {
     # Its own file, not the install log: this writes while the data load is
     # writing too, and two appenders interleave into nonsense. It is folded
     # into the install log when mcp_install collects it.
-    ( uvx "${EXAKIT_MCP_PACKAGE}@${EXAKIT_MCP_VERSION}" --help >"$EXAKIT_MCP_PREFETCH_LOG" 2>&1 ) &
+    # The exit code goes to a file beside the log, because the collector cannot
+    # read it any other way - see the note on waiting in mcp_install.
+    ( uvx "${EXAKIT_MCP_PACKAGE}@${EXAKIT_MCP_VERSION}" --help >"$EXAKIT_MCP_PREFETCH_LOG" 2>&1
+      printf '%s' "$?" > "$EXAKIT_MCP_PREFETCH_LOG.rc" ) &
     EXAKIT_MCP_PREFETCH_PID=$!
     _exakit_log_file "INFO  MCP package prefetch started in the background (pid $EXAKIT_MCP_PREFETCH_PID)"
     return 0
@@ -131,7 +134,7 @@ mcp_prefetch_stop() {
     [ -n "${EXAKIT_MCP_PREFETCH_PID:-}" ] || return 0
     kill "$EXAKIT_MCP_PREFETCH_PID" 2>/dev/null
     wait "$EXAKIT_MCP_PREFETCH_PID" 2>/dev/null
-    rm -f "${EXAKIT_MCP_PREFETCH_LOG:-}" 2>/dev/null
+    rm -f "${EXAKIT_MCP_PREFETCH_LOG:-}" "${EXAKIT_MCP_PREFETCH_LOG:-}.rc" 2>/dev/null
     EXAKIT_MCP_PREFETCH_PID=""
     EXAKIT_MCP_PREFETCH_LOG=""
     return 0
@@ -152,11 +155,25 @@ mcp_install() {
     if [ -n "${EXAKIT_MCP_PREFETCH_PID:-}" ]; then
         # Started before the data load (mcp_prefetch_begin). On a machine that
         # took longer to load than to download, this has already finished and
-        # the wait returns at once - which is the whole point.
-        wait "$EXAKIT_MCP_PREFETCH_PID" 2>/dev/null
-        _prime_rc=$?
+        # the poll below returns at once - which is the whole point.
+        #
+        # NOT `wait`, AND THAT IS NOT A STYLE CHOICE. mcp_install runs inside
+        # the soft-step SUBSHELL (`if ( "$@" )` in exakit_soft_step), and a
+        # shell can only wait on its OWN children. `wait` on a sibling pid
+        # returns non-zero IMMEDIATELY without waiting for anything - so the
+        # log was read while it was still being written, yielding uv's first
+        # progress line and none of the package output the verdict is graded
+        # on, and then deleted out from under a process that was still running.
+        # Observed on a real install: "Installed 87 packages in 429ms", six
+        # seconds after the prefetch started, graded "Could not prime".
+        # kill -0 asks the same question about any process, child or not.
+        while kill -0 "$EXAKIT_MCP_PREFETCH_PID" 2>/dev/null; do
+            sleep 1
+        done
         _prime_out="$(cat "$EXAKIT_MCP_PREFETCH_LOG" 2>/dev/null)"
-        rm -f "$EXAKIT_MCP_PREFETCH_LOG" 2>/dev/null
+        _prime_rc="$(cat "$EXAKIT_MCP_PREFETCH_LOG.rc" 2>/dev/null)"
+        case "$_prime_rc" in ''|*[!0-9]*) _prime_rc=1 ;; esac
+        rm -f "$EXAKIT_MCP_PREFETCH_LOG" "$EXAKIT_MCP_PREFETCH_LOG.rc" 2>/dev/null
         EXAKIT_MCP_PREFETCH_PID=""
         EXAKIT_MCP_PREFETCH_LOG=""
     else
