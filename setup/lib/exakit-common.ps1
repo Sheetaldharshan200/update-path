@@ -4424,7 +4424,16 @@ function Confirm-ExakitRuntimeRunning {
         }
         if ($Deploy) {
             Info "Self-heal: no database deployment found - deploying one"
+            # Its result counts. Install-PersonalDeployment reports "no database"
+            # by setting PersonalNoDatabase and returning (the soft path the
+            # installer relies on), having already said why; returning here
+            # regardless let `exakit start` exit 0 with nothing behind it.
+            # Same check as setup-windows.ps1. Twin of the sh self-heal.
+            $script:PersonalNoDatabase = $false
             Install-PersonalDeployment
+            if ($script:PersonalNoDatabase) {
+                Fail "No database could be deployed (the reason is above). Once it is fixed, re-run the installer: $(Get-ExakitInstallCommand)"
+            }
             return
         }
         Fail "No database found. Start one with: exakit start (or re-run the installer)"
