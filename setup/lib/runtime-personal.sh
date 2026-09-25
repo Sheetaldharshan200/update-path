@@ -173,7 +173,11 @@ _personal_podman_install_cmd_auto() {
     [ -n "$_ppica_cmd" ] || return 1
     case "$_ppica_cmd" in
         apt-get*)
-            printf 'DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a NEEDRESTART_SUSPEND=1 %s -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold </dev/null\n' \
+            # `apt-get update` first: a fresh Ubuntu image or container ships
+            # with empty package lists, and the install then fails with
+            # "Unable to locate package podman". Run inside the same `sh -c` so
+            # sudo covers both halves. The printed command stays the short one.
+            printf 'DEBIAN_FRONTEND=noninteractive apt-get update -qq </dev/null && DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a NEEDRESTART_SUSPEND=1 %s -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold </dev/null\n' \
                 "$_ppica_cmd"
             ;;
         *)

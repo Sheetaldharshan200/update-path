@@ -1,6 +1,6 @@
 ---
 name: exasol-marketplace
-description: Browse and install the starter kit's optional add-ons through exakit marketplace — dash-server (agent-built dashboards), Exasol for VS Code (editor extension) and JSON Tables (JSON ingestion) — including how to answer the menu non-interactively, why an add-on may not be offered at all, and how installed add-ons join the normal update and uninstall flows. Triggers — "what optional tools can I add", "exakit marketplace", "install an add-on", "add dashboards to my kit", "why is an add-on not listed", "remove an add-on", "update my add-ons".
+description: Browse, install and remove the starter kit's optional add-ons through exakit marketplace — dash-server (agent-built dashboards), Exasol for VS Code (editor extension), JSON Tables (JSON ingestion), Exasol Scheduler (SQL jobs on a schedule) and dbt-exasol (dbt models) — including the read-only listing, installing by id without a terminal, why an add-on may not be offered at all, and how installed add-ons join the normal update and uninstall flows. Triggers — "what optional tools can I add", "exakit marketplace", "install an add-on", "add dashboards to my kit", "add dbt to my kit", "schedule a query", "run this nightly", "install the scheduler", "why is an add-on not listed", "remove an add-on", "update my add-ons".
 ---
 
 # The marketplace — optional add-ons
@@ -13,11 +13,17 @@ installed by the setup scripts.
 exakit marketplace       # browse: Space selects, Enter installs
 ```
 
-Non-interactively — which is how you should drive it — answer with ids:
+Without a terminal, a bare `exakit marketplace` installs **nothing**. Drive it
+like this instead:
 
 ```bash
+exakit marketplace --list          # read-only: every add-on and its state
+exakit marketplace --list --json   # the same, for scripts
+exakit marketplace dbt-exasol      # install exactly this one (ids, space-separated)
 EXAKIT_MARKETPLACE_ADDONS=dash-server exakit marketplace   # ids csv, or all / none
 ```
+
+Look with `--list` first: it never installs anything.
 
 The same variable pre-answers the one-question offer that follows a successful
 interactive install ("Do you want to add optional tools?").
@@ -29,9 +35,12 @@ interactive install ("Do you want to add optional tools?").
 | `dash-server` | Agent-built live dashboards on the local database, driven through its own MCP control plane | `dash-server` |
 | `exasol-vscode` | Exasol SQL editing and schema browsing inside VS Code | `exasol-vscode` |
 | `json-tables` | Ingest, query and reshape JSON-shaped data; the engine ships prebuilt, no Rust toolchain | `json-tables` |
+| `exasol-scheduler` | SQL jobs on a cron schedule, defined and audited as rows in a table | `exasol-scheduler` |
+| `dbt-exasol` | Build, test and document SQL models on the local database with dbt | `dbt-exasol` |
 
-Each has its own skill — load that one when the user wants to *use* the tool.
-This skill is about choosing and managing them.
+Each has its own skill, placed when the add-on is installed. Load that one
+when the user wants to *use* the tool; this skill is about choosing and
+managing them.
 
 ## Why an add-on might not appear
 
@@ -65,7 +74,7 @@ An installed add-on becomes a **full component** of the kit:
 
 ```bash
 exakit version                     # its version, and whether a newer one is advertised
-exakit update          # apply it
+exakit update dash-server          # update one add-on
 exakit update                      # covers every INSTALLED add-on
 ```
 
@@ -85,8 +94,10 @@ exakit logs          # each service's log is listed
 ## Removing one
 
 ```bash
-exakit uninstall     # a selection: Skip (safe default), the add-ons as a
-                     # group, each add-on on its own, or EVERYTHING
+exakit uninstall dash-server --dry-run   # what removing just this one would do
+exakit uninstall dash-server --yes       # remove just this add-on; the rest of the kit stays
+exakit uninstall                         # interactive: Skip (safe default), the add-ons as a
+                                         # group, each add-on on its own, or EVERYTHING
 ```
 
 Each add-on is individually selectable, the plan is shown back as a summary,

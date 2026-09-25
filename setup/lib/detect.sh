@@ -402,7 +402,20 @@ preflight_report() {
         if command -v "$_tool" >/dev/null 2>&1; then _pf_ok "$_tool available"
         else _pf_bad "$_tool missing — install it with your package manager"; fi
     done
-    if command -v python3 >/dev/null 2>&1; then
+    # The macOS Command Line Tools placeholder is ruled out WITHOUT running it:
+    # running /usr/bin/python3 on a Mac without the tools pops the "install
+    # developer tools" dialog, and it is not an interpreter - reporting it as
+    # "older than 3.11" named a version problem that does not exist. Preflight
+    # sources this file alone, so the check is spelled out here rather than
+    # shared with common.sh (_exakit_python3_is_xcode_stub).
+    _pf_py_stub=0
+    if [ "$(command -v python3 2>/dev/null)" = /usr/bin/python3 ] && [ -x /usr/bin/xcode-select ] && \
+       ! /usr/bin/xcode-select -p >/dev/null 2>&1; then
+        _pf_py_stub=1
+    fi
+    if [ "$_pf_py_stub" = 1 ]; then
+        _pf_note "python3 is only the macOS placeholder (no Command Line Tools) — the installer will use its managed Python runtime automatically"
+    elif command -v python3 >/dev/null 2>&1; then
         # The kit's tooling needs 3.11+ (tomllib); an older system python is
         # fine — the installer switches to its managed runtime automatically.
         if python3 -c 'import sys; raise SystemExit(0 if sys.version_info[:2] >= (3, 11) else 1)' 2>/dev/null; then
