@@ -130,8 +130,13 @@ EXAKIT_VERSIONS_URL="${EXAKIT_VERSIONS_URL:-https://raw.githubusercontent.com/${
 # on purpose: manifest_get is not defined yet and requires python3 fatally,
 # while a kit source is three fields of one line - and a machine with no
 # python3, or no manifest, simply keeps the default.
+# The macOS Command Line Tools stub (see _exakit_python3_is_xcode_stub, which is
+# not defined yet) is ruled out inline: running it pops the developer-tools
+# dialog, and this runs on every exakit command.
 if [ -z "$_EXAKIT_KIT_REPO_FROM_ENV" ] && [ -f "$EXAKIT_MANIFEST" ] && \
-   command -v python3 >/dev/null 2>&1; then
+   command -v python3 >/dev/null 2>&1 && \
+   ! { [ "$(command -v python3)" = /usr/bin/python3 ] && [ -x /usr/bin/xcode-select ] && \
+       ! /usr/bin/xcode-select -p >/dev/null 2>&1; }; then
     _ekr_src="$(python3 - "$EXAKIT_MANIFEST" <<'EXAKIT_KIT_SRC_PY' 2>/dev/null
 import json, sys
 try:
@@ -1215,6 +1220,35 @@ require_python3() {
 EXAKIT_MIN_PYTHON="3.11"
 _EXAKIT_SYSTEM_PY_OK=""
 
+# _exakit_python3_is_xcode_stub — is the python3 on PATH the macOS placeholder
+# rather than an interpreter?
+#
+# On a Mac without the Xcode Command Line Tools, /usr/bin/python3 is a small
+# xcrun shim: it satisfies `command -v`, and running it fails (and pops the
+# "install developer tools" dialog). It is decided WITHOUT running it: the shim
+# only works when a developer directory exists, and `xcode-select -p` answers
+# that without a dialog. Anything that is not /usr/bin/python3 on a Mac is
+# never the stub, and costs no process at all.
+_exakit_python3_is_xcode_stub() {
+    case "$(command -v python3 2>/dev/null)" in
+        /usr/bin/python3) : ;;
+        *) return 1 ;;
+    esac
+    [ -x /usr/bin/xcode-select ] || return 1
+    ! /usr/bin/xcode-select -p >/dev/null 2>&1
+}
+
+# _exakit_python3_present — a python3 on PATH that can actually run (no
+# version floor). The gate for run_python_any: `command -v python3` alone
+# accepted the macOS stub, so on a Mac without the Command Line Tools every
+# manifest read failed after a successful install and `exakit status --json`
+# printed nothing.
+_exakit_python3_present() {
+    [ "${EXAKIT_DISABLE_SYSTEM_PYTHON:-0}" != "1" ] || return 1
+    command -v python3 >/dev/null 2>&1 || return 1
+    ! _exakit_python3_is_xcode_stub
+}
+
 # A system python3 is usable only when it exists AND meets the version floor;
 # anything less is treated exactly like an absent interpreter, so the
 # uv-managed runtime takes over automatically. The probe spawns an interpreter,
@@ -1222,6 +1256,11 @@ _EXAKIT_SYSTEM_PY_OK=""
 _exakit_has_system_python3() {
     [ "${EXAKIT_DISABLE_SYSTEM_PYTHON:-0}" != "1" ] || return 1
     command -v python3 >/dev/null 2>&1 || return 1
+    # The stub is known without running it (running it pops a dialog).
+    if [ -z "$_EXAKIT_SYSTEM_PY_OK" ] && _exakit_python3_is_xcode_stub; then
+        _EXAKIT_SYSTEM_PY_OK="no"
+        _exakit_log_file "INFO  /usr/bin/python3 is the Xcode Command Line Tools stub, not a real interpreter — using the uv-managed Python runtime instead"
+    fi
     if [ -z "$_EXAKIT_SYSTEM_PY_OK" ]; then
         # Keep the probe's stderr: it is the difference between an interpreter
         # that is too old and one that is not an interpreter at all.
@@ -1325,7 +1364,7 @@ exakit_can_run_python() {
 # computing, which is how `runtime.type` came back as a multi-line blob.
 # Anything that needs only the standard library runs here instead.
 run_python_any() {
-    if [ "${EXAKIT_DISABLE_SYSTEM_PYTHON:-0}" != "1" ] && command -v python3 >/dev/null 2>&1; then
+    if _exakit_python3_present; then
         python3 "$@"
         return $?
     fi
@@ -1335,7 +1374,7 @@ run_python_any() {
 # Is there any Python 3 at all? Never installs one from a read-only query
 # (exakit_ensure_uv enforces that); callers degrade instead of failing.
 exakit_can_run_python_any() {
-    if [ "${EXAKIT_DISABLE_SYSTEM_PYTHON:-0}" != "1" ] && command -v python3 >/dev/null 2>&1; then
+    if _exakit_python3_present; then
         return 0
     fi
     exakit_can_run_python
