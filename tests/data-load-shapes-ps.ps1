@@ -230,8 +230,10 @@ if ($onWindows) {
     $retryStub = Join-Path $work "exapump-retry.cmd"
     Set-Content -Path $retryStub -Encoding Ascii -Value @(
         "@echo off",
+        "if `"%~1`"==`"sql`" goto :sql",
         "if not `"%~1`"==`"upload`" exit /b 0",
         "for %%F in (`"%~2`") do set NAME=%%~nF",
+        ">`"%EXAKIT_RETRY_KNOBS%\%NAME%.table`" echo %~4",
         "set CF=%EXAKIT_RETRY_KNOBS%\%NAME%.count",
         "set N=0",
         "if exist `"%CF%`" set /p N=<`"%CF%`"",
@@ -243,20 +245,27 @@ if ($onWindows) {
         "echo Imported 2 rows",
         "exit /b 0",
         ":fail",
+        "if `"%EXAKIT_RETRY_KIND%`"==`"silent`" exit /b 1",
         "if `"%EXAKIT_RETRY_KIND%`"==`"parse`" echo Error: SQL execution failed: Protocol error: ETL-2109: Error while parsing row=2",
         "if not `"%EXAKIT_RETRY_KIND%`"==`"parse`" echo $cutMsg",
-        "exit /b 1"
+        "exit /b 1",
+        ":sql",
+        ">>`"%EXAKIT_RETRY_KNOBS%\sql.log`" echo %~4",
+        "exit /b 0"
     )
 } else {
     $retryStub = Join-Path $work "exapump-retry"
     Set-Content -Path $retryStub -Value @(
         "#!/bin/sh",
+        "if [ `"`$1`" = sql ]; then printf '%s\n' `"`$4`" >> `"`$EXAKIT_RETRY_KNOBS/sql.log`"; exit 0; fi",
         "[ `"`$1`" = upload ] || exit 0",
         "name=`"`$(basename `"`$2`" .csv)`"",
+        "printf '%s' `"`$4`" > `"`$EXAKIT_RETRY_KNOBS/`$name.table`"",
         "cf=`"`$EXAKIT_RETRY_KNOBS/`$name.count`"; n=0; [ -f `"`$cf`" ] && n=`"`$(cat `"`$cf`")`"",
         "n=`$((n + 1)); printf '%s' `"`$n`" > `"`$cf`"",
         "fail=0; [ -f `"`$EXAKIT_RETRY_KNOBS/`$name.fail`" ] && fail=`"`$(cat `"`$EXAKIT_RETRY_KNOBS/`$name.fail`")`"",
         "if [ `"`$n`" -le `"`$fail`" ]; then",
+        "  [ `"`${EXAKIT_RETRY_KIND:-cut}`" = silent ] && exit 1",
         "  if [ `"`${EXAKIT_RETRY_KIND:-cut}`" = parse ]; then echo 'Error: SQL execution failed: Protocol error: ETL-2109: Error while parsing row=2'; else echo '$cutMsg'; fi",
         "  exit 1",
         "fi",
@@ -309,6 +318,84 @@ $env:EXAKIT_UPLOAD_RETRIES = "0"
 Check "EXAKIT_UPLOAD_RETRIES=0 -> one attempt only" "1" (Get-RetryAttempts "beta")
 Check "...and the cut is a failure"                 1   $script:ExakitUploadFailures.Count
 Remove-Item Env:EXAKIT_UPLOAD_RETRIES -ErrorAction SilentlyContinue
+
+Write-Host ""
+Write-Host "== a file the import keeps cutting is re-sent in pieces, all or nothing =="
+# Against Exasol Personal on Windows the engine loses the LAST 10-90 KB of a
+# file, and the same file mostly loses it again: retrying whole does not help,
+# pieces small enough to arrive whole do. EXAKIT_UPLOAD_PIECE_KB=1 makes a
+# 5 KB fixture several pieces. The fixture has a BOM, CRLF endings and a
+# quoted field spanning a line, because pieces must be slices of the original
+# bytes. Twin of the same section in dataset-load-progress.sh.
+$sb = New-Object System.Text.StringBuilder
+[void]$sb.Append("id,note`r`n")
+foreach ($i in 1..120) {
+    if ($i -eq 40) { [void]$sb.Append("$i,`"a quoted note`r`nthat spans, a line`"`r`n") }
+    else { [void]$sb.Append("$i,plain note number $i for padding`r`n") }
+}
+$bigPath = Join-Path $retry "data\big.csv"
+$bom = [byte[]](0xEF, 0xBB, 0xBF)
+[System.IO.File]::WriteAllBytes($bigPath, $bom + [System.Text.Encoding]::ASCII.GetBytes($sb.ToString()))
+$pieceDir = Join-Path $work "pieces"
+New-Item -ItemType Directory -Force -Path $pieceDir | Out-Null
+$pieces = @(Split-ExakitCsvPieces -Path $bigPath -Dir $pieceDir -PieceBytes 1024)
+$orig = [System.IO.File]::ReadAllBytes($bigPath)
+$headLen = [Array]::IndexOf($orig, [byte]10) + 1
+$joined = New-Object System.Collections.Generic.List[byte]
+$badHead = 0; $odd = 0
+foreach ($p in $pieces) {
+    $b = [System.IO.File]::ReadAllBytes($p)
+    for ($k = 0; $k -lt $headLen; $k++) { if ($b[$k] -ne $orig[$k]) { $badHead++; break } }
+    $joined.AddRange([byte[]]($b[$headLen..($b.Length - 1)]))
+    if ((@($b | Where-Object { $_ -eq 34 }).Count % 2) -ne 0) { $odd++ }
+}
+$body = [byte[]]($orig[$headLen..($orig.Length - 1)])
+Check "a 5 KB file cut at 1 KB -> several pieces"   $true  ($pieces.Count -ge 4)
+Check "...every piece starts with the header (BOM included)" 0 $badHead
+Check "...the rows put back together are the file, byte for byte" $true ([System.Linq.Enumerable]::SequenceEqual([byte[]]$joined.ToArray(), $body))
+Check "...and no cut falls inside a quoted field"   0      $odd
+function New-BigFile { return @{ Path = $bigPath; Target = "TPCH.BIG"; Name = "big.csv" } }
+function Get-SqlLog { $f = Join-Path $knobs "sql.log"; if (Test-Path $f) { return (Get-Content $f -Raw) }; return "" }
+
+$env:EXAKIT_UPLOAD_PIECE_KB = "1"
+Reset-Retry; Set-Content -Path (Join-Path $knobs "big.fail") -Value "9"
+[void](& { Invoke-ExapumpUploadMany -Files @((New-BigFile)) -Id "t" } 6>&1)
+Check "cut every time -> re-sent in pieces, batch succeeds" 0 $script:ExakitUploadFailures.Count
+Check "...the whole file was tried once"            "1" (Get-RetryAttempts "big")
+Check "...each piece went to the staging table"     "TPCH.BIG__EXAKIT_PIECES" ((Get-Content (Join-Path $knobs "big.piece0002.table") -Raw).Trim())
+Has   "...which is a copy of the target"            "CREATE TABLE TPCH.BIG__EXAKIT_PIECES LIKE TPCH.BIG" (Get-SqlLog)
+Has   "...moved across in one statement"            "INSERT INTO TPCH.BIG SELECT * FROM TPCH.BIG__EXAKIT_PIECES" (Get-SqlLog)
+Has   "...and the log says why"                     "big.csv: re-sending it as" (Get-Content $script:LogFile -Raw)
+
+Reset-Retry; Set-Content -Path (Join-Path $knobs "big.fail") -Value "9"; Set-Content -Path (Join-Path $knobs "big.piece0002.fail") -Value "9"
+[void](& { Invoke-ExapumpUploadMany -Files @((New-BigFile)) -Id "t" } 6>&1)
+Check "a piece that never lands -> the file fails"  1   $script:ExakitUploadFailures.Count
+Check "...after its own three attempts"             "3" (Get-RetryAttempts "big.piece0002")
+Check "...the pieces after it are not sent"         "0" (Get-RetryAttempts "big.piece0003")
+Lacks "...the target never sees the pieces"         "INSERT INTO TPCH.BIG" (Get-SqlLog)
+Check "...and the staging table is dropped"         "DROP TABLE IF EXISTS TPCH.BIG__EXAKIT_PIECES" (@((Get-SqlLog).Trim() -split "`r?`n")[-1])
+
+Reset-Retry; Set-Content -Path (Join-Path $knobs "big.fail") -Value "9"
+$env:EXAKIT_UPLOAD_PIECE_KB = "0"
+[void](& { Invoke-ExapumpUploadMany -Files @((New-BigFile)) -Id "t" } 6>&1)
+Check "EXAKIT_UPLOAD_PIECE_KB=0 -> whole-file retries only" "3" (Get-RetryAttempts "big")
+Check "...and no staging table"                     "" (Get-SqlLog)
+
+# The single-file path - a user's own CSV - crosses the same connection.
+$env:EXAKIT_UPLOAD_PIECE_KB = "1"
+Reset-Retry; Set-Content -Path (Join-Path $knobs "big.fail") -Value "9"
+$ok = [bool](@(& { Invoke-ExapumpUpload $bigPath "TPCH.BIG" -Soft } 6>&1)[-1])
+Check "a user's file that keeps being cut loads in pieces too" $true $ok
+Has   "...through the staging table"                "INSERT INTO TPCH.BIG SELECT * FROM TPCH.BIG__EXAKIT_PIECES" (Get-SqlLog)
+Remove-Item Env:EXAKIT_UPLOAD_PIECE_KB -ErrorAction SilentlyContinue
+
+Reset-Retry; Set-Content -Path (Join-Path $knobs "beta.fail") -Value "1"
+$env:EXAKIT_RETRY_KIND = "silent"
+[void](& { Invoke-ExapumpUploadMany -Files @((New-RetryFile "beta")) -Id "t" } 6>&1)
+Check "a failure that printed nothing is retried"   0   $script:ExakitUploadFailures.Count
+Check "...once"                                     "2" (Get-RetryAttempts "beta")
+Has   "...and the log keeps the exit code"          "beta.csv: exapump exited with code 1 and printed nothing" (Get-Content $script:LogFile -Raw)
+Remove-Item Env:EXAKIT_RETRY_KIND -ErrorAction SilentlyContinue
 $env:EXAKIT_EXAPUMP_BIN = $stub
 
 Write-Host ""

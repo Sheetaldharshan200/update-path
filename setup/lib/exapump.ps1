@@ -790,6 +790,16 @@ function Invoke-ExapumpUpload {
         if ($look.Delimiter -ne ",") { $uploadArgs += @("--delimiter", $look.Delimiter) }
     }
     $result = Invoke-Exapump $uploadArgs
+    if (-not $result.Success -and (Test-ExakitUploadCutShort -Output $result.Output)) {
+        # A cut transfer is recovered here too, not only in the dataset batch:
+        # a user's own file crosses the same import connection. Only a cut the
+        # output SAYS, as in the twin, which reads this attempt from the log.
+        $delim = ","
+        if ($uploadArgs -contains "--delimiter") { $delim = $uploadArgs[[array]::IndexOf($uploadArgs, "--delimiter") + 1] }
+        $rec = Invoke-ExakitUploadRecovery -Path $Path -Target $Target -Delimiter $delim `
+            -ExitCode $result.ExitCode -Output $result.Output
+        $result = @{ Output = $rec.Output; ExitCode = $result.ExitCode; Success = [bool]$rec.Success }
+    }
     if (-not $result.Success) {
         # -Soft: a bulk folder load must not lose the other thirty-nine files to
         # one bad one. Fail() exits the whole PROCESS here - PowerShell has no
@@ -917,6 +927,208 @@ function Get-ExakitUploadRetries {
     return $n
 }
 
+# Test-ExakitUploadRetryable - is this failed upload worth another attempt? A
+# cut transfer (Test-ExakitUploadCutShort) is, and so is a non-zero exit that
+# printed NOTHING: seen on Windows in the same runs as the cuts, five files in
+# a row - a 415-byte one among them - that the same command loaded a moment
+# later. A failure that says what is wrong (a bad row, a missing table, a
+# refused login) is never retried. Twin of exakit_upload_retryable.
+function Test-ExakitUploadRetryable([int]$ExitCode, [AllowEmptyString()][string]$Output) {
+    if (Test-ExakitUploadCutShort -Output $Output) { return $true }
+    return ($ExitCode -ne 0 -and -not "$Output".Trim())
+}
+
+# Get-ExakitUploadPieceBytes - how big each piece of a re-sent file is
+# (EXAKIT_UPLOAD_PIECE_KB, default 128; 0 turns piecing off).
+#
+# WHY PIECES: the cut is not random. Against Exasol Personal on Windows (the
+# database inside the Podman WSL machine) the engine loses the LAST 10-90 KB of
+# the file - "failed after 393216 bytes" of a 475 KB file, every time, while a
+# 390 KB file never failed. Retrying the same file mostly repeats the same cut
+# (customer.csv needed nine attempts), so the file is re-sent in pieces small
+# enough to arrive whole: measured 54 of 54 at 128 KB, 3 of 72 failing at 256
+# KB. Twin of exakit_upload_piece_bytes.
+function Get-ExakitUploadPieceBytes {
+    $kb = 128
+    if ($null -ne $env:EXAKIT_UPLOAD_PIECE_KB -and "$env:EXAKIT_UPLOAD_PIECE_KB" -ne "") {
+        $parsed = 0
+        if ([int]::TryParse($env:EXAKIT_UPLOAD_PIECE_KB, [ref]$parsed) -and $parsed -ge 0) { $kb = $parsed }
+    }
+    return ($kb * 1024)
+}
+
+# Test-ExakitUploadPieceable <path> - can this file be re-sent in pieces? A
+# plain (uncompressed) delimited text file, bigger than one piece, and no
+# bigger than 64 MB - past that the piece count, one exapump launch each,
+# costs more than the retry is worth. Twin of exakit_upload_pieceable.
+function Test-ExakitUploadPieceable([string]$Path) {
+    $piece = Get-ExakitUploadPieceBytes
+    if ($piece -le 0) { return $false }
+    if ((Split-Path $Path -Leaf) -notmatch '\.(csv|tsv|txt)$') { return $false }
+    if (-not (Test-Path $Path)) { return $false }
+    $size = (Get-Item $Path).Length
+    return ($size -gt $piece -and $size -le 64MB)
+}
+
+# Split-ExakitCsvPieces <path> <dir> <bytes> - cut a CSV into pieces of about
+# <bytes>, each carrying the header, and return their paths in order.
+#
+# Byte for byte: a piece is a slice of the original file, so line endings, a
+# BOM and every quote survive exactly as they were. Cuts only fall after a
+# newline where the double quotes seen so far in the piece are even - a
+# newline inside a quoted field is data, not a row boundary. Twin of
+# exakit_split_csv_pieces.
+function Split-ExakitCsvPieces {
+    param([Parameter(Mandatory)][string]$Path, [Parameter(Mandatory)][string]$Dir, [Parameter(Mandatory)][int]$PieceBytes)
+    $bytes = [System.IO.File]::ReadAllBytes($Path)
+    $len = $bytes.Length
+    $headEnd = [Array]::IndexOf($bytes, [byte]10)
+    if ($headEnd -lt 0 -or $headEnd -ge $len - 1) { return @() }
+    $stem = [System.IO.Path]::GetFileNameWithoutExtension($Path)
+    $ext = [System.IO.Path]::GetExtension($Path)
+    $pieces = @()
+    $pos = $headEnd + 1
+    $n = 0
+    while ($pos -lt $len) {
+        $end = $len
+        if ($pos + $PieceBytes -lt $len) {
+            $cut = [Array]::IndexOf($bytes, [byte]10, $pos + $PieceBytes - 1)
+            if ($cut -lt 0) { $cut = $len - 1 }
+            $quotes = 0
+            $q = [Array]::IndexOf($bytes, [byte]34, $pos, $cut - $pos + 1)
+            while ($q -ge 0) { $quotes++; if ($q -ge $cut) { break }; $q = [Array]::IndexOf($bytes, [byte]34, $q + 1, $cut - $q) }
+            while (($quotes % 2) -ne 0 -and $cut -lt $len - 1) {
+                $next = [Array]::IndexOf($bytes, [byte]10, $cut + 1)
+                if ($next -lt 0) { $next = $len - 1 }
+                $q = [Array]::IndexOf($bytes, [byte]34, $cut + 1, $next - $cut)
+                while ($q -ge 0) { $quotes++; if ($q -ge $next) { break }; $q = [Array]::IndexOf($bytes, [byte]34, $q + 1, $next - $q) }
+                $cut = $next
+            }
+            $end = $cut + 1
+        }
+        $n++
+        $piece = Join-Path $Dir ("{0}.piece{1:D4}{2}" -f $stem, $n, $ext)
+        $fs = [System.IO.File]::Create($piece)
+        try {
+            $fs.Write($bytes, 0, $headEnd + 1)
+            $fs.Write($bytes, $pos, $end - $pos)
+        } finally { $fs.Dispose() }
+        $pieces += $piece
+        $pos = $end
+    }
+    return $pieces
+}
+
+# The output of the attempt that sank Invoke-ExakitUploadPieces, for the
+# caller's failure message. Script-scoped for the same reason as the failure
+# list above.
+$script:ExakitUploadPiecesOutput = ""
+$script:ExakitUploadRetried = 0
+
+# Invoke-ExakitUploadPieces <path> <schema.table> [delimiter] - re-send a file
+# in pieces, ALL OR NOTHING.
+#
+# The pieces are separate exapump calls, so separate commits: loading them
+# straight into the target would leave a half-loaded table behind the one
+# piece that never made it - and for a user appending to a table they already
+# had, no safe way back. So they go into a staging copy of the target (CREATE
+# TABLE ... LIKE), and only once every piece is in does ONE INSERT ... SELECT
+# move them across. Any failure drops the staging table; the target is
+# exactly as it was. Needs the target to exist - it always does here, because
+# a cut import has already created it (the dataset scripts create theirs up
+# front, and exapump keeps the table it inferred when the data fails).
+# Twin of exakit_upload_pieces.
+function Invoke-ExakitUploadPieces {
+    param([Parameter(Mandatory)][string]$Path, [Parameter(Mandatory)][string]$Target, [string]$Delimiter = ",")
+    $script:ExakitUploadPiecesOutput = ""
+    $leaf = Split-Path $Path -Leaf
+    $stage = "${Target}__EXAKIT_PIECES"
+    $max = Get-ExakitUploadRetries
+    $extra = @()
+    if ($Delimiter -and $Delimiter -ne ",") { $extra = @("--delimiter", $Delimiter) }
+    $dir = Join-Path ([System.IO.Path]::GetTempPath()) ("exakit-pieces-" + [guid]::NewGuid().ToString("N"))
+    New-Item -ItemType Directory -Force -Path $dir | Out-Null
+    try {
+        $pieces = @(Split-ExakitCsvPieces -Path $Path -Dir $dir -PieceBytes (Get-ExakitUploadPieceBytes))
+        if ($pieces.Count -eq 0) { return $false }
+        Write-ExakitLog "WARN" "${leaf}: re-sending it as $($pieces.Count) smaller pieces through $stage"
+        $r = Invoke-Exapump @("sql", "-p", $script:ExapumpProfile, "DROP TABLE IF EXISTS $stage; CREATE TABLE $stage LIKE $Target")
+        if (-not $r.Success) { $script:ExakitUploadPiecesOutput = "" + $r.Output; return $false }
+        foreach ($p in $pieces) {
+            $try = 0
+            while ($true) {
+                $u = Invoke-Exapump (@("upload", $p, "--table", $stage, "-p", $script:ExapumpProfile) + $extra)
+                if ($u.Success) { break }
+                if ($try -ge $max -or -not (Test-ExakitUploadRetryable -ExitCode $u.ExitCode -Output $u.Output)) {
+                    $script:ExakitUploadPiecesOutput = "" + $u.Output
+                    $null = Invoke-Exapump @("sql", "-p", $script:ExapumpProfile, "DROP TABLE IF EXISTS $stage")
+                    return $false
+                }
+                $try++
+                Start-Sleep -Seconds $try
+            }
+        }
+        $m = Invoke-Exapump @("sql", "-p", $script:ExapumpProfile, "INSERT INTO $Target SELECT * FROM $stage; DROP TABLE $stage")
+        if (-not $m.Success) {
+            $script:ExakitUploadPiecesOutput = "" + $m.Output
+            $null = Invoke-Exapump @("sql", "-p", $script:ExapumpProfile, "DROP TABLE IF EXISTS $stage")
+            return $false
+        }
+        return $true
+    } finally {
+        Remove-Item -Recurse -Force $dir -ErrorAction SilentlyContinue
+    }
+}
+
+# Invoke-ExakitUploadRecovery - what every failed upload goes through before
+# anyone hears about it. A failure that is not retryable (see
+# Test-ExakitUploadRetryable) comes straight back. A retryable one is re-sent
+# in pieces when the file allows (Test-ExakitUploadPieceable), otherwise tried
+# again whole, with a short pause between attempts. The log keeps every
+# attempt; the screen only ever sees the outcome. Returns @{ Success; Output },
+# Output being the last attempt's. Twin of exakit_upload_recover.
+function Invoke-ExakitUploadRecovery {
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)][string]$Target,
+        [string]$Delimiter = ",",
+        [int]$ExitCode = 1,
+        [AllowEmptyString()][string]$Output = ""
+    )
+    $leaf = Split-Path $Path -Leaf
+    $out = "$Output"
+    # Nothing on screen and nothing in the log is what made the Windows
+    # failures above impossible to read afterwards. The exit code is all there
+    # is, so it is kept.
+    if (-not $out.Trim()) { Write-ExakitLog "WARN" "${leaf}: exapump exited with code $ExitCode and printed nothing" }
+    $max = Get-ExakitUploadRetries
+    if ($max -lt 1 -or -not (Test-ExakitUploadRetryable -ExitCode $ExitCode -Output $out)) {
+        return @{ Success = $false; Output = $out }
+    }
+    if (Test-ExakitUploadPieceable $Path) {
+        $script:ExakitUploadRetried++
+        if (Invoke-ExakitUploadPieces -Path $Path -Target $Target -Delimiter $Delimiter) {
+            return @{ Success = $true; Output = "" }
+        }
+        return @{ Success = $false; Output = $script:ExakitUploadPiecesOutput }
+    }
+    $extra = @()
+    if ($Delimiter -and $Delimiter -ne ",") { $extra = @("--delimiter", $Delimiter) }
+    $try = 0
+    while ($try -lt $max) {
+        $try++
+        $script:ExakitUploadRetried++
+        if (Test-ExakitUploadCutShort -Output $out) { $why = "the import connection was cut mid-transfer" } else { $why = "exapump failed without saying why" }
+        Write-ExakitLog "WARN" "${leaf}: $why - attempt $($try + 1) of $($max + 1)"
+        if ($try -gt 1) { Start-Sleep -Seconds ($try - 1) }
+        $again = Invoke-Exapump (@("upload", $Path, "--table", $Target, "-p", $script:ExapumpProfile) + $extra)
+        $out = "" + $again.Output
+        if ($again.Success) { return @{ Success = $true; Output = $out } }
+        if (-not (Test-ExakitUploadRetryable -ExitCode $again.ExitCode -Output $out)) { break }
+    }
+    return @{ Success = $false; Output = $out }
+}
+
 function Invoke-ExapumpUploadMany {
     param(
         [Parameter(Mandatory)][object[]]$Files,
@@ -984,21 +1196,13 @@ function Invoke-ExapumpUploadMany {
             if (Test-ExapumpSucceeded -ExitCode $r.Proc.ExitCode -Output $out) {
                 if (-not $script:ExakitUploadQuiet) { Ok "$($r.File.Name) loaded" }
             } else {
-                # A CONNECTION CUT MID-TRANSFER IS TRIED AGAIN, one file at a
-                # time, before anyone hears about it. The log keeps every
-                # attempt; the screen only ever sees the outcome. See
-                # Test-ExakitUploadCutShort.
-                $try = 0
-                $max = Get-ExakitUploadRetries
-                $recovered = $false
-                while (-not $recovered -and $try -lt $max -and (Test-ExakitUploadCutShort -Output $out)) {
-                    $try++
-                    $script:ExakitUploadRetried++
-                    Write-ExakitLog "WARN" "$($r.File.Name): the import connection was cut mid-transfer - attempt $($try + 1) of $($max + 1)"
-                    $again = Invoke-Exapump @("upload", $r.File.Path, "--table", $r.File.Target, "-p", $script:ExapumpProfile)
-                    $out = "" + $again.Output
-                    if ($again.Success) { $recovered = $true }
-                }
+                # A CUT TRANSFER IS RECOVERED, one file at a time, before anyone
+                # hears about it - re-sent in pieces or tried again whole. See
+                # Invoke-ExakitUploadRecovery.
+                $rec = Invoke-ExakitUploadRecovery -Path $r.File.Path -Target $r.File.Target `
+                    -ExitCode $r.Proc.ExitCode -Output $out
+                $out = "" + $rec.Output
+                $recovered = [bool]$rec.Success
                 if ($recovered) {
                     if (-not $script:ExakitUploadQuiet) { Ok "$($r.File.Name) loaded" }
                 } else {
