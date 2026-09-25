@@ -8497,7 +8497,12 @@ exakit_ensure_runtime_running() {
             fi
             if [ "$_err_deploy" = "deploy" ]; then
                 info "Self-heal: no database deployment found — deploying one"
-                personal_deploy_local
+                # Its result counts: personal_deploy_local returns non-zero when
+                # it could not deploy (no usable Podman on Linux, a refused
+                # install), having already said why. Returning 0 regardless made
+                # `exakit start` exit 0 with no database behind it.
+                personal_deploy_local || \
+                    die "No database could be deployed (the reason is above). Once it is fixed, re-run the installer: $(exakit_install_command)"
                 return 0
             fi
             die "No database found. Start one with: exakit start (or re-run the installer)"
@@ -11062,8 +11067,6 @@ EXAKIT_UM_PANEL_EOF
     case " $_um_picked " in
         *" database "*|*" everything "*)
             warn "The database selection deletes ALL local database data."
-            # BEFORE the typed gate, never after it.
-            _exakit_shared_engine_db_warning || true
             ;;
     esac
     _um_tty="$(_exakit_prompt_tty)"
@@ -11178,9 +11181,8 @@ exakit_uninstall_run() {
     _type="$(manifest_get runtime.type 2>/dev/null || true)"
     if [ -n "$_type" ]; then
         # Named BEFORE the removal, not only in the record line after it: on
-        # `--yes` there is no gate to read, so this line and the shared-engine
-        # warning below it are the last chance to recognise the container as one
-        # the other side of a Windows+WSL machine is also using.
+        # `--yes` there is no gate to read, so this line is the last chance to
+        # see what is about to be deleted.
         _step "local Exasol $_type deployment and ALL its data"
         if [ "$_dry" != "1" ]; then
             case "$_type" in

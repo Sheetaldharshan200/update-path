@@ -139,7 +139,11 @@ detect_ram_gb() {
             *)           _dr_ram=$(( _dr_bytes / 1073741824 )) ;;
         esac
     else
-        _dr_ram="$(awk '/MemTotal/ { printf "%d", $2 / 1048576 }' /proc/meminfo 2>/dev/null)"
+        # Rounded to the nearest GB, not truncated: MemTotal is always a little
+        # under the installed RAM (the kernel keeps some), so truncating read
+        # every 8 GB machine - and WSL's default VM on a 16 GB laptop - as 7 GB
+        # and refused it. Same rule as the Windows twin (runtime-personal.ps1).
+        _dr_ram="$(awk '/MemTotal/ { printf "%d", ($2 / 1048576) + 0.5 }' /proc/meminfo 2>/dev/null)"
     fi
     case "$_dr_ram" in
         ''|*[!0-9]*) echo 0 ;;
