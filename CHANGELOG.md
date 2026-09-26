@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+**Sample data loads on Windows again, first time.** A fresh Windows install
+could end with "Dataset(s) tpch did not load": five of TPC-H's eight tables
+empty. The database runs inside the Podman WSL machine and reads each file back
+from exapump on the host, and on that link the engine loses the **last 10-90 KB
+of a file** - `ETL-5105 ... failed after 393216 bytes. [transfer closed with
+outstanding read data remaining]` - on most attempts for files between about
+400 KB and a few MB, while files under ~390 KB never failed. The two retries
+already there mostly repeated the same cut (customer.csv needed nine attempts
+by hand). A file that is cut is now re-sent in 128 KB pieces instead, each its
+own attempt, and the pieces go into a staging copy of the target
+(`CREATE TABLE ... LIKE`) that ONE `INSERT ... SELECT` moves across only once
+every piece is in - so the target is never left half-loaded, and a table you
+were appending to is exactly as it was if the load still fails. Measured
+against a live deployment: three full TPC-H loads through the kit's loader, no
+failures, every row count exact. Your own CSV files get the same recovery. An
+upload that fails with **no output at all** - seen in the same runs, a 415-byte
+file among them - is retried too, and its exit code is now written to the log
+instead of nothing. `EXAKIT_UPLOAD_PIECE_KB` sets the piece size (0 turns
+piecing off).
+
 **The Podman install stopped asking, and stopped shouting.** It used to put a
 y/n in the middle of the install and then three screens of `apt` unpacking
 twenty-four packages through a run that gives every other step one line. The

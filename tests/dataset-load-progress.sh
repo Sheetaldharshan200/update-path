@@ -676,13 +676,16 @@ RETRY_DIR="$WORK/retry"; mkdir -p "$RETRY_DIR/data"
 for _rf in alpha beta gamma; do printf 'id\n1\n2\n' > "$RETRY_DIR/data/$_rf.csv"; done
 cat > "$EXAKIT_BIN_DIR/exapump" <<'STUBEOF'
 #!/bin/sh
+if [ "$1" = sql ]; then printf '%s\n' "$4" >> "$EXAKIT_RETRY_KNOBS/sql.log"; exit 0; fi
 [ "$1" = upload ] || exit 0
 name="$(basename "$2" .csv)"
+printf '%s' "$4" > "$EXAKIT_RETRY_KNOBS/$name.table"
 count_file="$EXAKIT_RETRY_KNOBS/$name.count"; n=0; [ -f "$count_file" ] && n="$(cat "$count_file")"
 n=$((n + 1)); printf '%s' "$n" > "$count_file"
 fail_first=0; [ -f "$EXAKIT_RETRY_KNOBS/$name.fail" ] && fail_first="$(cat "$EXAKIT_RETRY_KNOBS/$name.fail")"
 if [ "$n" -le "$fail_first" ]; then
     case "${EXAKIT_RETRY_KIND:-cut}" in
+        silent) : ;;
         cut) echo "Error: SQL execution failed: Protocol error: ETL-5105: Following error occured while reading data from external connection [http://172.25.78.139:41705/001.csv failed after 393216 bytes. [transfer closed with outstanding read data remaining],[18],[Transferred a partial file]]" ;;
         *)   echo "Error: SQL execution failed: Protocol error: ETL-2109: Error while parsing row=2" ;;
     esac
@@ -726,6 +729,58 @@ retry_reset; printf '1' > "$EXAKIT_RETRY_KNOBS/beta.fail"
 OUT="$(EXAKIT_UPLOAD_RETRIES=0 EXAKIT_UPLOAD_QUIET=1 exapump_upload_many TPCH "$RETRY_DIR/data/beta.csv" 2>&1; echo "rc=$?")"
 check "EXAKIT_UPLOAD_RETRIES=0 -> one attempt only"  "1"    "$(retry_attempts beta)"
 check "...and the cut is a failure"                  "rc=1" "$(printf '%s\n' "$OUT" | tail -1)"
+
+printf '\n== a file the import keeps cutting is re-sent in pieces, all or nothing ==\n'
+
+# Against Exasol Personal on Windows the engine loses the LAST 10-90 KB of a
+# file, and the same file mostly loses it again: retrying whole does not help,
+# pieces small enough to arrive whole do. EXAKIT_UPLOAD_PIECE_KB=1 makes a
+# 5 KB fixture several pieces.
+{
+    printf 'id,note\n'
+    _bi=0
+    while [ "$_bi" -lt 120 ]; do
+        _bi=$((_bi + 1))
+        if [ "$_bi" = 40 ]; then printf '%s,"a quoted note\nthat spans, a line"\n' "$_bi"
+        else printf '%s,plain note number %s for padding\n' "$_bi" "$_bi"; fi
+    done
+} > "$RETRY_DIR/data/big.csv"
+PIECE_DIR="$WORK/pieces"; mkdir -p "$PIECE_DIR"
+exakit_split_csv_pieces "$RETRY_DIR/data/big.csv" "$PIECE_DIR" 1024
+tail -n +2 "$RETRY_DIR/data/big.csv" > "$WORK/big.body"
+for _pf in "$PIECE_DIR"/*; do tail -n +2 "$_pf"; done > "$WORK/pieces.body"
+check "a 5 KB file cut at 1 KB -> several pieces"   "yes"  "$( [ "$(ls "$PIECE_DIR" | wc -l | tr -d ' ')" -ge 4 ] && echo yes || echo no)"
+check "...every piece starts with the header"       "0"    "$(for _pf in "$PIECE_DIR"/*; do head -1 "$_pf"; done | grep -vc '^id,note$')"
+check "...the rows put back together are the file"  "same" "$(cmp -s "$WORK/big.body" "$WORK/pieces.body" && echo same || echo differ)"
+check "...and no cut falls inside a quoted field"   "0"    "$(for _pf in "$PIECE_DIR"/*; do _q="$(tr -cd '"' < "$_pf" | wc -c | tr -d ' ')"; [ $((_q % 2)) = 0 ] || echo odd; done | grep -c odd)"
+
+retry_reset; printf '9' > "$EXAKIT_RETRY_KNOBS/big.fail"
+OUT="$(EXAKIT_UPLOAD_PIECE_KB=1 EXAKIT_UPLOAD_QUIET=1 exapump_upload_many TPCH "$RETRY_DIR/data/big.csv" 2>&1; echo "rc=$?")"
+check "cut every time -> re-sent in pieces, batch succeeds" "rc=0" "$(printf '%s\n' "$OUT" | tail -1)"
+check "...the whole file was tried once"            "1" "$(retry_attempts big)"
+check "...each piece went to the staging table"     "TPCH.BIG__EXAKIT_PIECES" "$(cat "$EXAKIT_RETRY_KNOBS/big.piece0002.table" 2>/dev/null)"
+has   "...which is a copy of the target"            "CREATE TABLE TPCH.BIG__EXAKIT_PIECES LIKE TPCH.BIG" "$(cat "$EXAKIT_RETRY_KNOBS/sql.log")"
+has   "...moved across in one statement"            "INSERT INTO TPCH.BIG SELECT * FROM TPCH.BIG__EXAKIT_PIECES" "$(cat "$EXAKIT_RETRY_KNOBS/sql.log")"
+has   "...and the log says why"                     "big.csv: re-sending it as" "$(cat "$EXAKIT_LOG_FILE")"
+
+retry_reset; printf '9' > "$EXAKIT_RETRY_KNOBS/big.fail"; printf '9' > "$EXAKIT_RETRY_KNOBS/big.piece0002.fail"
+EXAKIT_UPLOAD_PIECE_KB=1 EXAKIT_UPLOAD_QUIET=1 exapump_upload_many TPCH "$RETRY_DIR/data/big.csv" >/dev/null 2>&1; RC=$?
+check "a piece that never lands -> the file fails"  "1" "$RC"
+check "...after its own three attempts"             "3" "$(retry_attempts big.piece0002)"
+check "...the pieces after it are not sent"         "0" "$(retry_attempts big.piece0003)"
+lacks "...the target never sees the pieces"         "INSERT INTO TPCH.BIG" "$(cat "$EXAKIT_RETRY_KNOBS/sql.log")"
+check "...and the staging table is dropped"         "DROP TABLE IF EXISTS TPCH.BIG__EXAKIT_PIECES" "$(tail -1 "$EXAKIT_RETRY_KNOBS/sql.log")"
+
+retry_reset; printf '9' > "$EXAKIT_RETRY_KNOBS/big.fail"
+EXAKIT_UPLOAD_PIECE_KB=0 EXAKIT_UPLOAD_QUIET=1 exapump_upload_many TPCH "$RETRY_DIR/data/big.csv" >/dev/null 2>&1
+check "EXAKIT_UPLOAD_PIECE_KB=0 -> whole-file retries only" "3" "$(retry_attempts big)"
+check "...and no staging table"                     ""  "$(cat "$EXAKIT_RETRY_KNOBS/sql.log" 2>/dev/null)"
+
+retry_reset; printf '1' > "$EXAKIT_RETRY_KNOBS/beta.fail"
+OUT="$(EXAKIT_RETRY_KIND=silent EXAKIT_UPLOAD_QUIET=1 exapump_upload_many TPCH "$RETRY_DIR/data/beta.csv" 2>&1; echo "rc=$?")"
+check "a failure that printed nothing is retried"   "rc=0" "$(printf '%s\n' "$OUT" | tail -1)"
+check "...once"                                     "2"    "$(retry_attempts beta)"
+has   "...and the log keeps the exit code"          "beta.csv: exapump exited with code 1 and printed nothing" "$(cat "$EXAKIT_LOG_FILE")"
 
 printf '\n== a binary that cannot start YET is waited for, not called broken ==\n'
 

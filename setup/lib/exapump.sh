@@ -680,12 +680,30 @@ exapump_upload() {
         esac
         [ -n "$EXAKIT_CSV_FLAGS" ] && _exakit_log_file "INFO  $(basename "$1") has: $EXAKIT_CSV_FLAGS"
     fi
+    _upl_mark=0
+    [ -n "${EXAKIT_LOG_FILE:-}" ] && _upl_mark="$(wc -l < "$EXAKIT_LOG_FILE" 2>/dev/null | tr -d ' ')"
     if [ "$_upl_delim" = "," ]; then
         run_logged "$(exapump_cli)" upload "$1" --table "$2" -p "$EXAKIT_EXAPUMP_PROFILE"
     else
         run_logged "$(exapump_cli)" upload "$1" --table "$2" -p "$EXAKIT_EXAPUMP_PROFILE" --delimiter "$_upl_delim"
     fi
     _upl_rc=$?
+    # A cut transfer is recovered here too, not only in the dataset batch: a
+    # user's own file crosses the same import connection. The failed attempt's
+    # output is only in the log (run_logged), so that is where it is read from -
+    # and only a cut it SAYS is acted on: an empty slice of the log is no
+    # evidence of a silent failure, just of nothing written there.
+    if [ "$_upl_rc" -ne 0 ] && [ -n "${EXAKIT_LOG_FILE:-}" ]; then
+        _upl_out="$(mktemp "${TMPDIR:-/tmp}/exakit-upload-out.XXXXXX")" || _upl_out=""
+        if [ -n "$_upl_out" ]; then
+            tail -n +"$(( ${_upl_mark:-0} + 1 ))" "$EXAKIT_LOG_FILE" 2>/dev/null | sed '/CMD   /d' > "$_upl_out"
+            if exakit_upload_cut_short "$(cat "$_upl_out")" && \
+               exakit_upload_recover "$1" "$2" "$_upl_delim" "$_upl_rc" "$_upl_out"; then
+                _upl_rc=0
+            fi
+            rm -f "$_upl_out"
+        fi
+    fi
     if [ "$_upl_rc" -ne 0 ]; then
         # EXAKIT_UPLOAD_SOFT: the caller is loading MANY files, reports each one
         # itself and carries on. Dying here announced a whole-job failure for one
@@ -782,6 +800,196 @@ exakit_upload_retries() {
     esac
 }
 
+# exakit_upload_retryable <exit code> <exapump output> — is this failed upload
+# worth another attempt? A cut transfer (exakit_upload_cut_short) is, and so is
+# a non-zero exit that printed NOTHING: seen on Windows in the same runs as the
+# cuts, five files in a row - a 415-byte one among them - that the same command
+# loaded a moment later. A failure that says what is wrong is never retried.
+# Twin of Test-ExakitUploadRetryable.
+exakit_upload_retryable() {
+    exakit_upload_cut_short "$2" && return 0
+    [ "$1" != 0 ] || return 1
+    [ -z "$(printf '%s' "$2" | tr -d ' \t\r\n')" ]
+}
+
+# exakit_upload_piece_bytes — how big each piece of a re-sent file is
+# (EXAKIT_UPLOAD_PIECE_KB, default 128; 0 turns piecing off).
+#
+# WHY PIECES: the cut is not random. Against Exasol Personal on Windows (the
+# database inside the Podman WSL machine) the engine loses the LAST 10-90 KB of
+# the file - "failed after 393216 bytes" of a 475 KB file, every time, while a
+# 390 KB file never failed. Retrying the same file mostly repeats the same cut
+# (customer.csv needed nine attempts), so the file is re-sent in pieces small
+# enough to arrive whole: measured 54 of 54 at 128 KB, 3 of 72 failing at 256
+# KB. Twin of Get-ExakitUploadPieceBytes.
+exakit_upload_piece_bytes() {
+    case "${EXAKIT_UPLOAD_PIECE_KB:-128}" in
+        ''|*[!0-9]*) printf '%s' $((128 * 1024)) ;;
+        *) printf '%s' $(( ${EXAKIT_UPLOAD_PIECE_KB:-128} * 1024 )) ;;
+    esac
+}
+
+# exakit_upload_pieceable <file> — can this file be re-sent in pieces? A plain
+# (uncompressed) delimited text file, bigger than one piece, and no bigger than
+# 64 MB - past that the piece count, one exapump launch each, costs more than
+# the retry is worth. Twin of Test-ExakitUploadPieceable.
+exakit_upload_pieceable() {
+    _eupa_piece="$(exakit_upload_piece_bytes)"
+    [ "$_eupa_piece" -gt 0 ] || return 1
+    case "$1" in
+        *.csv|*.CSV|*.tsv|*.TSV|*.txt|*.TXT) ;;
+        *) return 1 ;;
+    esac
+    [ -f "$1" ] || return 1
+    _eupa_size="$(wc -c < "$1" | tr -d ' ')"
+    [ "$_eupa_size" -gt "$_eupa_piece" ] && [ "$_eupa_size" -le 67108864 ]
+}
+
+# exakit_split_csv_pieces <file> <dir> <bytes> — cut a CSV into pieces of about
+# <bytes> in <dir>, each carrying the header, named so they sort in order.
+#
+# Line for line: every row goes over exactly as it was, CR included on a CRLF
+# file. Cuts only fall where the double quotes seen so far in the piece are
+# even - a newline inside a quoted field is data, not a row boundary. LC_ALL=C
+# so length() counts bytes. Twin of Split-ExakitCsvPieces.
+exakit_split_csv_pieces() {
+    _escp_base="$(basename "$1")"
+    LC_ALL=C awk -v dir="$2" -v stem="${_escp_base%.*}" -v ext="${_escp_base##*.}" -v lim="$3" '
+        NR == 1 { head = $0; next }
+        {
+            if (f == "" || (size >= lim && quotes % 2 == 0)) {
+                if (f != "") close(f)
+                n++
+                f = sprintf("%s/%s.piece%04d.%s", dir, stem, n, ext)
+                print head > f
+                size = length(head) + 1
+                quotes = 0
+            }
+            print > f
+            size += length($0) + 1
+            line = $0
+            quotes += gsub(/"/, "", line)
+        }' "$1"
+}
+
+# _exakit_upload_run <outfile> <exapump args>... — one exapump call, its output
+# kept in <outfile> and appended to the log.
+_exakit_upload_run() {
+    _eur_out="$1"; shift
+    "$(exapump_cli)" "$@" > "$_eur_out" 2>&1
+    _eur_rc=$?
+    if [ -n "${EXAKIT_LOG_FILE:-}" ]; then
+        printf 'exapump %s\n' "$*" >> "$EXAKIT_LOG_FILE"
+        cat "$_eur_out" >> "$EXAKIT_LOG_FILE" 2>/dev/null
+    fi
+    return $_eur_rc
+}
+
+# exakit_upload_pieces <file> <schema.table> <delimiter> <outfile> — re-send a
+# file in pieces, ALL OR NOTHING.
+#
+# The pieces are separate exapump calls, so separate commits: loading them
+# straight into the target would leave a half-loaded table behind the one
+# piece that never made it - and for a user appending to a table they already
+# had, no safe way back. So they go into a staging copy of the target (CREATE
+# TABLE ... LIKE), and only once every piece is in does ONE INSERT ... SELECT
+# move them across. Any failure drops the staging table; the target is exactly
+# as it was. Needs the target to exist - it always does here, because a cut
+# import has already created it. <outfile> ends up holding the output of the
+# attempt that decided it. Twin of Invoke-ExakitUploadPieces.
+exakit_upload_pieces() {
+    _eup_file="$1"; _eup_table="$2"; _eup_delim="${3:-,}"; _eup_out="$4"
+    _eup_stage="${_eup_table}__EXAKIT_PIECES"
+    _eup_max="$(exakit_upload_retries)"
+    _eup_dir="$(mktemp -d "${TMPDIR:-/tmp}/exakit-pieces.XXXXXX")" || return 1
+    exakit_split_csv_pieces "$_eup_file" "$_eup_dir" "$(exakit_upload_piece_bytes)"
+    _eup_n="$(ls "$_eup_dir" | wc -l | tr -d ' ')"
+    if [ "$_eup_n" -eq 0 ]; then rm -rf "$_eup_dir"; return 1; fi
+    [ -n "${EXAKIT_LOG_FILE:-}" ] && \
+        printf 'WARN  %s: re-sending it as %s smaller pieces through %s\n' \
+            "$(basename "$_eup_file")" "$_eup_n" "$_eup_stage" >> "$EXAKIT_LOG_FILE"
+    if ! _exakit_upload_run "$_eup_out" sql -p "$EXAKIT_EXAPUMP_PROFILE" \
+            "DROP TABLE IF EXISTS $_eup_stage; CREATE TABLE $_eup_stage LIKE $_eup_table"; then
+        rm -rf "$_eup_dir"; return 1
+    fi
+    for _eup_p in "$_eup_dir"/*; do
+        _eup_try=0
+        while :; do
+            if [ "$_eup_delim" = "," ]; then
+                _exakit_upload_run "$_eup_out" upload "$_eup_p" --table "$_eup_stage" -p "$EXAKIT_EXAPUMP_PROFILE"
+            else
+                _exakit_upload_run "$_eup_out" upload "$_eup_p" --table "$_eup_stage" -p "$EXAKIT_EXAPUMP_PROFILE" --delimiter "$_eup_delim"
+            fi
+            _eup_rc=$?
+            [ "$_eup_rc" = 0 ] && break
+            if [ "$_eup_try" -ge "$_eup_max" ] || ! exakit_upload_retryable "$_eup_rc" "$(cat "$_eup_out" 2>/dev/null)"; then
+                "$(exapump_cli)" sql -p "$EXAKIT_EXAPUMP_PROFILE" "DROP TABLE IF EXISTS $_eup_stage" >/dev/null 2>&1
+                rm -rf "$_eup_dir"; return 1
+            fi
+            _eup_try=$((_eup_try + 1))
+            sleep "$_eup_try"
+        done
+    done
+    rm -rf "$_eup_dir"
+    if ! _exakit_upload_run "$_eup_out" sql -p "$EXAKIT_EXAPUMP_PROFILE" \
+            "INSERT INTO $_eup_table SELECT * FROM $_eup_stage; DROP TABLE $_eup_stage"; then
+        "$(exapump_cli)" sql -p "$EXAKIT_EXAPUMP_PROFILE" "DROP TABLE IF EXISTS $_eup_stage" >/dev/null 2>&1
+        return 1
+    fi
+    return 0
+}
+
+# exakit_upload_recover <file> <schema.table> <delimiter> <exit code> <outfile>
+# — what every failed upload goes through before anyone hears about it. A
+# failure that is not retryable (exakit_upload_retryable) comes straight back.
+# A retryable one is re-sent in pieces when the file allows
+# (exakit_upload_pieceable), otherwise tried again whole, with a short pause
+# between attempts. <outfile> holds the failed attempt's output on the way in
+# and the last attempt's on the way out; the log keeps every attempt. Twin of
+# Invoke-ExakitUploadRecovery.
+exakit_upload_recover() {
+    _eurc_file="$1"; _eurc_table="$2"; _eurc_delim="${3:-,}"; _eurc_rc="$4"; _eurc_out="$5"
+    _eurc_name="$(basename "$_eurc_file")"
+    # Nothing on screen and nothing in the log is what made the Windows
+    # failures above impossible to read afterwards. The exit code is all there
+    # is, so it is kept.
+    if [ -z "$(tr -d ' \t\r\n' < "$_eurc_out" 2>/dev/null)" ] && [ -n "${EXAKIT_LOG_FILE:-}" ]; then
+        printf 'WARN  %s: exapump exited with code %s and printed nothing\n' "$_eurc_name" "$_eurc_rc" >> "$EXAKIT_LOG_FILE"
+    fi
+    _eurc_max="$(exakit_upload_retries)"
+    [ "$_eurc_max" -ge 1 ] || return 1
+    exakit_upload_retryable "$_eurc_rc" "$(cat "$_eurc_out" 2>/dev/null)" || return 1
+    if exakit_upload_pieceable "$_eurc_file"; then
+        EXAKIT_UPLOAD_RETRIED=$((${EXAKIT_UPLOAD_RETRIED:-0} + 1))
+        exakit_upload_pieces "$_eurc_file" "$_eurc_table" "$_eurc_delim" "$_eurc_out"
+        return
+    fi
+    _eurc_try=0
+    while [ "$_eurc_try" -lt "$_eurc_max" ]; do
+        _eurc_try=$((_eurc_try + 1))
+        EXAKIT_UPLOAD_RETRIED=$((${EXAKIT_UPLOAD_RETRIED:-0} + 1))
+        if exakit_upload_cut_short "$(cat "$_eurc_out" 2>/dev/null)"; then
+            _eurc_why="the import connection was cut mid-transfer"
+        else
+            _eurc_why="exapump failed without saying why"
+        fi
+        [ -n "${EXAKIT_LOG_FILE:-}" ] && \
+            printf 'WARN  %s: %s - attempt %s of %s\n' \
+                "$_eurc_name" "$_eurc_why" "$((_eurc_try + 1))" "$((_eurc_max + 1))" >> "$EXAKIT_LOG_FILE"
+        [ "$_eurc_try" -gt 1 ] && sleep $((_eurc_try - 1))
+        if [ "$_eurc_delim" = "," ]; then
+            "$(exapump_cli)" upload "$_eurc_file" --table "$_eurc_table" -p "$EXAKIT_EXAPUMP_PROFILE" > "$_eurc_out" 2>&1
+        else
+            "$(exapump_cli)" upload "$_eurc_file" --table "$_eurc_table" -p "$EXAKIT_EXAPUMP_PROFILE" --delimiter "$_eurc_delim" > "$_eurc_out" 2>&1
+        fi
+        _eurc_rc=$?
+        [ -n "${EXAKIT_LOG_FILE:-}" ] && cat "$_eurc_out" >> "$EXAKIT_LOG_FILE" 2>/dev/null
+        [ "$_eurc_rc" = 0 ] && return 0
+        exakit_upload_retryable "$_eurc_rc" "$(cat "$_eurc_out" 2>/dev/null)" || return 1
+    done
+    return 1
+}
+
 exapump_upload_many() {
     _um_schema="$1"; shift
     EXAKIT_UPLOAD_FAILED=""
@@ -829,23 +1037,12 @@ exapump_upload_many() {
             [ "${EXAKIT_UPLOAD_QUIET:-0}" = 1 ] || ok "$(basename "$_um_f") loaded"
             continue
         fi
-        # A CONNECTION CUT MID-TRANSFER IS TRIED AGAIN, one file at a time,
-        # before anyone hears about it. The log keeps every attempt; the
-        # screen only ever sees the outcome. See exakit_upload_cut_short.
-        _um_try=0
-        _um_max="$(exakit_upload_retries)"
-        while [ "$_um_rc" != "0" ] && [ "$_um_try" -lt "$_um_max" ] && \
-              exakit_upload_cut_short "$(cat "$_um_dir/$_um_j.out" 2>/dev/null)"; do
-            _um_try=$((_um_try + 1))
-            EXAKIT_UPLOAD_RETRIED=$((EXAKIT_UPLOAD_RETRIED + 1))
-            [ -n "${EXAKIT_LOG_FILE:-}" ] && \
-                printf 'WARN  %s: the import connection was cut mid-transfer - attempt %s of %s\n' \
-                    "$(basename "$_um_f")" "$((_um_try + 1))" "$((_um_max + 1))" >> "$EXAKIT_LOG_FILE"
-            "$(exapump_cli)" upload "$_um_f" --table "$_um_t" -p "$EXAKIT_EXAPUMP_PROFILE" \
-                > "$_um_dir/$_um_j.out" 2>&1
-            _um_rc=$?
-            [ -n "${EXAKIT_LOG_FILE:-}" ] && cat "$_um_dir/$_um_j.out" >> "$EXAKIT_LOG_FILE" 2>/dev/null
-        done
+        # A CUT TRANSFER IS RECOVERED, one file at a time, before anyone
+        # hears about it - re-sent in pieces or tried again whole. See
+        # exakit_upload_recover.
+        if exakit_upload_recover "$_um_f" "$_um_t" "," "${_um_rc:-1}" "$_um_dir/$_um_j.out"; then
+            _um_rc=0
+        fi
         if [ "$_um_rc" = "0" ]; then
             [ "${EXAKIT_UPLOAD_QUIET:-0}" = 1 ] || ok "$(basename "$_um_f") loaded"
             continue
