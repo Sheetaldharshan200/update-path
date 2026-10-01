@@ -7,7 +7,7 @@
 
 # Exasol Personal Local Starter Kit
 
-### The Analytics Database for Agentic AI. Free for Personal Use.
+### The Sovereign Agentic Database. Free for Personal Use.
 
 **Install it with one command. You don't need a cloud account or a license key.**
 
