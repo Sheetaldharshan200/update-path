@@ -70,7 +70,6 @@ The base install stays small. When you want more, you pick an add-on by the outc
 | [Exasol&nbsp;Scheduler](https://github.com/exasol-labs/exasol-scheduler) | SQL that runs on a timetable inside the database. The jobs are rows in a table |
 | [dbt-exasol](https://github.com/exasol/dbt-exasol) | Repeatable SQL models built, tested and documented with dbt against the local database |
 
-The marketplace does not offer a tool you already have, even one you installed outside the kit. [MARKETPLACE.md](MARKETPLACE.md) walks through each scenario and shows how to build your own add-on.
 
 ### JSON loading
 
