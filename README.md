@@ -73,7 +73,7 @@ The base install stays small. When you want more, you pick an add-on by the outc
 
 ### JSON loading
 
-`exakit data-load` now takes JSON files, including nested documents, and loads them as regular tables. The load goes through the JSON Tables add-on, which the kit offers the first time you need it. Its ingest engine ships prebuilt, so you never need a Rust toolchain.
+`exakit data-load` now takes JSON files, including nested documents, and loads them as regular tables. The load goes through the JSON Tables add-on, which the kit offers the first time you need it.
 
 ### Folder bulk upload
 
