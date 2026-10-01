@@ -54,7 +54,7 @@ The install command sets up four components and connects them:
 | [exapump](https://github.com/exasol-labs/exapump) | Loads CSV and Parquet files and runs SQL from your terminal |
 | [pyexasol](https://github.com/exasol/pyexasol) | The official Exasol Python driver, installed in its own environment |
 
-It also gives your AI agent eight skills, one for each part of the kit. They work in Claude Code, Codex, Cursor and any tool that reads the open skill standard, and an agent loads one only when the task needs it. The full list is in [skills/README.md](skills/README.md).
+It also gives your AI agent eight skills, one for each part of the kit. They work in Claude Code, Codex, Cursor and any tool that reads the open skill standard, and an agent loads one only when the task needs it.
 
 ## What's new in 0.2.0
 
@@ -90,7 +90,7 @@ Every platform runs the same database, Exasol Personal, set up by the same launc
 | **[Linux](quickstarts/linux.md)** | Podman (rootless is fine), 8 GB+ RAM, 20 GB free disk | If Podman is missing, the installer installs it without stopping to ask. It uses `sudo`, so expect a password prompt |
 | **[Windows](quickstarts/windows.md)** | 8 GB+ RAM, 20 GB free disk | Runs through Podman, which the launcher offers to install (this may need administrator approval). An existing Podman machine must be rootless (`podman machine set --rootful=false`), or the database port cannot reach Windows. Windows arm64 is not supported |
 
-Python 3.11+ is needed everywhere, and the kit installs its own copy if you don't have it. **WSL** is supported and follows the Linux path: run the same command inside a WSL2 distro. Podman or Docker Desktop on the Windows side does not count.
+Python 3.11+ is needed everywhere, and the kit installs its own copy if you don't have it. **WSL** is supported and follows the Linux path: run the same command inside a WSL2 distro.
 
 If you already run the kit's database in a container, re-run the install command and it offers to bring your data across, without deleting anything. `exakit migrate docker-nano` does the same later.
 
@@ -105,12 +105,6 @@ exakit mcp-setup
 The installer runs this for you, and you can run it again any time to add a client. It lists Claude, Codex, Cursor, GitHub Copilot, Gemini CLI, OpenCode and Continue, greys out the ones already connected or not installed, writes the config for the ones you pick and checks the connection. `exakit mcp-doctor` checks it again later.
 
 Three sample datasets are loaded for you: TPC-H retail in `TPCH`, smart-meter energy readings in `ENERGY` and daily city weather in `WEATHER`. The [data dictionary](data/data-dictionary.md) describes them, and [data/example-questions.md](data/example-questions.md) has 14 questions with reference SQL.
-
-The kit teaches one loop:
-
-```
-ASK -> INSPECT -> RUN -> VALIDATE -> RERUN
-```
 
 Try it: *"Which product category generated the most revenue? Show me the SQL before you run it."*
 
