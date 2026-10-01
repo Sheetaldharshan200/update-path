@@ -1,10 +1,11 @@
 # legacy-fault-engine.ps1 - the PowerShell twin of legacy-fault-engine.sh.
 #
 # Same contract, same control files, same log (engine.calls): a container
-# engine that answers inspect, start and stop and misbehaves on request. Driven
-# by tests/legacy-crossing-ps.ps1, through a .cmd wrapper on Windows and a
-# #!/bin/sh wrapper elsewhere, so the PowerShell module meets one stub on every
-# host it is tested on. See the .sh twin for what each control file means.
+# engine that answers version, inspect, start and stop and misbehaves on
+# request. Driven by tests/legacy-crossing-ps.ps1, through a .cmd wrapper on
+# Windows and a #!/bin/sh wrapper elsewhere, so the PowerShell module meets one
+# stub on every host it is tested on. See the .sh twin for what each control
+# file means.
 $dir = $env:EXAKIT_FAULT_DIR
 if (-not $dir) { [Console]::Error.WriteLine("EXAKIT_FAULT_DIR must point at the scenario's control directory"); exit 2 }
 function Read-Knob([string]$Name, [string]$Default) {

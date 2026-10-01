@@ -170,8 +170,14 @@ echo "the engine misbehaves:"
 # runner's group kill has no group to hit in a non-interactive shell, the
 # grandchild keeps the capture pipe open, and the crossing waits out the whole
 # hang. That is a limit of exakit_run_bounded, noted here rather than hidden.
+#
+# The budget is 2, not 1. Without timeout(1) the kit's bounded runner polls the
+# child once a second and never again after its last sleep, so a limit of 1
+# reads EVERY probe as timed out - including the `version` call the engine
+# answers at once, which is what tells a hung inspect from a stopped engine.
+# At 2 that call gets its second look; each hung inspect still ends in 3s.
 H="$WORK/hang"; seed "$H"; fault "$H" engine.state hang; fault "$H" engine.hang_seconds 60
-_t0=$(date +%s); _o="$(PROBE_TIMEOUT=1 before "$H")"; _dt=$(( $(date +%s) - _t0 )); note_rc "$_o"
+_t0=$(date +%s); _o="$(PROBE_TIMEOUT=2 before "$H")"; _dt=$(( $(date +%s) - _t0 )); note_rc "$_o"
 check "a hanging engine does not block the install" "0" "$(rc_of "$_o")"
 check "...and it gives up promptly, not after the hang" "yes" "$([ "$_dt" -lt 30 ] && echo yes || echo "no: ${_dt}s")"
 check "...saying nothing on screen" "" "$(quiet "$_o")"
@@ -229,17 +235,25 @@ check "...and closes silently" "" "$(quiet "$_o")"
 check "...the removal command has nothing to name and says so" "1" \
     "$(run "$H" "" 'legacy_remove_command >/dev/null; echo $?' | tail -1)"
 
-# An engine whose answer cannot be parsed. "unknown" is not "gone": the
-# database is probed, answers, and the offer is made - with the state shown
-# for what it is.
+# An engine whose answer cannot be parsed. "unknown" is not "gone" - and it is
+# not "readable" either. Nothing is copied from a container whose state the
+# engine will not state, nothing is recorded as chosen, and the crossing stays
+# open with the reason kept, so a later run with a talking engine (or `exakit
+# migrate docker-nano`) can still make the offer. Reading "unknown" as a
+# condition and not a decision is what keeps a stopped Docker Desktop from
+# withdrawing the offer for good.
 H="$WORK/unknown"; seed "$H"; fault "$H" engine.state unknown
 _o="$(before "$H" EXAKIT_LEGACY_DATA=skip)"; note_rc "$_o"
-check "an unparseable state still leads to the copy" "3" "$(mget "$H" legacy.exported)"
-# ONE call, not two: the first answers the question and the second would find
-# it already answered.
+check "an unparseable state is not an error" "0" "$(rc_of "$_o")"
+check "...nothing reaches the screen" "" "$(quiet "$_o")"
+check "...nothing is copied on its strength" "" "$(mget "$H" legacy.exported)"
+check "...no choice is recorded for the user" "" "$(mget "$H" legacy.choice)"
+check "...the crossing stays open" "" "$(mget "$H" legacy.crossing_done)"
+has   "...and the reason is kept" "is not answering" "$(mget "$H" legacy.offer_blocked)"
+lacks "...no export was tried" "export" "$(calls "$H" exapump)"
+# With nothing copied, the second half has nothing to offer and nothing to restore.
 _o2="$(after "$H" EXAKIT_LEGACY_DATA=skip)"
-has "...and the offer that follows it" "Found your previous starter kit" "$_o2"
-has "...naming the state it is in by then" "stopped for this install" "$_o2"
+check "...and the second half has nothing to say" "" "$(quiet "$_o2")"
 
 # An engine that refuses `inspect -f` but answers a plain `inspect` (too old
 # for the template flag): the container exists, its state cannot be read, and
@@ -995,8 +1009,10 @@ check "the engine was used, so the next lines mean something" "yes" "$([ -n "$_a
 check "exapump was used" "yes" "$([ -n "$_all_exapump" ] && echo yes || echo no)"
 # THE INVARIANT: the crossing copies and stops. It never deletes.
 check "no engine call ever removed a container" "0" "$(printf '%s\n' "$_all_engine" | grep -cE '^(rm|container rm|volume|destroy|kill|prune)')"
-check "only inspect, start and stop were ever issued" "" \
-    "$(printf '%s\n' "$_all_engine" | awk '$1 != "container" && $1 != "start" && $1 != "stop"' | sort -u | tr '\n' ' ')"
+# `version` is the one read of the engine itself rather than of the container:
+# it is how a stopped daemon is told apart from a missing container.
+check "only inspect, version, start and stop were ever issued" "" \
+    "$(printf '%s\n' "$_all_engine" | awk '$1 != "container" && $1 != "version" && $1 != "start" && $1 != "stop"' | sort -u | tr '\n' ' ')"
 check "every inspect was of the recorded container" "0" "$(printf '%s\n' "$_all_engine" | grep '^container' | grep -vc 'exasol-nano$')"
 # THE PASSWORD. It is checked where it would leak - on screen, and in the argv
 # handed to another process (what `ps` shows) - and not in the xtrace, which

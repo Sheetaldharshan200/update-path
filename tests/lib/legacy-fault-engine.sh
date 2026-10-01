@@ -3,7 +3,7 @@
 #
 # Installed into a sandbox as `fakeengine` (the name the fixture manifest
 # records as runtime.engine) by tests/legacy-crossing-resilience.sh. It answers
-# the three verbs the crossing is allowed to use — inspect, start, stop — and
+# the four verbs the crossing may use — version, inspect, start, stop — and
 # takes its behaviour from plain files in $EXAKIT_FAULT_DIR, so a scenario can
 # make it hang, refuse, or lose the container between two calls without a
 # second stub. Every call is appended to engine.calls, argv verbatim: that log

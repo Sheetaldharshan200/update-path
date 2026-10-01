@@ -830,7 +830,9 @@ Write-Host "invariants that held across every scenario above:"
 Check "the engine was used" $true ($script:allEngine.Count -gt 0)
 Check "exapump was used" $true ($script:allExapump.Count -gt 0)
 Check "no engine call ever removed anything" 0 @($script:allEngine | Where-Object { $_ -match '^(rm|container rm|volume|destroy|kill|prune)' }).Count
-Check "only inspect, start and stop were issued" "" (@($script:allEngine | ForEach-Object { ($_ -split " ")[0] } | Where-Object { $_ -notin @("container", "start", "stop") } | Sort-Object -Unique) -join " ")
+# `version` is the one read of the engine itself rather than of the container:
+# it is how a stopped daemon is told apart from a missing container.
+Check "only inspect, version, start and stop were issued" "" (@($script:allEngine | ForEach-Object { ($_ -split " ")[0] } | Where-Object { $_ -notin @("container", "version", "start", "stop") } | Sort-Object -Unique) -join " ")
 Check "the password never reached the screen" 0 @($script:screens | Where-Object { $_.Contains($PASSWORD) }).Count
 Check "...nor any process the crossing ran" 0 @(($script:allEngine + $script:allExapump) | Where-Object { $_.Contains($PASSWORD) }).Count
 Check "...and it did land in the sandboxed profile" $true ((Get-Content $cfg -Raw).Contains($PASSWORD))

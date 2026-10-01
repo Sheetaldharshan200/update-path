@@ -493,11 +493,12 @@ Write-Host ""
 Write-Host "== a dataset whose marker tables are empty is not loaded =="
 # The dataset's DDL creates its tables before a single file is uploaded, so an
 # upload that failed left empty tables that the marker check called "loaded".
-# The listing asks for rows; a stub answering with every table but ORDERS
-# reads as "not loaded" for markers that include ORDERS.
+# The listing carries every table's row count and only a table with rows is
+# kept; a stub answering with every table but ORDERS reads as "not loaded" for
+# markers that include ORDERS. Twin of the checks in tests/dataset-load-progress.sh.
 $exapumpPs1 = Get-Content (Join-Path $repo "setup/lib/exapump.ps1") -Raw
-Has "the listing asks for rows, not existence" "WHERE TABLE_ROW_COUNT > 0" $exapumpPs1
-Has "...and says when it was answered"         "SELECT 'EXAKIT.LISTING_ANSWERED' AS QUALIFIED FROM DUAL UNION ALL" $exapumpPs1
+Has "the listing carries the row count"  "TABLE_NAME || '|' || TABLE_ROW_COUNT" $exapumpPs1
+Has "...and says when it was answered"   "SELECT 'EXAKIT.LISTING_ANSWERED|1' AS QUALIFIED FROM DUAL UNION ALL" $exapumpPs1
 function Get-ExakitQualifiedTables { return @{ "TPCH.REGION" = $true; "TPCH.NATION" = $true } }
 function Sync-ExakitDatasetFlag { }
 $script:ExakitTableListing = $null
