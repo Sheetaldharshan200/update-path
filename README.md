@@ -71,11 +71,11 @@ The base install stays small. When you want more, you pick an add-on by the outc
 | [dbt-exasol](https://github.com/exasol/dbt-exasol) | Repeatable SQL models built, tested and documented with dbt against the local database |
 
 
-### JSON loading
+### JSON support
 
 `exakit data-load` now takes JSON files, including nested documents, and loads them as regular tables. The load goes through the JSON Tables add-on, which the kit offers the first time you need it.
 
-### Folder bulk upload
+### Bulk upload
 
 Point `exakit data-load` at a folder and every CSV, Parquet or JSON file in it becomes one table, named after the file. The folder is read at its top level only. Uploads land in the `STARTER_KIT` schema by default.
 
