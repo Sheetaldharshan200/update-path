@@ -146,9 +146,9 @@ exakit version
 
 The whole flow, from install to the first query:
 
-https://github.com/user-attachments/assets/77916db0-d273-4720-8d59-1aedac95d5e8
+<!-- https://github.com/user-attachments/assets/77916db0-d273-4720-8d59-1aedac95d5e8 -->
 
-## Quick answers
+## FAQ
 
 | Question | Answer |
 |---|---|
