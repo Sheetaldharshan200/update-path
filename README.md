@@ -88,13 +88,13 @@ Every platform runs the same database, Exasol Personal, set up by the same launc
 | **[macOS](quickstarts/macos.md)** | 8 GB+ RAM, 20 GB free disk | Runs in a lightweight managed VM. Nothing to install first |
 | **[Linux](quickstarts/linux.md)** | Podman (rootless is fine), 8 GB+ RAM, 20 GB free disk | If Podman is missing, the installer installs it without stopping to ask. It uses `sudo`, so expect a password prompt |
 | **[Windows](quickstarts/windows.md)** | 8 GB+ RAM, 20 GB free disk | Runs through Podman, which the launcher offers to install (this may need administrator approval). An existing Podman machine must be rootless (`podman machine set --rootful=false`), or the database port cannot reach Windows. Windows arm64 is not supported |
-| All platforms | Python 3.11+ | **WSL** is supported and follows the Linux path: run the same command inside a WSL2 distro. |
+| All platforms | Python 3.11+ |  |
 
-
+**WSL** is supported and follows the Linux path: run the same command inside a WSL2 distro.
 
 ## Upgrade
 
-To upgrade from 0.1.0 to 0.2.0, run the install command from the top of this page again, or run `exakit update`. Windows needs Podman Desktop installed before you start, and Linux needs Podman. On macOS there is nothing to prepare.
+To upgrade from 0.1.0 to 0.2.0, run the install command from the top of this page again, or run `exakit update`. On Windows it is recommended to have Podman Desktop installed before you start, and Podman on Linux. On macOS there is nothing to prepare.
 
 ## Connect your AI client and ask
 
