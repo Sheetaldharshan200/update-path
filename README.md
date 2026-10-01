@@ -83,7 +83,7 @@ Point `exakit data-load` at a folder and every CSV, Parquet or JSON file in it b
 
 Every platform runs the same database, Exasol Personal, set up by the same launcher.
 
-| Your machine | Minimum | Notes |
+| Machine | Minimum | Notes |
 |---|---|---|
 | **[macOS](quickstarts/macos.md)** | 8 GB+ RAM, 20 GB free disk | Runs in a lightweight managed VM. Nothing to install first |
 | **[Linux](quickstarts/linux.md)** | Podman (rootless is fine), 8 GB+ RAM, 20 GB free disk | If Podman is missing, the installer installs it without stopping to ask. It uses `sudo`, so expect a password prompt |
