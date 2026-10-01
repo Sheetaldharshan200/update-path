@@ -92,7 +92,7 @@ Every platform runs the same database, Exasol Personal, set up by the same launc
 
 **WSL** is supported and follows the Linux path: run the same command inside a WSL2 distro.
 
-## Upgrade
+## Upgrade Path for Starterkit
 
 To upgrade from 0.1.0 to 0.2.0, run the install command from the top of this page again. On Windows it is recommended to have Podman Desktop installed before you start, and Podman on Linux. On macOS there is nothing to prepare, and `exakit update` does the same job.
 
