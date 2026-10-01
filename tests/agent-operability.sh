@@ -1403,7 +1403,7 @@ check "gate(linux, podman) passes" \
 # The documented promise has to match the gate: a WSL reader is now given the
 # Linux road and the one prerequisite that differs, not an exit.
 has "the README sends WSL down the Linux road" "WSL** is supported" "$(cat "$ROOT/README.md")"
-has "...naming the podman that counts" "does not count" "$(cat "$ROOT/README.md")"
+has "...naming the podman that counts" "Podman has to be installed there as well" "$(cat "$ROOT/quickstarts/windows.md")"
 has "the Linux quickstart claims the WSL path" "also the WSL path" "$(cat "$ROOT/quickstarts/linux.md")"
 has "the Windows quickstart hands WSL over" "supported too" "$(cat "$ROOT/quickstarts/windows.md")"
 lacks "no doc still says Personal refuses WSL" "does not support WSL" \
