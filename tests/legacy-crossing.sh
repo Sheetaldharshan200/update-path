@@ -69,7 +69,7 @@ run() {
     _r_home="$1"; _r_state="$2"; _r_body="$3"
     _r_bin="$WORK/bin-$_r_state"
     mkdir -p "$_r_bin"
-    # The engine stub answers the three verbs the crossing uses, and records
+    # The engine stub answers the two verbs the state probe uses, and records
     # every call so the assertions can read back what it was handed.
     cat > "$_r_bin/fakeengine" <<EOF
 #!/bin/sh
@@ -77,6 +77,7 @@ printf '%s\n' "\$*" >> "$WORK/engine.calls"
 case "\$1 \$2" in
   "container inspect")
       [ "$_r_state" = absent ] && exit 1
+      [ "$_r_state" = down ] && exit 1
       [ "$_r_state" = unknown ] && { printf 'weird\n'; exit 0; }
       [ "$_r_state" = running ] && { printf 'true\n'; exit 0; }
       printf 'false\n'; exit 0 ;;
