@@ -41,7 +41,7 @@ Install the Exasol starter kit from https://github.com/exasol-labs/exasol-person
 
 ---
 
-## What is this?
+## Overview
 
 This kit sets up an analytics database on your own machine and connects your AI assistant to it. Everything runs locally, so your data stays with you. You see every SQL statement before it runs and can check each answer yourself.
 
@@ -49,14 +49,14 @@ The install command sets up four components and connects them:
 
 | Component | What it does |
 |---|---|
-| [MCP server](https://github.com/exasol/mcp-server) | Lets Claude, Cursor or other supported MCP clients query your database through a dedicated read-only login |
+| [MCP server](https://github.com/exasol/mcp-server) | Let Claude, Cursor or other supported MCP clients query your database through a dedicated read-only login |
 | [Exasol&nbsp;Personal&nbsp;Local](https://github.com/exasol/exasol-personal) | An in-memory analytics database that runs on your machine |
 | [exapump](https://github.com/exasol-labs/exapump) | Loads CSV and Parquet files and runs SQL from your terminal |
 | [pyexasol](https://github.com/exasol/pyexasol) | The official Exasol Python driver, installed in its own environment |
 
 It also gives your AI agent eight skills, one for each part of the kit. They work in Claude Code, Codex, Cursor and any tool that reads the open skill standard, and an agent loads one only when the task needs it.
 
-## What's new in 0.2.0
+## What's new
 
 ### Add-ons through `exakit marketplace`
 
