@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import copy
 import json
-import shutil
 from pathlib import Path
 from typing import Any
 
@@ -155,7 +154,7 @@ class VSCodeCopilotAdapter(ClientAdapter):
             )
         managed_entry = servers.get(server_name)
         managed_hash = sha256_json(managed_entry) if managed_entry is not None else None
-        other_server_names = [name for name in servers.keys() if name != server_name]
+        other_server_names = [name for name in servers if name != server_name]
         return AdapterInspection(
             path=path,
             exists=True,

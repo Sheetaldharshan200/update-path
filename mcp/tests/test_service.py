@@ -44,23 +44,23 @@ class MCPSubsystemLifecycleTests(unittest.TestCase):
     def test_full_lifecycle_flow(self) -> None:
         with self._mock_connectivity():
             configure = self.subsystem.execute(self._base_request("configure"))
-            self.assertEqual(configure.status, OperationStatus.SUCCESS)
+            self.assertEqual(configure.status, OperationStatus.SUCCESS, configure.findings)
             self.assertTrue(self.config_path.exists())
             config_doc = json.loads(self.config_path.read_text(encoding="utf-8"))
             self.assertIn("exasol", config_doc["mcpServers"])
             self.assertTrue(config_doc["mcpServers"]["exasol"]["command"].endswith("exasol-mcp-server"))
 
             discover = self.subsystem.execute(self._base_request("discover"))
-            self.assertEqual(discover.status, OperationStatus.SUCCESS)
+            self.assertEqual(discover.status, OperationStatus.SUCCESS, discover.findings)
             discovered = discover.details["discovered_clients"][0]
             self.assertTrue(discovered["detected"])
 
             validate = self.subsystem.execute(self._base_request("validate"))
-            self.assertEqual(validate.status, OperationStatus.SUCCESS)
+            self.assertEqual(validate.status, OperationStatus.SUCCESS, validate.findings)
             self.assertGreaterEqual(len(validate.verification_evidence), 4)
 
             backup = self.subsystem.execute(self._base_request("backup"))
-            self.assertEqual(backup.status, OperationStatus.SUCCESS)
+            self.assertEqual(backup.status, OperationStatus.SUCCESS, backup.findings)
             snapshot_id = backup.details["snapshot_id"]
 
             drifted = json.loads(self.config_path.read_text(encoding="utf-8"))
@@ -71,12 +71,12 @@ class MCPSubsystemLifecycleTests(unittest.TestCase):
             self.assertEqual(drift_validate.status, OperationStatus.FAILED_RECOVERABLE)
 
             repair = self.subsystem.execute(self._base_request("repair"))
-            self.assertEqual(repair.status, OperationStatus.SUCCESS)
+            self.assertEqual(repair.status, OperationStatus.SUCCESS, repair.findings)
             repaired_doc = json.loads(self.config_path.read_text(encoding="utf-8"))
             self.assertEqual(repaired_doc["mcpServers"]["exasol"]["command"], "exasol-mcp-server")
 
             status = self.subsystem.execute(self._base_request("status"))
-            self.assertEqual(status.status, OperationStatus.SUCCESS)
+            self.assertEqual(status.status, OperationStatus.SUCCESS, status.findings)
             self.assertEqual(len(status.artifacts), 1)
 
             doctor = self.subsystem.execute(self._base_request("doctor"))
@@ -93,12 +93,12 @@ class MCPSubsystemLifecycleTests(unittest.TestCase):
                     "snapshot_id": snapshot_id,
                 }
             )
-            self.assertEqual(restore.status, OperationStatus.SUCCESS)
+            self.assertEqual(restore.status, OperationStatus.SUCCESS, restore.findings)
             restored_doc = json.loads(self.config_path.read_text(encoding="utf-8"))
             self.assertEqual(restored_doc["mcpServers"]["exasol"]["args"], ["--profile", "starter-kit"])
 
             uninstall = self.subsystem.execute(self._base_request("uninstall"))
-            self.assertEqual(uninstall.status, OperationStatus.SUCCESS)
+            self.assertEqual(uninstall.status, OperationStatus.SUCCESS, uninstall.findings)
             self.assertFalse(self.config_path.exists())
 
     def test_uninstall_preserves_unmanaged_servers(self) -> None:
@@ -120,9 +120,9 @@ class MCPSubsystemLifecycleTests(unittest.TestCase):
         )
         with self._mock_connectivity():
             configure = self.subsystem.execute(self._base_request("configure"))
-            self.assertEqual(configure.status, OperationStatus.SUCCESS)
+            self.assertEqual(configure.status, OperationStatus.SUCCESS, configure.findings)
             uninstall = self.subsystem.execute(self._base_request("uninstall"))
-            self.assertEqual(uninstall.status, OperationStatus.SUCCESS)
+            self.assertEqual(uninstall.status, OperationStatus.SUCCESS, uninstall.findings)
             remaining = json.loads(self.config_path.read_text(encoding="utf-8"))
             self.assertIn("filesystem", remaining["mcpServers"])
             self.assertNotIn("exasol", remaining["mcpServers"])
@@ -154,7 +154,7 @@ class MCPSubsystemLifecycleTests(unittest.TestCase):
         }
         with self._mock_connectivity():
             configure = subsystem.execute(request)
-            self.assertEqual(configure.status, OperationStatus.SUCCESS)
+            self.assertEqual(configure.status, OperationStatus.SUCCESS, configure.findings)
             self.assertTrue(cursor_path.exists())
             self.assertTrue(codex_path.exists())
 
@@ -169,7 +169,7 @@ class MCPSubsystemLifecycleTests(unittest.TestCase):
                     "target_clients": ["cursor", "codex"],
                 }
             )
-            self.assertEqual(validate.status, OperationStatus.SUCCESS)
+            self.assertEqual(validate.status, OperationStatus.SUCCESS, validate.findings)
 
             uninstall = subsystem.execute(
                 {
@@ -177,7 +177,7 @@ class MCPSubsystemLifecycleTests(unittest.TestCase):
                     "target_clients": ["cursor", "codex"],
                 }
             )
-            self.assertEqual(uninstall.status, OperationStatus.SUCCESS)
+            self.assertEqual(uninstall.status, OperationStatus.SUCCESS, uninstall.findings)
             self.assertFalse(cursor_path.exists())
             self.assertFalse(codex_path.exists())
 
@@ -322,12 +322,12 @@ class DoctorClientStateTests(unittest.TestCase):
     def test_absent_unmanaged_clients_leave_doctor_at_plain_success(self) -> None:
         with self._mock_connectivity():
             configure = self.subsystem.execute(self._request("configure", ["claude_desktop"]))
-            self.assertEqual(configure.status, OperationStatus.SUCCESS)
+            self.assertEqual(configure.status, OperationStatus.SUCCESS, configure.findings)
 
             # cursor is neither installed in this sandbox nor managed:
             # expected state, so the run must be SUCCESS, full stop.
             doctor = self.subsystem.execute(self._request("doctor", ["claude_desktop", "cursor"]))
-            self.assertEqual(doctor.status, OperationStatus.SUCCESS)
+            self.assertEqual(doctor.status, OperationStatus.SUCCESS, doctor.findings)
             codes = {finding.code for finding in doctor.findings}
             self.assertIn("client_not_detected", codes)          # discover's INFO
             self.assertNotIn("managed_client_missing", codes)
@@ -347,7 +347,7 @@ class DoctorClientStateTests(unittest.TestCase):
         """
         with self._mock_connectivity():
             configure = self.subsystem.execute(self._request("configure", ["claude_desktop"]))
-            self.assertEqual(configure.status, OperationStatus.SUCCESS)
+            self.assertEqual(configure.status, OperationStatus.SUCCESS, configure.findings)
             doctor = self.subsystem.execute(self._request("doctor", ["claude_desktop", "cursor"]))
             states = {row["client"]: row["state"] for row in doctor.details["clients"]}
             self.assertEqual(states["claude_desktop"], "connected")
@@ -363,7 +363,7 @@ class DoctorClientStateTests(unittest.TestCase):
     def test_managed_entry_with_missing_client_warns(self) -> None:
         with self._mock_connectivity():
             configure = self.subsystem.execute(self._request("configure", ["claude_desktop"]))
-            self.assertEqual(configure.status, OperationStatus.SUCCESS)
+            self.assertEqual(configure.status, OperationStatus.SUCCESS, configure.findings)
 
             # Simulate the client vanishing after setup: config file AND its
             # directory are gone (detection falls back to the parent dir), so

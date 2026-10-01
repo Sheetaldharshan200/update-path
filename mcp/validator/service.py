@@ -8,11 +8,10 @@ import json
 import os
 import queue
 import socket
-import stat
 import subprocess
 import threading
 import time
-from typing import Iterable
+from collections.abc import Iterable
 from urllib.parse import urlparse
 
 from mcp.adapters.base import AdapterInspection, ClientAdapter
@@ -20,7 +19,6 @@ from mcp.adapters.registry import AdapterRegistry
 from mcp.runtime.filesystem import OWNER_ONLY_ACL, describe_protection
 from mcp.core.models import (
     ArtifactReference,
-    DiscoveredClient,
     Finding,
     OperationRequest,
     ServerDefinition,
@@ -40,6 +38,44 @@ from mcp.runtime.paths import RuntimePaths
 REPAIR_ACTION = (
     "Run: exakit mcp-doctor (it repairs drift and re-checks; --json only reports)"
 )
+
+
+_HANDSHAKE = (
+    {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {
+            "protocolVersion": "2024-11-05",
+            "capabilities": {},
+            "clientInfo": {"name": "exakit-mcp-doctor", "version": "1"},
+        },
+    },
+    {"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}},
+    {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}},
+)
+
+
+def _json_object(line: str) -> dict | None:
+    """The JSON object on one stdout line, or None for the banner and log lines a server prints there."""
+    text = line.strip()
+    if not text.startswith("{"):
+        return None
+    try:
+        doc = json.loads(text)
+    except ValueError:
+        return None
+    return doc if isinstance(doc, dict) else None
+
+
+def _tools_in(message: dict) -> list[str]:
+    """The tool names in a tools/list reply; an error reply or an empty list is a launch failure."""
+    if "error" in message:
+        raise _ServerLaunchError(str((message["error"] or {}).get("message", "tools/list failed")))
+    tools = [tool.get("name", "") for tool in (message.get("result") or {}).get("tools", []) if isinstance(tool, dict)]
+    if not tools:
+        raise _ServerLaunchError("the server offered no tools")
+    return tools
 
 
 class _ServerLaunchError(RuntimeError):
@@ -361,7 +397,7 @@ class ValidatorService:
             text=True,
             bufsize=1,
         )
-        lines: "queue.Queue[str]" = queue.Queue()
+        lines: queue.Queue[str] = queue.Queue()
 
         def drain() -> None:
             try:
@@ -373,57 +409,10 @@ class ValidatorService:
         reader = threading.Thread(target=drain, daemon=True)
         reader.start()
         try:
-            for message in (
-                {
-                    "jsonrpc": "2.0",
-                    "id": 1,
-                    "method": "initialize",
-                    "params": {
-                        "protocolVersion": "2024-11-05",
-                        "capabilities": {},
-                        "clientInfo": {"name": "exakit-mcp-doctor", "version": "1"},
-                    },
-                },
-                {"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}},
-                {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}},
-            ):
+            for message in _HANDSHAKE:
                 process.stdin.write(json.dumps(message) + "\n")  # type: ignore[union-attr]
                 process.stdin.flush()  # type: ignore[union-attr]
-
-            deadline = time.monotonic() + self.SERVER_LAUNCH_TIMEOUT_SECONDS
-            while time.monotonic() < deadline:
-                try:
-                    line = lines.get(timeout=0.5)
-                except queue.Empty:
-                    # The server died without answering: no point waiting out the
-                    # rest of a 90-second budget for a process that is gone.
-                    if process.poll() is not None and lines.empty():
-                        raise _ServerLaunchError(
-                            f"the server exited (code {process.returncode}) before answering"
-                        )
-                    continue
-                line = line.strip()
-                if not line.startswith("{"):
-                    continue
-                try:
-                    message = json.loads(line)
-                except ValueError:
-                    continue
-                if message.get("id") != 2:
-                    continue
-                if "error" in message:
-                    raise _ServerLaunchError(
-                        str((message["error"] or {}).get("message", "tools/list failed"))
-                    )
-                tools = [
-                    tool.get("name", "")
-                    for tool in (message.get("result") or {}).get("tools", [])
-                    if isinstance(tool, dict)
-                ]
-                if not tools:
-                    raise _ServerLaunchError("the server offered no tools")
-                return tools
-            raise subprocess.TimeoutExpired(command, self.SERVER_LAUNCH_TIMEOUT_SECONDS)
+            return self._await_tools(process, lines, command)
         except BrokenPipeError as exc:
             raise _ServerLaunchError(f"the server closed its input ({exc})") from exc
         finally:
@@ -435,6 +424,23 @@ class ValidatorService:
                         stream.close()
                 except OSError:
                     pass
+
+    def _await_tools(self, process: subprocess.Popen, lines: queue.Queue[str], command: list[str]) -> list[str]:
+        """The tool names from the tools/list reply, or the launch error the server produced instead."""
+        deadline = time.monotonic() + self.SERVER_LAUNCH_TIMEOUT_SECONDS
+        while time.monotonic() < deadline:
+            try:
+                line = lines.get(timeout=0.5)
+            except queue.Empty:
+                # The server died without answering: no point waiting out the
+                # rest of a 90-second budget for a process that is gone.
+                if process.poll() is not None and lines.empty():
+                    raise _ServerLaunchError(f"the server exited (code {process.returncode}) before answering") from None
+                continue
+            message = _json_object(line)
+            if message is not None and message.get("id") == 2:
+                return _tools_in(message)
+        raise subprocess.TimeoutExpired(command, self.SERVER_LAUNCH_TIMEOUT_SECONDS)
 
     def validate_permission_posture(
         self, artifacts: Iterable[ArtifactReference]

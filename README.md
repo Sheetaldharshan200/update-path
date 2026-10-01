@@ -91,7 +91,7 @@ Every platform runs the same database, **Exasol Personal**, set up by the same l
 
 If you already run the kit's database in a container, re-run the install command to migrate your data, or run `exakit migrate docker-nano` later. Nothing is deleted. The sample data is not copied, because the kit loads it itself.
 
-**WSL** is supported and follows the Linux path: run the same command inside a WSL2 distro. Podman or Docker Desktop on the Windows side does not count. Windows and WSL share port 8563, so run the database on one side only; the kit asks you to stop the other side's database rather than adopt it. Windows arm64 is not supported for local deployments. Run the kit inside WSL2 or a Linux VM instead.
+**WSL** is supported and follows the Linux path: run the same command inside a WSL2 distro. Podman or Docker Desktop on the Windows side does not count. Windows and WSL share port 8563, so run the database on one side only; the kit asks you to stop the other side's database rather than adopt it. Windows arm64 and Intel Macs are not supported for local deployments (the database runs on Apple silicon Macs, Linux x86_64/arm64 and Windows x86_64); the installer says so before it downloads anything. Run the kit inside WSL2 or a Linux VM instead.
 
 Python 3.11+ is needed on every platform. If you don't have it, the kit installs its own copy.
 
@@ -168,6 +168,7 @@ exakit mcp-doctor      # AI connection health check
 exakit version         # what is installed, and what is newer
 exakit update          # apply what is pending (asks before it stops the database)
 exakit marketplace     # optional add-ons (dashboards & more)
+exakit persona         # install by role: datasets, AI clients, add-ons in one go
 exakit help            # the commands it offers
 ```
 
@@ -182,6 +183,21 @@ exakit marketplace
 ```
 
 Press Space to select and Enter to install. `exakit update` keeps installed add-ons up to date along with the rest of the kit. The marketplace does not offer a tool you already have, even one you installed outside the kit. [MARKETPLACE.md](MARKETPLACE.md) has flowcharts for each scenario and explains how to build your own add-on.
+
+## Pick a persona
+
+A persona is a named bundle of the optional choices: which sample datasets,
+which AI clients, which add-ons. Four ship with the kit: `analyst`,
+`data-scientist`, `data-engineer` and `minimal`. Name one on the install
+command and every question is answered for you:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/krishna-exasol/update-path/main/install.sh | EXAKIT_PERSONA=data-scientist sh
+```
+
+On an installed kit, `exakit persona list` shows them and
+`exakit persona plan data-scientist` shows what is still missing on this
+machine. Your own persona is one JSON file in `~/.exasol-starter-kit/personas/`.
 
 ## Staying up to date
 

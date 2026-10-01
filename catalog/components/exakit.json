@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "id": "exakit",
+  "title": "exakit command",
+  "kind": "helper",
+  "manifest_key": "kit",
+  "source": {
+    "type": "kit"
+  },
+  "install_order": 60,
+  "step_id": "exakit_helper",
+  "requires": [],
+  "help": "exakit"
+}

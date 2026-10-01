@@ -12,6 +12,7 @@ import subprocess
 
 from mcp.core.errors import MCPSubsystemError
 from mcp.core.serialization import sha256_text
+import contextlib
 
 # What protect_path() reports when it applied a Windows ACL rather than a POSIX
 # mode. It is a label, not a mode: nothing about it is chmod-shaped, and callers
@@ -73,6 +74,33 @@ def protect_path(path: Path) -> str | None:
     return format(stat.S_IMODE(path.stat().st_mode), "04o")
 
 
+# Principals that are not "other local users": the system itself, the local
+# administrators (who can read any file regardless) and the owner's own rights
+# entry. A hosted runner's temp files carry all three as explicit entries that
+# /inheritance:r does not remove; a file that lists only these and the user is
+# owner-only in every sense the kit cares about.
+ALWAYS_PRESENT_PRINCIPALS = frozenset({"system", "administrators", "owner rights"})
+
+
+def _account_name(line: str, *, first: bool, path_spellings: tuple[str, ...]) -> tuple[str, str] | None:
+    """(account, flags) of one icacls line: the account in lower case, without its domain or the echoed path.
+
+    Only the first line carries the path, in whichever spelling icacls chose
+    (long, or the short RUNNER~1 form); every later line is the principal alone,
+    which may hold spaces ("NT AUTHORITY\\SYSTEM", "OWNER RIGHTS").
+    """
+    head, colon, flags = line.rpartition(":(")
+    if not colon:
+        return None
+    flags = "(" + flags
+    principal = head.strip()
+    if first:
+        lowered = principal.lower()
+        prefix = next((s for s in path_spellings if lowered.startswith(s.lower())), None)
+        principal = principal[len(prefix):].strip() if prefix else principal.rsplit(" ", 1)[-1]
+    return principal.rsplit("\\", 1)[-1].strip().lower(), flags
+
+
 def describe_protection(path: Path) -> str | None:
     """What ``path`` is ACTUALLY protected by right now - the read side of
     :func:`protect_path`.
@@ -98,7 +126,7 @@ def describe_protection(path: Path) -> str | None:
     if _is_windows():
         try:
             completed = subprocess.run(
-                ["icacls", str(path)],
+                ["icacls", os.path.realpath(str(path))],
                 check=True,
                 capture_output=True,
                 text=True,
@@ -107,33 +135,37 @@ def describe_protection(path: Path) -> str | None:
         except (OSError, subprocess.SubprocessError):
             return None
         username = (os.environ.get("USERNAME") or getpass.getuser()).strip().lower()
-        target = str(path).lower()
         principals: list[str] = []
         inherited = False
+        spellings = (str(path), os.path.realpath(str(path)))
+        first = True
         for raw in (completed.stdout or "").splitlines():
             line = raw.strip()
             if not line or line.lower().startswith("successfully processed"):
                 continue
             # icacls prints "<path> PRINCIPAL:(FLAGS)" on its first line and a
-            # bare "PRINCIPAL:(FLAGS)" on every line after it.
-            if line.lower().startswith(target):
-                line = line[len(target):].strip()
-            if ":" not in line:
+            # bare "PRINCIPAL:(FLAGS)" on every line after it. The path may be
+            # spelled long or short (RUNNER~1) and may hold spaces, so nothing
+            # here depends on it: the account name is what follows the last
+            # backslash (DOMAIN\user) or, for a bare name, the last space.
+            account = _account_name(line, first=first, path_spellings=spellings)
+            first = False
+            if account is None:
                 continue
-            principal, _, flags = line.partition(":")
+            principal, flags = account
             # (I) marks an ACE inherited from the parent - exactly what
             # /inheritance:r removes, and exactly what a client rewriting its
             # own config re-acquires.
             if "(I)" in flags:
                 inherited = True
-            principals.append(principal.strip().lower())
+            principals.append(principal)
         if not principals:
             return None
         if inherited:
             return NOT_OWNER_ONLY_ACL
         # A principal arrives as "DOMAIN\\user" or bare "user"; compare the
         # account name, which is what protect_path granted.
-        if any(p.rsplit("\\", 1)[-1] != username for p in principals):
+        if any(p != username and p not in ALWAYS_PRESENT_PRINCIPALS for p in principals):
             return NOT_OWNER_ONLY_ACL
         return OWNER_ONLY_ACL
     return format(stat.S_IMODE(path.stat().st_mode), "04o")
@@ -169,10 +201,8 @@ class FileSystem:
                 protect_path(tmp)
             os.replace(tmp, path)
         except BaseException:
-            try:
+            with contextlib.suppress(OSError):
                 os.unlink(tmp)
-            except OSError:
-                pass
             raise
 
     def write_json(self, path: Path, content: dict) -> None:

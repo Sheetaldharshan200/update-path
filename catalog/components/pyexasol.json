@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "id": "pyexasol",
+  "title": "pyexasol (Python driver)",
+  "kind": "python-venv",
+  "source": {
+    "type": "pypi",
+    "package": "pyexasol"
+  },
+  "install_order": 50,
+  "step_id": "pyexasol",
+  "fallback_version": "2.4.1",
+  "requires": [],
+  "help": "pyexasol"
+}

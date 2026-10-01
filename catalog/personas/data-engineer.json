@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "id": "data-engineer",
+  "title": "Data Engineer",
+  "summary": "The TPC-H sample, every AI client, dbt, JSON ingestion, scheduled SQL and the VS Code extension.",
+  "datasets": [
+    "tpch"
+  ],
+  "mcp_clients": "all",
+  "addons": [
+    "dbt-exasol",
+    "json-tables",
+    "exasol-scheduler",
+    "exasol-vscode"
+  ],
+  "skills": "all"
+}

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import copy
 import json
-import shutil
 from pathlib import Path
 from typing import Any
 
@@ -74,7 +73,7 @@ class ClaudeCodeAdapter(ClientAdapter):
             environment,
             client_label="the Claude Code CLI",
             programs=("claude",),
-            client_dir=lambda env, path: env.home / ".claude",
+            client_dir=lambda env, _path: env.home / ".claude",
             kit_only=lambda path: json_config_is_kit_only(path, "mcpServers"),
             override_env=self._CONFIG_ENV_NAME,
         )
@@ -142,7 +141,7 @@ class ClaudeCodeAdapter(ClientAdapter):
             )
         managed_entry = mcp_servers.get(server_name)
         managed_hash = sha256_json(managed_entry) if managed_entry is not None else None
-        other_server_names = [name for name in mcp_servers.keys() if name != server_name]
+        other_server_names = [name for name in mcp_servers if name != server_name]
         return AdapterInspection(
             path=path,
             exists=True,

@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "id": "mcp",
+  "title": "Exasol MCP server (AI bridge)",
+  "kind": "python-tool",
+  "manifest_key": "mcp_server",
+  "source": {
+    "type": "pypi",
+    "package": "exasol-mcp-server"
+  },
+  "install_order": 40,
+  "step_id": "mcp",
+  "fallback_version": "2.2.0",
+  "requires": [
+    "personal",
+    "exapump"
+  ],
+  "help": "mcp"
+}

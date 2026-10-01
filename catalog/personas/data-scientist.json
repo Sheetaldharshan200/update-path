@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "id": "data-scientist",
+  "title": "Data Scientist",
+  "summary": "Every sample dataset, every AI client on this machine, dashboards and JSON ingestion.",
+  "datasets": "all",
+  "mcp_clients": "all",
+  "addons": [
+    "dash-server",
+    "json-tables"
+  ],
+  "skills": "all"
+}

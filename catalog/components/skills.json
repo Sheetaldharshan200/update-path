@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "id": "skills",
+  "title": "AI skills",
+  "kind": "skills",
+  "source": {
+    "type": "kit"
+  },
+  "install_order": 45,
+  "requires": [],
+  "help": "exakit"
+}

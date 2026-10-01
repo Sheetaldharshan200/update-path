@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "id": "dash-server",
+  "title": "dash-server (AI dashboard host)",
+  "kind": "python-venv",
+  "source": {
+    "type": "github_tag",
+    "repo": "exasol-labs/dash-server",
+    "package": "dash-server"
+  },
+  "platforms": [
+    "macos-aarch64",
+    "macos-x86_64",
+    "linux-aarch64",
+    "linux-x86_64",
+    "windows-x86_64"
+  ],
+  "requires": [
+    "personal",
+    "mcp"
+  ],
+  "provides": [
+    "dashboarding"
+  ],
+  "service": {
+    "port": 5100,
+    "autostart": true,
+    "url": "http://127.0.0.1:{port}",
+    "mcp_path": "/mcp"
+  },
+  "launcher": "dash-server",
+  "skill": "dash-server",
+  "help": "dash-server",
+  "fallback_version": "0.1.1"
+}

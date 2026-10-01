@@ -1,0 +1,66 @@
+{
+  "schema_version": 1,
+  "id": "exasol-scheduler",
+  "title": "Exasol Scheduler (SQL jobs on a schedule)",
+  "kind": "binary",
+  "source": {
+    "type": "github_release",
+    "repo": "exasol-labs/exasol-scheduler",
+    "releases": [
+      {
+        "repo": "exasol-labs/exasol-scheduler",
+        "tag": "{version}",
+        "checksums": "sidecar",
+        "member": "*/exasol_scheduler",
+        "assets": {
+          "macos-aarch64": "exasol_scheduler-{version}-macos-arm64.tar.gz",
+          "macos-x86_64": "exasol_scheduler-{version}-macos-x86_64.tar.gz",
+          "linux-aarch64": "exasol_scheduler-{version}-linux-arm64.tar.gz",
+          "linux-x86_64": "exasol_scheduler-{version}-linux-x86_64.tar.gz"
+        }
+      },
+      {
+        "mirror": "kit",
+        "tag": "exasol-scheduler-{version}",
+        "pins": "sha256",
+        "assets": {
+          "macos-aarch64": "exasol-scheduler-macos-arm64",
+          "macos-x86_64": "exasol-scheduler-macos-x86_64",
+          "linux-aarch64": "exasol-scheduler-linux-arm64",
+          "linux-x86_64": "exasol-scheduler-linux-x86_64"
+        }
+      }
+    ],
+    "digest_keys": {
+      "macos-aarch64": "macos-arm64",
+      "macos-x86_64": "macos-x86_64",
+      "linux-aarch64": "linux-arm64",
+      "linux-x86_64": "linux-x86_64"
+    }
+  },
+  "platforms": [
+    "macos-aarch64",
+    "macos-x86_64",
+    "linux-aarch64",
+    "linux-x86_64"
+  ],
+  "requires": [
+    "personal",
+    "exapump"
+  ],
+  "provides": [
+    "scheduling"
+  ],
+  "service": {
+    "port": 0,
+    "autostart": true
+  },
+  "launcher": "exasol-scheduler",
+  "skill": "exasol-scheduler",
+  "help": "exasol-scheduler",
+  "fallback_version": "v0.2",
+  "config": {
+    "db_user": "scheduler_svc",
+    "schema": "SCHED"
+  }
+}

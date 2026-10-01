@@ -12,7 +12,12 @@ name: pkg / exasol-scheduler
 # every asset on it, so rewriting them would turn every pinned install into a
 # checksum failure. "Already published" is the change gate, and a forced
 # rebuild of the same upstream version gets a NEW suffixed tag.
-
+#
+# Since D36 this release is the kit's MIRROR: the installer downloads from the
+# exasol-labs release first (the upstream archives, verified by the digests
+# upstream publishes) and falls back to the assets published here only when
+# that download cannot complete, or for a platform upstream does not publish.
+# The immutability rule above is unchanged: versions.json pins these digests.
 on:
   schedule:
     - cron: "40 7 * * *" # daily 07:40 UTC (the check job is change-gated)
@@ -253,17 +258,14 @@ jobs:
           PY
           # The module fallbacks move with the manifest or the two drift apart,
           # which versions.yml fails the build over.
-          sed -i "s/^EXAKIT_EXASOL_SCHEDULER_VERSION_FALLBACK=\"\${EXAKIT_EXASOL_SCHEDULER_VERSION_FALLBACK:-.*}\"$/EXAKIT_EXASOL_SCHEDULER_VERSION_FALLBACK=\"\${EXAKIT_EXASOL_SCHEDULER_VERSION_FALLBACK:-$new}\"/" setup/lib/exasol-scheduler.sh
           python3 - "$new" <<'PY'
-          import re, sys
-          new = sys.argv[1]
-          path = "setup/lib/exasol-scheduler.ps1"
-          with open(path) as handle:
-              text = handle.read()
-          text = re.sub(r'(\$script:ExasolSchedulerVersionFallback = .*else \{ ")[^"]*(" \})',
-                        lambda m: m.group(1) + new + m.group(2), text, count=1)
+          import json, sys
+          path = "catalog/addons/exasol-scheduler/addon.json"
+          doc = json.load(open(path))
+          doc["fallback_version"] = sys.argv[1]
           with open(path, "w") as handle:
-              handle.write(text)
+              json.dump(doc, handle, indent=2)
+              handle.write("\n")
           PY
           if git diff --quiet; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
@@ -281,7 +283,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git checkout -b "$branch"
-          git add versions.json setup/lib/exasol-scheduler.sh setup/lib/exasol-scheduler.ps1
+          git add versions.json catalog/addons/exasol-scheduler/addon.json
           git commit -m "exasol-scheduler: advertise $new (prebuilt binaries published)"
           git push -u origin "$branch" --force
           if [ -n "$(gh pr list --head "$branch" --state open --json number --jq '.[0].number // empty')" ]; then

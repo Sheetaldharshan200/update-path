@@ -22,7 +22,12 @@ name: pkg / json-tables
 # tag was overwritten with the v0.3 binaries while versions.json still pinned
 # v0.2. The change gate is therefore "is this build already published", and a
 # forced rebuild of the same upstream version gets a NEW suffixed tag.
-
+#
+# Since D36 this release is the kit's MIRROR: the installer downloads from the
+# exasol-labs release first (the upstream archives, verified by the digests
+# upstream publishes) and falls back to the assets published here only when
+# that download cannot complete, or for a platform upstream does not publish.
+# The immutability rule above is unchanged: versions.json pins these digests.
 on:
   schedule:
     - cron: "30 7 * * *" # daily 07:30 UTC (the check job is change-gated)
@@ -273,7 +278,7 @@ jobs:
     # requirement lands on this runner instead of on the user, which is the
     # whole trade this add-on exists to make.
     #
-    # Built from THIS repository (setup/shim/json-tables-cargo), not upstream's,
+    # Built from THIS repository (shim/json-tables-cargo), not upstream's,
     # and rebuilt on every publish so the mirror release never ends up carrying
     # an engine with no way to reach it.
     needs: check
@@ -285,16 +290,16 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: setup/shim/json-tables-cargo -> target
+          workspaces: shim/json-tables-cargo -> target
           key: json-tables-cargo-shim
       - name: Test the shim
         # The argument-shape parsing IS the contract with upstream's CLI. It is
         # unit-tested rather than eyeballed, and a failure here must stop the
         # publish: a shim that mis-parses would forward the wrong argv to the
         # engine and fail in the middle of a user's ingest.
-        run: cargo test --manifest-path setup/shim/json-tables-cargo/Cargo.toml
+        run: cargo test --manifest-path shim/json-tables-cargo/Cargo.toml
       - name: Build the shim
-        run: cargo build --release --manifest-path setup/shim/json-tables-cargo/Cargo.toml --target-dir "${{ github.workspace }}/shim-target"
+        run: cargo build --release --manifest-path shim/json-tables-cargo/Cargo.toml --target-dir "${{ github.workspace }}/shim-target"
       - name: Stage the shim
         shell: bash
         run: |
@@ -439,17 +444,14 @@ jobs:
           # The module's fallback constant is what a no-network install picks:
           # it moves with the manifest or the two drift apart, which versions.yml
           # fails the build over.
-          sed -i "s/^EXAKIT_JSON_TABLES_VERSION_FALLBACK=\"\${EXAKIT_JSON_TABLES_VERSION_FALLBACK:-.*}\"$/EXAKIT_JSON_TABLES_VERSION_FALLBACK=\"\${EXAKIT_JSON_TABLES_VERSION_FALLBACK:-$new}\"/" setup/lib/json-tables.sh
           python3 - "$new" <<'PY'
-          import re, sys
-          new = sys.argv[1]
-          path = "setup/lib/json-tables.ps1"
-          with open(path) as handle:
-              text = handle.read()
-          text = re.sub(r'(\$script:JsonTablesVersionFallback = .*else \{ ")[^"]*(" \})',
-                        lambda m: m.group(1) + new + m.group(2), text, count=1)
+          import json, sys
+          path = "catalog/addons/json-tables/addon.json"
+          doc = json.load(open(path))
+          doc["fallback_version"] = sys.argv[1]
           with open(path, "w") as handle:
-              handle.write(text)
+              json.dump(doc, handle, indent=2)
+              handle.write("\n")
           PY
           if git diff --quiet; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
@@ -468,7 +470,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git checkout -b "$branch"
-          git add versions.json setup/lib/json-tables.sh setup/lib/json-tables.ps1
+          git add versions.json catalog/addons/json-tables/addon.json
           git commit -m "json-tables: advertise $new (release $tag published)"
           git push -u origin "$branch" --force
           # An existing open PR for this branch just gets the new commit from

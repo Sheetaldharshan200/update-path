@@ -74,7 +74,7 @@ class CodexAdapter(ClientAdapter):
             environment,
             client_label="Codex",
             programs=("codex",),
-            client_dir=lambda env, path: env.home / ".codex",
+            client_dir=lambda env, _path: env.home / ".codex",
             kit_only=_toml_is_kit_only,
             override_env=self._CONFIG_ENV_NAME,
         )
@@ -147,7 +147,7 @@ class CodexAdapter(ClientAdapter):
             file_valid=True,
             managed_entry=managed_entry,
             managed_hash=managed_hash,
-            other_server_names=[name for name in mcp_servers.keys() if name != server_name],
+            other_server_names=[name for name in mcp_servers if name != server_name],
         )
 
     def render(
@@ -265,7 +265,7 @@ def _emit_toml_table(lines: list[str], table: dict, prefix: tuple[str, ...]) -> 
     if scalar_items and nested_items:
         lines.append("\n")
     for index, (key, value) in enumerate(nested_items):
-        _emit_toml_table(lines, value, prefix + (key,))
+        _emit_toml_table(lines, value, (*prefix, key))
         if index != len(nested_items) - 1:
             lines.append("\n")
 

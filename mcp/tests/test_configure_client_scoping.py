@@ -132,7 +132,7 @@ class PerClientScopingTests(unittest.TestCase):
 
         self.paths["vscode_copilot"].write_text(EMPTY_FILE, encoding="utf-8")
         healthy = ["claude_desktop", "claude_code", "cursor", "codex"]
-        clients = healthy + ["vscode_copilot"]
+        clients = [*healthy, "vscode_copilot"]
         with self._mock_connectivity():
             result = self._subsystem().execute(self._request(clients))
 
@@ -166,12 +166,12 @@ class PerClientScopingTests(unittest.TestCase):
         """
 
         healthy = ["claude_desktop", "cursor"]
-        clients = healthy + ["vscode_copilot"]
+        clients = [*healthy, "vscode_copilot"]
 
         # Run 1: everything works, and every client earns a manifest record.
         with self._mock_connectivity():
             first = self._subsystem().execute(self._request(clients))
-        self.assertEqual(first.status, OperationStatus.SUCCESS)
+        self.assertEqual(first.status, OperationStatus.SUCCESS, first.findings)
         self.assertEqual(self._clients_carrying_entry(clients), set(clients))
 
         # Then something outside the kit truncates one config file.
@@ -205,9 +205,9 @@ class PerClientScopingTests(unittest.TestCase):
 
         healthy = ["claude_desktop", "claude_code", "cursor", "codex"]
         orders = {
-            "broken_first": ["vscode_copilot"] + healthy,
-            "broken_last": healthy + ["vscode_copilot"],
-            "broken_middle": healthy[:2] + ["vscode_copilot"] + healthy[2:],
+            "broken_first": ["vscode_copilot", *healthy],
+            "broken_last": [*healthy, "vscode_copilot"],
+            "broken_middle": [*healthy[:2], "vscode_copilot", *healthy[2:]],
         }
         outcomes = {}
         for name, order in orders.items():
@@ -342,7 +342,7 @@ class PerClientScopingTests(unittest.TestCase):
                     "dsn_reference": {"kind": "literal", "value": "127.0.0.1:8563"},
                 }
             )
-        self.assertEqual(restore.status, OperationStatus.SUCCESS)
+        self.assertEqual(restore.status, OperationStatus.SUCCESS, restore.findings)
         restored = json.loads(self.paths["cursor"].read_text(encoding="utf-8"))
         self.assertIn("filesystem", restored["mcpServers"])
         self.assertNotIn("exasol", restored["mcpServers"])

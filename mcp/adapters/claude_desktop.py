@@ -203,7 +203,7 @@ class ClaudeDesktopAdapter(ClientAdapter):
             )
         managed_entry = mcp_servers.get(server_name)
         managed_hash = sha256_json(managed_entry) if managed_entry is not None else None
-        other_server_names = [name for name in mcp_servers.keys() if name != server_name]
+        other_server_names = [name for name in mcp_servers if name != server_name]
         return AdapterInspection(
             path=path,
             exists=True,

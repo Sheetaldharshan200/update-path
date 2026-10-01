@@ -24,6 +24,12 @@ Every ✗ line tells you what to fix. If Podman is missing, the check gives the 
 curl https://www.exasol.com/install/starter-kit.sh | sh
 ```
 
+To install by role (datasets, AI clients and add-ons chosen for you), name a persona:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/krishna-exasol/update-path/main/install.sh | EXAKIT_PERSONA=data-scientist sh
+```
+
 What happens, in order:
 
 1. The installer checks your machine (Podman, RAM, disk) and shows the plan. If the machine is short of RAM or disk, it stops before downloading anything and tells you why. A missing Podman is reported here and dealt with at the database step

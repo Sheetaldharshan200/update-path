@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import re
-import shutil
 from pathlib import Path
 
 from mcp.core.models import DeploymentMode, Finding, NextAction, Severity, ServerDefinition
@@ -143,8 +142,8 @@ class ContinueAdapter(ClientAdapter):
             environment,
             client_label="Continue",
             programs=("cn", "continue"),
-            client_dir=lambda env, path: env.home / ".continue",
-            kit_only=lambda path: True,
+            client_dir=lambda env, _path: env.home / ".continue",
+            kit_only=lambda _path: True,
             kit_paths=lambda path: set(path.parent.glob("exasol-starter-kit*.yaml")) | {path},
             override_env=self._CONFIG_ENV_NAME,
         )

@@ -297,47 +297,31 @@ jobs:
           # make a fully offline install a different install.
           COUPLED = {
               "personal": [
-                  ("setup/lib/common.sh", "bash", "EXAKIT_PERSONAL_VERSION_FALLBACK"),
-                  ("setup/lib/runtime-personal.ps1", "pwsh", "PersonalVersionFallback"),
+                  ("catalog/components/personal.json", "json", "fallback_version"),
               ],
               "exapump": [
-                  ("setup/lib/common.sh", "bash", "EXAKIT_EXAPUMP_VERSION_FALLBACK"),
-                  ("setup/lib/exakit-common.ps1", "pwsh", "ExapumpVersionFallback"),
+                  ("catalog/components/exapump.json", "json", "fallback_version"),
               ],
               "mcp": [
-                  ("setup/lib/common.sh", "bash", "EXAKIT_MCP_VERSION_FALLBACK"),
-                  ("setup/lib/exakit-common.ps1", "pwsh", "McpVersionFallback"),
-                  ("mcp/runtime/exakit.py", "python", "DEFAULT_MCP_VERSION"),
+                  ("catalog/components/mcp.json", "json", "fallback_version"),
               ],
               "pyexasol": [
-                  ("setup/lib/common.sh", "bash", "EXAKIT_PYEXASOL_VERSION_FALLBACK"),
-                  ("setup/lib/exakit-common.ps1", "pwsh", "PyexasolVersionFallback"),
+                  ("catalog/components/pyexasol.json", "json", "fallback_version"),
               ],
-              # Marketplace add-ons keep their constants in their own module
-              # pair, not in the shared libraries.
               "dbt-exasol": [
-                  ("setup/lib/dbt-exasol.sh", "bash", "EXAKIT_DBT_EXASOL_VERSION_FALLBACK"),
-                  ("setup/lib/dbt-exasol.ps1", "pwsh", "DbtExasolVersionFallback"),
+                  ("catalog/addons/dbt-exasol/addon.json", "json", "fallback_version"),
               ],
               "exasol-scheduler": [
-                  ("setup/lib/exasol-scheduler.sh", "bash", "EXAKIT_EXASOL_SCHEDULER_VERSION_FALLBACK"),
-                  ("setup/lib/exasol-scheduler.ps1", "pwsh", "ExasolSchedulerVersionFallback"),
+                  ("catalog/addons/exasol-scheduler/addon.json", "json", "fallback_version"),
               ],
               "dash-server": [
-                  ("setup/lib/dash-server.sh", "bash", "EXAKIT_DASH_SERVER_VERSION_FALLBACK"),
-                  ("setup/lib/dash-server.ps1", "pwsh", "DashServerVersionFallback"),
+                  ("catalog/addons/dash-server/addon.json", "json", "fallback_version"),
               ],
               "exasol-vscode": [
-                  ("setup/lib/exasol-vscode.sh", "bash", "EXAKIT_EXASOL_VSCODE_VERSION_FALLBACK"),
-                  ("setup/lib/exasol-vscode.ps1", "pwsh", "ExasolVscodeVersionFallback"),
+                  ("catalog/addons/exasol-vscode/addon.json", "json", "fallback_version"),
               ],
-              # json-tables is versioned by the upstream COMMIT its prebuilt
-              # artifacts were built from; the pkg/json-tables workflow moves
-              # that version, so the auto-bump leaves it alone and only the
-              # fallback constants are kept in lockstep by hand.
               "json-tables": [
-                  ("setup/lib/json-tables.sh", "bash", "EXAKIT_JSON_TABLES_VERSION_FALLBACK"),
-                  ("setup/lib/json-tables.ps1", "pwsh", "JsonTablesVersionFallback"),
+                  ("catalog/addons/json-tables/addon.json", "json", "fallback_version"),
               ],
           }
           touched = set()
@@ -345,12 +329,14 @@ jobs:
           def retune(path, dialect, name, version):
               """Point one constant at version. Loud on anything unexpected: a
               renamed constant must stop the run, not produce a half-done PR."""
-              if dialect == "bash":
+              if dialect == "json":
+                  pattern = re.compile(r'("%s": ")([^"]*)(")' % name)
+              elif dialect == "bash":
                   pattern = re.compile(r'(%s="\$\{%s:-)([^}"]*)(\}")' % (name, name))
               elif dialect == "pwsh":
                   # Two shapes are in use: the env-overridable
                   #   $script:X = if ($env:Y) { $env:Y } else { "1.2.3" }
-                  # and the plain  $script:X = "1.2.3"  (runtime-personal.ps1).
+                  # and the plain  $script:X = "1.2.3".
                   # Accepting only the first is what stopped the 2.3.0 Personal
                   # bump with "found 0".
                   pattern = re.compile(
@@ -384,7 +370,7 @@ jobs:
               doc["updated"] = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
               rendered = json.dumps(doc, indent=2) + "\n"
-              # The no-Python reader in setup/lib/common.sh depends on this exact
+              # The launcher's no-Python fallback depends on this exact
               # shape, and versions.yml diffs it against json.tool. Prove the file
               # is canonical here rather than discovering it in review.
               import subprocess
@@ -434,7 +420,7 @@ jobs:
           with open("bump-summary.md", "w") as handle:
               handle.write(text)
           # Exactly the files this run changed, for the commit step: a fixed
-          # list there left an add-on module or runtime-personal.ps1 out of the
+          # list there left a catalog file out of the
           # commit, and versions.yml then failed the PR on the drift.
           with open("bump-files.txt", "w") as handle:
               for path in [MANIFEST] + sorted(touched):

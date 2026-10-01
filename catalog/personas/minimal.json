@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "id": "minimal",
+  "title": "Minimal",
+  "summary": "The database and the fixed components only: no sample data, no AI clients, no add-ons.",
+  "datasets": "none",
+  "mcp_clients": "skip",
+  "addons": "none",
+  "skills": "all"
+}

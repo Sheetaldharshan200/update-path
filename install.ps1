@@ -6,8 +6,8 @@
 # via `irm | iex` (as a fetched string, never read from disk with -File), and
 # a BOM that survives into that string as a literal U+FEFF character breaks
 # PowerShell's '#' comment-line detection - the parser then tries to execute
-# the comment text itself as commands. (setup\setup-windows.ps1 and
-# setup\exakit.ps1 are the opposite case: always read from disk via -File,
+# the comment text itself as commands. (setup\exakit.ps1 and
+# bootstrap\ensure-python.ps1 are the opposite case: always read from disk via -File,
 # where a BOM is the correct fix for a different, real encoding bug - do not
 # "fix" those to match this file.)
 #
@@ -17,9 +17,9 @@
 #   2. downloads the starter kit to ~\.exasol-starter-kit\kit (so you can
 #      read every script before or after it runs)
 #   3. shows the installation plan
-#   4. hands off to setup\setup-windows.ps1, which installs the
-#      Exasol Personal local deployment, exapump (data loading CLI), and the
-#      MCP server - the same components the macOS/Linux/WSL path installs
+#   4. sets up the kit's own Python and hands off to `python -m exakit
+#      install`, which installs the Exasol Personal local deployment, exapump
+#      (data loading CLI) and the MCP server - the same path as macOS/Linux/WSL
 #
 # Options (environment variables):
 #   $env:EXAKIT_DRY_RUN = "1"   show the plan, install nothing
@@ -100,7 +100,7 @@ trap {
     return
 }
 
-# Twin of Get-ExakitHomeBase in exakit-common.ps1: exakit resolves its home
+# Twin of Paths.from_env in exakit/adapters/fs/paths.py: exakit resolves its home
 # from USERPROFILE (an existing install still winning, wherever it sits),
 # while this file used $HOME - so on a domain machine with a redirected home
 # the install landed in one tree, every later `exakit` looked in another, the
@@ -178,7 +178,7 @@ foreach ($gpoScope in @("MachinePolicy", "UserPolicy")) {
 # the machine is still untouched - a laptop that was never going to pass was
 # still left with a rewritten kit directory and an install log to explain.
 #
-# install.sh cannot do this: its check lives in setup\lib\detect.sh, inside the
+# install.sh cannot do this: its check lives in its preflight_report, inside the
 # kit it has to download first. Nothing these checks need is in the kit.
 #
 # This is a gate, not the check. Test-PersonalRequirements still runs the real one
@@ -303,7 +303,7 @@ function Get-ExakitRequirementChecks {
 
 # Write-ExakitRequirementReport - $env:EXAKIT_PREFLIGHT: say what this machine
 # can and cannot do, install nothing, and return the number of genuine
-# failures as the exit code. The twin is preflight_report (setup\lib\detect.sh),
+# failures as the exit code. The twin is preflight_report (install.sh),
 # which install.sh runs at this same point in its own flow. That one can report
 # more because it runs after the download and has the kit to read; the items it
 # adds (network reachability, the database port, python) are all things this
@@ -464,12 +464,12 @@ try {
     $inner = Get-ChildItem $incoming | Select-Object -First 1
     if (-not $inner) { throw "The downloaded kit archive was empty or malformed. Re-run to download it again." }
 
-    # Sentinels: three files every later step reads - the exakit command itself,
-    # the shared library every script dot-sources, and the versions manifest
-    # that is the kit's offline version tier. Checked BEFORE the working copy is
-    # touched, so an archive that unpacked into something unusable is a no-op
-    # instead of a broken install.
-    foreach ($sentinel in @("setup\exakit.ps1", "setup\lib\exakit-common.ps1", "versions.json")) {
+    # Sentinels: the files every later step reads - the launcher, the bootstrap
+    # that installs the kit's Python, the Python kit itself, the versions
+    # manifest that is the kit's offline version tier and the help document.
+    # Checked BEFORE the working copy is touched, so an archive that unpacked
+    # into something unusable is a no-op instead of a broken install.
+    foreach ($sentinel in @("setup\exakit.ps1", "bootstrap\ensure-python.ps1", "exakit\__main__.py", "versions.json", "help\exakit.json")) {
         if (-not (Test-Path (Join-Path $inner.FullName $sentinel))) {
             if ($LocalKit) {
                 throw "The local kit checkout is incomplete ($sentinel is missing from $LocalKit), so it was not installed and your existing kit is untouched."
@@ -516,7 +516,7 @@ $ramGb = Get-ExakitTotalRamGb
 # "RAM unknown" rather than a crash or a bare "-1 GB": the requirements gate
 # above already decided an unreadable value is not a reason to stop.
 $ramText = if ($ramGb -ge 0) { "$ramGb GB RAM" } else { "RAM unknown" }
-# Banner + plan via the kit's shared visual layer (setup\lib\ui.ps1) so the
+# Banner + plan via the kit's visual layer (setup\lib\ui.ps1, gone since 0.3.0) so the
 # EXASOL wordmark and palette match the rest of the install exactly. Available
 # now that the kit is downloaded; plain fallback if the lib is missing.
 $uiLib = Join-Path $KitDir "setup\lib\ui.ps1"
@@ -546,11 +546,7 @@ if (Test-Path $uiLib) {
         $uiLoaded = $true
     } catch { $uiLoaded = $false }
 }
-if (-not $uiLoaded) {
-    Write-Host ""
-    Write-Host "  Personal Local Starter Kit"
-    Write-Host ""
-}
+# The install screen (the wordmark, the facts, the plan) is drawn by the Python kit.
 
 if ($env:EXAKIT_DRY_RUN -eq "1") {
     Write-Host "  * Dry run requested (EXAKIT_DRY_RUN=1) - nothing was installed, and nothing under $ExakitHome was changed." -ForegroundColor Blue
@@ -569,32 +565,50 @@ $InstallPhase = "setup"
 # the UPSTREAM kit, and when the two layouts differ the handoff below failed
 # with PowerShell's own "The argument ... does not exist" - a path, and no hint
 # that two repositories were in play. Two people hit exactly that.
-$setupScript = Join-Path $KitDir "setup\setup-windows.ps1"
-if (-not (Test-Path $setupScript)) {
+$pythonKit = Join-Path $KitDir "exakit\__main__.py"
+if (-not (Test-Path $pythonKit)) {
     Write-Host ""
     Write-Host "  x This installer and the kit it downloaded do not match." -ForegroundColor Red
-    Write-Host "    The kit came from $Repo@$Ref and has no setup\setup-windows.ps1 in it."
+    Write-Host "    The kit came from $Repo@$Ref and has no Python kit in it (exakit\__main__.py)."
     Write-Host ""
     Write-Host "    The installer is read from a URL, but the kit is taken from EXAKIT_REPO,"
     Write-Host "    which is '$Repo' unless you say otherwise. If you fetched this installer"
     Write-Host "    from a fork or a branch, name it for the kit as well:"
+    Write-Host "      `$env:EXAKIT_REPO = 'owner/name'; `$env:EXAKIT_REF = 'branch'"
+    Write-Host "    The download is at $KitDir."
     Write-Host ""
-    Write-Host "      `$env:EXAKIT_REPO = 'owner/name'; `$env:EXAKIT_REF = 'branch'" -ForegroundColor Cyan
-    Write-Host ""
-    Write-Host "    Nothing was installed. The download is at $KitDir."
-    Write-Host ""
-    if ($ExakitRanAsFile) { exit 1 }
     $global:LASTEXITCODE = 1
+    if ($ExakitRanAsFile) { exit 1 }
     return
 }
-Write-Host "  * Starting setup: setup\setup-windows.ps1" -ForegroundColor Blue
-Write-Host ""
-# We already showed the banner above; tell the setup script to skip its own so
-# the wordmark appears exactly once through the installer. A direct
-# `-File setup\setup-windows.ps1` run (no installer) still shows it.
-$env:EXAKIT_BANNER_SHOWN = "1"
-& powershell -ExecutionPolicy Bypass -File (Join-Path $KitDir "setup\setup-windows.ps1")
-$setupExitCode = $LASTEXITCODE
+# We already showed the banner above; the install skips its own so the
+# wordmark appears exactly once.
+# --- 5. the kit's own Python, then the kit ---------------------------------------
+# From here on the kit is Python: bootstrap\ensure-python.ps1 puts a managed
+# interpreter under $ExakitHome\python (uv, digest-checked, never the system
+# Python) and `python -m exakit install` runs the install, handing it to the
+# setup script named above today. Twin of the same step in install.sh.
+$ensurePython = Join-Path $KitDir "bootstrap\ensure-python.ps1"
+if (-not (Test-Path $ensurePython)) {
+    Write-Host "  x The kit has no bootstrap\ensure-python.ps1; it is not a kit this installer can run." -ForegroundColor Red
+    $global:LASTEXITCODE = 1
+    if ($ExakitRanAsFile) { exit 1 }
+    return
+}
+if ($true) {
+    $env:EXAKIT_KIT_DIR = $KitDir
+    . ([scriptblock]::Create([System.IO.File]::ReadAllText($ensurePython, [System.Text.Encoding]::UTF8)))
+    $pyCode = Confirm-ExakitPython
+    if ($pyCode -ne 0) {
+        Write-Host "  x The kit's Python could not be set up. Check your internet connection or proxy and re-run this installer." -ForegroundColor Red
+        $global:LASTEXITCODE = 1
+        if ($ExakitRanAsFile) { exit 1 }
+        return
+    }
+    $env:PYTHONPATH = if ($env:PYTHONPATH) { "$KitDir;$($env:PYTHONPATH)" } else { $KitDir }
+    & $env:EXAKIT_PYTHON -m exakit install
+    $setupExitCode = $LASTEXITCODE
+}
 # Pass the code through; do NOT re-wrap it. Re-throwing it as "Setup failed
 # with exit code 1" made the trap above print that number as THE reason and
 # then append its network hypothesis, so the last two lines of every failed

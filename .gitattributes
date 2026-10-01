@@ -29,3 +29,12 @@ versions.json text eol=lf
 # export-ignore keeps it in the repo (browsable, cloneable, linkable) while
 # dropping it from the archive GitHub builds with `git archive`.
 static/*.mp4 export-ignore
+
+# The launcher copies must be byte-identical on every checkout: LF, never CRLF
+bootstrap/exakit text eol=lf
+bootstrap/exakit.ps1 text eol=lf
+setup/exakit.ps1 text eol=lf
+
+# The .cmd shim is a Windows file: CRLF on every checkout
+bootstrap/exakit.cmd text eol=crlf
+setup/exakit.cmd text eol=crlf

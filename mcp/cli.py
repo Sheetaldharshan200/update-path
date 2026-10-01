@@ -215,7 +215,7 @@ def _connected_clients(
         try:
             if not registry.get(client).detect(environment).detected:
                 continue
-        except Exception:
+        except Exception:  # noqa: S112 - a client whose detection crashes is not connected, and this list must never crash
             continue
         connected.append(client)
     return connected
@@ -623,9 +623,7 @@ def _doctor_stages() -> list[str]:
     stages = list(OperationRequest.stages)
     if os.environ.get("EXAKIT_MCP_SKIP_SERVER_PROBE") == "1":
         return stages
-    return stages[: stages.index("connectivity") + 1] + ["server_launch"] + stages[
-        stages.index("connectivity") + 1 :
-    ]
+    return [*stages[:stages.index("connectivity") + 1], "server_launch", *stages[stages.index("connectivity") + 1:]]
 
 
 def _build_operation_request(

@@ -21,11 +21,6 @@ DATA_DIR = ROOT / "data" / "datasets" / "tpch" / "data"
 SCHEMA_SQL = ROOT / "data" / "datasets" / "tpch" / "01_create_schema.sql"
 LOAD_SQL = ROOT / "data" / "datasets" / "tpch" / "02_load_data.sql"
 VERIFY_SQL = ROOT / "data" / "datasets" / "tpch" / "03_verify_setup.sql"
-EXAPUMP_LIB = ROOT / "setup" / "lib" / "exapump.sh"
-EXAPUMP_PS1 = ROOT / "setup" / "lib" / "exapump.ps1"
-COMMON_LIB = ROOT / "setup" / "lib" / "common.sh"
-LOAD_DATA_SH = ROOT / "setup" / "load-data.sh"
-EXAKIT_CLI = ROOT / "setup" / "exakit"
 
 # Fixed row counts at TPC-H scale factor 0.02, per data/README.md and
 # data/data-dictionary.md. lineitem is generator-dependent (~120K) and is
@@ -54,8 +49,8 @@ def _parse_schema_columns() -> dict[str, list[str]]:
         table_name = match.group(1).lower()
         body = match.group(2)
         columns = []
-        for line in body.splitlines():
-            line = line.strip().rstrip(",")
+        for raw in body.splitlines():
+            line = raw.strip().rstrip(",")
             if not line or line.upper().startswith("CONSTRAINT"):
                 continue
             columns.append(line.split()[0].lower())
@@ -71,10 +66,7 @@ def _csv_header(table_name: str) -> list[str]:
 
 def _function_block(text: str, function_name: str, end_marker: str | None = None) -> str:
     start = text.index(function_name)
-    if end_marker is not None:
-        next_function = text.find(end_marker, start + len(function_name))
-    else:
-        next_function = text.find("\nfunction ", start + len(function_name))
+    next_function = text.find(end_marker, start + len(function_name)) if end_marker is not None else text.find("\nfunction ", start + len(function_name))
     if next_function == -1:
         next_function = len(text)
     return text[start:next_function]
@@ -148,7 +140,7 @@ class RowCountRegressionTests(unittest.TestCase):
 
 
 class LoadPipelineFilesTests(unittest.TestCase):
-    """setup/load-data.sh's three consumed SQL files must exist, be non-empty,
+    """The loader's three consumed SQL files must exist, be non-empty,
     and 03_verify_setup.sql must not silently drop coverage for a table."""
 
     def test_all_pipeline_sql_files_exist_and_are_non_empty(self) -> None:
@@ -168,211 +160,6 @@ class LoadPipelineFilesTests(unittest.TestCase):
                     f"sql/03_verify_setup.sql does not mention table {table_name.upper()} "
                     "— it was likely added to the schema without adding verification coverage.",
                 )
-
-
-class LoadWiringTests(unittest.TestCase):
-    """Lock in the interactive-load wiring so it cannot silently regress:
-    one shared pipeline, invoked from all three entry points, with the kit's
-    assets copied where the post-install commands expect them."""
-
-    def test_shared_pipeline_function_is_defined_once(self) -> None:
-        exapump = EXAPUMP_LIB.read_text(encoding="utf-8")
-        self.assertIn(
-            "exakit_load_sample_data()",
-            exapump,
-            "setup/lib/exapump.sh must define the shared exakit_load_sample_data pipeline.",
-        )
-
-    def test_load_data_script_delegates_and_does_not_duplicate_pipeline(self) -> None:
-        load_sh = LOAD_DATA_SH.read_text(encoding="utf-8")
-        self.assertIn(
-            "exakit_load_sample_data",
-            load_sh,
-            "setup/load-data.sh should call the shared function, not reimplement the load.",
-        )
-        # The load pipeline must live in exactly one place — the script must
-        # not carry its own copy of the upload/verify/manifest steps.
-        for reimplemented in ("exapump_upload ", "manifest_set data.loaded"):
-            self.assertNotIn(
-                reimplemented,
-                load_sh,
-                f"setup/load-data.sh re-implements '{reimplemented.strip()}' instead of "
-                "delegating to exakit_load_sample_data.",
-            )
-
-    def test_installer_offers_load_and_copies_assets(self) -> None:
-        common = COMMON_LIB.read_text(encoding="utf-8")
-        self.assertIn(
-            "exakit_maybe_offer_data_load",
-            common,
-            "kit_shared_steps must offer the interactive sample-data load during install.",
-        )
-        # data/ and load-data.sh must be copied into the kit home so the
-        # documented post-install commands keep working after the checkout
-        # is gone (mcp/ and sql/ are copied for the same reason).
-        self.assertIn('cp -R "$_kit_root/data"', common)
-        self.assertIn("load-data.sh", common)
-
-    def test_exakit_cli_exposes_load_data_command(self) -> None:
-        cli = EXAKIT_CLI.read_text(encoding="utf-8")
-        self.assertIn("data-load)", cli, "exakit must dispatch the single 'data-load' subcommand.")
-        self.assertNotIn("load-data)", cli, "exakit must not expose a duplicate 'load-data' subcommand.")
-        self.assertNotIn("mcp-configs)", cli, "exakit must not expose a temporary MCP config command.")
-        self.assertIn("cmd_data_load", cli)
-
-    def test_guided_data_load_menu_is_focused(self) -> None:
-        """Both data menus route through ONE dynamic selector: bundled datasets
-        that are not loaded yet (discovered from data/datasets/*/dataset.conf),
-        a local-file option, and a mutually exclusive opt-out."""
-        bash = EXAPUMP_LIB.read_text(encoding="utf-8")
-        ps1 = EXAPUMP_PS1.read_text(encoding="utf-8")
-        # Every entry point delegates to the shared selector with the same
-        # one-word opt-out.
-        self.assertIn('exakit_data_load_select "Skip"', bash)
-        self.assertIn('Select-ExakitDataLoad -FinalLabel "Skip"', ps1)
-        # The selector offers the local-file source on both platforms, with the
-        # SAME label. The PowerShell label used to stay narrow ("A local
-        # CSV/Parquet file") because exapump.ps1 had no twin of the shell's JSON
-        # load path; that routing has landed (a .json pick goes to
-        # Import-ExakitLocalJson), and the label was widened with it in
-        # b792369. This assertion is the one that had to move with them.
-        self.assertIn("A local CSV / Parquet / JSON file", bash)
-        self.assertIn("A local CSV / Parquet / JSON file", ps1)
-        self.assertIn("Import-ExakitLocalJson -Path $path -Target $target", ps1)
-        for text, name in ((bash, "exapump.sh"), (ps1, "exapump.ps1")):
-            with self.subTest(menu=name):
-                for removed_option in (
-                    "Remote CSV/Text File",
-                    "Import from Another Database",
-                    "Import from Another Exasol",
-                    "SQL Script",
-                ):
-                    self.assertNotIn(
-                        removed_option,
-                        text,
-                        f"Guided data-load menu should not show advanced option: {removed_option}",
-                    )
-
-    def test_bundled_datasets_are_discovered_from_conf_files(self) -> None:
-        """Dataset labels live in data/datasets/<id>/dataset.conf — nothing is
-        hardcoded in the menus, so adding a dataset is dropping in a folder."""
-        datasets_dir = ROOT / "data" / "datasets"
-        confs = sorted(datasets_dir.glob("*/dataset.conf"))
-        ids = set()
-        for conf in confs:
-            kv = dict(
-                line.split("=", 1)
-                for line in conf.read_text(encoding="utf-8").splitlines()
-                if "=" in line
-            )
-            self.assertIn("id", kv, f"{conf} is missing id=")
-            self.assertIn("label", kv, f"{conf} is missing label=")
-            self.assertIn("markers", kv, f"{conf} is missing markers=")
-            ids.add(kv["id"])
-        self.assertIn("tpch", ids, "TPC-H must be a folder dataset like the others.")
-        self.assertGreaterEqual(len(ids), 3, "The kit ships at least three bundled datasets.")
-        # TPC-H keeps its historical manifest flag so existing installs stay recognized.
-        tpch_conf = (datasets_dir / "tpch" / "dataset.conf").read_text(encoding="utf-8")
-        self.assertIn("flag=data.loaded", tpch_conf)
-
-    def test_tpch_dataset_folder_is_complete(self) -> None:
-        tpch = ROOT / "data" / "datasets" / "tpch"
-        for required in ("dataset.conf", "01_create_schema.sql", "02_load_data.sql", "03_verify_setup.sql"):
-            self.assertTrue((tpch / required).is_file(), f"missing {required} in data/datasets/tpch/")
-        csvs = {p.name for p in (tpch / "data").glob("*.csv")}
-        self.assertEqual(
-            csvs,
-            {
-                "customer.csv", "lineitem.csv", "nation.csv", "orders.csv",
-                "part.csv", "partsupp.csv", "region.csv", "supplier.csv",
-            },
-        )
-
-    def test_install_offer_uses_skip_wording(self) -> None:
-        """Every caller of the shared selector passes the same one-word opt-out.
-
-        The install path and the standalone command used to word this row
-        differently ("Skip for now (no data loading)" against "Cancel (load
-        nothing)") - two labels for one row, in a menu whose other rows are one
-        word each. Both are "Skip" now, so what is worth pinning is that all
-        four call sites (two entry points x two platforms) agree.
-        """
-        common = COMMON_LIB.read_text(encoding="utf-8")
-        exapump = EXAPUMP_LIB.read_text(encoding="utf-8")
-        exapump_ps1 = EXAPUMP_PS1.read_text(encoding="utf-8")
-        self.assertIn('exakit_data_load_select "Skip"', common)
-        self.assertIn('exakit_data_load_select "Skip"', exapump)
-        self.assertEqual(2, exapump_ps1.count('Select-ExakitDataLoad -FinalLabel "Skip"'))
-
-    def test_local_file_data_load_can_return_to_menu(self) -> None:
-        local_file_blocks = (
-            (
-                EXAPUMP_LIB.name,
-                _function_block(
-                    EXAPUMP_LIB.read_text(encoding="utf-8"),
-                    "exakit_load_local_file()",
-                    "\nexakit_load_remote_file()",
-                ),
-            ),
-            (EXAPUMP_PS1.name, _function_block(EXAPUMP_PS1.read_text(encoding="utf-8"), "function Import-ExakitLocalFile")),
-        )
-        for menu_name, local_file_flow in local_file_blocks:
-            with self.subTest(menu=menu_name):
-                self.assertIn("type back to return", local_file_flow)
-                # Both halves name JSON: the compiled cargo shim made the
-                # json-tables add-on installable on Windows x86_64, so the
-                # platform split this once asserted is gone. The prompt takes a
-                # FOLDER as readily as a file (the bulk load), so both name both.
-                self.assertIn("Please enter a local CSV, Parquet or JSON file, a folder of them", local_file_flow)
-                self.assertIn("back to return", local_file_flow)
-                self.assertIn("Returning to data loading options.", local_file_flow)
-
-
-class DatabaseReadinessTests(unittest.TestCase):
-    """Lock in the first-boot readiness fix so it cannot silently regress.
-
-    Right after first boot the database answers SELECT 1 while still
-    stabilizing, and in that window it can ACK a DDL batch ("0 failed") without
-    durably persisting it — the schema-creation step "succeeds" but the next
-    upload fails with "schema not found". Two guards must stay in place and in
-    sync across the bash and PowerShell paths: (1) a DDL write-readback probe
-    gating connection validation, and (2) a verify-after-create step in the
-    sample-data pipeline."""
-
-    def test_bash_gates_connection_on_ddl_roundtrip(self) -> None:
-        text = EXAPUMP_LIB.read_text(encoding="utf-8")
-        self.assertIn("exapump_ddl_roundtrip()", text)
-        self.assertIn("exapump_confirm_database_ready()", text)
-        # The probe must round-trip a written value through a fresh connection,
-        # not merely run a statement (a bare CREATE would not catch the bug).
-        self.assertIn("EXAKIT_READY_PROBE", text)
-        self.assertIn("EXAKIT_DDL[42]", text)
-        # confirm_database_ready must be defined AND called (>= 2 occurrences);
-        # its only caller is exapump_validate_connection.
-        self.assertGreaterEqual(text.count("exapump_confirm_database_ready"), 2)
-
-    def test_powershell_gates_connection_on_ddl_roundtrip(self) -> None:
-        text = EXAPUMP_PS1.read_text(encoding="utf-8")
-        self.assertIn("function Test-ExapumpDdlRoundtrip", text)
-        self.assertIn("function Confirm-ExapumpDatabaseReady", text)
-        self.assertIn("EXAKIT_READY_PROBE", text)
-        # The PowerShell probe no longer scrapes a rendered-grid token (exapump
-        # omits the grid when stdout is a pipe — see Test-ExapumpDdlRoundtrip);
-        # it must still write a value and read it back from a fresh connection.
-        self.assertIn("INSERT INTO $probe.READY_PROBE VALUES (42)", text)
-        self.assertIn("WHERE n = 42", text)
-        self.assertGreaterEqual(text.count("Confirm-ExapumpDatabaseReady"), 2)
-
-    def test_sample_data_pipeline_verifies_schema_after_creation(self) -> None:
-        # Both pipelines must confirm the schema really landed (from a fresh
-        # connection) after running 01_create_schema.sql, rather than trusting
-        # exapump's "0 failed" and marching into doomed uploads.
-        bash = EXAPUMP_LIB.read_text(encoding="utf-8")
-        self.assertIn("exakit_schema_present()", bash)
-        self.assertIn("is not present after creation", bash)
-        ps1 = EXAPUMP_PS1.read_text(encoding="utf-8")
-        self.assertIn("function Test-ExapumpSchemaPresent", ps1)
-        self.assertIn("is not present after creation", ps1)
 
 
 if __name__ == "__main__":

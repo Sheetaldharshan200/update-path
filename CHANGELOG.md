@@ -2,6 +2,127 @@
 
 ## Unreleased
 
+**The interactive screens run on Textual.** In a terminal, the install,
+the marketplace, an update, an uninstall and the other interactive flows
+draw a full-screen app: the plan with each step's state and time, the log,
+a status bar with the spinner and the download bar, and proper menus. The
+toolkit is installed by uv into its own folder under the kit home on the
+first interactive run; the kit itself stays standard-library. Pipes,
+`--json`, scripted runs, `EXAKIT_TUI=0` and any machine where that install
+fails keep the console output, and the console transcript is printed when
+the app closes so the scrollback keeps everything.
+
+**The add-ons come from their own releases.** The kit bundles Exasol
+Scheduler and JSON Tables; it does not maintain them. Their binaries now
+download from the `exasol-labs` release of the version the kit advertises,
+verified by the digests upstream publishes, and the kit's own mirror release
+answers only when that download cannot complete (or for the one engine
+upstream does not publish). The release sites are catalog data. The pinned
+mirror release for JSON Tables named a tag that did not exist, so every
+install of it failed; the pin now names the release that does.
+
+**The scheduler installs again.** Its service user is created with `GRANT
+CREATE SCHEMA`; the statement had carried the literal text `self.schema`,
+so the grant failed and the add-on reported a database that was running as
+not running. A failure now names the statement that failed.
+
+**Downloads show their progress**, as a live bar with the bytes so far on
+the step's spinner (quarter-way lines when the output is not a terminal),
+and every running step shows how long it has taken. The pause between
+"ready to use" and the marketplace is now a spinner that says what it is
+checking.
+
+**The menus take the arrow keys.** Up and Down move, Space ticks and unticks,
+Enter continues, `a` and `n` take all or none, a digit picks, Esc backs out;
+the numbered prompts remain where no terminal can give keys.
+
+**The install screen is back, and the dry run shows the plan.** The EXASOL
+wordmark heads the install in a terminal, the plan names its six steps, and
+`EXAKIT_DRY_RUN=1` now draws that screen and plan through the kit (with any
+Python 3.11+ it finds, installing nothing) where before it stopped after a
+shell summary.
+
+**The exapump glibc shim is back.** On a Linux distro whose glibc is older
+than 2.38 (Ubuntu 22.04, RHEL 8 and 9, Debian 11 and 12) the exapump release
+binary cannot start; the kit now does what the shell kit did: it moves the
+binary aside and runs it inside a small `ubuntu:24.04` container through
+Podman, transparently, from the same path with the same CLI.
+
+**Windows uninstall removes everything.** The kit's own Python runs the
+uninstall command, so its folder could not be deleted from inside; a detached
+shell now removes it a few seconds after the command exits.
+
+**Intel Macs are refused up front.** The local database runs on Apple silicon
+Macs, Linux x86_64/arm64 and Windows x86_64; on an Intel Mac the installer and
+`exakit preflight` now say so before downloading or writing anything, where
+before the install ran to the database step and failed there.
+
+**Windows installs have an `exakit` command again**, `exakit.cmd` beside the
+PowerShell launcher in `~\.local\bin`, installed by the installer and the
+self-update and removed by the uninstall; `install.ps1` no longer demands a
+file the 0.3.0 kit does not ship.
+
+**Every default is data.** `catalog/kit.json` now carries the kit's own
+settings (the repository it updates from, the installer URLs, where the
+versions manifest and an add-on's About are fetched and how long they are
+cached, the endpoint templates, the managed Python, the machine requirements,
+the database port and the runtime budgets, the MCP read-only user), and each
+component's and add-on's catalog entry carries its release tag, asset names
+per platform, pins and mirror. The code reads them; an environment variable
+overrides where the guide says so; nothing in `exakit/` names a URL, a
+repository, a port or a threshold any more, and a test keeps it that way.
+
+**Quality gates, and the bugs they found.** The repository now carries its
+own QA: `tools/check_standard.py` holds the coding standard mechanically,
+`ruff.toml` the SonarQube-aligned lint, `tools/run_tests.py` runs every suite
+with JUnit and coverage reports, `tools/release_check.py` is the release
+gate and `tools/qa_report.py` assembles the QA report; `quality.yml` runs
+them on Linux, macOS and Windows and `sonar-project.properties` is ready
+for SonarQube. A new `tests/scenarios` suite runs every command in every
+machine state in both output modes. What that found and fixed: the
+installer never recorded the persona it followed (`exakit status` showed
+none after `EXAKIT_PERSONA=analyst`); a corrupt install record produced a
+traceback instead of one refusal naming `exakit install`; `exakit update
+--dry-run` acted instead of planning; `<command> --help --json` printed a
+human page; the install dry run did not stop on an unknown `EXAKIT_PERSONA`;
+an f-string in the catalog validator needed Python 3.12 although the kit
+promises 3.11; and the real install on a scratch runner (the new
+`real-install.yml`) passed end to end on Linux.
+
+**The kit is one Python implementation, and it has personas.** `exakit` is now
+`python -m exakit`: a launcher on PATH finds the kit's own Python (installed by
+the bootstrap through a pinned, digest-checked uv into `~/.exasol-starter-kit/python`,
+never the system Python) and runs the kit. The commands Python has taken over
+in this release are `help`, `catalog`, `whats-new`, `version`, `persona`
+(including `apply`), `skills`, `skills-install`, `mcp-setup`, `mcp-status`,
+`mcp-doctor`, `mcp-remove`, `sql`, `logs`, `data-load`, `marketplace`,
+`uninstall <addon>`, `status`, `info`, `start`, `stop`, `autostart`, `update`,
+`install`, `uninstall`, `repair-runtime`, `migrate`, `preflight`, `guide` and the
+Kit 2 scripts: every command. The shell implementation is gone from the tree
+(only the launcher copies under `setup/` and the bootstrap remain shell);
+`tests/contract` pins every `--json` shape and exit code against the new one, so
+scripts and agents see no difference. An installed
+0.2.0 kit gets all of this from `exakit update`: the new tree's `setup/exakit`
+is the launcher, so the update that brings the tree installs it, and the first
+run sets up the Python. Personas are data: `catalog/personas/<id>.json` names the
+datasets, AI clients and add-ons a role wants; four ship (`analyst`,
+`data-scientist`, `data-engineer`, `minimal`) and your own go in
+`~/.exasol-starter-kit/personas/`. `EXAKIT_PERSONA=<id>` on the install command
+answers every question from it (an explicit `EXAKIT_*` answer still wins, an
+add-on that cannot run here is skipped with a reason), and `exakit persona
+list | show | plan` read the personas and say what is left on this machine.
+`exakit persona apply <id>` runs the plan through the kit's one apply loop
+(confirm, or `--yes`, or exit 5 without a terminal), records the persona, and
+answers `partial` with the failed step's own retry command when one step does
+not finish. Add-ons are described in `catalog/addons/<id>/addon.json` and
+installed by one lifecycle per kind (a Python venv, a prebuilt binary, an
+editor extension); the steps only one add-on needs (dash-server's port,
+the scheduler's database user, JSON Tables' cargo shim) are a short Python
+class each under `exakit/addons/`. `exakit marketplace --list --json`,
+`exakit uninstall <addon>` and the MCP, skills, data, sql and logs commands
+keep their `--json` shapes and exit codes, pinned by `tests/contract`
+(docs/architecture.md, docs/design.md, docs/tasks.md).
+
 **A rate-limited GitHub no longer stops the exapump install.** The kit asks
 the GitHub release API for a version's checksum, and that API allows 60
 unauthenticated requests an hour per address - repeated installs, or an office

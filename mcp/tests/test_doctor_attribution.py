@@ -107,7 +107,7 @@ class DoctorAttributionTests(unittest.TestCase):
         actions = {
             f.recommended_action
             for f in doctor.findings
-            if f.severity in (Severity.WARNING, Severity.ERROR) and "drift" in f.code or f.code == "managed_artifact_missing"
+            if (f.severity in (Severity.WARNING, Severity.ERROR) and "drift" in f.code) or f.code == "managed_artifact_missing"
         }
         self.assertTrue(actions, "the missing file must produce a warning or error")
         for action in actions:

@@ -169,6 +169,8 @@ class DiscoverClientsTests(unittest.TestCase):
         repo_root = Path(__file__).resolve().parents[2]
         env = {
             "HOME": str(bare_home),
+            "USERPROFILE": str(bare_home),
+            "SYSTEMROOT": os.environ.get("SYSTEMROOT", ""),   # Windows: the interpreter does not start without it
             "PATH": "/usr/bin:/bin",
             "PYTHONPATH": str(repo_root),
             # No app bundles either: the developer's real /Applications must
@@ -177,7 +179,7 @@ class DiscoverClientsTests(unittest.TestCase):
         }
         result = subprocess.run(
             [sys.executable, "-m", "mcp", "discover-clients", "--runtime-root", str(self._temp_dir)],
-            capture_output=True,
+            check=False, capture_output=True,
             text=True,
             env=env,
             cwd=str(repo_root),

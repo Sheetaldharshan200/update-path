@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "id": "analyst",
+  "title": "Analyst",
+  "summary": "The TPC-H sample, every AI client on this machine, and the dashboard host.",
+  "datasets": [
+    "tpch"
+  ],
+  "mcp_clients": "all",
+  "addons": [
+    "dash-server"
+  ],
+  "skills": "all"
+}

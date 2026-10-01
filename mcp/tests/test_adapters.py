@@ -11,13 +11,12 @@ import unittest
 from mcp.adapters.registry import AdapterRegistry
 from mcp.core.models import DeploymentMode, ServerDefinition
 from mcp.runtime.environment import ExecutionEnvironment
-from mcp.runtime.exakit import DEFAULT_MCP_PACKAGE, DEFAULT_MCP_VERSION
+from mcp.runtime.exakit import catalog_mcp_defaults
 
-# The package spec the kit actually renders into client configs. Derived from the
-# runtime defaults rather than repeated as a literal, so a version bump in
-# versions.json (which CI keeps in step with DEFAULT_MCP_VERSION) does not have
+# The package spec the kit actually renders into client configs, from the
+# catalog (catalog/components/mcp.json), so a version bump there does not have
 # to be chased through the fixtures.
-MCP_SPEC = f"{DEFAULT_MCP_PACKAGE}@{DEFAULT_MCP_VERSION}"
+MCP_SPEC = "{}@{}".format(*catalog_mcp_defaults(Path(__file__).resolve().parents[2], {}))
 
 
 class AdditionalAdapterTests(unittest.TestCase):

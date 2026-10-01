@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, UTC
 from enum import Enum
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any
+from collections.abc import Mapping
 
 from .serialization import to_primitive
 
@@ -15,7 +16,7 @@ def utc_now() -> str:
     """Return an RFC3339-ish UTC timestamp without microseconds."""
 
     return (
-        datetime.now(timezone.utc)
+        datetime.now(UTC)
         .replace(microsecond=0)
         .isoformat()
         .replace("+00:00", "Z")
@@ -78,7 +79,7 @@ class CredentialReference:
     value: str | None = None
 
     @classmethod
-    def from_raw(cls, raw: Mapping[str, Any] | None) -> "CredentialReference | None":
+    def from_raw(cls, raw: Mapping[str, Any] | None) -> CredentialReference | None:
         if raw is None:
             return None
         return cls(kind=str(raw["kind"]), name=raw.get("name"), value=raw.get("value"))
@@ -90,7 +91,7 @@ class DsnReference:
     value: str | None = None
 
     @classmethod
-    def from_raw(cls, raw: Mapping[str, Any] | None) -> "DsnReference | None":
+    def from_raw(cls, raw: Mapping[str, Any] | None) -> DsnReference | None:
         if raw is None:
             return None
         return cls(kind=str(raw["kind"]), value=raw.get("value"))
@@ -107,7 +108,7 @@ class ServerDefinition:
     headers: dict[str, str] = field(default_factory=dict)
 
     @classmethod
-    def from_raw(cls, raw: Mapping[str, Any] | None) -> "ServerDefinition | None":
+    def from_raw(cls, raw: Mapping[str, Any] | None) -> ServerDefinition | None:
         if raw is None:
             return None
         return cls(
@@ -227,7 +228,7 @@ class OperationRequest:
     )
 
     @classmethod
-    def from_raw(cls, raw: Mapping[str, Any]) -> "OperationRequest":
+    def from_raw(cls, raw: Mapping[str, Any]) -> OperationRequest:
         return cls(
             request_id=raw.get("request_id"),
             operation=OperationName(str(raw["operation"])),

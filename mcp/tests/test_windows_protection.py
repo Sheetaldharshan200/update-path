@@ -15,6 +15,7 @@ from __future__ import annotations
 from pathlib import Path
 import shutil
 import tempfile
+import os
 import unittest
 from unittest import mock
 
@@ -101,6 +102,7 @@ class WindowsProtectionTests(unittest.TestCase):
             self.assertIsNone(self.filesystem.mode_string(artifact))
             self.assertEqual(SecurityPolicy().apply_managed_permissions(artifact), OWNER_ONLY_ACL)
 
+    @unittest.skipIf(os.name == "nt", "the POSIX mode branch needs a POSIX file system")
     def test_posix_still_reports_a_mode(self) -> None:
         artifact = self._temp_dir / "config.json"
         artifact.write_text("{}", encoding="utf-8")
@@ -149,6 +151,23 @@ class DescribeProtectionTests(unittest.TestCase):
         out = f"{self.target} DESKTOP-1\\piotr:(F)\n\nSuccessfully processed 1 files.\n"
         self.assertEqual(self._describe(out), OWNER_ONLY_ACL)
 
+    def test_system_administrators_and_owner_rights_do_not_break_owner_only(self) -> None:
+        """The explicit entries a hosted runner's temp files carry: not other local users, so still owner-only."""
+        from mcp.runtime.filesystem import OWNER_ONLY_ACL
+        out = (
+            f"{self.target} RUNNERVM\\piotr:(F)\n"
+            "                 NT AUTHORITY\\SYSTEM:(F)\n"
+            "                 BUILTIN\\Administrators:(F)\n"
+            "                 OWNER RIGHTS:(F)\n"
+            "Successfully processed 1 files; Failed processing 0 files\n"
+        )
+        self.assertEqual(self._describe(out), OWNER_ONLY_ACL)
+
+    def test_another_user_is_drift_even_without_inheritance(self) -> None:
+        from mcp.runtime.filesystem import NOT_OWNER_ONLY_ACL
+        out = f"{self.target} DESKTOP-1\\piotr:(F)\n                 DESKTOP-1\\guest:(R)\n"
+        self.assertEqual(self._describe(out), NOT_OWNER_ONLY_ACL)
+
     def test_an_inherited_ace_is_drift(self) -> None:
         """The exact shape a client rewrite produces: the file is recreated and
         picks the parent's ACEs back up, marked (I)."""
@@ -184,6 +203,7 @@ class DescribeProtectionTests(unittest.TestCase):
     def test_empty_icacls_output_is_none(self) -> None:
         self.assertIsNone(self._describe("\nSuccessfully processed 1 files.\n"))
 
+    @unittest.skipIf(os.name == "nt", "the POSIX mode branch needs a POSIX file system")
     def test_posix_still_reports_the_mode(self) -> None:
         from mcp.runtime import filesystem as fs
         self.target.chmod(0o600)

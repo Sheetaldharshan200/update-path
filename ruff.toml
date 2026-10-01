@@ -1,0 +1,35 @@
+# The lint the CI runs (tools/lint.sh, quality.yml) and the one SonarQube's
+# Python rules overlap with most. Every ignore below is a decision, not a
+# convenience; the reason sits next to it.
+line-length = 160
+target-version = "py311"
+extend-exclude = ["static", "test_data", "quickstarts", "shim"]
+
+[lint]
+select = ["E", "F", "W", "B", "C90", "N", "UP", "S", "A", "C4", "PIE", "RET", "SIM", "ARG", "PL", "RUF"]
+ignore = [
+    "E501",     # line length: 160 is the limit above; the reporter is off so a long table row is not a finding
+    "PLR2004",  # magic values: exit codes, ports and sizes are named where they matter, the rest reads better inline
+    "PLC0415",  # imports inside functions: the app layer imports its sibling use cases lazily on purpose (see design.md 9)
+    "S603", "S607",  # subprocess with a list argv is the adapters' job; the runner never uses a shell
+    "S608",     # SQL built from identifiers the kit validated itself (schema and table names), never from user text
+    "PLR0913",  # keyword-only constructors with many fields are the Protocol adapters' shape
+    "RUF012",   # mutable class attributes are the dataclass defaults ruff cannot see through
+    "ARG002",   # unused method arguments: the Protocol implementations (silent UI, NullLog, the lifecycle defaults) keep the boundary's signature
+    "N818",     # the exit-code exceptions are named for what happened (Failed, BadInput, NotRunning, NotInstalled, NotConfirmed): frozen in AGENTS.md
+]
+
+[lint.mccabe]
+max-complexity = 12
+
+[lint.pylint]
+max-returns = 8
+max-branches = 14
+max-args = 8
+max-statements = 60
+
+[lint.per-file-ignores]
+"tests/**" = ["S101", "S108", "ARG001", "ARG002", "ARG005", "PLR0915"]   # asserts, fixed temp paths and unused fake arguments are what tests are made of
+"mcp/tests/**" = ["S101", "S108", "ARG001", "ARG002", "ARG005", "PLR0915"]
+"tools/**" = ["S101"]
+"tools/run_tests.py" = ["N802"]   # unittest.TestResult's own method names

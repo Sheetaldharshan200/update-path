@@ -37,17 +37,16 @@ class SecurityPolicy:
                     blocking=True,
                 )
             )
-        if request.server_definition.transport == DeploymentMode.STDIO:
-            if not request.server_definition.command:
-                findings.append(
-                    Finding(
-                        code="missing_server_command",
-                        severity=Severity.ERROR,
-                        message="A stdio server definition requires a command.",
-                        recommended_action="Populate server_definition.command.",
-                        blocking=True,
-                    )
+        if request.server_definition.transport == DeploymentMode.STDIO and not request.server_definition.command:
+            findings.append(
+                Finding(
+                    code="missing_server_command",
+                    severity=Severity.ERROR,
+                    message="A stdio server definition requires a command.",
+                    recommended_action="Populate server_definition.command.",
+                    blocking=True,
                 )
+            )
         if request.server_definition.transport == DeploymentMode.HTTP:
             parsed = urlparse(request.server_definition.url or "")
             if parsed.hostname not in {"127.0.0.1", "localhost", "::1"}:

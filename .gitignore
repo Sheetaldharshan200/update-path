@@ -8,3 +8,6 @@ setup-test-*.log
 
 # Claude Code local state (worktrees, settings, session data)
 .claude/
+
+# what tools/run_tests.py, check_standard.py, release_check.py and qa_report.py write (snapshots live in docs/reports/)
+reports/

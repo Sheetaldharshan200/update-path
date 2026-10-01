@@ -1,0 +1,52 @@
+{
+  "schema_version": 1,
+  "id": "json-tables",
+  "title": "JSON Tables (JSON into Exasol)",
+  "kind": "python-venv",
+  "source": {
+    "type": "github_release",
+    "repo": "exasol-labs/exasol-json-tables",
+    "package": "exasol-json-tables",
+    "sources": "{version}",
+    "releases": [
+      {
+        "repo": "exasol-labs/exasol-json-tables",
+        "tag": "{version}",
+        "checksums": "SHA256SUMS",
+        "member": "*/json_to_parquet",
+        "assets": {
+          "wheel": "exasol_json_tables-{bare}-py3-none-any.whl",
+          "macos-aarch64": "json_to_parquet-{version}-macos-arm64.tar.gz",
+          "linux-x86_64": "json_to_parquet-{version}-linux-x86_64.tar.gz"
+        }
+      },
+      {
+        "mirror": "kit",
+        "tag": "json-tables-{version}",
+        "pins": "sha256",
+        "assets": {
+          "wheel": "exasol_json_tables-{bare}-py3-none-any.whl",
+          "macos-aarch64": "exasol-json-tables-ingest-macos-aarch64",
+          "linux-aarch64": "exasol-json-tables-ingest-linux-aarch64",
+          "linux-x86_64": "exasol-json-tables-ingest-linux-x86_64"
+        }
+      }
+    ]
+  },
+  "platforms": [
+    "macos-aarch64",
+    "linux-aarch64",
+    "linux-x86_64"
+  ],
+  "requires": [
+    "personal",
+    "exapump"
+  ],
+  "provides": [
+    "json-ingestion"
+  ],
+  "launcher": "exasol-json-tables",
+  "skill": "json-tables",
+  "help": "json-tables",
+  "fallback_version": "v0.3.2"
+}

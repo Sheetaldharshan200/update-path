@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "id": "dbt-exasol",
+  "title": "dbt-exasol (dbt models on Exasol)",
+  "kind": "python-venv",
+  "source": {
+    "type": "pypi",
+    "package": "dbt-exasol"
+  },
+  "platforms": [
+    "macos-aarch64",
+    "macos-x86_64",
+    "linux-aarch64",
+    "linux-x86_64",
+    "windows-x86_64"
+  ],
+  "requires": [
+    "personal"
+  ],
+  "provides": [
+    "sql-modelling"
+  ],
+  "launcher": "dbt-exasol",
+  "skill": "dbt-exasol",
+  "help": "dbt-exasol",
+  "fallback_version": "1.12.1",
+  "config": {
+    "profile": "exasol_starter_kit",
+    "schema": "DBT"
+  }
+}

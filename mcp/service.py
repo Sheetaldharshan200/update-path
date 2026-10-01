@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Iterable
+from collections.abc import Iterable
 
 from mcp.adapters.base import ClientAdapter, RenderResult
 from mcp.adapters.registry import AdapterRegistry
-from mcp.core.errors import BlockingOperationError, MCPSubsystemError
+from mcp.core.errors import BlockingOperationError
 from mcp.core.models import (
     ArtifactReference,
     ChangeKind,
@@ -22,7 +22,6 @@ from mcp.core.models import (
     OperationStatus,
     OwnershipState,
     Severity,
-    VerificationEvidence,
 )
 from mcp.diagnostics.reporting import summarize_findings
 from mcp.runtime.environment import ExecutionEnvironment
@@ -710,7 +709,7 @@ class MCPAccessSubsystem:
             # down with it. Unknown means "not here", which prints no action.
             try:
                 detected = adapter.detect(self._environment).detected
-            except Exception:  # noqa: BLE001 - a read-only screen never fails here
+            except Exception:
                 detected = False
             clients.append(
                 {

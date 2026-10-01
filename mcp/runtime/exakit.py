@@ -16,8 +16,6 @@ from .paths import RuntimePaths
 
 
 DEFAULT_MCP_COMMAND = "uvx"
-DEFAULT_MCP_PACKAGE = "exasol-mcp-server"
-DEFAULT_MCP_VERSION = "2.2.0"
 DEFAULT_SERVER_NAME = "exasol"
 # The dash-server add-on's MCP control plane. dash-server speaks Streamable
 # HTTP on a port it records at install time (5100 unless something already held
@@ -34,6 +32,27 @@ DEFAULT_READ_ONLY_MCP_SETTINGS = {
     "enable_write_query": False,
     "enable_write_bucketfs": False,
 }
+
+
+def kit_dir(runtime_root: Path, env: dict[str, str]) -> Path:
+    """The kit copy: EXAKIT_KIT_DIR, else <kit home>/kit, else the checkout this module runs from."""
+    explicit = env.get("EXAKIT_KIT_DIR")
+    if explicit:
+        return Path(explicit)
+    installed = runtime_root / "kit"
+    if (installed / "catalog").is_dir():
+        return installed
+    return Path(__file__).resolve().parents[2]
+
+
+def catalog_mcp_defaults(runtime_root: Path, env: dict[str, str]) -> tuple[str, str]:
+    """(package, version) of the MCP server from catalog/components/mcp.json: the last resort behind the record."""
+    path = kit_dir(runtime_root, env) / "catalog" / "components" / "mcp.json"
+    try:
+        doc = json.loads(path.read_text(encoding="utf-8"))
+        return str(doc["source"]["package"]), str(doc["fallback_version"])
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        raise MCPSubsystemError("catalog_missing", f"The kit's catalog entry for the MCP server is missing or unreadable: {path}") from exc
 
 
 @dataclass
@@ -105,15 +124,16 @@ class ExakitRuntimeLoader:
 
         components = document.get("components", {})
         component_state = components.get("mcp_server", {}) if isinstance(components, dict) else {}
+        catalog_package, catalog_version = catalog_mcp_defaults(runtime_root, self._environment.env)
         package = str(
             self._environment.env.get("EXAKIT_MCP_PACKAGE")
             or component_state.get("package")
-            or DEFAULT_MCP_PACKAGE
+            or catalog_package
         ).strip()
         version = str(
             self._environment.env.get("EXAKIT_MCP_VERSION")
             or component_state.get("version")
-            or DEFAULT_MCP_VERSION
+            or catalog_version
         ).strip()
         command = self._resolve_mcp_command(component_state)
         server_name = str(
@@ -166,7 +186,7 @@ class ExakitRuntimeLoader:
             return None
         try:
             document = self._filesystem.read_json(manifest_path)
-        except Exception:  # noqa: BLE001 - an unreadable manifest is the caller's problem
+        except Exception:
             return None
         components = document.get("components")
         if not isinstance(components, dict):

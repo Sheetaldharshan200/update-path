@@ -1,0 +1,334 @@
+name: real install
+
+# The manual acceptance rows M-3 and M-5 of docs/test-and-acceptance.md, run on
+# a scratch machine nobody keeps: a fresh runner. The install goes through the
+# public path (install.sh, the kit's own Python, `python -m exakit install`)
+# with a persona, then the commands an agent runs, then a re-run, then the
+# full uninstall. Nothing here is mocked; the runner is thrown away after.
+#
+# ubuntu-latest is the machine that proves the database on Linux: Podman is
+# there and the deployment runs. macos-latest (Apple silicon) is a VM without
+# Apple's Virtualization framework and ships with 7 GB, so the launcher cannot
+# deploy there; that job proves everything around the database (the bootstrap,
+# the launcher download, the persona's add-ons and skills, status with no
+# database, the uninstall) under the documented EXAKIT_FORCE hatch, asserts
+# exactly that, and skips the steps that need a database. The Intel Mac job proves the
+# other half of the contract: the local database does not run on Intel Macs
+# (the launcher itself says so), so the kit refuses before anything is
+# downloaded or written.
+# windows-latest is the same story under Windows PowerShell 5.1: the hosted
+# runner has no WSL2 and no nested virtualisation, so install.ps1, the
+# bootstrap, the kit's Python, the persona, the skills, status and the
+# uninstall are proven there and the database is not (that is M-5, a real
+# Windows 11 machine or a self-hosted runner).
+on:
+  workflow_dispatch:
+
+jobs:
+  install:
+    name: full install (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    env:
+      EXAKIT_LOCAL_KIT: ${{ github.workspace }}
+      EXAKIT_KIT_REPO: ${{ github.repository }}
+      EXAKIT_PERSONA: analyst
+      EXAKIT_NO_UPDATE_NOTICE: "1"
+      NO_COLOR: "1"
+      # Apple silicon runners: 7 GB and no virtualisation; the database cannot
+      # deploy there anyway, so the RAM guard is passed to prove the rest.
+      EXAKIT_FORCE: ${{ matrix.os == 'macos-latest' && '1' || '' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: the machine
+        run: |
+          uname -a
+          if command -v free >/dev/null 2>&1; then free -g; else sysctl -n hw.memsize; sysctl -n kern.hv_support || true; fi
+          df -h "$HOME" | tail -1
+          command -v podman >/dev/null 2>&1 && podman --version || echo "no podman (macOS: the launcher brings its own VM)"
+          echo "PATH=$HOME/.local/bin:$PATH" >> "$GITHUB_ENV"
+
+      - name: make room (the Linux runner ships with 14 GB free; the kit asks for 20)
+        if: runner.os == 'Linux'
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL /usr/share/swift
+          sudo docker image prune --all --force >/dev/null 2>&1 || true
+          df -h "$HOME" | tail -1
+
+      - name: preflight (installs nothing)
+        # Apple silicon runners fail the RAM check by design (7 GB); the verdict is printed, not enforced, there.
+        run: EXAKIT_PREFLIGHT=1 sh install.sh || { [ "${{ matrix.os }}" = "macos-latest" ] && echo "preflight blocked, as expected on this runner"; }
+
+      - name: dry run (installs nothing)
+        run: |
+          EXAKIT_DRY_RUN=1 sh install.sh
+          test ! -f "$HOME/.exasol-starter-kit/manifest.json"
+
+      - name: install with the analyst persona
+        run: |
+          start=$(date +%s)
+          sh install.sh
+          echo "install took $(( $(date +%s) - start ))s"
+
+      - name: status must be running
+        if: matrix.os != 'macos-latest'
+        run: |
+          for i in $(seq 1 60); do
+            if exakit status --json > status.json; then break; fi
+            # Nothing in progress and no runtime at all: waiting cannot change that.
+            if python3 -c 'import json,sys; d=json.load(open("status.json")); sys.exit(0 if (not d.get("installing") and d["runtime"]["status"] == "not installed") else 1)'; then
+              echo "no deployment and nothing in progress: not waiting"; break
+            fi
+            sleep 10
+          done
+          cat status.json
+          python3 -c 'import json; d=json.load(open("status.json")); assert d["running"] and d["status"]=="running", d["status"]; assert "tpch" in d["datasets_loaded"], d["datasets_loaded"]; print("persona:", d["persona"])'
+
+      - name: everything but the database is in place (Apple silicon runner, no virtualisation)
+        if: matrix.os == 'macos-latest'
+        run: |
+          exakit status --json > status.json || true
+          cat status.json
+          python3 - <<'PY'
+          import json
+          d = json.load(open("status.json"))
+          assert d["installed"] is True, d
+          assert d["persona"] == "analyst", d["persona"]
+          assert d["runtime"]["status"] == "not installed", d["runtime"]
+          assert d["services"].get("dash-server") == "running", d["services"]
+          assert {"launcher", "exakit_helper"} <= set(d["steps_completed"]), d["steps_completed"]
+          assert d["remedy"].startswith("curl "), d["remedy"]
+          print("proven: launcher, kit command, persona, dash-server; the database cannot deploy in this VM, and status says so with its remedy")
+          PY
+
+      - name: the commands an agent runs
+        if: matrix.os != 'macos-latest'
+        run: |
+          set -e
+          exakit version --json | tee version.json | python3 -c 'import json,sys; d=json.load(sys.stdin); print({r["component"]: r["status"] for r in d["components"]})'
+          exakit info --json | python3 -c 'import json,sys; d=json.load(sys.stdin); print("info:", d["status"], d["runtime"]["dsn"])'
+          exakit sql --json "SELECT COUNT(*) AS n FROM TPCH.NATION" | tee sql.json
+          python3 -c 'import json; d=json.load(open("sql.json")); assert d["ok"] and int(list(d["rows"][0].values())[0]) == 25, d'
+          exakit sql --json "DELETE FROM TPCH.NATION" > reject.json || true
+          python3 -c 'import json; d=json.load(open("reject.json")); assert d["ok"] is False and d.get("rejected"), d'
+          exakit marketplace --list --json | tee marketplace.json
+          exakit persona plan analyst --json | tee plan.json | python3 -c 'import json,sys; d=json.load(sys.stdin); print("plan:", d["status"], "pending", d["pending"])'
+          exakit skills --json | python3 -c 'import json,sys; d=json.load(sys.stdin); print("skills:", d["status"], len(d["skills"]))'
+          exakit logs --json | python3 -c 'import json,sys; d=json.load(sys.stdin); print("logs:", [t["target"] for t in d["targets"]])'
+          exakit mcp-status --json > mcp.json || true; head -c 400 mcp.json; echo
+          exakit catalog --json | python3 -c 'import json,sys; d=json.load(sys.stdin); print("catalog:", d["count"], "commands")'
+          exakit help mcp >/dev/null && exakit guide >/dev/null
+
+      - name: a second run skips every done step
+        if: matrix.os != 'macos-latest'
+        run: |
+          start=$(date +%s)
+          sh install.sh | tee rerun.log
+          echo "re-run took $(( $(date +%s) - start ))s"
+          grep -c "already done, skipping" rerun.log
+
+      - name: the add-ons install from their source releases (D36)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          set -e
+          exakit marketplace exasol-scheduler json-tables --yes
+          exakit marketplace --list --json | python3 -c '
+          import json, sys
+          rows = {r["id"]: r for r in json.load(sys.stdin)["addons"]}
+          for aid in ("exasol-scheduler", "json-tables"):
+              assert rows[aid]["installed"], (aid, rows[aid])
+              print("installed:", aid, rows[aid]["version"])'
+          # the log names the release each asset came from: the exasol-labs source, not the mirror
+          grep -h "from exasol-labs/" ~/.exasol-starter-kit/logs/*.log | tail -5
+          test "$(grep -h "from exasol-labs/" ~/.exasol-starter-kit/logs/*.log | wc -l)" -ge 3
+
+      - name: stop, start, update, data-load --force
+        if: matrix.os != 'macos-latest'
+        run: |
+          set -e
+          exakit stop
+          exakit status --json > stopped.json || true
+          python3 -c 'import json; d=json.load(open("stopped.json")); assert not d["running"], d["status"]; print("stopped:", d["status"], d["remedy"])'
+          exakit start
+          exakit status --json | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d["running"], d["status"]'
+          exakit update --yes
+          exakit data-load --force
+          exakit status --json | python3 -c 'import json,sys; d=json.load(sys.stdin); print("datasets:", d["datasets_loaded"], d["datasets_source"])'
+
+      - name: keep the logs
+        if: always()
+        run: |
+          mkdir -p kept && cp -R "$HOME/.exasol-starter-kit/logs" kept/ 2>/dev/null || true
+          cp -f "$HOME/.exasol-starter-kit/manifest.json" kept/ 2>/dev/null || true
+          cp -f status.json version.json marketplace.json plan.json rerun.log kept/ 2>/dev/null || true
+
+      - name: uninstall everything
+        if: always()
+        run: |
+          exakit uninstall --dry-run || true
+          exakit uninstall --yes || true
+          test ! -d "$HOME/.exasol-starter-kit" && echo "kit home gone"
+          test ! -e "$HOME/.local/bin/exakit" && echo "exakit command gone"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: real-install-${{ matrix.os }}
+          path: kept/
+          if-no-files-found: ignore
+
+  install-windows:
+    name: full install (windows-latest, PowerShell 5.1)
+    runs-on: windows-latest
+    timeout-minutes: 45
+    continue-on-error: true
+    defaults:
+      run:
+        shell: powershell
+    env:
+      EXAKIT_LOCAL_KIT: ${{ github.workspace }}
+      EXAKIT_KIT_REPO: ${{ github.repository }}
+      EXAKIT_PERSONA: analyst
+      EXAKIT_NO_UPDATE_NOTICE: "1"
+      NO_COLOR: "1"
+      # The hosted Windows runner has 7 GB; the requirement (8) guards the
+      # database, which cannot deploy here anyway. The documented hatch lets
+      # the rest of the install be proven.
+      EXAKIT_FORCE: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: the machine
+        run: |
+          $PSVersionTable.PSVersion
+          (Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1GB
+          Get-PSDrive C | Select-Object Used, Free
+          try { wsl --status } catch { Write-Host "no WSL on this runner: the database cannot deploy here" }
+          "$env:USERPROFILE\.local\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: preflight (installs nothing; expected to name the missing WSL)
+        run: |
+          $env:EXAKIT_PREFLIGHT = "1"
+          Get-Content install.ps1 -Raw | Invoke-Expression
+          Write-Host "preflight exit $LASTEXITCODE"
+          exit 0
+
+      - name: dry run (installs nothing)
+        run: |
+          $env:EXAKIT_DRY_RUN = "1"
+          Get-Content install.ps1 -Raw | Invoke-Expression
+          if (Test-Path "$env:USERPROFILE\.exasol-starter-kit\manifest.json") { throw "a dry run wrote the install record" }
+          exit 0
+
+      - name: install with the analyst persona
+        run: |
+          $start = Get-Date
+          $Error.Clear()
+          Get-Content install.ps1 -Raw | Invoke-Expression
+          Write-Host "install exit $LASTEXITCODE after $([int]((Get-Date) - $start).TotalSeconds)s"
+          if ($Error.Count -gt 0) {
+            Write-Host "--- where the installer failed (the last error's position and stack) ---"
+            $Error[0].InvocationInfo.PositionMessage
+            $Error[0].ScriptStackTrace
+          }
+          exit 0
+
+      - name: status, and the commands an agent runs
+        run: |
+          exakit status --json | Out-File status.json -Encoding utf8
+          if ($LASTEXITCODE -notin @(0, 3)) { throw "exakit status exited $LASTEXITCODE" }
+          $status = Get-Content status.json -Raw | ConvertFrom-Json
+          Write-Host "status: $($status.status)  persona: $($status.persona)  installed: $($status.installed)"
+          if (-not $status.installed) { throw "not installed" }
+          if ($status.persona -ne "analyst") { throw "the persona was not recorded" }
+          exakit version --json | Out-File version.json -Encoding utf8
+          exakit persona plan analyst --json | Out-File plan.json -Encoding utf8
+          exakit skills --json | Out-Null
+          exakit catalog --json | Out-Null
+          exakit help mcp | Out-Null
+          exakit info --json | Out-Null
+          Write-Host "agent commands answered"
+          # The state commands answer 3 (no database) on this runner by design; the assertions above are the verdict.
+          exit 0
+
+      - name: a second run skips every done step
+        run: |
+          # A child PowerShell with both streams merged by cmd: a native stderr line merged inside this session
+          # would become an error record and trip the installer's own trap.
+          cmd /c "powershell -NoProfile -ExecutionPolicy Bypass -Command ""Get-Content install.ps1 -Raw | Invoke-Expression; exit `$LASTEXITCODE"" 2>&1" | Tee-Object -FilePath rerun.log
+          Write-Host "re-run exit $LASTEXITCODE"
+          Write-Host "skipped: $((Select-String -Path rerun.log -Pattern 'already done, skipping').Count)"
+          exit 0
+
+      - name: keep the logs
+        if: always()
+        run: |
+          New-Item -ItemType Directory -Force kept | Out-Null
+          Copy-Item -Recurse -Force "$env:USERPROFILE\.exasol-starter-kit\logs" kept\ -ErrorAction SilentlyContinue
+          Copy-Item -Force "$env:USERPROFILE\.exasol-starter-kit\manifest.json" kept\ -ErrorAction SilentlyContinue
+          Copy-Item -Force status.json, version.json, plan.json, rerun.log kept\ -ErrorAction SilentlyContinue
+          exit 0
+
+      - name: uninstall everything
+        if: always()
+        run: |
+          exakit uninstall --dry-run
+          exakit uninstall --yes
+          if (Test-Path "$env:USERPROFILE\.exasol-starter-kit") { Write-Host "kit home still there (the managed Python folder is the known leftover, tasks.md D5)" } else { Write-Host "kit home gone" }
+          exit 0
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: real-install-windows-latest
+          path: kept/
+          if-no-files-found: ignore
+
+  refuse-intel-mac:
+    name: Intel Mac is refused before anything is installed
+    runs-on: macos-15-intel
+    timeout-minutes: 15
+    env:
+      EXAKIT_LOCAL_KIT: ${{ github.workspace }}
+      EXAKIT_PERSONA: analyst
+      EXAKIT_NO_UPDATE_NOTICE: "1"
+      NO_COLOR: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - name: the machine
+        run: uname -a && sysctl -n machdep.cpu.brand_string
+      - name: the preflight names the platform as the blocker
+        run: |
+          set +e
+          EXAKIT_PREFLIGHT=1 sh install.sh | tee preflight.log
+          code=${PIPESTATUS[0]}
+          set -e
+          test "$code" -ne 0
+          grep -q "macOS on Intel" preflight.log
+      - name: the installer refuses, and nothing is written
+        run: |
+          set +e
+          sh install.sh 2>&1 | tee install.log
+          code=${PIPESTATUS[0]}
+          set -e
+          test "$code" -ne 0
+          grep -q "Nothing was installed" install.log
+          test ! -e "$HOME/.exasol-starter-kit/manifest.json"
+          test ! -e "$HOME/.local/bin/exakit"
+          test ! -e "$HOME/.local/bin/exasol"
+          test ! -d "$HOME/.exasol"
+      - name: the Python kit's own gate says the same (through the bootstrap)
+        run: |
+          . bootstrap/ensure-python.sh
+          ensure_python
+          set +e
+          "$EXAKIT_PYTHON" -m exakit preflight --json > preflight.json
+          code=$?
+          set -e
+          test "$code" -eq 1
+          python3 -c 'import json; d=json.load(open("preflight.json")); assert d["status"] == "blocked", d; assert any("Intel" in f for f in d["failures"]), d["failures"]; print("blocked:", d["failures"][0])'

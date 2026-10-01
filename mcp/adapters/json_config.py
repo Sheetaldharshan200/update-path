@@ -183,7 +183,7 @@ class JsonConfigAdapter(ClientAdapter):
             file_valid=True,
             managed_entry=managed_entry,
             managed_hash=managed_hash,
-            other_server_names=[name for name in servers.keys() if name != server_name],
+            other_server_names=[name for name in servers if name != server_name],
         )
 
     def render(

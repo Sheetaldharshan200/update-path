@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "id": "exasol-vscode",
+  "title": "Exasol for VS Code (editor extension)",
+  "kind": "host-extension",
+  "source": {
+    "type": "github_release",
+    "repo": "exasol-labs/exasol-vscode"
+  },
+  "platforms": [
+    "macos-aarch64",
+    "macos-x86_64",
+    "linux-aarch64",
+    "linux-x86_64",
+    "windows-x86_64"
+  ],
+  "requires": [
+    "personal"
+  ],
+  "provides": [
+    "sql-editing"
+  ],
+  "skill": "exasol-vscode",
+  "help": "exasol-vscode",
+  "fallback_version": "1.8.0"
+}

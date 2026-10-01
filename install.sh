@@ -1,5 +1,5 @@
 #!/bin/sh
-# install.sh — Exasol Personal Local Starter Kit, one-command installer.
+# install.sh - Exasol Personal Local Starter Kit, one-command installer.
 #
 #   curl -fsSL https://raw.githubusercontent.com/krishna-exasol/update-path/main/install.sh | sh
 #
@@ -8,7 +8,8 @@
 #   2. downloads the starter kit to ~/.exasol-starter-kit/kit (so you can
 #      read every script before or after it runs)
 #   3. shows the installation plan
-#   4. hands off to the matching setup script, which installs and connects
+#   4. sets up the kit's own Python (uv-managed, never the system one)
+#   5. hands off to `python -m exakit install`, which installs and connects
 #      a local Exasol database, exapump, and the Exasol MCP server
 #
 # Options (environment variables, because flags don't travel through a pipe):
@@ -53,6 +54,10 @@
 #   EXAKIT_MARKETPLACE_ADDONS=...  answer the closing marketplace offer: add-on
 #                           ids (csv, e.g. "dash-server"), all, or none; unset,
 #                           a non-interactive install skips the offer
+#   EXAKIT_PERSONA=...      a named bundle of the answers above: analyst,
+#                           data-scientist, data-engineer, minimal, or your own
+#                           (~/.exasol-starter-kit/personas/<id>.json); the
+#                           explicit answers above still win over it
 #   GITHUB_TOKEN=...        auth for downloading from a private repo
 #
 # Windows (PowerShell): use install.ps1 instead.
@@ -72,7 +77,7 @@ main() {
     # the step/gutter hierarchy the setup scripts use once ui.sh is loaded.
     # UTF-8 bullet only on UTF-8 locales; ASCII everywhere else.
     case "${LC_ALL:-${LC_CTYPE:-${LANG:-}}}" in
-        *[Uu][Tt][Ff]*) _say_glyph='•' ;;
+        *[Uu][Tt][Ff]*) _say_glyph='*' ;;
         *)              _say_glyph='*' ;;
     esac
     say() { printf '  \033[1;34m%s\033[0m %s\n' "$_say_glyph" "$*"; }
@@ -82,12 +87,12 @@ main() {
     # read in the next session and no way to tell "never ran" from "ran and
     # refused". Best-effort: a note is a nicety and must not mask the real error.
     fail() {
-        printf '\033[1;31m  ✗\033[0m %s\n' "$*" >&2
+        printf '\033[1;31m  x\033[0m %s\n' "$*" >&2
         _fail_home="${EXAKIT_HOME:-$HOME/.exasol-starter-kit}"
         if mkdir -p "$_fail_home" 2>/dev/null; then
             # TWO lines, matching exakit_note_failure: line 1 the reason, line 2
             # when it happened. `exakit status --json` reads the date off line 2,
-            # and this writer left it empty — so the one failure an agent is most
+            # and this writer left it empty - so the one failure an agent is most
             # likely to meet (the installer dying before the kit exists) produced
             # exactly the undated note that makes a healthy machine look broken
             # months later. date is POSIX; a missing one must not break the note.
@@ -99,35 +104,34 @@ main() {
         exit 1
     }
 
-    # Banner + plan: reuse the kit's shared visual layer (setup/lib/ui.sh) so
-    # the EXASOL wordmark and palette match the rest of the install exactly.
-    # install.sh is POSIX sh and can't source that bash lib, so bridge through
-    # `bash ui.sh __render_install_plan`; fall back to plain sh if bash or the
-    # lib isn't there. Called after the kit is fetched (once ui.sh exists).
-    render_banner_plan() {
-        _ui="$kit_dir/setup/lib/ui.sh"
-        if command -v bash >/dev/null 2>&1 && [ -f "$_ui" ]; then
-            EXAKIT_UI_PLATFORM="$platform ($arch)" \
-            EXAKIT_UI_TARGET="$target" \
-            EXAKIT_UI_KIT="$kit_dir" \
-            EXAKIT_UI_HOME="$EXAKIT_HOME" \
-            bash "$_ui" __render_install_plan && return 0
+    # The install screen (the wordmark, the facts, the plan) is drawn by the
+    # Python kit; this script only says what it downloads and hands over.
+    # plan_python - the interpreter a DRY RUN may use to draw the plan without
+    # installing anything: the kit's own if an earlier install set it up, else
+    # a system Python 3.11+ (never used for the install itself).
+    plan_python() {
+        _pp=""
+        [ -f "$EXAKIT_HOME/python/interpreter" ] && _pp="$(head -n 1 "$EXAKIT_HOME/python/interpreter" 2>/dev/null)"
+        if [ -z "$_pp" ] || ! "$_pp" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 11) else 1)' >/dev/null 2>&1; then
+            _pp=""
+            for _cand in python3 python; do
+                if command -v "$_cand" >/dev/null 2>&1 && "$_cand" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 11) else 1)' >/dev/null 2>&1; then
+                    _pp="$_cand"; break
+                fi
+            done
         fi
-        printf '\n  Exasol Personal Local Starter Kit\n\n'
+        printf '%s' "$_pp"
     }
 
     # --- 1. preflight --------------------------------------------------------
     [ "$(id -u)" -ne 0 ] || fail "Please run as a regular user, not root."
     command -v curl >/dev/null 2>&1 || fail "curl is required."
     command -v tar  >/dev/null 2>&1 || fail "tar is required."
-    # THIS SCRIPT is POSIX sh, but everything it hands off to is bash: the setup
-    # scripts, every module under setup/lib, and the exakit command itself. Left
-    # unchecked, a bash-less distro (Alpine/BusyBox, a minimal image) downloaded
-    # and unpacked the whole kit and then died at `exec bash` with the shell's
-    # own "exec: bash: not found" and exit 127 — past fail(), so not even a
-    # .last-failure note was written for the next session to read. Checked here,
-    # beside curl and tar, so the refusal comes before anything is downloaded.
-    command -v bash >/dev/null 2>&1 || fail "bash is required (the setup scripts and the exakit command are bash). Install it with your package manager — e.g. 'sudo apk add bash', 'sudo apt-get install -y bash' or 'sudo dnf install -y bash' — then re-run this installer."
+    # THIS SCRIPT is POSIX sh; the Python bootstrap and the exakit launcher are
+    # POSIX sh too, but the launchers the kit writes for add-ons and the Exasol
+    # launcher's own hooks expect bash on PATH. Checked here, beside curl and
+    # tar, so the refusal comes before anything is downloaded.
+    command -v bash >/dev/null 2>&1 || fail "bash is required. Install it with your package manager - e.g. 'sudo apk add bash', 'sudo apt-get install -y bash' or 'sudo dnf install -y bash' - then re-run this installer."
 
     # --- 2. detect -----------------------------------------------------------
     os="$(uname -s)"
@@ -136,7 +140,6 @@ main() {
         Darwin)
             platform="macos"
             target="Exasol Personal (local deployment)"
-            setup_script="setup/setup-macos.sh"
             ;;
         Linux)
             # THE SAME UNION AS detect_os, and duplicated for the same reason
@@ -158,7 +161,6 @@ main() {
             # on PATH. setup-linux.sh then checks that and says so before
             # anything is downloaded.
             target="Exasol Personal (local deployment via Podman)"
-            setup_script="setup/setup-linux.sh"
             ;;
         *)
             fail "Unsupported platform: $os. On Windows, run install.ps1 in PowerShell."
@@ -168,6 +170,13 @@ main() {
         arm64|aarch64|x86_64|amd64) : ;;
         *) fail "Unsupported CPU architecture: $arch" ;;
     esac
+    # The local database runs on Apple silicon Macs, Linux x86_64/arm64 and
+    # Windows x86_64 (catalog/components/personal.json, platforms). An Intel
+    # Mac is refused here, before a byte is downloaded; the Python kit holds
+    # the same rule for everything that runs after this installer.
+    if [ "${EXAKIT_PREFLIGHT:-0}" != "1" ] && [ "$platform" = "macos" ] && [ "$arch" != "arm64" ] && [ "$arch" != "aarch64" ]; then
+        fail "The local Exasol database runs on macOS with Apple silicon, Linux x86_64/arm64 and Windows x86_64. This Mac is Intel ($arch), so the database cannot run here. Nothing was installed."
+    fi
 
     # --- 3. fetch the kit ----------------------------------------------------
     # A DRY RUN WRITES NOTHING UNDER EXAKIT_HOME. It used to unpack into
@@ -182,10 +191,10 @@ main() {
     # The failure text names the OWNERSHIP case explicitly. "Check that it is
     # writable" is not an action, and the documented escape hatch for a
     # /mnt/c or cloud-synced HOME (EXAKIT_HOME=/opt/exakit) lands here on every
-    # distro, because /opt is root-owned — while the installer separately, and
+    # distro, because /opt is root-owned - while the installer separately, and
     # correctly, refuses to be run with sudo. The two messages read as a
     # contradiction unless this one says which sudo command is the right one.
-    mkdir -p "$kit_dir" || fail "Could not create $kit_dir: $EXAKIT_HOME is not writable by $(id -un). If EXAKIT_HOME points at a system path such as /opt, create it and take ownership once — sudo mkdir -p '$EXAKIT_HOME' && sudo chown \"\$(id -un)\" '$EXAKIT_HOME' — then re-run this installer as your normal user (never with sudo). Otherwise pick a path you own, or check the disk is not full."
+    mkdir -p "$kit_dir" || fail "Could not create $kit_dir: $EXAKIT_HOME is not writable by $(id -un). If EXAKIT_HOME points at a system path such as /opt, create it and take ownership once - sudo mkdir -p '$EXAKIT_HOME' && sudo chown \"\$(id -un)\" '$EXAKIT_HOME' - then re-run this installer as your normal user (never with sudo). Otherwise pick a path you own, or check the disk is not full."
     if [ -n "${EXAKIT_LOCAL_KIT:-}" ]; then
         [ -f "$EXAKIT_LOCAL_KIT/install.sh" ] || fail "EXAKIT_LOCAL_KIT does not look like a kit checkout: $EXAKIT_LOCAL_KIT"
         EXAKIT_KIT_SOURCE="local:$EXAKIT_LOCAL_KIT"
@@ -229,14 +238,20 @@ main() {
     fi
 
     if [ "${EXAKIT_PREFLIGHT:-0}" = "1" ]; then
-        exec bash -c ". '$kit_dir/setup/lib/detect.sh'; preflight_report"
+        preflight_report
+        exit $?
     fi
 
-    # --- 4. show the plan ----------------------------------------------------
-    render_banner_plan
-
+    # --- 4. a dry run: the screen and the plan, nothing installed ------------
     if [ "${EXAKIT_DRY_RUN:-0}" = "1" ]; then
-        say "Dry run requested (EXAKIT_DRY_RUN=1) — nothing was installed, and nothing under $EXAKIT_HOME was changed."
+        _dry_py="$(plan_python)"
+        if [ -n "$_dry_py" ]; then
+            EXAKIT_KIT_DIR="$kit_dir" PYTHONPATH="$kit_dir${PYTHONPATH:+:$PYTHONPATH}" "$_dry_py" -m exakit install --dry-run
+        else
+            printf '\n  Exasol Personal Local Starter Kit\n  Platform: %s (%s)   Target: %s\n  Kit: %s   Home: %s\n\n' "$platform" "$arch" "$target" "$kit_dir" "$EXAKIT_HOME"
+            say "Dry run: the six install steps are the launcher, the local database, exapump, the AI bridge, pyexasol and the exakit command."
+        fi
+        say "Dry run requested (EXAKIT_DRY_RUN=1) - nothing was installed, and nothing under $EXAKIT_HOME was changed."
         say "The kit is unpacked for inspection in a temporary folder: $kit_dir"
         say "To install, run the same command again without EXAKIT_DRY_RUN=1."
         exit 0
@@ -253,9 +268,9 @@ main() {
     # over the UPSTREAM kit, and when the two layouts differ the handoff below
     # died on "No such file or directory" - a path, and no hint that two
     # repositories were in play. Twin of the same guard in install.ps1.
-    if [ ! -f "$kit_dir/$setup_script" ]; then
+    if [ ! -f "$kit_dir/bootstrap/ensure-python.sh" ] || [ ! -f "$kit_dir/exakit/__main__.py" ]; then
         printf '\n'
-        say "The kit came from $EXAKIT_REPO@$EXAKIT_REF and has no $setup_script in it."
+        say "The kit came from $EXAKIT_REPO@$EXAKIT_REF and has no Python kit in it (bootstrap/ensure-python.sh, exakit/)."
         say "The installer is read from a URL, but the kit is taken from EXAKIT_REPO,"
         say "which is '$EXAKIT_REPO' unless you say otherwise. If you fetched this"
         say "installer from a fork or a branch, name it for the kit as well:"
@@ -264,19 +279,57 @@ main() {
         printf '\n'
         fail "This installer and the kit it downloaded do not match. Nothing was installed."
     fi
-    _bootstrap_s=""
-    [ -n "${EXAKIT_INSTALL_T0:-}" ] && _bootstrap_s=" ($(( $(date +%s) - EXAKIT_INSTALL_T0 ))s after start)"
-    say "Starting setup: $setup_script$_bootstrap_s"
-    printf '\n'
-    # We already showed the banner above; tell the setup script to skip its
-    # own so the wordmark appears exactly once through the installer. A direct
-    # `bash setup/setup-*.sh` run (no installer) still shows it.
-    export EXAKIT_BANNER_SHOWN=1
+    # --- 6. the kit's own Python, then the kit ------------------------------
+    # bootstrap/ensure-python.sh puts a managed interpreter under
+    # $EXAKIT_HOME/python (uv, digest-checked, never the system Python) and
+    # `python -m exakit install` runs the whole install (EXAKIT_PERSONA and
+    # every EXAKIT_* answer are read there).
+    EXAKIT_KIT_DIR="$kit_dir"; export EXAKIT_KIT_DIR
+    . "$kit_dir/bootstrap/ensure-python.sh"
+    ensure_python || fail "The kit's Python could not be set up. Check your internet connection or proxy (set HTTPS_PROXY if needed) and re-run this installer."
+    export EXAKIT_PYTHON
+    PYTHONPATH="$kit_dir${PYTHONPATH:+:$PYTHONPATH}"; export PYTHONPATH
     if [ ! -t 0 ] && (: < /dev/tty) 2>/dev/null; then
-        exec bash "$kit_dir/$setup_script" < /dev/tty
+        exec "$EXAKIT_PYTHON" -m exakit install < /dev/tty
     else
-        exec bash "$kit_dir/$setup_script"
+        exec "$EXAKIT_PYTHON" -m exakit install
     fi
+}
+
+# preflight_report - EXAKIT_PREFLIGHT=1: what this machine has, nothing
+# installed (not even the kit's Python). The same checks `exakit preflight`
+# makes once the kit is in place; POSIX sh so it runs before anything else.
+preflight_report() {
+    _pf_fail=0
+    _pf_ok()  { printf '  [ok] %s\n' "$*"; }
+    _pf_bad() { printf '  [x] %s\n' "$*"; _pf_fail=$((_pf_fail + 1)); }
+    printf 'Preflight check\n'
+    _pf_ok "Operating system: $platform"
+    _pf_ok "CPU architecture: $arch"
+    if [ "$platform" = "macos" ] && [ "$arch" != "arm64" ] && [ "$arch" != "aarch64" ]; then
+        _pf_bad "Platform: macOS on Intel - the local Exasol database runs on Apple silicon Macs, Linux x86_64/arm64 and Windows x86_64 only"
+    fi
+    if [ "$(uname -s)" = "Darwin" ]; then
+        _pf_ram=$(( $(sysctl -n hw.memsize 2>/dev/null || echo 0) / 1073741824 ))
+    else
+        _pf_ram="$(awk '/MemTotal/ { printf "%d", ($2 / 1048576) + 0.5 }' /proc/meminfo 2>/dev/null || echo 0)"
+    fi
+    _pf_disk="$(df -Pk "$HOME" 2>/dev/null | awk 'NR == 2 { printf "%d", $4 / 1048576 }')"
+    [ "${_pf_ram:-0}" -ge 8 ] && _pf_ok "Memory: ${_pf_ram} GB (Exasol Personal needs 8+)" || _pf_bad "Memory: ${_pf_ram:-0} GB - Exasol Personal needs at least 8 GB"
+    [ "${_pf_disk:-0}" -ge 20 ] && _pf_ok "Free disk at $HOME: ${_pf_disk} GB (20+ recommended)" || _pf_bad "Free disk at $HOME: ${_pf_disk:-0} GB - free up space (20 GB recommended for the local database)"
+    for _pf_tool in curl tar bash; do
+        command -v "$_pf_tool" >/dev/null 2>&1 && _pf_ok "$_pf_tool available" || _pf_bad "$_pf_tool missing - install it with your package manager"
+    done
+    if [ "$platform" = "wsl" ] && grep -qi "microsoft" /proc/version 2>/dev/null && ! grep -qiE "wsl2|microsoft-standard" /proc/version 2>/dev/null; then
+        _pf_bad "WSL 1: Exasol Personal needs a real Linux kernel; convert this distro with: wsl --set-version <distro> 2"
+    fi
+    if [ "$platform" = "linux" ] || [ "$platform" = "wsl" ]; then
+        command -v podman >/dev/null 2>&1 && _pf_ok "Podman: available (the Exasol Personal deployment runs through it)" \
+            || _pf_bad "Podman is required and is not on PATH - install it with your package manager (e.g. 'sudo apt-get install -y podman uidmap')"
+    fi
+    printf '\n'
+    [ "$_pf_fail" -eq 0 ] && printf 'Ready to install.\n' || printf '%s check(s) failed - fix them, then run the installer.\n' "$_pf_fail"
+    return "$_pf_fail"
 }
 
 main "$@"

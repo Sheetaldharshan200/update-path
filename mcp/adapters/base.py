@@ -215,10 +215,7 @@ def app_bundle_present(environment: ExecutionEnvironment, names: Iterable[str]) 
     if environment.os_name != "darwin":
         return None
     override = environment.env.get("EXAKIT_MCP_APP_ROOTS")
-    if override is not None:
-        roots = [Path(part) for part in override.split(os.pathsep) if part]
-    else:
-        roots = [Path("/Applications"), environment.home / "Applications"]
+    roots = [Path(part) for part in override.split(os.pathsep) if part] if override is not None else [Path("/Applications"), environment.home / "Applications"]
     for name in names:
         for root in roots:
             bundle = root / f"{name}.app"

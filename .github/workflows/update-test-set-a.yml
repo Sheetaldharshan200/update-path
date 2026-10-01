@@ -23,8 +23,8 @@ name: update-test / set A
 # WHAT IT TOUCHES
 #   The same things a hand-written flip touches, and nothing else: versions.json
 #   (the five component versions, exapump's five sha256 digests, severity,
-#   updated) and the coupled fallback constants in setup/lib/common.sh,
-#   setup/lib/exakit-common.ps1 and mcp/runtime/exakit.py. kit.version is never
+#   updated) and the coupled fallback constants in catalog/*/… (fallback_version)
+#   and mcp/runtime/exakit.py. kit.version is never
 #   touched -- the kit scripts are not what is being flipped.
 #
 # MODES
@@ -223,21 +223,16 @@ jobs:
           # step is pulled back into it.
           COUPLED = {
               "personal": [
-                  ("setup/lib/common.sh", "bash", "EXAKIT_PERSONAL_VERSION_FALLBACK"),
-                  ("setup/lib/runtime-personal.ps1", "pwsh", "PersonalVersionFallback"),
+                  ("catalog/components/personal.json", "json", "fallback_version"),
               ],
               "exapump": [
-                  ("setup/lib/common.sh", "bash", "EXAKIT_EXAPUMP_VERSION_FALLBACK"),
-                  ("setup/lib/exakit-common.ps1", "pwsh", "ExapumpVersionFallback"),
+                  ("catalog/components/exapump.json", "json", "fallback_version"),
               ],
               "mcp": [
-                  ("setup/lib/common.sh", "bash", "EXAKIT_MCP_VERSION_FALLBACK"),
-                  ("setup/lib/exakit-common.ps1", "pwsh", "McpVersionFallback"),
-                  ("mcp/runtime/exakit.py", "python", "DEFAULT_MCP_VERSION"),
+                  ("catalog/components/mcp.json", "json", "fallback_version"),
               ],
               "pyexasol": [
-                  ("setup/lib/common.sh", "bash", "EXAKIT_PYEXASOL_VERSION_FALLBACK"),
-                  ("setup/lib/exakit-common.ps1", "pwsh", "PyexasolVersionFallback"),
+                  ("catalog/components/pyexasol.json", "json", "fallback_version"),
               ],
           }
           touched = set()
@@ -245,7 +240,9 @@ jobs:
           def retune(path, dialect, name, version):
               """Point one constant at version. Loud on anything unexpected: a
               renamed constant must stop the run, not produce a half-done flip."""
-              if dialect == "bash":
+              if dialect == "json":
+                  pattern = re.compile(r'("%s": ")([^"]*)(")' % name)
+              elif dialect == "bash":
                   pattern = re.compile(r'(%s="\$\{%s:-)([^}"]*)(\}")' % (name, name))
               elif dialect == "pwsh":
                   pattern = re.compile(
@@ -278,7 +275,7 @@ jobs:
           if manifest_dirty:
               doc["updated"] = datetime.now(timezone.utc).strftime("%Y-%m-%d")
               rendered = json.dumps(doc, indent=2) + "\n"
-              # The no-Python reader in setup/lib/common.sh depends on this exact
+              # The launcher's no-Python fallback depends on this exact
               # shape, and versions.yml diffs it against json.tool. Prove the file
               # is canonical here rather than discovering it in review.
               canonical = subprocess.run(
@@ -366,10 +363,10 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           if [ "$CHANGED" = "true" ]; then
             # Everything the flip touched, never the summary (a build artifact).
-            git add versions.json setup/lib/common.sh setup/lib/exakit-common.ps1 \
+            git add versions.json catalog/components/*.json \
                     mcp/runtime/exakit.py
             git commit -m "$TITLE" -m "$(cat update-test-summary.md)" \
-                -- versions.json setup/lib/common.sh setup/lib/exakit-common.ps1 \
+                -- versions.json catalog/components/*.json \
                    mcp/runtime/exakit.py
             git push origin "HEAD:refs/heads/$TARGET_BRANCH"
             printf '\nCommitted `%s` to `%s`.\n' "$(git rev-parse HEAD)" "$TARGET_BRANCH" \
@@ -396,10 +393,10 @@ jobs:
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git switch -c "$BRANCH"
-          git add versions.json setup/lib/common.sh setup/lib/exakit-common.ps1 \
+          git add versions.json catalog/components/*.json \
                   mcp/runtime/exakit.py
           git commit -m "$TITLE" -m "$(cat update-test-summary.md)" \
-              -- versions.json setup/lib/common.sh setup/lib/exakit-common.ps1 \
+              -- versions.json catalog/components/*.json \
                  mcp/runtime/exakit.py
           # One reusable branch, force-pushed: a later run replaces the proposal
           # instead of leaving a trail of stale pull requests behind it.

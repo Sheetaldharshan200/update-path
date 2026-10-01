@@ -1,0 +1,154 @@
+name: quality
+
+# The quality gates, on every push and pull request:
+#   standard      the coding standard (tools/check_standard.py), the lint (ruff.toml), the shell layer
+#   tests         every suite on Linux (3.11 and 3.12), macOS and Windows, with coverage; JUnit and Markdown reports
+#   release       the release gate (tools/release_check.py)
+#   qa-report     one QA report assembled from every job's reports, published as an artifact and the run summary
+#   sonar         SonarQube / SonarCloud analysis when the SONAR_TOKEN secret is set (skipped otherwise)
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  standard:
+    name: coding standard and lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: the coding standard (size, complexity, layers, boundary, stdlib, shell)
+        run: python3 tools/check_standard.py
+      - name: the lint (ruff.toml is the SonarQube-aligned rule set)
+        run: |
+          pip install --quiet ruff==0.14.0
+          ruff check --output-format github exakit mcp tests tools
+          ruff check --output-format json exakit mcp tests tools > reports/lint.json || true
+      - name: the shell layer parses and shellcheck is quiet
+        run: |
+          for f in install.sh bootstrap/ensure-python.sh bootstrap/exakit setup/exakit; do sh -n "$f" && echo "ok $f"; done
+          shellcheck -s sh -S warning install.sh bootstrap/ensure-python.sh bootstrap/exakit
+      - uses: actions/upload-artifact@v4
+        with:
+          name: reports-standard
+          path: reports/
+
+  tests:
+    name: tests (${{ matrix.os }}, ${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, python: "3.11" }
+          - { os: ubuntu-latest, python: "3.12" }
+          - { os: macos-latest, python: "3.12" }
+          - { os: windows-latest, python: "3.12" }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: the test dependencies (coverage, and the pinned Textual for the screens' tests)
+        shell: bash
+        run: pip install --quiet coverage "textual==$(python -c 'import json; print(json.load(open("versions.json"))["tools"]["textual"]["version"])')"
+      - name: every suite, with coverage and the reports
+        run: python tools/run_tests.py --coverage
+      - name: what icacls says about a protected file (Windows, diagnostic)
+        if: runner.os == 'Windows' && always()
+        shell: bash
+        run: python tools/acl_diag.py
+      - name: the bootstrap and the launcher parse under Windows PowerShell 5.1
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          foreach ($file in @("bootstrap\ensure-python.ps1", "bootstrap\exakit.ps1", "install.ps1")) {
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $file), [ref]$null, [ref]$errors) | Out-Null
+            if ($errors.Count -gt 0) { Write-Host "$file does not parse under 5.1"; $errors | ForEach-Object { Write-Host $_ }; exit 1 }
+            Write-Host "ok $file"
+          }
+      - name: the summary
+        if: always()
+        shell: bash
+        run: head -20 reports/test-report.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: reports-${{ matrix.os }}-${{ matrix.python }}
+          path: reports/
+
+  release:
+    name: release gate
+    runs-on: ubuntu-latest
+    needs: [tests]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 60
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@v4
+        with:
+          name: reports-ubuntu-latest-3.12
+          path: reports/
+      - name: the release checks
+        run: python3 tools/release_check.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: reports-release
+          path: reports/release*.*
+
+  qa-report:
+    name: QA report
+    runs-on: ubuntu-latest
+    needs: [standard, tests, release]
+    if: always()
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts/
+      - name: assemble
+        run: |
+          mkdir -p reports
+          cp -f artifacts/reports-standard/*.json reports/ 2>/dev/null || true
+          cp -f artifacts/reports-release/*.json reports/ 2>/dev/null || true
+          python3 tools/qa_report.py --from artifacts/ || true
+          cat reports/qa-report.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: qa-report
+          path: reports/qa-report.md
+
+  sonar:
+    name: SonarQube
+    runs-on: ubuntu-latest
+    needs: [tests]
+    env:
+      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+      SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        if: env.SONAR_TOKEN != ''
+        with:
+          name: reports-ubuntu-latest-3.12
+          path: reports/
+      - name: analyse
+        if: env.SONAR_TOKEN != ''
+        uses: SonarSource/sonarqube-scan-action@v5
+      - name: skipped
+        if: env.SONAR_TOKEN == ''
+        run: echo "SONAR_TOKEN is not set; the analysis is skipped (sonar-project.properties is ready for it)"

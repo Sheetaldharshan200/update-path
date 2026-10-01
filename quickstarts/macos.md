@@ -4,8 +4,8 @@ This guide takes you from a bare Mac to a local Exasol database with an AI assis
 
 ## What you need
 
-- macOS on Apple Silicon or Intel. One optional add-on, JSON Tables, runs on
-  Apple Silicon only; everything else runs on both.
+- macOS on Apple silicon. The local database does not run on Intel Macs:
+  the installer says so and installs nothing there.
 - 8 GB+ RAM, ~20 GB free disk
 
 The install runs unattended, and the database is usually up in under 2 minutes. The steps after it (sample data, the AI bridge and the Python driver) take longer.
@@ -22,6 +22,12 @@ You don't need Python on your Mac. The installer brings its own.
 
 ```bash
 curl https://www.exasol.com/install/starter-kit.sh | sh
+```
+
+To install by role (datasets, AI clients and add-ons chosen for you), name a persona:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/krishna-exasol/update-path/main/install.sh | EXAKIT_PERSONA=data-scientist sh
 ```
 
 What happens, in order:

@@ -1,0 +1,67 @@
+{
+  "schema_version": 1,
+  "id": "kit",
+  "title": "Exasol Personal Local Starter Kit",
+  "repository": "krishna-exasol/update-path",
+  "install": {
+    "sh_url": "https://www.exasol.com/install/starter-kit.sh",
+    "ps1_url": "https://www.exasol.com/install/starter-kit.ps1"
+  },
+  "versions": {
+    "url_template": "https://raw.githubusercontent.com/{repo}/main/versions.json",
+    "ttl_seconds": 86400,
+    "retry_seconds": 3600
+  },
+  "about": {
+    "url": "https://api.github.com/repos",
+    "ttl_seconds": 86400,
+    "retry_seconds": 3600,
+    "max_len": 200
+  },
+  "endpoints": {
+    "github_api": "https://api.github.com",
+    "github_web": "https://github.com",
+    "release_asset": "{github_web}/{repo}/releases/download/{tag}/{name}",
+    "release_by_tag": "{github_api}/repos/{repo}/releases/tags/{tag}",
+    "latest_release": "{github_api}/repos/{repo}/releases/latest",
+    "archive_tag": "{github_web}/{repo}/archive/refs/tags/{ref}.tar.gz",
+    "archive_branch": "{github_web}/{repo}/archive/refs/heads/{ref}.tar.gz",
+    "pypi_json": "https://pypi.org/pypi/{package}/json",
+    "archive_ref": "{github_web}/{repo}/archive/{ref}.tar.gz"
+  },
+  "python": {
+    "managed_version": "3.12"
+  },
+  "requirements": {
+    "min_ram_gb": 8,
+    "min_disk_gb": 20,
+    "comfort_ram_gb": 12,
+    "comfort_disk_gb": 40
+  },
+  "runtime": {
+    "db_port": 8563,
+    "probe_timeout_seconds": 10,
+    "ready_timeout_seconds": 150,
+    "rebuild_timeout_seconds": 900,
+    "reap_min_age_seconds": 180,
+    "container_probe_timeout_seconds": 20,
+    "container_action_timeout_seconds": 120
+  },
+  "mcp": {
+    "readonly_user": "mcp_readonly",
+    "readonly_schemas": "STARTER_KIT"
+  },
+  "data": {
+    "schema": "STARTER_KIT"
+  },
+  "notice": {
+    "interval_seconds": 86400
+  },
+  "exapump": {
+    "glibc_shim_image": "ubuntu:24.04"
+  },
+  "ui": {
+    "package": "textual",
+    "venv_dir": "ui-venv"
+  }
+}
