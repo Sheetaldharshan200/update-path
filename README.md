@@ -92,7 +92,7 @@ Every platform runs the same database, Exasol Personal, set up by the same launc
 
 **WSL** is supported and follows the Linux path: run the same command inside a WSL2 distro.
 
-## Upgrading an existing kit
+## Upgrade
 
 No reinstall is needed:
 
