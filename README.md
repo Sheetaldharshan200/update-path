@@ -88,21 +88,13 @@ Every platform runs the same database, Exasol Personal, set up by the same launc
 | **[macOS](quickstarts/macos.md)** | 8 GB+ RAM, 20 GB free disk | Runs in a lightweight managed VM. Nothing to install first |
 | **[Linux](quickstarts/linux.md)** | Podman (rootless is fine), 8 GB+ RAM, 20 GB free disk | If Podman is missing, the installer installs it without stopping to ask. It uses `sudo`, so expect a password prompt |
 | **[Windows](quickstarts/windows.md)** | 8 GB+ RAM, 20 GB free disk | Runs through Podman, which the launcher offers to install (this may need administrator approval). An existing Podman machine must be rootless (`podman machine set --rootful=false`), or the database port cannot reach Windows. Windows arm64 is not supported |
-| All platforms | Python 3.11+ | The kit installs its own copy if you don't have it |
+| All platforms | Python 3.11+ | |
 
 **WSL** is supported and follows the Linux path: run the same command inside a WSL2 distro.
 
 ## Upgrade
 
-No reinstall is needed:
-
-```bash
-exakit update
-```
-
-The kit scripts, exapump, the MCP server, pyexasol, the skills and the marketplace arrive in seconds, without downtime. When a database update is waiting, the command asks before it stops the database.
-
-If your database still runs in a container from an earlier kit, re-run the install command instead. It finds the old installation and offers to bring your data across, without deleting anything. `exakit migrate docker-nano` does the same later.
+To move from 0.1.0 to 0.2.0, run the install command at the top of this page again, or run `exakit update`. On Windows, have Podman Desktop installed first, and on Linux, Podman. On macOS, the curl command is all you need.
 
 ## Connect your AI client and ask
 
@@ -161,7 +153,7 @@ The whole flow, from install to the first query:
 
 | Question | Answer |
 |---|---|
-| What&nbsp;do&nbsp;I&nbsp;need&nbsp;installed&nbsp;first? | Nothing. The kit installs its own Python 3.11+ if you don't have one, and you don't need Rust or Homebrew. |
+| What&nbsp;do&nbsp;I&nbsp;need&nbsp;installed&nbsp;first? | Python 3.11+. You don't need Rust or Homebrew. |
 | What&nbsp;if&nbsp;I&nbsp;don't&nbsp;have&nbsp;Podman? | macOS does not use it. On Linux the installer installs it for you with one package-manager command through `sudo`, without stopping to ask. On Windows the launcher offers to install it, which may need administrator approval. |
 | Does&nbsp;it&nbsp;cost&nbsp;anything? | No. Exasol Personal Local is free of charge, but it is not open source: the database ships under [Exasol's own licence terms](https://www.exasol.com/legal/), and this kit's scripts are [MIT](LICENSE). |
 | Can&nbsp;I&nbsp;load&nbsp;my&nbsp;own&nbsp;data? | Yes. `exakit data-load` takes CSV, Parquet or JSON files, or a folder of them, and `exapump upload` works from the terminal. |
@@ -170,7 +162,7 @@ The whole flow, from install to the first query:
 | Port&nbsp;8563&nbsp;already&nbsp;taken? | The launcher picks the deployment's port and remembers it, and the kit reads back whichever port it picked. If an existing Exasol database is on the port, the kit adopts it. If something else is using it, the kit names that process. |
 | Behind&nbsp;a&nbsp;corporate&nbsp;proxy? | Set `HTTPS_PROXY` to your proxy address before you run the install command, and every download goes through it: `export HTTPS_PROXY=http://proxy.example.com:8080` on macOS and Linux, `$env:HTTPS_PROXY = 'http://proxy.example.com:8080'` in PowerShell. If the proxy asks for a login, the Windows installer uses your signed-in Windows account. |
 | Installing&nbsp;over&nbsp;a&nbsp;database<br>I&nbsp;already&nbsp;have? | The kit adopts your existing database, running or stopped, and reuses it with its data intact. The installer replaces a database only if it cannot start at all, and it warns you first. |
-| I&nbsp;already&nbsp;have&nbsp;the&nbsp;kit.<br>How&nbsp;do&nbsp;I&nbsp;get&nbsp;this&nbsp;version? | Run `exakit update`. See [Upgrading an existing kit](#upgrading-an-existing-kit). |
+| I&nbsp;already&nbsp;have&nbsp;the&nbsp;kit.<br>How&nbsp;do&nbsp;I&nbsp;get&nbsp;this&nbsp;version? | Run `exakit update`. See [Upgrade](#upgrade). |
 | How&nbsp;do&nbsp;I&nbsp;remove&nbsp;everything? | Run `exakit uninstall`. |
 
 ---
