@@ -94,7 +94,7 @@ Every platform runs the same database, Exasol Personal, set up by the same launc
 
 ## Upgrade
 
-To move from 0.1.0 to 0.2.0, run the install command at the top of this page again, or run `exakit update`. On Windows, have Podman Desktop installed first, and on Linux, Podman. On macOS, the curl command is all you need.
+To upgrade from 0.1.0 to 0.2.0, run the install command from the top of this page again, or run `exakit update`. Windows needs Podman Desktop installed before you start, and Linux needs Podman. On macOS there is nothing to prepare.
 
 ## Connect your AI client and ask
 
@@ -155,7 +155,7 @@ The whole flow, from install to the first query:
 |---|---|
 | What&nbsp;do&nbsp;I&nbsp;need&nbsp;installed&nbsp;first? | Python 3.11+. You don't need Rust or Homebrew. |
 | What&nbsp;if&nbsp;I&nbsp;don't&nbsp;have&nbsp;Podman? | macOS does not use it. On Linux the installer installs it for you with one package-manager command through `sudo`, without stopping to ask. On Windows the launcher offers to install it, which may need administrator approval. |
-| Does&nbsp;it&nbsp;cost&nbsp;anything? | No. Exasol Personal Local is free of charge, but it is not open source: the database ships under [Exasol's own licence terms](https://www.exasol.com/legal/), and this kit's scripts are [MIT](LICENSE). |
+| Does&nbsp;it&nbsp;cost&nbsp;anything? | No. Exasol Personal Local is free of charge, but it is not open source: the database ships under the [Exasol Personal End User License Agreement](https://www.exasol.com/terms-and-conditions/#h-exasol-personal-end-user-license-agreement), and this kit's scripts are [MIT](LICENSE). |
 | Can&nbsp;I&nbsp;load&nbsp;my&nbsp;own&nbsp;data? | Yes. `exakit data-load` takes CSV, Parquet or JSON files, or a folder of them, and `exapump upload` works from the terminal. |
 | The&nbsp;install&nbsp;failed&nbsp;partway&nbsp;through? | Re-run the install command. It skips what is already done and picks up where it left off. |
 | `exakit` not recognized after<br>a Windows install? | Re-run the install command. It adds `~\.local\bin` to your user PATH and fixes the command. |
