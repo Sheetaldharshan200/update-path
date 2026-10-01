@@ -88,9 +88,9 @@ Every platform runs the same database, Exasol Personal, set up by the same launc
 | **[macOS](quickstarts/macos.md)** | 8 GB+ RAM, 20 GB free disk | Runs in a lightweight managed VM. Nothing to install first |
 | **[Linux](quickstarts/linux.md)** | Podman (rootless is fine), 8 GB+ RAM, 20 GB free disk | If Podman is missing, the installer installs it without stopping to ask. It uses `sudo`, so expect a password prompt |
 | **[Windows](quickstarts/windows.md)** | 8 GB+ RAM, 20 GB free disk | Runs through Podman, which the launcher offers to install (this may need administrator approval). An existing Podman machine must be rootless (`podman machine set --rootful=false`), or the database port cannot reach Windows. Windows arm64 is not supported |
-| All platforms | Python 3.11+ | |
+| All platforms | Python 3.11+ | **WSL** is supported and follows the Linux path: run the same command inside a WSL2 distro. |
 
-**WSL** is supported and follows the Linux path: run the same command inside a WSL2 distro.
+
 
 ## Upgrade
 
@@ -159,7 +159,7 @@ The whole flow, from install to the first query:
 | Can&nbsp;I&nbsp;load&nbsp;my&nbsp;own&nbsp;data? | Yes. `exakit data-load` takes CSV, Parquet or JSON files, or a folder of them, and `exapump upload` works from the terminal. |
 | The&nbsp;install&nbsp;failed&nbsp;partway&nbsp;through? | Re-run the install command. It skips what is already done and picks up where it left off. |
 | `exakit` not recognized after<br>a Windows install? | Re-run the install command. It adds `~\.local\bin` to your user PATH and fixes the command. |
-| Port&nbsp;8563&nbsp;already&nbsp;taken? | The launcher picks the deployment's port and remembers it, and the kit reads back whichever port it picked. If an existing Exasol database is on the port, the kit adopts it. If something else is using it, the kit names that process. |
+| Port&nbsp;8563&nbsp;already&nbsp;taken? | If an Exasol database is on it, the kit adopts that database. If another program is on it, the kit says which program and leaves it running. Stop that program and re-run. `exakit info` shows the port your database uses. |
 | Behind&nbsp;a&nbsp;corporate&nbsp;proxy? | Set `HTTPS_PROXY` to your proxy address before you run the install command, and every download goes through it: `export HTTPS_PROXY=http://proxy.example.com:8080` on macOS and Linux, `$env:HTTPS_PROXY = 'http://proxy.example.com:8080'` in PowerShell. If the proxy asks for a login, the Windows installer uses your signed-in Windows account. |
 | Installing&nbsp;over&nbsp;a&nbsp;database<br>I&nbsp;already&nbsp;have? | The kit adopts your existing database, running or stopped, and reuses it with its data intact. The installer replaces a database only if it cannot start at all, and it warns you first. |
 | I&nbsp;already&nbsp;have&nbsp;the&nbsp;kit.<br>How&nbsp;do&nbsp;I&nbsp;get&nbsp;this&nbsp;version? | Run `exakit update`. See [Upgrade](#upgrade). |
